@@ -2,6 +2,10 @@
 
 A Model Context Protocol (MCP) server that integrates WorkFlowy's outline and task management capabilities with LLM applications.
 
+<a href="https://glama.ai/mcp/servers/@daniel347x/workflowy-mcp-fixed">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@daniel347x/workflowy-mcp-fixed/badge" alt="WorkFlowy Server MCP server" />
+</a>
+
 ## MCP Tools Available
 
 | Tool | Description |
