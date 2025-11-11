@@ -308,6 +308,39 @@ async def uncomplete_node(node_id: str) -> WorkFlowyNode:
         raise
 
 
+# Tool: Move Node
+@mcp.tool(name="workflowy_move_node", description="Move a WorkFlowy node to a new parent")
+async def move_node(
+    node_id: str,
+    parent_id: str | None = None,
+    position: str = "top",
+) -> bool:
+    """Move a node to a new parent.
+    
+    Args:
+        node_id: The ID of the node to move
+        parent_id: The new parent node ID (UUID, target key like 'inbox', or None for root)
+        position: Where to place the node ('top' or 'bottom', default 'top')
+        
+    Returns:
+        True if move was successful
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        success = await client.move_node(node_id, parent_id, position)
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return success
+    except Exception as e:
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
 # Resource: WorkFlowy Outline
 @mcp.resource(
     uri="workflowy://outline",

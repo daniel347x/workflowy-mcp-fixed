@@ -133,8 +133,12 @@ class WorkFlowyClient:
         try:
             response = await self.client.get(f"/nodes/{node_id}")
             data = await self._handle_response(response)
-            # API returns the full node object
-            return WorkFlowyNode(**data)
+            # API returns {"node": {...}} structure
+            if isinstance(data, dict) and "node" in data:
+                return WorkFlowyNode(**data["node"])
+            else:
+                # Fallback for unexpected format
+                return WorkFlowyNode(**data)
         except httpx.TimeoutException as err:
             raise TimeoutError("get_node") from err
         except httpx.NetworkError as e:
@@ -145,7 +149,10 @@ class WorkFlowyClient:
         try:
             # exclude_none=True ensures parent_id is omitted entirely for root nodes
             # (API requires absence of parameter, not null value)
-            params = request.model_dump(exclude_none=True)
+            # Build params manually to ensure snake_case (API expects parent_id not parentId)
+            params = {}
+            if request.parentId is not None:
+                params['parent_id'] = request.parentId
             response = await self.client.get("/nodes", params=params)
             response_data: list[Any] | dict[str, Any] = await self._handle_response(response)
 
@@ -198,5 +205,35 @@ class WorkFlowyClient:
             return WorkFlowyNode(**data)
         except httpx.TimeoutException as err:
             raise TimeoutError("uncomplete_node") from err
+        except httpx.NetworkError as e:
+            raise NetworkError(f"Network error: {str(e)}") from e
+
+    async def move_node(
+        self,
+        node_id: str,
+        parent_id: str | None = None,
+        position: str = "top",
+    ) -> bool:
+        """Move a node to a new parent.
+        
+        Args:
+            node_id: The ID of the node to move
+            parent_id: The new parent node ID (UUID, target key like 'inbox', or None for root)
+            position: Where to place the node ('top' or 'bottom', default 'top')
+            
+        Returns:
+            True if move was successful
+        """
+        try:
+            payload = {"position": position}
+            if parent_id is not None:
+                payload["parent_id"] = parent_id
+            
+            response = await self.client.post(f"/nodes/{node_id}/move", json=payload)
+            data = await self._handle_response(response)
+            # API returns {"status": "ok"}
+            return data.get("status") == "ok"
+        except httpx.TimeoutException as err:
+            raise TimeoutError("move_node") from err
         except httpx.NetworkError as e:
             raise NetworkError(f"Network error: {str(e)}") from e
