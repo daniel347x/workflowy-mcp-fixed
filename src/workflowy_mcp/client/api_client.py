@@ -121,8 +121,14 @@ class WorkFlowyClient:
                 f"/nodes/{node_id}", json=request.model_dump(exclude_none=True)
             )
             data = await self._handle_response(response)
-            # API returns the full node object
-            return WorkFlowyNode(**data)
+            # API returns {"status": "ok"} - fetch updated node
+            if isinstance(data, dict) and data.get('status') == 'ok':
+                get_response = await self.client.get(f"/nodes/{node_id}")
+                node_data = await self._handle_response(get_response)
+                return WorkFlowyNode(**node_data["node"])
+            else:
+                # Fallback for unexpected format
+                return WorkFlowyNode(**data)
         except httpx.TimeoutException as err:
             raise TimeoutError("update_node") from err
         except httpx.NetworkError as e:
@@ -189,8 +195,14 @@ class WorkFlowyClient:
         try:
             response = await self.client.post(f"/nodes/{node_id}/complete")
             data = await self._handle_response(response)
-            # API returns the full node object
-            return WorkFlowyNode(**data)
+            # API returns {"status": "ok"} - fetch updated node
+            if isinstance(data, dict) and data.get('status') == 'ok':
+                get_response = await self.client.get(f"/nodes/{node_id}")
+                node_data = await self._handle_response(get_response)
+                return WorkFlowyNode(**node_data["node"])
+            else:
+                # Fallback for unexpected format
+                return WorkFlowyNode(**data)
         except httpx.TimeoutException as err:
             raise TimeoutError("complete_node") from err
         except httpx.NetworkError as e:
@@ -201,8 +213,14 @@ class WorkFlowyClient:
         try:
             response = await self.client.post(f"/nodes/{node_id}/uncomplete")
             data = await self._handle_response(response)
-            # API returns the full node object
-            return WorkFlowyNode(**data)
+            # API returns {"status": "ok"} - fetch updated node
+            if isinstance(data, dict) and data.get('status') == 'ok':
+                get_response = await self.client.get(f"/nodes/{node_id}")
+                node_data = await self._handle_response(get_response)
+                return WorkFlowyNode(**node_data["node"])
+            else:
+                # Fallback for unexpected format
+                return WorkFlowyNode(**data)
         except httpx.TimeoutException as err:
             raise TimeoutError("uncomplete_node") from err
         except httpx.NetworkError as e:
@@ -235,5 +253,56 @@ class WorkFlowyClient:
             return data.get("status") == "ok"
         except httpx.TimeoutException as err:
             raise TimeoutError("move_node") from err
+        except httpx.NetworkError as e:
+            raise NetworkError(f"Network error: {str(e)}") from e
+
+    async def export_nodes(
+        self,
+        node_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Export all nodes or filter to specific node's subtree.
+        
+        Args:
+            node_id: Optional node ID to export only that node and its descendants.
+                     If None, exports all nodes in the account.
+            
+        Returns:
+            Dictionary with 'nodes' list containing all exported nodes.
+            If node_id is provided, filters to only that node and descendants.
+        """
+        try:
+            # API exports all nodes as flat list (no parameters supported)
+            response = await self.client.get("/nodes-export")
+            data = await self._handle_response(response)
+            
+            # If no filtering requested, return everything
+            if node_id is None:
+                return data
+            
+            # Filter to specific node and its descendants
+            all_nodes = data.get("nodes", [])
+            
+            # Build set of node IDs to include (target node + all descendants)
+            included_ids = {node_id}
+            nodes_by_id = {node["id"]: node for node in all_nodes}
+            
+            # Find all descendants recursively
+            def add_descendants(parent_id: str) -> None:
+                for node in all_nodes:
+                    if node.get("parent_id") == parent_id and node["id"] not in included_ids:
+                        included_ids.add(node["id"])
+                        add_descendants(node["id"])
+            
+            # Start with target node's children
+            if node_id in nodes_by_id:
+                add_descendants(node_id)
+            
+            # Filter nodes list
+            filtered_nodes = [node for node in all_nodes if node["id"] in included_ids]
+            
+            return {"nodes": filtered_nodes}
+            
+        except httpx.TimeoutException as err:
+            raise TimeoutError("export_nodes") from err
         except httpx.NetworkError as e:
             raise NetworkError(f"Network error: {str(e)}") from e

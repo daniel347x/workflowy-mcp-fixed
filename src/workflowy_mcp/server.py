@@ -341,6 +341,37 @@ async def move_node(
         raise
 
 
+# Tool: Export Nodes
+@mcp.tool(name="workflowy_export_node", description="Export a WorkFlowy node with all its children")
+async def export_node(
+    node_id: str | None = None,
+) -> dict:
+    """Export all nodes or filter to specific node's subtree.
+
+    Args:
+        node_id: ID of the node to export (omit to export all nodes).
+                 If provided, exports only that node and all its descendants.
+
+    Returns:
+        Dictionary containing 'nodes' list with exported node data.
+        Rate limit: 1 request per minute for full export.
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        data = await client.export_nodes(node_id)
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return data
+    except Exception as e:
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
 # Resource: WorkFlowy Outline
 @mcp.resource(
     uri="workflowy://outline",
