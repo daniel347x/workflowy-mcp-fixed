@@ -95,20 +95,14 @@ class WorkFlowyClient:
             response = await self.client.post("/nodes/", json=request.model_dump(exclude_none=True))
             data = await self._handle_response(response)
             # Create endpoint returns just {"item_id": "..."}
-            # We need to construct a minimal node response
             item_id = data.get("item_id")
             if not item_id:
                 raise NetworkError(f"Invalid response from create endpoint: {data}")
 
-            # Return a minimal node with just the ID and provided fields
-            node_data = {
-                "id": item_id,
-                "name": request.name,
-                "note": request.note,
-            }
-            if request.layoutMode:
-                node_data["data"] = {"layoutMode": request.layoutMode}
-            return WorkFlowyNode(**node_data)
+            # Fetch the created node to get actual saved state (including note field)
+            get_response = await self.client.get(f"/nodes/{item_id}")
+            node_data = await self._handle_response(get_response)
+            return WorkFlowyNode(**node_data["node"])
         except httpx.TimeoutException as err:
             raise TimeoutError("create_node") from err
         except httpx.NetworkError as e:
