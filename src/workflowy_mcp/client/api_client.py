@@ -300,3 +300,299 @@ class WorkFlowyClient:
             raise TimeoutError("export_nodes") from err
         except httpx.NetworkError as e:
             raise NetworkError(f"Network error: {str(e)}") from e
+
+    async def bulk_export_to_file(
+        self,
+        node_id: str,
+        output_file: str,
+        include_metadata: bool = True,
+    ) -> dict[str, Any]:
+        """Export node tree to hierarchical JSON file.
+        
+        Args:
+            node_id: Root node UUID to export from
+            output_file: Absolute path where JSON should be written
+            include_metadata: Include created_at, modified_at fields (default True)
+            
+        Returns:
+            {"success": True, "file_path": "...", "node_count": N, "depth": M}
+        """
+        try:
+            # Fetch flat node list
+            raw_data = await self.export_nodes(node_id)
+            flat_nodes = raw_data.get("nodes", [])
+            
+            if not flat_nodes:
+                return {
+                    "success": True,
+                    "file_path": output_file,
+                    "node_count": 0,
+                    "depth": 0
+                }
+            
+            # Build hierarchical tree from flat list
+            hierarchical_tree = self._build_hierarchy(flat_nodes, include_metadata)
+            
+            # Calculate max depth
+            max_depth = self._calculate_max_depth(hierarchical_tree)
+            
+            # Write to file
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(hierarchical_tree, f, indent=2, ensure_ascii=False)
+            
+            return {
+                "success": True,
+                "file_path": output_file,
+                "node_count": len(flat_nodes),
+                "depth": max_depth
+            }
+            
+        except Exception as e:
+            raise NetworkError(f"Bulk export failed: {str(e)}") from e
+    
+    def _build_hierarchy(
+        self,
+        flat_nodes: list[dict[str, Any]],
+        include_metadata: bool = True
+    ) -> list[dict[str, Any]]:
+        """Convert flat node list to hierarchical tree structure.
+        
+        Args:
+            flat_nodes: Flat list of nodes with parent_id references
+            include_metadata: Whether to include metadata fields
+            
+        Returns:
+            List of root nodes with nested children
+        """
+        # Pass 1: Build lookup dictionary and add children arrays
+        nodes_by_id: dict[str, dict[str, Any]] = {}
+        for node in flat_nodes:
+            node_copy = node.copy()
+            
+            # Strip metadata if requested
+            if not include_metadata:
+                node_copy.pop('created_at', None)
+                node_copy.pop('modified_at', None)
+                node_copy.pop('createdAt', None)
+                node_copy.pop('modifiedAt', None)
+            
+            node_copy['children'] = []
+            nodes_by_id[node['id']] = node_copy
+        
+        # Pass 2: Link children to parents
+        root_nodes = []
+        for node in nodes_by_id.values():
+            parent_id = node.get('parent_id') or node.get('parentId')
+            if parent_id and parent_id in nodes_by_id:
+                nodes_by_id[parent_id]['children'].append(node)
+            else:
+                # No parent or parent not in set = root node
+                root_nodes.append(node)
+        
+        return root_nodes
+    
+    def _calculate_max_depth(self, nodes: list[dict[str, Any]], current_depth: int = 1) -> int:
+        """Calculate maximum depth of node tree.
+        
+        Args:
+            nodes: List of nodes at current level
+            current_depth: Current depth (starts at 1)
+            
+        Returns:
+            Maximum depth of tree
+        """
+        if not nodes:
+            return current_depth - 1
+        
+        max_child_depth = current_depth
+        for node in nodes:
+            if node.get('children'):
+                child_depth = self._calculate_max_depth(node['children'], current_depth + 1)
+                max_child_depth = max(max_child_depth, child_depth)
+        
+        return max_child_depth
+    
+    async def bulk_import_from_file(
+        self,
+        json_file: str,
+        parent_id: str,
+    ) -> dict[str, Any]:
+        """Create multiple Workflowy nodes from JSON file.
+        
+        Args:
+            json_file: Absolute path to JSON file with node structure
+            parent_id: Parent UUID where nodes should be created
+            
+        Returns:
+            {
+                "success": True/False,
+                "nodes_created": N,
+                "root_node_ids": [...],
+                "api_calls": N,
+                "retries": N,
+                "rate_limit_hits": N,
+                "errors": [...]
+            }
+        """
+        import asyncio
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        
+        # Read JSON file
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                nodes_to_create = json.load(f)
+        except Exception as e:
+            return {
+                "success": False,
+                "nodes_created": 0,
+                "root_node_ids": [],
+                "api_calls": 0,
+                "retries": 0,
+                "rate_limit_hits": 0,
+                "errors": [f"Failed to read JSON file: {str(e)}"]
+            }
+        
+        if not isinstance(nodes_to_create, list):
+            return {
+                "success": False,
+                "nodes_created": 0,
+                "root_node_ids": [],
+                "api_calls": 0,
+                "retries": 0,
+                "rate_limit_hits": 0,
+                "errors": ["JSON must contain an array of nodes"]
+            }
+        
+        # Stats tracking
+        stats = {
+            "api_calls": 0,
+            "retries": 0,
+            "rate_limit_hits": 0,
+            "nodes_created": 0,
+            "errors": []
+        }
+        
+        async def create_node_with_retry(
+            request: NodeCreateRequest,
+            max_retries: int = 5
+        ) -> WorkFlowyNode | None:
+            """Create node with exponential backoff retry."""
+            retry_count = 0
+            base_delay = 1.0
+            
+            while retry_count < max_retries:
+                try:
+                    # Fixed safety delay (100ms between calls)
+                    await asyncio.sleep(0.1)
+                    stats["api_calls"] += 1
+                    
+                    node = await self.create_node(request)
+                    return node
+                    
+                except RateLimitError as e:
+                    stats["rate_limit_hits"] += 1
+                    stats["retries"] += 1
+                    retry_count += 1
+                    
+                    retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
+                    logger.warning(
+                        f"Rate limited. Retry after {retry_after}s. "
+                        f"Total retries: {stats['retries']}"
+                    )
+                    
+                    if retry_count < max_retries:
+                        await asyncio.sleep(retry_after)
+                    else:
+                        raise
+                        
+                except NetworkError as e:
+                    stats["retries"] += 1
+                    retry_count += 1
+                    
+                    logger.warning(
+                        f"Network error: {e}. Retry {retry_count}/{max_retries}"
+                    )
+                    
+                    if retry_count < max_retries:
+                        await asyncio.sleep(base_delay * (2 ** retry_count))
+                    else:
+                        raise
+            
+            return None
+        
+        async def create_tree(
+            parent_id: str,
+            nodes: list[dict[str, Any]]
+        ) -> list[str]:
+            """Recursively create node tree."""
+            created_ids = []
+            
+            for node_data in nodes:
+                try:
+                    # Build request
+                    request = NodeCreateRequest(
+                        name=node_data['name'],
+                        parent_id=parent_id,
+                        note=node_data.get('note'),
+                        layoutMode=node_data.get('layout_mode'),
+                        position=node_data.get('position', 'top')
+                    )
+                    
+                    # Create with retry logic
+                    node = await create_node_with_retry(request)
+                    
+                    if node:
+                        created_ids.append(node.id)
+                        stats["nodes_created"] += 1
+                        
+                        # Recursively create children
+                        if 'children' in node_data and node_data['children']:
+                            await create_tree(node.id, node_data['children'])
+                    
+                except Exception as e:
+                    error_msg = f"Failed to create node '{node_data.get('name', 'unknown')}': {str(e)}"
+                    logger.error(error_msg)
+                    stats["errors"].append(error_msg)
+                    # Continue with other nodes
+                    continue
+            
+            return created_ids
+        
+        # Create the tree
+        try:
+            root_ids = await create_tree(parent_id, nodes_to_create)
+            
+            # Log summary if retries occurred
+            if stats["retries"] > 0:
+                logger.warning(
+                    f"⚠️ Import completed with {stats['retries']} retries "
+                    f"({stats['rate_limit_hits']} rate limit hits). "
+                    f"Consider reducing import speed."
+                )
+            
+            return {
+                "success": len(stats["errors"]) == 0,
+                "nodes_created": stats["nodes_created"],
+                "root_node_ids": root_ids,
+                "api_calls": stats["api_calls"],
+                "retries": stats["retries"],
+                "rate_limit_hits": stats["rate_limit_hits"],
+                "errors": stats["errors"]
+            }
+            
+        except Exception as e:
+            error_msg = f"Bulk import failed: {str(e)}"
+            logger.error(error_msg)
+            stats["errors"].append(error_msg)
+            
+            return {
+                "success": False,
+                "nodes_created": stats["nodes_created"],
+                "root_node_ids": [],
+                "api_calls": stats["api_calls"],
+                "retries": stats["retries"],
+                "rate_limit_hits": stats["rate_limit_hits"],
+                "errors": stats["errors"]
+            }

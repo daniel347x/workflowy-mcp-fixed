@@ -372,6 +372,81 @@ async def export_node(
         raise
 
 
+# Tool: Bulk Export to JSON File
+@mcp.tool(
+    name="workflowy_bulk_export",
+    description="Export a Workflowy node and its entire subtree to a JSON file."
+)
+async def bulk_export(
+    node_id: str,
+    output_file: str,
+    include_metadata: bool = True,
+) -> dict:
+    """Export a node tree to a hierarchical JSON file.
+
+    Args:
+        node_id: The UUID of the root node to export from.
+        output_file: The absolute path where the JSON output file should be written.
+        include_metadata: Whether to include metadata fields like created_at and modified_at (default True).
+
+    Returns:
+        A dictionary with success status, file path, node count, and tree depth.
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.bulk_export_to_file(node_id, output_file, include_metadata)
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
+# Tool: Bulk Import from JSON File
+@mcp.tool(
+    name="workflowy_bulk_import",
+    description="Create multiple Workflowy nodes from a hierarchical JSON file."
+)
+async def bulk_import(
+    json_file: str,
+    parent_id: str,
+) -> dict:
+    """Create a tree of nodes from a JSON structure.
+
+    Args:
+        json_file: The absolute path to the JSON file containing the node structure.
+        parent_id: The UUID of the parent node under which to create the new nodes.
+
+    Returns:
+        A dictionary with success status, nodes created, API call stats, and any errors.
+    """
+    client = get_client()
+
+    # Rate limiter is handled within the bulk_import_from_file method
+    # due to the recursive nature of the operation.
+
+    try:
+        result = await client.bulk_import_from_file(json_file, parent_id)
+        return result
+    except Exception as e:
+        # Top-level exception capture
+        return {
+            "success": False,
+            "nodes_created": 0,
+            "root_node_ids": [],
+            "api_calls": 0,
+            "retries": 0,
+            "rate_limit_hits": 0,
+            "errors": [f"An unexpected error occurred: {str(e)}"]
+        }
+
+
 # Resource: WorkFlowy Outline
 @mcp.resource(
     uri="workflowy://outline",
