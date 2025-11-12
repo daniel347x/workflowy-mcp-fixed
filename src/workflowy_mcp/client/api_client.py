@@ -537,7 +537,7 @@ class WorkFlowyClient:
                         parent_id=parent_id,
                         note=node_data.get('note'),
                         layoutMode=node_data.get('layout_mode'),
-                        position=node_data.get('position', 'top')
+                        position=node_data.get('position', 'bottom')
                     )
                     
                     # Create with retry logic
