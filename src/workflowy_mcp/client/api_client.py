@@ -307,7 +307,7 @@ class WorkFlowyClient:
         output_file: str,
         include_metadata: bool = True,
     ) -> dict[str, Any]:
-        """Export node tree to hierarchical JSON file.
+        """Export node tree to hierarchical JSON file AND Markdown file.
         
         Args:
             node_id: Root node UUID to export from
@@ -315,7 +315,7 @@ class WorkFlowyClient:
             include_metadata: Include created_at, modified_at fields (default True)
             
         Returns:
-            {"success": True, "file_path": "...", "node_count": N, "depth": M}
+            {"success": True, "file_path": "...", "markdown_file": "...", "node_count": N, "depth": M}
         """
         try:
             # Fetch flat node list
@@ -326,6 +326,7 @@ class WorkFlowyClient:
                 return {
                     "success": True,
                     "file_path": output_file,
+                    "markdown_file": None,
                     "node_count": 0,
                     "depth": 0
                 }
@@ -333,16 +334,29 @@ class WorkFlowyClient:
             # Build hierarchical tree from flat list
             hierarchical_tree = self._build_hierarchy(flat_nodes, include_metadata)
             
+            # Extract only children of root node (skip root itself for round-trip editing)
+            # The root node info is preserved in Markdown metadata
+            if hierarchical_tree and len(hierarchical_tree) == 1:
+                root_node = hierarchical_tree[0]
+                hierarchical_tree = root_node.get('children', [])
+            
             # Calculate max depth
             max_depth = self._calculate_max_depth(hierarchical_tree)
             
-            # Write to file
+            # Write JSON file
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(hierarchical_tree, f, indent=2, ensure_ascii=False)
+            
+            # Generate and write Markdown file
+            markdown_file = output_file.replace('.json', '.md')
+            markdown_content = self._generate_markdown(hierarchical_tree)
+            with open(markdown_file, 'w', encoding='utf-8') as f:
+                f.write(markdown_content)
             
             return {
                 "success": True,
                 "file_path": output_file,
+                "markdown_file": markdown_file,
                 "node_count": len(flat_nodes),
                 "depth": max_depth
             }
@@ -411,6 +425,125 @@ class WorkFlowyClient:
                 max_child_depth = max(max_child_depth, child_depth)
         
         return max_child_depth
+    
+    def _generate_markdown(
+        self,
+        nodes: list[dict[str, Any]],
+        level: int = 1,
+        parent_path_uuids: list[str] | None = None,
+        parent_path_names: list[str] | None = None
+    ) -> str:
+        """Convert hierarchical nodes to Markdown format with UUID metadata.
+        
+        Args:
+            nodes: List of nodes at current level
+            level: Current heading level (1-6)
+            parent_path_uuids: Accumulated UUID path from root (for recursion)
+            parent_path_names: Accumulated name path from root (for recursion)
+            
+        Returns:
+            Markdown-formatted string with hidden XML metadata
+        """
+        if parent_path_uuids is None:
+            parent_path_uuids = []
+        if parent_path_names is None:
+            parent_path_names = []
+            
+        markdown_lines = []
+        
+        # Add root metadata at top of file (level 1 only)
+        if level == 1 and nodes:
+            first_node = nodes[0]
+            root_uuid = first_node.get('id', '')
+            root_name = first_node.get('name', 'Root')
+            markdown_lines.append(f'<!-- EXPORTED_ROOT_UUID: {root_uuid} -->')
+            markdown_lines.append(f'<!-- EXPORTED_ROOT_NAME: {root_name} -->')
+            markdown_lines.append('')
+        
+        for node in nodes:
+            node_uuid = node.get('id', '')
+            node_name = node.get('name', 'Untitled')
+            
+            # Build paths for this node
+            current_path_uuids = parent_path_uuids + [node_uuid]
+            current_path_names = parent_path_names + [node_name]
+            
+            # Create heading (limit to h6)
+            heading_level = min(level, 6)
+            heading = '#' * heading_level + ' ' + node_name
+            markdown_lines.append(heading)
+            
+            # Add metadata (hidden in Obsidian reading view)
+            markdown_lines.append(f'<!-- NODE_UUID: {node_uuid} -->')
+            
+            # Truncated UUID path (first 8 chars of each UUID for readability)
+            truncated_uuids = [uuid[:8] + '...' for uuid in current_path_uuids]
+            uuid_path = ' > '.join(truncated_uuids)
+            markdown_lines.append(f'<!-- NODE_PATH_UUIDS: {uuid_path} -->')
+            
+            # Name path (full names for orientation)
+            name_path = ' > '.join(current_path_names)
+            markdown_lines.append(f'<!-- NODE_PATH_NAMES: {name_path} -->')
+            
+            markdown_lines.append('')  # Blank line after metadata
+            
+            # Add note content if present
+            note = node.get('note')
+            if note and note.strip():
+                # Quick detection: check if note looks like markdown (has # headers)
+                is_markdown = any(line.strip().startswith('#') for line in note.split('\n'))
+                language = 'markdown' if is_markdown else 'text'
+                
+                # Wrap in 12-backtick delimiter (overkill prevents conflicts)
+                markdown_lines.append('````````````' + language)
+                markdown_lines.append(note)
+                markdown_lines.append('````````````')
+                markdown_lines.append('')  # Blank line after code block
+            
+            # Recursively process children with updated paths
+            children = node.get('children', [])
+            if children:
+                child_markdown = self._generate_markdown(
+                    children, 
+                    level + 1,
+                    current_path_uuids,
+                    current_path_names
+                )
+                markdown_lines.append(child_markdown)
+            
+        return '\n'.join(markdown_lines)
+    
+    def _strip_metadata_comments(self, text: str | None) -> str | None:
+        """Remove export metadata comments from text.
+        
+        Args:
+            text: Text that may contain our metadata HTML comments
+            
+        Returns:
+            Cleaned text with metadata comments removed
+        """
+        if not text:
+            return text
+            
+        import re
+        
+        # Remove our specific metadata comment patterns
+        patterns = [
+            r'<!-- EXPORTED_ROOT_UUID:.*? -->',
+            r'<!-- EXPORTED_ROOT_NAME:.*? -->',
+            r'<!-- NODE_UUID:.*? -->',
+            r'<!-- NODE_PATH_UUIDS:.*? -->',
+            r'<!-- NODE_PATH_NAMES:.*? -->'
+        ]
+        
+        cleaned = text
+        for pattern in patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.DOTALL)
+        
+        # Clean up any resulting multiple blank lines
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        
+        return cleaned.strip() if cleaned.strip() else None
     
     async def bulk_import_from_file(
         self,
@@ -531,11 +664,11 @@ class WorkFlowyClient:
             
             for node_data in nodes:
                 try:
-                    # Build request
+                    # Build request (strip metadata from name and note)
                     request = NodeCreateRequest(
-                        name=node_data['name'],
+                        name=self._strip_metadata_comments(node_data['name']) or node_data['name'],
                         parent_id=parent_id,
-                        note=node_data.get('note'),
+                        note=self._strip_metadata_comments(node_data.get('note')),
                         layoutMode=node_data.get('layout_mode'),
                         position=node_data.get('position', 'bottom')
                     )
