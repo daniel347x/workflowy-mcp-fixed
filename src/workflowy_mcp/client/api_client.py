@@ -921,7 +921,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         self,
         parent_id: str,
         nodes: list[dict[str, Any]] | str,
-        append_only: bool = True,
+        skip_duplicates: bool = True,
+        replace_all: bool = False,
     ) -> dict[str, Any]:
         """Create multiple nodes from JSON structure (no file intermediary).
         
@@ -938,8 +939,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                            {"name": "Child 2", "note": null, "children": []}
                        ]
                    }]
-            append_only: If True, skip nodes that already exist (by name match).
-                        Default False (create all nodes).
+            skip_duplicates: If True, check existing children and skip nodes with matching names.
+                            Default True (smart deduplication).
+            replace_all: If True, delete ALL existing children before creating new tree.
+                        Default False (preserve existing). Overrides skip_duplicates.
         
         Returns:
             {
@@ -1106,16 +1109,71 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "errors": []
         }
         
-        # If append_only, fetch existing children to check for duplicates
-        existing_names = set()
-        if append_only:
+        # 🗑️ REPLACE_ALL MODE: Delete existing children first
+        if replace_all:
+            logger.info("🗑️ replace_all=True - Deleting all existing children")
             try:
                 request = NodeListRequest(parentId=parent_id)
-                existing_nodes, _ = await self.list_nodes(request)
-                existing_names = {node.nm for node in existing_nodes if node.nm}
+                existing_children, _ = await self.list_nodes(request)
+                stats["api_calls"] += 1
+                
+                for child in existing_children:
+                    try:
+                        await self.delete_node(child.id)
+                        logger.info(f"  Deleted: {child.nm}")
+                        stats["api_calls"] += 1
+                    except Exception as e:
+                        logger.warning(f"  Failed to delete {child.nm}: {e}")
+                        # Continue with others
             except Exception as e:
-                logger.warning(f"Failed to fetch existing nodes for append_only check: {e}")
-                # Continue anyway - will attempt to create all nodes
+                logger.warning(f"Could not list/delete existing children: {e}")
+                # Proceed anyway - replacement will still work
+            
+            nodes_to_create = nodes  # Create all nodes (clean slate)
+            existing_names = set()  # No deduplication needed
+        
+        # 🔍 SKIP_DUPLICATES MODE: Filter out existing nodes
+        elif skip_duplicates:
+            try:
+                request = NodeListRequest(parentId=parent_id)
+                existing_children, _ = await self.list_nodes(request)
+                stats["api_calls"] += 1
+                
+                existing_names = {child.nm.strip() for child in existing_children if child.nm}
+                
+                # Filter: only create nodes that don't already exist
+                nodes_to_create = [
+                    node for node in nodes 
+                    if node.get('name', '').strip() not in existing_names
+                ]
+                
+                stats["skipped"] = len(nodes) - len(nodes_to_create)
+                
+                if stats["skipped"] > 0:
+                    logger.info(f"🔍 skip_duplicates=True - Skipped {stats['skipped']} existing node(s)")
+                
+                if not nodes_to_create:
+                    # All nodes already exist
+                    return {
+                        "success": True,
+                        "nodes_created": 0,
+                        "root_node_ids": [],
+                        "skipped": stats["skipped"],
+                        "api_calls": stats["api_calls"],
+                        "retries": 0,
+                        "rate_limit_hits": 0,
+                        "errors": [],
+                        "message": "All nodes already exist - nothing to create"
+                    }
+            except Exception as e:
+                logger.warning(f"Could not check for duplicates: {e} - proceeding to create all")
+                nodes_to_create = nodes
+                existing_names = set()
+        
+        # ➕ DEFAULT MODE (skip_duplicates=False): Create all nodes
+        else:
+            nodes_to_create = nodes
+            existing_names = set()
         
         async def create_node_with_retry(
             request: NodeCreateRequest,
@@ -1241,8 +1299,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "errors": stats["errors"]
             }
             
-            # Add skipped count if append_only mode
-            if append_only:
+            # Add skipped count if skip_duplicates mode
+            if skip_duplicates and not replace_all:
                 result["skipped"] = stats["skipped"]
             
             # Add stringify strategy if auto-fix was used
@@ -1266,7 +1324,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "errors": stats["errors"]
             }
             
-            if append_only:
+            if skip_duplicates and not replace_all:
                 result["skipped"] = stats["skipped"]
             
             if stringify_strategy_used:
