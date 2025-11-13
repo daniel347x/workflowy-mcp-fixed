@@ -871,8 +871,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         """
         import asyncio
         
-        # Rate limit protection - 100ms delay before API call
-        await asyncio.sleep(0.1)
+        # Rate limit protection - 500ms delay before API call
+        await asyncio.sleep(0.5)
         
         try:
             # Fetch flat node list
@@ -966,9 +966,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         import json
         
         logger = logging.getLogger(__name__)
-
-        # Rate limit protection - 100ms delay
-        await asyncio.sleep(0.1)
+        
+        # Rate limit protection - 500ms delay
+        await asyncio.sleep(0.5)
         
         # 🔧 AUTO-FIX: Detect if nodes is stringified JSON instead of list
         stringify_strategy_used = None
@@ -1200,8 +1200,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
             while retry_count < max_retries:
                 try:
-                    # Fixed safety delay (100ms between calls)
-                    await asyncio.sleep(0.1)
+                    # Fixed safety delay (500ms between calls)
+                    await asyncio.sleep(0.5)
                     stats["api_calls"] += 1
                     
                     node = await self.create_node(request, _internal_call=internal)
@@ -1472,8 +1472,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
             while retry_count < max_retries:
                 try:
-                    # Fixed safety delay (100ms between calls)
-                    await asyncio.sleep(0.1)
+                    # Fixed safety delay (500ms between calls)
+                    await asyncio.sleep(0.5)
                     stats["api_calls"] += 1
                     
                     # Internal call - bypass single-node forcing function
