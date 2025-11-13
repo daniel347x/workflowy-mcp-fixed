@@ -783,8 +783,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "error": "JSON must contain an array of nodes"
                 }
             
-            # Generate Markdown WITHOUT metadata (for edited JSON)
-            markdown_content = self._generate_markdown_simple(nodes)
+            # Generate Markdown WITH metadata (enables UUID tracking in diffs)
+            markdown_content = self._generate_markdown(nodes, level=1)
             
             # Write to .md file (same name as JSON)
             markdown_file = json_file.replace('.json', '.md')
@@ -1459,6 +1459,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "retries": 0,
             "rate_limit_hits": 0,
             "nodes_created": 0,
+            "nodes_updated": 0,
+            "nodes_deleted": 0,
             "errors": []
         }
         
@@ -1515,39 +1517,94 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             parent_id: str,
             nodes: list[dict[str, Any]]
         ) -> list[str]:
-            """Recursively create node tree."""
-            created_ids = []
+            """Recursively create/update/delete node tree (three-set algorithm)."""
+            processed_ids = []
             
+            # THREE-SET ALGORITHM: Determine UPDATE/DELETE/CREATE sets
+            
+            # Get existing children at this level
+            try:
+                request = NodeListRequest(parentId=parent_id)
+                existing_children, _ = await self.list_nodes(request)
+                stats["api_calls"] += 1
+                existing_by_uuid = {child.id: child for child in existing_children}
+            except Exception as e:
+                logger.warning(f"Could not list existing children: {e} - assuming empty")
+                existing_by_uuid = {}
+            
+            # Build source UUID set (nodes with "id" field in JSON)
+            source_uuids = {node["id"] for node in nodes if "id" in node and node["id"]}
+            existing_uuids = set(existing_by_uuid.keys())
+            
+            # SET A: UPDATE (nodes in both source and existing)
+            update_uuids = source_uuids & existing_uuids
+            
+            # SET B: DELETE (nodes in existing but not in source)
+            delete_uuids = existing_uuids - source_uuids
+            
+            # Delete removed nodes
+            for uuid in delete_uuids:
+                try:
+                    await self.delete_node(uuid)
+                    stats["api_calls"] += 1
+                    stats["nodes_deleted"] += 1
+                    logger.info(f"Deleted removed node: {existing_by_uuid[uuid].nm}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete node {uuid}: {e}")
+            
+            # Process each source node
             for node_data in nodes:
                 try:
-                    # Build request (strip metadata from name and note)
-                    request = NodeCreateRequest(
-                        name=self._strip_metadata_comments(node_data['name']) or node_data['name'],
-                        parent_id=parent_id,
-                        note=self._strip_metadata_comments(node_data.get('note')),
-                        layoutMode=node_data.get('layout_mode'),
-                        position=node_data.get('position', 'bottom')
-                    )
+                    node_uuid = node_data.get('id')
                     
-                    # Create with retry logic
-                    node = await create_node_with_retry(request)
-                    
-                    if node:
-                        created_ids.append(node.id)
-                        stats["nodes_created"] += 1
+                    # Determine if UPDATE or CREATE
+                    if node_uuid and node_uuid in update_uuids:
+                        # UPDATE existing node
+                        update_request = NodeUpdateRequest(
+                            name=self._strip_metadata_comments(node_data['name']) or node_data['name'],
+                            note=self._strip_metadata_comments(node_data.get('note')),
+                            layoutMode=node_data.get('layout_mode')
+                        )
                         
-                        # Recursively create children
+                        updated_node = await self.update_node(node_uuid, update_request)
+                        stats["api_calls"] += 1
+                        stats["nodes_updated"] += 1
+                        processed_ids.append(node_uuid)
+                        logger.info(f"Updated node: {updated_node.nm}")
+                        
+                        # Recursively process children (UPDATE/DELETE/CREATE at next level)
                         if 'children' in node_data and node_data['children']:
-                            await create_tree(node.id, node_data['children'])
+                            await create_tree(node_uuid, node_data['children'])
+                    
+                    else:
+                        # CREATE new node
+                        request = NodeCreateRequest(
+                            name=self._strip_metadata_comments(node_data['name']) or node_data['name'],
+                            parent_id=parent_id,
+                            note=self._strip_metadata_comments(node_data.get('note')),
+                            layoutMode=node_data.get('layout_mode'),
+                            position=node_data.get('position', 'bottom')
+                        )
+                        
+                        node = await create_node_with_retry(request)
+                        
+                        if node:
+                            processed_ids.append(node.id)
+                            stats["nodes_created"] += 1
+                            logger.info(f"Created new node: {node.nm}")
+                            
+                            # Recursively create children
+                            if 'children' in node_data and node_data['children']:
+                                await create_tree(node.id, node_data['children'])
                     
                 except Exception as e:
-                    error_msg = f"Failed to create node '{node_data.get('name', 'unknown')}': {str(e)}"
+                    error_msg = f"Failed to process node '{node_data.get('name', 'unknown')}': {str(e)}"
                     logger.error(error_msg)
                     stats["errors"].append(error_msg)
                     # Continue with other nodes
                     continue
             
-            return created_ids
+            return processed_ids
         
         # Create the tree
         try:
@@ -1564,6 +1621,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             return {
                 "success": len(stats["errors"]) == 0,
                 "nodes_created": stats["nodes_created"],
+                "nodes_updated": stats["nodes_updated"],
+                "nodes_deleted": stats["nodes_deleted"],
                 "root_node_ids": root_ids,
                 "api_calls": stats["api_calls"],
                 "retries": stats["retries"],
@@ -1579,6 +1638,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             return {
                 "success": False,
                 "nodes_created": stats["nodes_created"],
+                "nodes_updated": stats["nodes_updated"],
+                "nodes_deleted": stats["nodes_deleted"],
                 "root_node_ids": [],
                 "api_calls": stats["api_calls"],
                 "retries": stats["retries"],
