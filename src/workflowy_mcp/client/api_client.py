@@ -1,9 +1,19 @@
 """WorkFlowy API client implementation."""
 
 import json
+import sys
+import os
 from typing import Any
 
 import httpx
+
+# Import reconciliation algorithm
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from workflowy_move_reconcile import reconcile_tree
+except ImportError:
+    # Fallback if module not found - will use old algorithm
+    reconcile_tree = None
 
 from ..models import (
     APIConfiguration,
@@ -1347,6 +1357,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
     ) -> dict[str, Any]:
         """Create multiple Workflowy nodes from JSON file.
         
+        Uses move-aware reconciliation algorithm (CREATE/MOVE/REORDER/UPDATE/DELETE).
+        Preserves UUIDs when nodes are moved (not delete+create).
+        
         Args:
             json_file: Absolute path to JSON file with node structure
             parent_id: Parent UUID where nodes should be created
@@ -1355,6 +1368,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             {
                 "success": True/False,
                 "nodes_created": N,
+                "nodes_updated": N,
+                "nodes_deleted": N,
+                "nodes_moved": N,
                 "root_node_ids": [...],
                 "api_calls": N,
                 "retries": N,
@@ -1453,6 +1469,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             for warning in warnings:
                 logger.info(f"  - {warning}")
         
+        # ============ MOVE-AWARE RECONCILIATION ============
+        
+        # Import reconciliation algorithm
+        from .workflowy_move_reconcile import reconcile_tree
+        
         # Stats tracking
         stats = {
             "api_calls": 0,
@@ -1461,168 +1482,78 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "nodes_created": 0,
             "nodes_updated": 0,
             "nodes_deleted": 0,
+            "nodes_moved": 0,
             "errors": []
         }
         
-        async def create_node_with_retry(
-            request: NodeCreateRequest,
-            max_retries: int = 5
-        ) -> WorkFlowyNode | None:
-            """Create node with exponential backoff retry (internal bulk operation)."""
-            retry_count = 0
-            base_delay = 1.0
-            
-            while retry_count < max_retries:
-                try:
-                    # Fixed safety delay (500ms between calls)
-                    await asyncio.sleep(0.5)
-                    stats["api_calls"] += 1
-                    
-                    # Internal call - bypass single-node forcing function
-                    node = await self.create_node(request, _internal_call=True)
-                    return node
-                    
-                except RateLimitError as e:
-                    stats["rate_limit_hits"] += 1
-                    stats["retries"] += 1
-                    retry_count += 1
-                    
-                    retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
-                    logger.warning(
-                        f"Rate limited. Retry after {retry_after}s. "
-                        f"Total retries: {stats['retries']}"
-                    )
-                    
-                    if retry_count < max_retries:
-                        await asyncio.sleep(retry_after)
-                    else:
-                        raise
-                        
-                except NetworkError as e:
-                    stats["retries"] += 1
-                    retry_count += 1
-                    
-                    logger.warning(
-                        f"Network error: {e}. Retry {retry_count}/{max_retries}"
-                    )
-                    
-                    if retry_count < max_retries:
-                        await asyncio.sleep(base_delay * (2 ** retry_count))
-                    else:
-                        raise
-            
-            return None
+        # ============ ASYNC API WRAPPERS ============
         
-        async def create_tree(
-            parent_id: str,
-            nodes: list[dict[str, Any]]
-        ) -> list[str]:
-            """Recursively create/update/delete node tree (three-set algorithm)."""
-            processed_ids = []
-            
-            # THREE-SET ALGORITHM: Determine UPDATE/DELETE/CREATE sets
-            
-            # Get existing children at this level
-            try:
-                request = NodeListRequest(parentId=parent_id)
-                existing_children, _ = await self.list_nodes(request)
-                stats["api_calls"] += 1
-                existing_by_uuid = {child.id: child for child in existing_children}
-            except Exception as e:
-                logger.warning(f"Could not list existing children: {e} - assuming empty")
-                existing_by_uuid = {}
-            
-            # Build source UUID set (nodes with "id" field in JSON)
-            source_uuids = {node["id"] for node in nodes if "id" in node and node["id"]}
-            existing_uuids = set(existing_by_uuid.keys())
-            
-            # SET A: UPDATE (nodes in both source and existing)
-            update_uuids = source_uuids & existing_uuids
-            
-            # SET B: DELETE (nodes in existing but not in source)
-            delete_uuids = existing_uuids - source_uuids
-            
-            # Delete removed nodes
-            for uuid in delete_uuids:
-                try:
-                    await self.delete_node(uuid)
-                    stats["api_calls"] += 1
-                    stats["nodes_deleted"] += 1
-                    logger.info(f"Deleted removed node: {existing_by_uuid[uuid].nm}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete node {uuid}: {e}")
-            
-            # Process each source node
-            for node_data in nodes:
-                try:
-                    node_uuid = node_data.get('id')
-                    
-                    # Determine if UPDATE or CREATE
-                    if node_uuid and node_uuid in update_uuids:
-                        # UPDATE existing node
-                        update_request = NodeUpdateRequest(
-                            name=self._strip_metadata_comments(node_data['name']) or node_data['name'],
-                            note=self._strip_metadata_comments(node_data.get('note')),
-                            layoutMode=node_data.get('layout_mode')
-                        )
-                        
-                        updated_node = await self.update_node(node_uuid, update_request)
-                        stats["api_calls"] += 1
-                        stats["nodes_updated"] += 1
-                        processed_ids.append(node_uuid)
-                        logger.info(f"Updated node: {updated_node.nm}")
-                        
-                        # Recursively process children (UPDATE/DELETE/CREATE at next level)
-                        if 'children' in node_data and node_data['children']:
-                            await create_tree(node_uuid, node_data['children'])
-                    
-                    else:
-                        # CREATE new node
-                        request = NodeCreateRequest(
-                            name=self._strip_metadata_comments(node_data['name']) or node_data['name'],
-                            parent_id=parent_id,
-                            note=self._strip_metadata_comments(node_data.get('note')),
-                            layoutMode=node_data.get('layout_mode'),
-                            position=node_data.get('position', 'bottom')
-                        )
-                        
-                        node = await create_node_with_retry(request)
-                        
-                        if node:
-                            processed_ids.append(node.id)
-                            stats["nodes_created"] += 1
-                            logger.info(f"Created new node: {node.nm}")
-                            
-                            # Recursively create children
-                            if 'children' in node_data and node_data['children']:
-                                await create_tree(node.id, node_data['children'])
-                    
-                except Exception as e:
-                    error_msg = f"Failed to process node '{node_data.get('name', 'unknown')}': {str(e)}"
-                    logger.error(error_msg)
-                    stats["errors"].append(error_msg)
-                    # Continue with other nodes
-                    continue
-            
-            return processed_ids
+        async def list_nodes_wrapper(parent_uuid: str) -> list[dict]:
+            """Wrapper for list_nodes - returns list of dicts."""
+            request = NodeListRequest(parentId=parent_uuid)
+            nodes, _ = await self.list_nodes(request)
+            stats["api_calls"] += 1
+            return [n.model_dump() for n in nodes]
         
-        # Create the tree
+        async def create_node_wrapper(parent_uuid: str, data: dict) -> str:
+            """Wrapper for create_node - returns new UUID."""
+            request = NodeCreateRequest(
+                name=data.get('name'),
+                parent_id=parent_uuid,
+                note=data.get('note'),
+                layoutMode=data.get('data', {}).get('layoutMode'),
+                position='bottom'
+            )
+            node = await self.create_node(request, _internal_call=True)
+            stats["api_calls"] += 1
+            stats["nodes_created"] += 1
+            return node.id
+        
+        async def update_node_wrapper(node_uuid: str, data: dict) -> None:
+            """Wrapper for update_node."""
+            request = NodeUpdateRequest(
+                name=data.get('name'),
+                note=data.get('note'),
+                layoutMode=data.get('data', {}).get('layoutMode')
+            )
+            await self.update_node(node_uuid, request)
+            stats["api_calls"] += 1
+            stats["nodes_updated"] += 1
+        
+        async def delete_node_wrapper(node_uuid: str) -> None:
+            """Wrapper for delete_node."""
+            await self.delete_node(node_uuid)
+            stats["api_calls"] += 1
+            stats["nodes_deleted"] += 1
+        
+        async def move_node_wrapper(node_uuid: str, new_parent_uuid: str, position: str = "top") -> None:
+            """Wrapper for move_node."""
+            await self.move_node(node_uuid, new_parent_uuid, position)
+            stats["api_calls"] += 1
+            stats["nodes_moved"] += 1
+        
+        # ============ EXECUTE RECONCILIATION ============
+        
         try:
-            root_ids = await create_tree(parent_id, nodes_to_create)
+            await reconcile_tree(
+                source_json=nodes_to_create,
+                parent_uuid=parent_id,
+                list_nodes=list_nodes_wrapper,
+                create_node=create_node_wrapper,
+                update_node=update_node_wrapper,
+                delete_node=delete_node_wrapper,
+                move_node=move_node_wrapper
+            )
             
-            # Log summary if retries occurred
-            if stats["retries"] > 0:
-                logger.warning(
-                    f"⚠️ Import completed with {stats['retries']} retries "
-                    f"({stats['rate_limit_hits']} rate limit hits). "
-                    f"Consider reducing import speed."
-                )
+            # Reconciliation complete - gather root IDs
+            root_ids = [n.get('id') for n in nodes_to_create if n.get('id')]
             
             return {
                 "success": len(stats["errors"]) == 0,
                 "nodes_created": stats["nodes_created"],
                 "nodes_updated": stats["nodes_updated"],
                 "nodes_deleted": stats["nodes_deleted"],
+                "nodes_moved": stats["nodes_moved"],
                 "root_node_ids": root_ids,
                 "api_calls": stats["api_calls"],
                 "retries": stats["retries"],
@@ -1640,6 +1571,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "nodes_created": stats["nodes_created"],
                 "nodes_updated": stats["nodes_updated"],
                 "nodes_deleted": stats["nodes_deleted"],
+                "nodes_moved": stats["nodes_moved"],
                 "root_node_ids": [],
                 "api_calls": stats["api_calls"],
                 "retries": stats["retries"],
