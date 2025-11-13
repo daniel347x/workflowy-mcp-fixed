@@ -27,6 +27,97 @@ class WorkFlowyClient:
         self.config = config
         self.base_url = config.base_url
         self._client: httpx.AsyncClient | None = None
+    
+    @staticmethod
+    def _validate_note_field(note: str | None, skip_newline_check: bool = False) -> tuple[str | None, str | None]:
+        """Validate and auto-escape note field for Workflowy compatibility.
+        
+        Handles:
+        1. Angle brackets (auto-escape to HTML entities - Workflowy renderer bug workaround)
+        2. Literal backslash-n escape sequences (block with error - common agent mistake)
+        
+        Args:
+            note: Note content to validate/escape
+            skip_newline_check: If True, skip literal backslash-n validation (for testing/bulk ops)
+            
+        Returns:
+            (processed_note, warning_message)
+            - processed_note: Escaped/fixed note (or None if blocking error)
+            - warning_message: Info message if changes made, or error if blocked
+        """
+        if note is None:
+            return (None, None)
+        
+        # Check for override token (for documentation that needs literal sequences)
+        OVERRIDE_TOKEN = "<<<LITERAL_BACKSLASH_N_INTENTIONAL>>>"
+        if note.startswith(OVERRIDE_TOKEN):
+            # Strip token and allow literal \n characters
+            return (note, None)  # Caller strips token before API call
+        
+        # CHECK 1: Auto-escape angle brackets (Workflowy renderer bug workaround)
+        # Web interface auto-escapes < to &lt; and > to &gt;
+        # API doesn't - we must do it manually
+        escaped_note = note
+        angle_bracket_escaped = False
+        
+        if '<' in note or '>' in note:
+            escaped_note = note.replace('<', '&lt;').replace('>', '&gt;')
+            angle_bracket_escaped = True
+        
+        # CHECK 2: Literal \n or \r\n or \t patterns (common agent mistakes) - BLOCK
+        # Skip this check if called from bulk operations (for testing)
+        if not skip_newline_check and ("\\n" in escaped_note or "\\r\\n" in escaped_note or "\\t" in escaped_note):
+            error_msg = """❌ NEWLINE FORMAT ERROR - Literal escape sequences detected in note field
+
+Your note parameter contains literal backslash-n characters (\\n) which will appear 
+as visible "\\n" text in Workflowy instead of actual newlines.
+
+📚 CORRECT FORMAT (for workflowy_create_node / workflowy_update_node):
+
+    workflowy_create_node(
+        name="Node name",
+        note="Line 1
+Line 2
+Line 3"  # Press Enter - actual newlines, NOT \\n
+    )
+
+❌ WRONG: note="Line 1\\n\\nLine 2"  # Produces literal backslash-n
+✅ CORRECT: note="Line 1
+
+Line 2"  # Actual newlines in parameter
+
+📖 Complete technical documentation:
+   MAJOR VAULT FORGE VYRTHEX
+   UUID: eabd9f9f-7994-4ea2-9684-c7e974aaf692
+   Location: Work > AI Dagger > MAJOR VAULT FORGE
+
+⚙️ OVERRIDE (if you truly want literal \\n characters):
+   Prefix note with: <<<LITERAL_BACKSLASH_N_INTENTIONAL>>>
+   
+   Example for documentation:
+   note="<<<LITERAL_BACKSLASH_N_INTENTIONAL>>>Use \\n for newlines"
+"""
+            return (None, error_msg)  # Blocking error
+        
+        # Return processed note with optional warning
+        if angle_bracket_escaped:
+            warning_msg = """✅ AUTO-ESCAPED: Angle brackets converted to HTML entities
+
+🐛 WORKFLOWY RENDERER BUG: The API doesn't auto-escape < and > like the web interface does.
+   Angle brackets cause notes to display as completely blank.
+
+⚙️ AUTO-FIX APPLIED:
+   Your < characters were converted to &lt;
+   Your > characters were converted to &gt;
+   
+   This matches how Workflowy's web interface handles angle brackets.
+   Your note will display correctly.
+
+📖 Bug documentation: SATCHEL VYRTHEX in Deployment Documentation Validation ARC
+"""
+            return (escaped_note, warning_msg)
+        
+        return (escaped_note, None)
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -89,8 +180,66 @@ class WorkFlowyClient:
         except json.JSONDecodeError as err:
             raise NetworkError("Invalid response format from API") from err
 
-    async def create_node(self, request: NodeCreateRequest) -> WorkFlowyNode:
-        """Create a new node in WorkFlowy."""
+    async def create_node(self, request: NodeCreateRequest, _internal_call: bool = False) -> WorkFlowyNode:
+        """Create a new node in WorkFlowy.
+        
+        Args:
+            request: Node creation request
+            _internal_call: Internal flag - bypasses single-node forcing function (not exposed to MCP)
+        """
+        # Check for single-node override token (skip if internal call)
+        if not _internal_call:
+            SINGLE_NODE_TOKEN = "<<<I_REALLY_NEED_SINGLE_NODE>>>"
+            
+            if request.name and request.name.startswith(SINGLE_NODE_TOKEN):
+                # Strip token and proceed
+                request.name = request.name.replace(SINGLE_NODE_TOKEN, "", 1)
+            else:
+                # Suggest ETCH instead
+                raise NetworkError("""⚠️ PREFER ETCH - Use bulk_write for consistency and capability
+
+You called workflowy_create_single_node, but bulk_write has identical performance.
+
+✅ RECOMMENDED (same speed, more capability):
+  workflowy_bulk_write(
+    parent_id="...",
+    nodes=[{"name": "Your node", "note": "...", "children": []}]
+  )
+
+📚 Benefits of ETCH:
+  - Same 1 tool call (no performance difference)
+  - Validation and auto-escaping built-in
+  - Works for 1 node or 100 nodes (consistent pattern)
+  - Trains you to think in tree structures
+
+⚙️ OVERRIDE (if you truly need single-node operation):
+  workflowy_create_single_node(
+    name="<<<I_REALLY_NEED_SINGLE_NODE>>>Your node",
+    ...
+  )
+
+🎯 Build the ETCH habit - it's your go-to tool!
+""")
+        
+        # Validate and escape note field
+        # Skip newline check if internal call (for bulk operations testing)
+        processed_note, message = self._validate_note_field(request.note, skip_newline_check=_internal_call)
+        
+        if processed_note is None and message:  # Blocking error
+            raise NetworkError(message)
+        
+        # Strip override token if present
+        if processed_note and processed_note.startswith("<<<LITERAL_BACKSLASH_N_INTENTIONAL>>>"):
+            processed_note = processed_note.replace("<<<LITERAL_BACKSLASH_N_INTENTIONAL>>>", "", 1)
+        
+        # Use processed (escaped) note
+        request.note = processed_note
+        
+        # Log warning if escaping occurred
+        if message and "AUTO-ESCAPED" in message:
+            import logging
+            logging.getLogger(__name__).info(message)
+        
         try:
             response = await self.client.post("/nodes/", json=request.model_dump(exclude_none=True))
             data = await self._handle_response(response)
@@ -110,6 +259,26 @@ class WorkFlowyClient:
 
     async def update_node(self, node_id: str, request: NodeUpdateRequest) -> WorkFlowyNode:
         """Update an existing node."""
+        # Validate and escape note field if being updated
+        if request.note is not None:
+            # Note: update_node doesn't have _internal_call flag yet, always validates
+            processed_note, message = self._validate_note_field(request.note)
+            
+            if processed_note is None and message:  # Blocking error
+                raise NetworkError(message)
+            
+            # Strip override token if present
+            if processed_note and processed_note.startswith("<<<LITERAL_BACKSLASH_N_INTENTIONAL>>>"):
+                processed_note = processed_note.replace("<<<LITERAL_BACKSLASH_N_INTENTIONAL>>>", "", 1)
+            
+            # Use processed (escaped) note
+            request.note = processed_note
+            
+            # Log warning if escaping occurred
+            if message and "AUTO-ESCAPED" in message:
+                import logging
+                logging.getLogger(__name__).info(message)
+        
         try:
             response = await self.client.post(
                 f"/nodes/{node_id}", json=request.model_dump(exclude_none=True)
@@ -334,23 +503,57 @@ class WorkFlowyClient:
             # Build hierarchical tree from flat list
             hierarchical_tree = self._build_hierarchy(flat_nodes, include_metadata)
             
-            # Extract only children of root node (skip root itself for round-trip editing)
-            # The root node info is preserved in Markdown metadata
+            # Preserve root node info and build complete path to Dagger root
+            root_node_info = None
             if hierarchical_tree and len(hierarchical_tree) == 1:
                 root_node = hierarchical_tree[0]
+                
+                # Walk up parent chain to build complete path
+                path_uuids = [root_node.get('id')]
+                path_names = [root_node.get('name')]
+                
+                current_parent_id = root_node.get('parent_id')
+                while current_parent_id:
+                    try:
+                        parent_node_data = await self.get_node(current_parent_id)
+                        path_uuids.insert(0, parent_node_data.id)
+                        path_names.insert(0, parent_node_data.nm or 'Untitled')
+                        current_parent_id = parent_node_data.parentId
+                    except Exception:
+                        # Stop if we can't fetch parent (permissions, deleted, etc.)
+                        break
+                
+                root_node_info = {
+                    'id': root_node.get('id'),
+                    'name': root_node.get('name'),
+                    'parent_id': root_node.get('parent_id'),
+                    'full_path_uuids': path_uuids,
+                    'full_path_names': path_names
+                }
+                # Extract only children (skip root for round-trip editing)
                 hierarchical_tree = root_node.get('children', [])
             
             # Calculate max depth
             max_depth = self._calculate_max_depth(hierarchical_tree)
             
-            # Write JSON file
+            # Write JSON file (working copy)
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(hierarchical_tree, f, indent=2, ensure_ascii=False)
             
-            # Generate and write Markdown file
+            # Create JSON backup (.original.json)
+            json_backup = output_file.replace('.json', '.original.json')
+            with open(json_backup, 'w', encoding='utf-8') as f:
+                json.dump(hierarchical_tree, f, indent=2, ensure_ascii=False)
+            
+            # Generate and write Markdown file (working copy)
             markdown_file = output_file.replace('.json', '.md')
-            markdown_content = self._generate_markdown(hierarchical_tree)
+            markdown_content = self._generate_markdown(hierarchical_tree, root_node_info=root_node_info)
             with open(markdown_file, 'w', encoding='utf-8') as f:
+                f.write(markdown_content)
+            
+            # Create Markdown backup (.original.md)
+            markdown_backup = output_file.replace('.json', '.original.md')
+            with open(markdown_backup, 'w', encoding='utf-8') as f:
                 f.write(markdown_content)
             
             return {
@@ -431,7 +634,8 @@ class WorkFlowyClient:
         nodes: list[dict[str, Any]],
         level: int = 1,
         parent_path_uuids: list[str] | None = None,
-        parent_path_names: list[str] | None = None
+        parent_path_names: list[str] | None = None,
+        root_node_info: dict[str, Any] | None = None
     ) -> str:
         """Convert hierarchical nodes to Markdown format with UUID metadata.
         
@@ -440,6 +644,7 @@ class WorkFlowyClient:
             level: Current heading level (1-6)
             parent_path_uuids: Accumulated UUID path from root (for recursion)
             parent_path_names: Accumulated name path from root (for recursion)
+            root_node_info: Info about the actual exported root node (excluded from JSON)
             
         Returns:
             Markdown-formatted string with hidden XML metadata
@@ -452,12 +657,21 @@ class WorkFlowyClient:
         markdown_lines = []
         
         # Add root metadata at top of file (level 1 only)
-        if level == 1 and nodes:
-            first_node = nodes[0]
-            root_uuid = first_node.get('id', '')
-            root_name = first_node.get('name', 'Root')
+        if level == 1 and root_node_info:
+            root_uuid = root_node_info.get('id', '')
+            root_name = root_node_info.get('name', 'Root')
+            full_path_uuids = root_node_info.get('full_path_uuids', [root_uuid])
+            full_path_names = root_node_info.get('full_path_names', [root_name])
+            
+            # Truncated UUID path for readability
+            truncated_path = ' > '.join([uuid[:8] + '...' for uuid in full_path_uuids])
+            # Full name path for orientation
+            name_path = ' > '.join(full_path_names)
+            
             markdown_lines.append(f'<!-- EXPORTED_ROOT_UUID: {root_uuid} -->')
             markdown_lines.append(f'<!-- EXPORTED_ROOT_NAME: {root_name} -->')
+            markdown_lines.append(f'<!-- EXPORTED_ROOT_PATH_UUIDS: {truncated_path} -->')
+            markdown_lines.append(f'<!-- EXPORTED_ROOT_PATH_NAMES: {name_path} -->')
             markdown_lines.append('')
         
         for node in nodes:
@@ -545,6 +759,503 @@ class WorkFlowyClient:
         
         return cleaned.strip() if cleaned.strip() else None
     
+    def generate_markdown_from_json(
+        self,
+        json_file: str,
+    ) -> dict[str, Any]:
+        """Convert JSON file to Markdown (without metadata - for edited JSON review).
+        
+        Args:
+            json_file: Path to JSON file (from bulk_export or edited)
+            
+        Returns:
+            {"success": True, "markdown_file": "..."}
+        """
+        try:
+            # Read JSON file
+            with open(json_file, 'r', encoding='utf-8') as f:
+                nodes = json.load(f)
+            
+            if not isinstance(nodes, list):
+                return {
+                    "success": False,
+                    "markdown_file": None,
+                    "error": "JSON must contain an array of nodes"
+                }
+            
+            # Generate Markdown WITHOUT metadata (for edited JSON)
+            markdown_content = self._generate_markdown_simple(nodes)
+            
+            # Write to .md file (same name as JSON)
+            markdown_file = json_file.replace('.json', '.md')
+            with open(markdown_file, 'w', encoding='utf-8') as f:
+                f.write(markdown_content)
+            
+            return {
+                "success": True,
+                "markdown_file": markdown_file
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "markdown_file": None,
+                "error": f"Failed to generate markdown: {str(e)}"
+            }
+    
+    def _generate_markdown_simple(
+        self,
+        nodes: list[dict[str, Any]],
+        level: int = 1
+    ) -> str:
+        """Convert nodes to Markdown WITHOUT metadata (for edited JSON).
+        
+        Args:
+            nodes: List of nodes at current level
+            level: Current heading level (1-6)
+            
+        Returns:
+            Clean Markdown without UUID metadata
+        """
+        markdown_lines = []
+        
+        for node in nodes:
+            node_name = node.get('name', 'Untitled')
+            
+            # Create heading (limit to h6)
+            heading_level = min(level, 6)
+            heading = '#' * heading_level + ' ' + node_name
+            markdown_lines.append(heading)
+            markdown_lines.append('')  # Blank line after heading
+            
+            # Add note content if present
+            note = node.get('note')
+            if note and note.strip():
+                # Quick detection: check if note looks like markdown (has # headers)
+                is_markdown = any(line.strip().startswith('#') for line in note.split('\n'))
+                language = 'markdown' if is_markdown else 'text'
+                
+                # Wrap in 12-backtick delimiter
+                markdown_lines.append('````````````' + language)
+                markdown_lines.append(note)
+                markdown_lines.append('````````````')
+                markdown_lines.append('')  # Blank line after code block
+            
+            # Recursively process children
+            children = node.get('children', [])
+            if children:
+                child_markdown = self._generate_markdown_simple(children, level + 1)
+                markdown_lines.append(child_markdown)
+            
+        return '\n'.join(markdown_lines)
+    
+    async def bulk_read(self, node_id: str) -> dict[str, Any]:
+        """Load entire node tree into context (no file intermediary).
+        
+        GLIMPSE command - direct context loading for agent analysis.
+        
+        Args:
+            node_id: Root node UUID to read from
+            
+        Returns:
+            {
+                "success": True,
+                "nodes": [...],  # Hierarchical JSON structure (same as bulk_export)
+                "node_count": N,
+                "depth": M
+            }
+        """
+        try:
+            # Fetch flat node list
+            raw_data = await self.export_nodes(node_id)
+            flat_nodes = raw_data.get("nodes", [])
+            
+            if not flat_nodes:
+                return {
+                    "success": True,
+                    "nodes": [],
+                    "node_count": 0,
+                    "depth": 0
+                }
+            
+            # Build hierarchical tree (same logic as bulk_export)
+            hierarchical_tree = self._build_hierarchy(flat_nodes, include_metadata=True)
+            
+            # Extract children if single root (skip root for consistency with bulk_export)
+            if hierarchical_tree and len(hierarchical_tree) == 1:
+                root_node = hierarchical_tree[0]
+                hierarchical_tree = root_node.get('children', [])
+            
+            # Calculate max depth
+            max_depth = self._calculate_max_depth(hierarchical_tree)
+            
+            return {
+                "success": True,
+                "nodes": hierarchical_tree,
+                "node_count": len(flat_nodes),
+                "depth": max_depth
+            }
+            
+        except Exception as e:
+            raise NetworkError(f"Bulk read failed: {str(e)}") from e
+    
+    async def bulk_write(
+        self,
+        parent_id: str,
+        nodes: list[dict[str, Any]] | str,
+        append_only: bool = True,
+    ) -> dict[str, Any]:
+        """Create multiple nodes from JSON structure (no file intermediary).
+        
+        ETCH command - direct node creation from JSON structure.
+        
+        Args:
+            parent_id: Parent UUID where nodes should be created
+            nodes: List of node objects with hierarchical structure:
+                   [{
+                       "name": "Node name",
+                       "note": "Optional note content",
+                       "children": [
+                           {"name": "Child 1", "note": null, "children": []},
+                           {"name": "Child 2", "note": null, "children": []}
+                       ]
+                   }]
+            append_only: If True, skip nodes that already exist (by name match).
+                        Default False (create all nodes).
+        
+        Returns:
+            {
+                "success": True/False,
+                "nodes_created": N,
+                "root_node_ids": [...],
+                "skipped": N,  # Only present if append_only=True
+                "api_calls": N,
+                "retries": N,
+                "rate_limit_hits": N,
+                "errors": [...]
+            }
+        """
+        import asyncio
+        import logging
+        import json
+        
+        logger = logging.getLogger(__name__)
+        
+        # 🔧 AUTO-FIX: Detect if nodes is stringified JSON instead of list
+        stringify_strategy_used = None
+        if isinstance(nodes, str):
+            logger.warning("⚠️ Received stringified JSON - attempting multiple parse strategies")
+            
+            # Strategy 1: Direct JSON parse (if already valid)
+            try:
+                nodes = json.loads(nodes)
+                stringify_strategy_used = "Strategy 1: Direct json.loads()"
+                logger.info(f"✅ {stringify_strategy_used}")
+            except json.JSONDecodeError:
+                
+                # Strategy 2: Unicode escape decode (CASE 1 style - escaped quotes/unicode)
+                try:
+                    decoded = nodes.encode().decode('unicode_escape')
+                    nodes = json.loads(decoded)
+                    stringify_strategy_used = "Strategy 2: Unicode escape decode (CASE 1 style)"
+                    logger.info(f"✅ {stringify_strategy_used}")
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    
+                    # Strategy 3: Triple-backslash quote replacement (CASE 2 style)
+                    try:
+                        # Raw string to avoid escape interpretation
+                        fixed = nodes.replace(r'\\\"', '"')
+                        nodes = json.loads(fixed)
+                        stringify_strategy_used = "Strategy 3: Triple-backslash replacement (CASE 2 style)"
+                        logger.info(f"✅ {stringify_strategy_used}")
+                    except json.JSONDecodeError as e:
+                        return {
+                            "success": False,
+                            "nodes_created": 0,
+                            "root_node_ids": [],
+                            "api_calls": 0,
+                            "retries": 0,
+                            "rate_limit_hits": 0,
+                            "errors": [
+                                f"Parameter 'nodes' is a string but could not parse with any strategy.",
+                                f"Tried: (1) direct parse, (2) unicode_escape decode, (3) triple-backslash replacement",
+                                f"Final error: {str(e)}",
+                                f"Hint: Use actual list structure, not stringified JSON"
+                            ]
+                        }
+        
+        # 🔥🔥🔥 VALIDATION CHECKPOINT - NOTE FIELDS ONLY 🔥🔥🔥
+        # 
+        # Validate NOTE fields (angle brackets + literal backslash-n)
+        # NAME fields tested separately - validation TBD based on test results
+        #
+        # 🔥🔥🔥 END VALIDATION CHECKPOINT 🔥🔥🔥
+        
+        def validate_and_escape_notes_recursive(nodes_list: list[dict[str, Any]], path: str = "root") -> tuple[bool, str | None, list[str]]:
+            """Recursively validate and auto-escape NOTE fields only.
+            
+            Returns:
+                (success, error_message, warnings_list)
+            """
+            warnings = []
+            
+            for idx, node in enumerate(nodes_list):
+                node_path = f"{path}[{idx}].{node.get('name', 'unnamed')}"
+                
+                # Validate and escape NOTE field
+                note = node.get('note')
+                if note:
+                    processed_note, message = self._validate_note_field(note, skip_newline_check=False)
+                    
+                    if processed_note is None and message:  # Blocking error
+                        return (False, f"Node: {node_path}\n\n{message}", warnings)
+                    
+                    # Update node with escaped/validated note
+                    node['note'] = processed_note
+                    
+                    # Collect warning if escaping occurred
+                    if message and "AUTO-ESCAPED" in message:
+                        warnings.append(f"Node: {node_path} - Angle brackets auto-escaped")
+                
+                # Recursively process children
+                children = node.get('children', [])
+                if children:
+                    success, error_msg, child_warnings = validate_and_escape_notes_recursive(children, node_path)
+                    if not success:
+                        return (False, error_msg, warnings)
+                    warnings.extend(child_warnings)
+            
+            return (True, None, warnings)
+        
+        # Run validation on NOTE fields
+        success, error_msg, warnings = validate_and_escape_notes_recursive(nodes)
+        
+        if not success:
+            return {
+                "success": False,
+                "nodes_created": 0,
+                "root_node_ids": [],
+                "api_calls": 0,
+                "retries": 0,
+                "rate_limit_hits": 0,
+                "errors": [error_msg or "Note field validation failed"]
+            }
+        
+        # Log warnings if any escaping occurred
+        if warnings:
+            logger.info(f"\u2705 Auto-escaped angle brackets in {len(warnings)} note(s)")
+            for warning in warnings:
+                logger.info(f"  - {warning}")
+                
+        # Validate and escape NOTE fields in entire tree (modifies nodes in-place)
+        success, error_msg, warnings = validate_and_escape_notes_recursive(nodes)
+        
+        if not success:
+            return {
+                "success": False,
+                "nodes_created": 0,
+                "root_node_ids": [],
+                "api_calls": 0,
+                "retries": 0,
+                "rate_limit_hits": 0,
+                "errors": [error_msg or "Note field validation failed"]
+            }
+        
+        # Log warnings if any escaping occurred
+        if warnings:
+            logger.info(f"\u2705 Auto-escaped angle brackets in {len(warnings)} note(s)")
+            for warning in warnings:
+                logger.info(f"  - {warning}")
+        
+        if not isinstance(nodes, list):
+            return {
+                "success": False,
+                "nodes_created": 0,
+                "root_node_ids": [],
+                "api_calls": 0,
+                "retries": 0,
+                "rate_limit_hits": 0,
+                "errors": ["Parameter 'nodes' must be a list"]
+            }
+        
+        # Stats tracking
+        stats = {
+            "api_calls": 0,
+            "retries": 0,
+            "rate_limit_hits": 0,
+            "nodes_created": 0,
+            "skipped": 0,
+            "errors": []
+        }
+        
+        # If append_only, fetch existing children to check for duplicates
+        existing_names = set()
+        if append_only:
+            try:
+                request = NodeListRequest(parentId=parent_id)
+                existing_nodes, _ = await self.list_nodes(request)
+                existing_names = {node.nm for node in existing_nodes if node.nm}
+            except Exception as e:
+                logger.warning(f"Failed to fetch existing nodes for append_only check: {e}")
+                # Continue anyway - will attempt to create all nodes
+        
+        async def create_node_with_retry(
+            request: NodeCreateRequest,
+            max_retries: int = 5,
+            internal: bool = False
+        ) -> WorkFlowyNode | None:
+            """Create node with exponential backoff retry.
+            
+            Args:
+                request: Node creation request
+                max_retries: Maximum retry attempts
+                internal: Pass True to bypass single-node forcing function
+            """
+            retry_count = 0
+            base_delay = 1.0
+            
+            while retry_count < max_retries:
+                try:
+                    # Fixed safety delay (100ms between calls)
+                    await asyncio.sleep(0.1)
+                    stats["api_calls"] += 1
+                    
+                    node = await self.create_node(request, _internal_call=internal)
+                    return node
+                    
+                except RateLimitError as e:
+                    stats["rate_limit_hits"] += 1
+                    stats["retries"] += 1
+                    retry_count += 1
+                    
+                    retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
+                    logger.warning(
+                        f"Rate limited. Retry after {retry_after}s. "
+                        f"Total retries: {stats['retries']}"
+                    )
+                    
+                    if retry_count < max_retries:
+                        await asyncio.sleep(retry_after)
+                    else:
+                        raise
+                        
+                except NetworkError as e:
+                    stats["retries"] += 1
+                    retry_count += 1
+                    
+                    logger.warning(
+                        f"Network error: {e}. Retry {retry_count}/{max_retries}"
+                    )
+                    
+                    if retry_count < max_retries:
+                        await asyncio.sleep(base_delay * (2 ** retry_count))
+                    else:
+                        raise
+            
+            return None
+        
+        async def create_tree(
+            parent_id: str,
+            nodes: list[dict[str, Any]]
+        ) -> list[str]:
+            """Recursively create node tree."""
+            created_ids = []
+            
+            for node_data in nodes:
+                try:
+                    node_name = node_data['name']
+                    
+                    # Skip if append_only and node already exists
+                    if append_only and node_name in existing_names:
+                        stats["skipped"] += 1
+                        logger.info(f"Skipped existing node: {node_name}")
+                        continue
+                    
+                    # Build request
+                    request = NodeCreateRequest(
+                        name=node_name,
+                        parent_id=parent_id,
+                        note=node_data.get('note'),
+                        layoutMode=node_data.get('layout_mode'),
+                        position=node_data.get('position', 'bottom')
+                    )
+                    
+                    # Create with retry logic (includes validation via create_node)
+                    # Pass _internal_call=True to bypass single-node forcing function
+                    node = await create_node_with_retry(request, internal=True)
+                    
+                    if node:
+                        created_ids.append(node.id)
+                        stats["nodes_created"] += 1
+                        
+                        # Recursively create children
+                        if 'children' in node_data and node_data['children']:
+                            await create_tree(node.id, node_data['children'])
+                    
+                except Exception as e:
+                    error_msg = f"Failed to create node '{node_data.get('name', 'unknown')}': {str(e)}"
+                    logger.error(error_msg)
+                    stats["errors"].append(error_msg)
+                    # Continue with other nodes
+                    continue
+            
+            return created_ids
+        
+        # Create the tree
+        try:
+            root_ids = await create_tree(parent_id, nodes)
+            
+            # Log summary if retries occurred
+            if stats["retries"] > 0:
+                logger.warning(
+                    f"⚠️ Bulk write completed with {stats['retries']} retries "
+                    f"({stats['rate_limit_hits']} rate limit hits). "
+                    f"Consider reducing import speed."
+                )
+            
+            result = {
+                "success": len(stats["errors"]) == 0,
+                "nodes_created": stats["nodes_created"],
+                "root_node_ids": root_ids,
+                "api_calls": stats["api_calls"],
+                "retries": stats["retries"],
+                "rate_limit_hits": stats["rate_limit_hits"],
+                "errors": stats["errors"]
+            }
+            
+            # Add skipped count if append_only mode
+            if append_only:
+                result["skipped"] = stats["skipped"]
+            
+            # Add stringify strategy if auto-fix was used
+            if stringify_strategy_used:
+                result["_stringify_autofix"] = stringify_strategy_used
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"Bulk write failed: {str(e)}"
+            logger.error(error_msg)
+            stats["errors"].append(error_msg)
+            
+            result = {
+                "success": False,
+                "nodes_created": stats["nodes_created"],
+                "root_node_ids": [],
+                "api_calls": stats["api_calls"],
+                "retries": stats["retries"],
+                "rate_limit_hits": stats["rate_limit_hits"],
+                "errors": stats["errors"]
+            }
+            
+            if append_only:
+                result["skipped"] = stats["skipped"]
+            
+            if stringify_strategy_used:
+                result["_stringify_autofix"] = stringify_strategy_used
+            
+            return result
+    
     async def bulk_import_from_file(
         self,
         json_file: str,
@@ -598,6 +1309,63 @@ class WorkFlowyClient:
                 "errors": ["JSON must contain an array of nodes"]
             }
         
+        # 🔥 VALIDATE & AUTO-ESCAPE NOTE FIELDS (angle brackets & newline escapes) 🔥
+        def validate_and_escape_nodes_recursive(nodes_list: list[dict[str, Any]], path: str = "root") -> tuple[bool, str | None, list[str]]:
+            """Recursively validate and auto-escape all note fields in node tree.
+            
+            Returns:
+                (success, error_message, warnings_list)
+            """
+            warnings = []
+            
+            for idx, node in enumerate(nodes_list):
+                node_path = f"{path}[{idx}].{node.get('name', 'unnamed')}"
+                
+                # Validate and escape this node's note field
+                note = node.get('note')
+                if note:
+                    processed_note, message = self._validate_note_field(note)
+                    
+                    if processed_note is None and message:  # Blocking error
+                        return (False, f"Node: {node_path}\n\n{message}", warnings)
+                    
+                    # Update node with escaped note
+                    node['note'] = processed_note
+                    
+                    # Collect warning if escaping occurred
+                    if message and "AUTO-ESCAPED" in message:
+                        warnings.append(f"Node: {node_path} - Angle brackets auto-escaped")
+                
+                # Recursively validate children
+                children = node.get('children', [])
+                if children:
+                    success, error_msg, child_warnings = validate_and_escape_nodes_recursive(children, node_path)
+                    if not success:
+                        return (False, error_msg, warnings)
+                    warnings.extend(child_warnings)
+            
+            return (True, None, warnings)
+        
+        # Run validation and escaping on entire tree (modifies nodes in-place)
+        success, error_msg, warnings = validate_and_escape_nodes_recursive(nodes_to_create)
+        
+        if not success:
+            return {
+                "success": False,
+                "nodes_created": 0,
+                "root_node_ids": [],
+                "api_calls": 0,
+                "retries": 0,
+                "rate_limit_hits": 0,
+                "errors": [error_msg or "Note field validation failed"]
+            }
+        
+        # Log warnings if any escaping occurred
+        if warnings:
+            logger.info(f"✅ Auto-escaped angle brackets in {len(warnings)} note(s)")
+            for warning in warnings:
+                logger.info(f"  - {warning}")
+        
         # Stats tracking
         stats = {
             "api_calls": 0,
@@ -611,7 +1379,7 @@ class WorkFlowyClient:
             request: NodeCreateRequest,
             max_retries: int = 5
         ) -> WorkFlowyNode | None:
-            """Create node with exponential backoff retry."""
+            """Create node with exponential backoff retry (internal bulk operation)."""
             retry_count = 0
             base_delay = 1.0
             
@@ -621,7 +1389,8 @@ class WorkFlowyClient:
                     await asyncio.sleep(0.1)
                     stats["api_calls"] += 1
                     
-                    node = await self.create_node(request)
+                    # Internal call - bypass single-node forcing function
+                    node = await self.create_node(request, _internal_call=True)
                     return node
                     
                 except RateLimitError as e:

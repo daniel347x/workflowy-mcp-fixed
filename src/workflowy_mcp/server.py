@@ -73,28 +73,35 @@ mcp = FastMCP(
 )
 
 
-# Tool: Create Node
-@mcp.tool(name="workflowy_create_node", description="Create a new node in WorkFlowy")
+# Tool: Create Single Node
+@mcp.tool(name="workflowy_create_single_node__WARNING__prefer_bulk_import", description="⚠️ WARNING: For 2+ nodes, use workflowy_bulk_import instead (vastly more efficient). This creates ONE node only.")
 async def create_node(
     name: str,
     parent_id: str | None = None,
     note: str | None = None,
     layout_mode: Literal["bullets", "todo", "h1", "h2", "h3"] | None = None,
-    position: Literal["top", "bottom"] = "top",
+    position: Literal["top", "bottom"] = "bottom",
     _completed: bool = False,
-) -> WorkFlowyNode:
-    """Create a new node in WorkFlowy.
+) -> dict:
+    """Create a SINGLE node in WorkFlowy.
+    
+    ⚠️ WARNING: For creating 2+ nodes, use workflowy_bulk_import instead.
+    
+    This tool is ONLY for:
+    - Adding one VYRTHEX to existing log (real-time work)
+    - One quick update to a known node
+    - Live work in progress
 
     Args:
         name: The text content of the node
         parent_id: ID of the parent node (optional)
         note: Additional note/description for the node
         layout_mode: Layout mode for the node (bullets, todo, h1, h2, h3) (optional)
-        position: Where to place the new node - "top" (default) or "bottom"
+        position: Where to place the new node - "bottom" (default) or "top"
         _completed: Whether the node should be marked as completed (not used)
 
     Returns:
-        The created WorkFlowy node
+        Dictionary with node data and warning message
     """
     client = get_client()
 
@@ -113,7 +120,12 @@ async def create_node(
         node = await client.create_node(request)
         if _rate_limiter:
             _rate_limiter.on_success()
-        return node
+        
+        # Return node data with warning message
+        return {
+            **node.model_dump(),
+            "_warning": "⚠️ WARNING: You just created a SINGLE node. For 2+ nodes, use workflowy_bulk_import instead (2 tool calls vs 10+)."
+        }
     except Exception as e:
         if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
             _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
@@ -164,7 +176,7 @@ async def update_node(
 
 
 # Tool: Get Node
-@mcp.tool(name="workflowy_get_node", description="Retrieve a specific WorkFlowy node by ID")
+@mcp.tool(name="workflowy_get_node__WARNING__prefer_bulk_read", description="⚠️ WARNING: Prefer workflowy_bulk_read (GLIMPSE) for reading trees. Retrieve a specific WorkFlowy node by ID")
 async def get_node(node_id: str) -> WorkFlowyNode:
     """Retrieve a specific WorkFlowy node.
 
@@ -191,7 +203,7 @@ async def get_node(node_id: str) -> WorkFlowyNode:
 
 
 # Tool: List Nodes
-@mcp.tool(name="workflowy_list_nodes", description="List WorkFlowy nodes (omit parent_id for root)")
+@mcp.tool(name="workflowy_list_nodes__WARNING__prefer_bulk_read", description="⚠️ WARNING: Prefer workflowy_bulk_read (GLIMPSE) for reading trees. List WorkFlowy nodes (omit parent_id for root)")
 async def list_nodes(
     parent_id: str | None = None,
 ) -> dict:
@@ -220,6 +232,7 @@ async def list_nodes(
         return {
             "nodes": [node.model_dump() for node in nodes],
             "total": total,
+            "_warning": "⚠️ For reading multiple nodes or full trees, use workflowy_bulk_read (GLIMPSE) instead for efficiency"
         }
     except Exception as e:
         if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
@@ -406,6 +419,105 @@ async def bulk_export(
         if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
             _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
         raise
+
+
+# Tool: Generate Markdown from JSON
+@mcp.tool(
+    name="generate_markdown_from_json",
+    description="Convert exported/edited JSON to Markdown format (without metadata)."
+)
+def generate_markdown(
+    json_file: str,
+) -> dict:
+    """Convert JSON file to Markdown format.
+    
+    Use after editing JSON with Quill scroll to create Markdown for PARALLAX review.
+
+    Args:
+        json_file: Absolute path to JSON file.
+
+    Returns:
+        Dictionary with success status and markdown file path.
+    """
+    client = get_client()
+    return client.generate_markdown_from_json(json_file)
+
+
+# Tool: Bulk Read (GLIMPSE)
+@mcp.tool(
+    name="workflowy_bulk_read",
+    description="Load entire node tree into context (no file intermediary). GLIMPSE command for direct context loading."
+)
+async def bulk_read(
+    node_id: str,
+) -> dict:
+    """Load entire node tree into agent context.
+    
+    GLIMPSE command - efficient context loading for agent analysis.
+    
+    Args:
+        node_id: Root node UUID to read from
+        
+    Returns:
+        Dictionary with hierarchical JSON structure, node count, and depth
+    """
+    client = get_client()
+    
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+    
+    try:
+        result = await client.bulk_read(node_id)
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
+# Tool: Bulk Write (ETCH)
+@mcp.tool(
+    name="workflowy_bulk_write",
+    description="Create multiple nodes from JSON structure (no file intermediary). ETCH command for direct node creation."
+)
+async def bulk_write(
+    parent_id: str,
+    nodes: list[dict] | str,
+    append_only: bool = True,
+) -> dict:
+    """Create multiple nodes from JSON structure.
+    
+    ETCH command - direct node creation without file intermediary.
+    Fallback: If this fails, use INSCRIBE scroll (write_file → bulk_import).
+    
+    Args:
+        parent_id: Parent UUID where nodes should be created
+        nodes: List of node objects with hierarchical structure
+        append_only: If True, skip nodes that already exist (by name). Default False.
+        
+    Returns:
+        Dictionary with success status, nodes created, skipped (if append_only), API call stats, and errors
+    """
+    client = get_client()
+    
+    # Rate limiter handled within bulk_write method due to recursive operations
+    
+    try:
+        result = await client.bulk_write(parent_id, nodes, append_only=append_only)
+        return result
+    except Exception as e:
+        # Top-level exception capture
+        return {
+            "success": False,
+            "nodes_created": 0,
+            "root_node_ids": [],
+            "api_calls": 0,
+            "retries": 0,
+            "rate_limit_hits": 0,
+            "errors": [f"An unexpected error occurred: {str(e)}"]
+        }
 
 
 # Tool: Bulk Import from JSON File
