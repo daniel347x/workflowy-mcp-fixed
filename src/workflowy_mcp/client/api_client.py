@@ -196,12 +196,12 @@ Line 2"  # Actual newlines in parameter
                 request.name = request.name.replace(SINGLE_NODE_TOKEN, "", 1)
             else:
                 # Suggest ETCH instead
-                raise NetworkError("""⚠️ PREFER ETCH - Use bulk_write for consistency and capability
+                raise NetworkError("""⚠️ PREFER ETCH - Use workflowy_etch for consistency and capability
 
-You called workflowy_create_single_node, but bulk_write has identical performance.
+You called workflowy_create_single_node, but workflowy_etch has identical performance.
 
 ✅ RECOMMENDED (same speed, more capability):
-  workflowy_bulk_write(
+  workflowy_etch(
     parent_id="...",
     nodes=[{"name": "Your node", "note": "...", "children": []}]
   )
@@ -849,7 +849,7 @@ You called workflowy_create_single_node, but bulk_write has identical performanc
             
         return '\n'.join(markdown_lines)
     
-    async def bulk_read(self, node_id: str) -> dict[str, Any]:
+    async def workflowy_glimpse(self, node_id: str) -> dict[str, Any]:
         """Load entire node tree into context (no file intermediary).
         
         GLIMPSE command - direct context loading for agent analysis.
@@ -860,10 +860,14 @@ You called workflowy_create_single_node, but bulk_write has identical performanc
         Returns:
             {
                 "success": True,
-                "nodes": [...],  # Hierarchical JSON structure (same as bulk_export)
+                "root": {"id": "...", "name": "...", "note": "..."},  # Root node metadata
+                "children": [...],  # Children only (for round-trip editing)
                 "node_count": N,
                 "depth": M
             }
+            
+        Note: root metadata lets you read the node's prompt/content.
+              children array is for round-trip editing (prevents root duplication).
         """
         try:
             # Fetch flat node list
@@ -873,25 +877,39 @@ You called workflowy_create_single_node, but bulk_write has identical performanc
             if not flat_nodes:
                 return {
                     "success": True,
-                    "nodes": [],
+                    "root": None,
+                    "children": [],
                     "node_count": 0,
                     "depth": 0
                 }
             
-            # Build hierarchical tree (same logic as bulk_export)
+            # Build hierarchical tree
             hierarchical_tree = self._build_hierarchy(flat_nodes, include_metadata=True)
             
-            # Extract children if single root (skip root for consistency with bulk_export)
+            # Extract root node metadata and children separately
+            root_metadata = None
+            children = []
+            
             if hierarchical_tree and len(hierarchical_tree) == 1:
                 root_node = hierarchical_tree[0]
-                hierarchical_tree = root_node.get('children', [])
+                root_metadata = {
+                    "id": root_node.get('id'),
+                    "name": root_node.get('name'),
+                    "note": root_node.get('note'),
+                    "parent_id": root_node.get('parent_id')
+                }
+                children = root_node.get('children', [])
+            else:
+                # Multiple roots or no clear root - return as-is
+                children = hierarchical_tree
             
             # Calculate max depth
-            max_depth = self._calculate_max_depth(hierarchical_tree)
+            max_depth = self._calculate_max_depth(children)
             
             return {
                 "success": True,
-                "nodes": hierarchical_tree,
+                "root": root_metadata,
+                "children": children,
                 "node_count": len(flat_nodes),
                 "depth": max_depth
             }
@@ -899,7 +917,7 @@ You called workflowy_create_single_node, but bulk_write has identical performanc
         except Exception as e:
             raise NetworkError(f"Bulk read failed: {str(e)}") from e
     
-    async def bulk_write(
+    async def workflowy_etch(
         self,
         parent_id: str,
         nodes: list[dict[str, Any]] | str,

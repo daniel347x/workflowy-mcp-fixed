@@ -73,7 +73,35 @@ mcp = FastMCP(
 )
 
 
-# Tool: Create Single Node
+# Tool: Create Single Node (Base - Deprecated)
+@mcp.tool(name="workflowy_create_single_node", description="DEPRECATED: Use workflowy_etch (ETCH) instead")
+async def create_single_node_base(
+    name: str,
+    parent_id: str | None = None,
+    note: str | None = None,
+) -> dict:
+    """Deprecated - use ETCH instead."""
+    raise ValueError("""⚠️ FUNCTION RENAMED
+
+The function 'workflowy_create_single_node' has been renamed to 'workflowy_create_single_node__WARNING__prefer_bulk_import'.
+
+BUT MORE IMPORTANTLY: Use workflowy_etch (ETCH command) instead!
+
+✅ RECOMMENDED:
+  workflowy_etch(
+    parent_id="...",
+    nodes=[{"name": "Your node", "note": "...", "children": []}]
+  )
+
+ETCH is better:
+- Works for 1 node or 100 nodes
+- Validation and auto-escaping built-in
+- Same performance, more capability
+
+📚 Build the ETCH habit!
+""")
+
+# Tool: Create Single Node (With Warning)
 @mcp.tool(name="workflowy_create_single_node__WARNING__prefer_bulk_import", description="⚠️ WARNING: For 2+ nodes, use workflowy_bulk_import instead (vastly more efficient). This creates ONE node only.")
 async def create_node(
     name: str,
@@ -175,8 +203,31 @@ async def update_node(
         raise
 
 
-# Tool: Get Node
-@mcp.tool(name="workflowy_get_node__WARNING__prefer_bulk_read", description="⚠️ WARNING: Prefer workflowy_bulk_read (GLIMPSE) for reading trees. Retrieve a specific WorkFlowy node by ID")
+# Tool: Get Node (Base - Deprecated)
+@mcp.tool(name="workflowy_get_node", description="DEPRECATED: Use workflowy_glimpse (GLIMPSE) instead")
+async def get_node_base(node_id: str) -> dict:
+    """Deprecated - use GLIMPSE instead."""
+    raise ValueError("""⚠️ FUNCTION RENAMED
+
+The function 'workflowy_get_node' has been renamed to 'workflowy_get_node__WARNING__prefer_glimpse'.
+
+BUT MORE IMPORTANTLY: Use workflowy_glimpse (GLIMPSE command) instead!
+
+✅ RECOMMENDED:
+  workflowy_glimpse(node_id="...")
+  
+Returns: {"root": {...}, "children": [...]} with complete tree structure.
+
+GLIMPSE is better:
+- Gets root node metadata (name, note)
+- Gets full children tree (not just direct children)
+- One call gets everything
+
+📚 Build the GLIMPSE habit!
+""")
+
+# Tool: Get Node (With Warning)
+@mcp.tool(name="workflowy_get_node__WARNING__prefer_glimpse", description="⚠️ WARNING: Prefer workflowy_glimpse (GLIMPSE) for reading trees. Retrieve a specific WorkFlowy node by ID")
 async def get_node(node_id: str) -> WorkFlowyNode:
     """Retrieve a specific WorkFlowy node.
 
@@ -202,8 +253,31 @@ async def get_node(node_id: str) -> WorkFlowyNode:
         raise
 
 
-# Tool: List Nodes
-@mcp.tool(name="workflowy_list_nodes__WARNING__prefer_bulk_read", description="⚠️ WARNING: Prefer workflowy_bulk_read (GLIMPSE) for reading trees. List WorkFlowy nodes (omit parent_id for root)")
+# Tool: List Nodes (Base - Deprecated)
+@mcp.tool(name="workflowy_list_nodes", description="DEPRECATED: Use workflowy_glimpse (GLIMPSE) instead")
+async def list_nodes_base(parent_id: str | None = None) -> dict:
+    """Deprecated - use GLIMPSE instead."""
+    raise ValueError("""⚠️ FUNCTION RENAMED
+
+The function 'workflowy_list_nodes' has been renamed to 'workflowy_list_nodes__WARNING__prefer_glimpse'.
+
+BUT MORE IMPORTANTLY: Use workflowy_glimpse (GLIMPSE command) instead!
+
+✅ RECOMMENDED:
+  workflowy_glimpse(node_id="...")
+  
+Returns: {"root": {...}, "children": [...]} with complete tree structure.
+
+GLIMPSE is better:
+- Gets full nested tree (not just direct children)
+- Gets root node metadata
+- More efficient
+
+📚 Build the GLIMPSE habit!
+""")
+
+# Tool: List Nodes (With Warning)
+@mcp.tool(name="workflowy_list_nodes__WARNING__prefer_glimpse", description="⚠️ WARNING: Prefer workflowy_glimpse (GLIMPSE) for reading trees. List WorkFlowy nodes (omit parent_id for root)")
 async def list_nodes(
     parent_id: str | None = None,
 ) -> dict:
@@ -232,7 +306,7 @@ async def list_nodes(
         return {
             "nodes": [node.model_dump() for node in nodes],
             "total": total,
-            "_warning": "⚠️ For reading multiple nodes or full trees, use workflowy_bulk_read (GLIMPSE) instead for efficiency"
+            "_warning": "⚠️ For reading multiple nodes or full trees, use workflowy_glimpse (GLIMPSE) instead for efficiency"
         }
     except Exception as e:
         if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
@@ -443,12 +517,12 @@ def generate_markdown(
     return client.generate_markdown_from_json(json_file)
 
 
-# Tool: Bulk Read (GLIMPSE)
+# Tool: GLIMPSE (Read Node Trees)
 @mcp.tool(
-    name="workflowy_bulk_read",
+    name="workflowy_glimpse",
     description="Load entire node tree into context (no file intermediary). GLIMPSE command for direct context loading."
 )
-async def bulk_read(
+async def glimpse(
     node_id: str,
 ) -> dict:
     """Load entire node tree into agent context.
@@ -459,7 +533,7 @@ async def bulk_read(
         node_id: Root node UUID to read from
         
     Returns:
-        Dictionary with hierarchical JSON structure, node count, and depth
+        Dictionary with root metadata, children tree, node count, and depth
     """
     client = get_client()
     
@@ -467,7 +541,7 @@ async def bulk_read(
         await _rate_limiter.acquire()
     
     try:
-        result = await client.bulk_read(node_id)
+        result = await client.workflowy_glimpse(node_id)
         if _rate_limiter:
             _rate_limiter.on_success()
         return result
@@ -477,12 +551,12 @@ async def bulk_read(
         raise
 
 
-# Tool: Bulk Write (ETCH)
+# Tool: ETCH (Write Node Trees)
 @mcp.tool(
-    name="workflowy_bulk_write",
+    name="workflowy_etch",
     description="Create multiple nodes from JSON structure (no file intermediary). ETCH command for direct node creation."
 )
-async def bulk_write(
+async def etch(
     parent_id: str,
     nodes: list[dict] | str,
     append_only: bool = True,
@@ -495,17 +569,17 @@ async def bulk_write(
     Args:
         parent_id: Parent UUID where nodes should be created
         nodes: List of node objects with hierarchical structure
-        append_only: If True, skip nodes that already exist (by name). Default False.
+        append_only: If True, skip nodes that already exist (by name). Default True (safe).
         
     Returns:
         Dictionary with success status, nodes created, skipped (if append_only), API call stats, and errors
     """
     client = get_client()
     
-    # Rate limiter handled within bulk_write method due to recursive operations
+    # Rate limiter handled within workflowy_etch method due to recursive operations
     
     try:
-        result = await client.bulk_write(parent_id, nodes, append_only=append_only)
+        result = await client.workflowy_etch(parent_id, nodes, append_only=append_only)
         return result
     except Exception as e:
         # Top-level exception capture
