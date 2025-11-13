@@ -869,6 +869,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         Note: root metadata lets you read the node's prompt/content.
               children array is for round-trip editing (prevents root duplication).
         """
+        import asyncio
+        
+        # Rate limit protection - 100ms delay before API call
+        await asyncio.sleep(0.1)
+        
         try:
             # Fetch flat node list
             raw_data = await self.export_nodes(node_id)
@@ -961,6 +966,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         import json
         
         logger = logging.getLogger(__name__)
+
+        # Rate limit protection - 100ms delay
+        await asyncio.sleep(0.1)
         
         # 🔧 AUTO-FIX: Detect if nodes is stringified JSON instead of list
         stringify_strategy_used = None
@@ -1358,6 +1366,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         import logging
         
         logger = logging.getLogger(__name__)
+
+        # Rate limit protection - 100ms delay
+        await asyncio.sleep(0.1)
         
         # Read JSON file
         try:
