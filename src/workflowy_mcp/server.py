@@ -644,19 +644,22 @@ async def glimpse(
 async def etch(
     parent_id: str,
     nodes: list[dict] | str,
-    skip_duplicates: bool = True,
     replace_all: bool = False,
 ) -> dict:
     """Create multiple nodes from JSON structure.
     
-    ETCH command - direct node creation without file intermediary.
+    ETCH command - simple additive node creation (no UUIDs, no updates/moves).
     Fallback: If this fails, use INSCRIBE scroll (write_file → bulk_import).
+    
+    DEFAULT: Additive (skip existing by name, add new children only)
+    REPLACE: Wipe all children, create fresh
+    
+    For complex operations (moves/updates with UUIDs): Use NEXUS scroll instead.
     
     Args:
         parent_id: Parent UUID where nodes should be created
-        nodes: List of node objects with hierarchical structure
-        skip_duplicates: If True, skip nodes that already exist (by name match). Default True.
-        replace_all: If True, delete ALL existing children before creating. Default False.
+        nodes: List of node objects (NO UUIDs - just name/note/children)
+        replace_all: If True, delete ALL existing children first. Default False.
         
     Returns:
         Dictionary with success status, nodes created, skipped (if append_only), API call stats, and errors
@@ -666,7 +669,7 @@ async def etch(
     # Rate limiter handled within workflowy_etch method due to recursive operations
     
     try:
-        result = await client.workflowy_etch(parent_id, nodes, skip_duplicates=skip_duplicates, replace_all=replace_all)
+        result = await client.workflowy_etch(parent_id, nodes, replace_all=replace_all)
         return result
     except Exception as e:
         # Top-level exception capture

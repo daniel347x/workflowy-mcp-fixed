@@ -936,16 +936,43 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         self,
         parent_id: str,
         nodes: list[dict[str, Any]] | str,
-        skip_duplicates: bool = True,
         replace_all: bool = False,
     ) -> dict[str, Any]:
         """Create multiple nodes from JSON structure (no file intermediary).
         
-        ETCH command - direct node creation from JSON structure.
+        ETCH command - simple additive node creation (no UUIDs, no updates/moves).
+        
+        TWO MODES:
+        
+        DEFAULT (replace_all=False):
+        - Match existing children by name (case-sensitive, trimmed)
+        - Skip if name exists (walk down tree, add new children only)
+        - NO updates, NO deletes, NO moves - just additions
+        - Use case: Add VYRTHEXes, documentation nodes, walk existing structure
+        
+        REPLACE MODE (replace_all=True):
+        - Delete ALL existing children first
+        - Create fresh tree from source
+        - Use case: "I don't like what's there, etch these instead"
+        
+        ASSUMPTIONS:
+        - Unique names per parent level (duplicate names = nondeterministic match)
+        - Case-sensitive name matching
+        - No Unicode normalization (uses simple .strip())
+        - No sibling reordering (new nodes appended at bottom)
+        
+        FOR COMPLEX OPERATIONS (updates/moves/deletes with UUID preservation):
+        Use bulk_import_from_file (NEXUS scroll) instead.
+        
+        FUTURE ENHANCEMENTS (deferred):
+        - dry_run flag (preview without executing)
+        - case_insensitive option
+        - Unicode normalization
+        - name_normalizer hook
         
         Args:
             parent_id: Parent UUID where nodes should be created
-            nodes: List of node objects with hierarchical structure:
+            nodes: List of node objects (NO UUIDs - just name/note/children):
                    [{
                        "name": "Node name",
                        "note": "Optional note content",
@@ -954,10 +981,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                            {"name": "Child 2", "note": null, "children": []}
                        ]
                    }]
-            skip_duplicates: If True, check existing children and skip nodes with matching names.
-                            Default True (smart deduplication).
-            replace_all: If True, delete ALL existing children before creating new tree.
-                        Default False (preserve existing). Overrides skip_duplicates.
+            replace_all: If True, delete ALL existing children before creating.
+                        Default False (additive mode).
         
         Returns:
             {
@@ -1127,7 +1152,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "errors": []
         }
         
-        # 🗑️ REPLACE_ALL MODE: Delete existing children first
+        # 🗑️ REPLACE_ALL MODE: Wipe and replace
         if replace_all:
             logger.info("🗑️ replace_all=True - Deleting all existing children")
             try:
@@ -1142,24 +1167,24 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         stats["api_calls"] += 1
                     except Exception as e:
                         logger.warning(f"  Failed to delete {child.nm}: {e}")
-                        # Continue with others
             except Exception as e:
                 logger.warning(f"Could not list/delete existing children: {e}")
-                # Proceed anyway - replacement will still work
             
             nodes_to_create = nodes  # Create all nodes (clean slate)
-            existing_names = set()  # No deduplication needed
+            existing_names = set()  # No name-matching needed
         
-        # 🔍 SKIP_DUPLICATES MODE: Filter out existing nodes
-        elif skip_duplicates:
+        # 📝 DEFAULT MODE: Additive (skip existing by name)
+        else:
+            # Always match by name and skip existing (simplified ETCH)
             try:
                 request = NodeListRequest(parentId=parent_id)
                 existing_children, _ = await self.list_nodes(request)
                 stats["api_calls"] += 1
                 
+                # Build set of existing names (case-sensitive, trimmed)
                 existing_names = {child.nm.strip() for child in existing_children if child.nm}
                 
-                # Filter: only create nodes that don't already exist
+                # Filter: only create nodes that don't exist by name
                 nodes_to_create = [
                     node for node in nodes 
                     if node.get('name', '').strip() not in existing_names
@@ -1168,10 +1193,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 stats["skipped"] = len(nodes) - len(nodes_to_create)
                 
                 if stats["skipped"] > 0:
-                    logger.info(f"🔍 skip_duplicates=True - Skipped {stats['skipped']} existing node(s)")
+                    logger.info(f"📝 Skipped {stats['skipped']} existing node(s) (matched by name)")
                 
                 if not nodes_to_create:
-                    # All nodes already exist
+                    # All nodes already exist by name
                     return {
                         "success": True,
                         "nodes_created": 0,
@@ -1181,17 +1206,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         "retries": 0,
                         "rate_limit_hits": 0,
                         "errors": [],
-                        "message": "All nodes already exist - nothing to create"
+                        "message": "All nodes already exist (matched by name) - nothing to create"
                     }
             except Exception as e:
-                logger.warning(f"Could not check for duplicates: {e} - proceeding to create all")
+                logger.warning(f"Could not check existing: {e} - proceeding to create all")
                 nodes_to_create = nodes
                 existing_names = set()
-        
-        # ➕ DEFAULT MODE (skip_duplicates=False): Create all nodes
-        else:
-            nodes_to_create = nodes
-            existing_names = set()
         
         async def create_node_with_retry(
             request: NodeCreateRequest,
@@ -1259,8 +1279,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 try:
                     node_name = node_data['name']
                     
-                    # Skip if skip_duplicates and node already exists
-                    if skip_duplicates and not replace_all and node_name in existing_names:
+                    # Skip if node already exists by name (default additive behavior)
+                    if not replace_all and node_name in existing_names:
                         stats["skipped"] += 1
                         logger.info(f"Skipped existing node: {node_name}")
                         continue
@@ -1317,8 +1337,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "errors": stats["errors"]
             }
             
-            # Add skipped count if skip_duplicates mode
-            if skip_duplicates and not replace_all:
+            # Add skipped count (always tracked in additive mode)
+            if not replace_all:
                 result["skipped"] = stats["skipped"]
             
             # Add stringify strategy if auto-fix was used
