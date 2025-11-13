@@ -1249,8 +1249,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 try:
                     node_name = node_data['name']
                     
-                    # Skip if append_only and node already exists
-                    if append_only and node_name in existing_names:
+                    # Skip if skip_duplicates and node already exists
+                    if skip_duplicates and not replace_all and node_name in existing_names:
                         stats["skipped"] += 1
                         logger.info(f"Skipped existing node: {node_name}")
                         continue
