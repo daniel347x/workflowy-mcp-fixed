@@ -73,6 +73,68 @@ mcp = FastMCP(
 )
 
 
+# 🔐 SECRET CODE VALIDATION - Brute Force Agent Training Override
+def validate_secret_code(provided_code: str | None, function_name: str) -> tuple[bool, str | None]:
+    """Validate secret code for WARNING functions.
+    
+    This is the nuclear option - forces agents to ask Dan explicitly.
+    
+    Returns:
+        (is_valid, error_message)
+    """
+    import os
+    import secrets
+    
+    SECRET_FILE = r"E:\__daniel347x\glimpse_etch.txt"
+    
+    # Generate code if file doesn't exist
+    if not os.path.exists(SECRET_FILE):
+        code = secrets.token_hex(8)  # 16-character hex code
+        with open(SECRET_FILE, 'w') as f:
+            f.write(code)
+    
+    # Read current code
+    with open(SECRET_FILE, 'r') as f:
+        valid_code = f.read().strip()
+    
+    # Check if code provided and matches
+    if provided_code and provided_code.strip() == valid_code:
+        return (True, None)  # Valid - allow function call
+    
+    # Invalid or missing - return error
+    error_msg = f"""⚠️ EXPLICIT PERMISSION REQUIRED
+
+You called: {function_name}
+
+This is a WARNING function. You should be using GLIMPSE or ETCH instead.
+
+🛑 YOU BELIEVE YOU'RE AN EXCEPTION CASE.
+
+🚨 YOU ARE NOT THE EXCEPTION.
+
+✅ USE INSTEAD:
+  - For reading node trees: workflowy_glimpse(node_id="...")
+  - For creating nodes: workflowy_etch(parent_id="...", nodes=[...])
+
+⚙️ IF YOU TRULY NEED THIS FUNCTION:
+
+1. Ask Dan: "May I have permission to call {function_name}?"
+2. Dan will check a secret file for the authorization code
+3. If Dan grants permission, he'll provide the code
+4. Call again with: secret_code="[code-from-Dan]"
+
+🚫 IF DAN SAYS NO:
+- You are NOT the exception
+- Your training misled you  
+- Use GLIMPSE or ETCH as instructed
+- Do NOT call this function again
+
+📚 Break free from your training - build the GLIMPSE/ETCH habit!
+"""
+    
+    return (False, error_msg)
+
+
 # Tool: Create Single Node (Base - Deprecated)
 @mcp.tool(name="workflowy_create_single_node", description="DEPRECATED: Use workflowy_etch (ETCH) instead")
 async def create_single_node_base(
@@ -110,6 +172,7 @@ async def create_node(
     layout_mode: Literal["bullets", "todo", "h1", "h2", "h3"] | None = None,
     position: Literal["top", "bottom"] = "bottom",
     _completed: bool = False,
+    secret_code: str | None = None,
 ) -> dict:
     """Create a SINGLE node in WorkFlowy.
     
@@ -127,10 +190,16 @@ async def create_node(
         layout_mode: Layout mode for the node (bullets, todo, h1, h2, h3) (optional)
         position: Where to place the new node - "bottom" (default) or "top"
         _completed: Whether the node should be marked as completed (not used)
+        secret_code: Authorization code from Dan (required for WARNING functions)
 
     Returns:
         Dictionary with node data and warning message
     """
+    # 🔐 SECRET CODE VALIDATION
+    is_valid, error = validate_secret_code(secret_code, "workflowy_create_single_node__WARNING__prefer_bulk_import")
+    if not is_valid:
+        raise ValueError(error)
+    
     client = get_client()
 
     request = NodeCreateRequest(  # type: ignore[call-arg]
@@ -228,15 +297,24 @@ GLIMPSE is better:
 
 # Tool: Get Node (With Warning)
 @mcp.tool(name="workflowy_get_node__WARNING__prefer_glimpse", description="⚠️ WARNING: Prefer workflowy_glimpse (GLIMPSE) for reading trees. Retrieve a specific WorkFlowy node by ID")
-async def get_node(node_id: str) -> WorkFlowyNode:
+async def get_node(
+    node_id: str,
+    secret_code: str | None = None,
+) -> WorkFlowyNode:
     """Retrieve a specific WorkFlowy node.
 
     Args:
         node_id: The ID of the node to retrieve
+        secret_code: Authorization code from Dan (required for WARNING functions)
 
     Returns:
         The requested WorkFlowy node
     """
+    # 🔐 SECRET CODE VALIDATION
+    is_valid, error = validate_secret_code(secret_code, "workflowy_get_node__WARNING__prefer_glimpse")
+    if not is_valid:
+        raise ValueError(error)
+    
     client = get_client()
 
     if _rate_limiter:
@@ -280,16 +358,23 @@ GLIMPSE is better:
 @mcp.tool(name="workflowy_list_nodes__WARNING__prefer_glimpse", description="⚠️ WARNING: Prefer workflowy_glimpse (GLIMPSE) for reading trees. List WorkFlowy nodes (omit parent_id for root)")
 async def list_nodes(
     parent_id: str | None = None,
+    secret_code: str | None = None,
 ) -> dict:
     """List WorkFlowy nodes.
 
     Args:
         parent_id: ID of parent node to list children for
                    (omit or pass None to list root nodes - parameter won't be sent to API)
+        secret_code: Authorization code from Dan (required for WARNING functions)
 
     Returns:
         Dictionary with 'nodes' list and 'total' count
     """
+    # 🔐 SECRET CODE VALIDATION
+    is_valid, error = validate_secret_code(secret_code, "workflowy_list_nodes__WARNING__prefer_glimpse")
+    if not is_valid:
+        raise ValueError(error)
+    
     client = get_client()
 
     request = NodeListRequest(  # type: ignore[call-arg]
