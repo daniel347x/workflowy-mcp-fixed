@@ -742,6 +742,46 @@ async def glimpse(
         raise
 
 
+# Tool: GLIMPSE FULL (Force API Fetch)
+@mcp.tool(
+    name="workflowy_glimpse_full",
+    description="Load entire node tree via API (bypass WebSocket). Use when Key Files doesn't have parent UUID for ETCH, or when Dan wants complete tree regardless of expansion state."
+)
+async def glimpse_full(
+    node_id: str,
+) -> dict:
+    """Load entire node tree via full API fetch (bypass WebSocket).
+    
+    Thin wrapper around workflowy_glimpse that forces API fetch.
+    
+    Use when:
+    - Agent needs to hunt for parent UUIDs not in Key Files
+    - Dan wants complete node tree regardless of expansion
+    - WebSocket selective extraction not needed
+    
+    Args:
+        node_id: Root node UUID to read from
+        
+    Returns:
+        Same format as workflowy_glimpse with _source="api"
+    """
+    client = get_client()
+    
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+    
+    try:
+        # Call glimpse_full on client (bypasses WebSocket by design)
+        result = await client.workflowy_glimpse_full(node_id)
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
 # Tool: ETCH (Write Node Trees)
 @mcp.tool(
     name="workflowy_etch",
