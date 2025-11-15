@@ -1,5 +1,7 @@
 """WorkFlowy MCP server implementation using FastMCP."""
 
+import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -21,6 +23,10 @@ logger = logging.getLogger(__name__)
 _client: WorkFlowyClient | None = None
 _rate_limiter: AdaptiveRateLimiter | None = None
 
+# Global WebSocket connection for DOM cache
+_ws_connection = None
+_ws_server_task = None
+
 
 def get_client() -> WorkFlowyClient:
     """Get the global WorkFlowy client instance."""
@@ -30,10 +36,72 @@ def get_client() -> WorkFlowyClient:
     return _client
 
 
+def get_ws_connection():
+    """Get the current WebSocket connection (if any)."""
+    global _ws_connection
+    return _ws_connection
+
+
+async def websocket_handler(websocket, path):
+    """Handle WebSocket connections from Chrome extension.
+    
+    Extension sends requests:
+    {"action": "extract_dom", "node_id": "uuid"}
+    
+    Extension receives responses with DOM tree data.
+    """
+    global _ws_connection
+    
+    logger.info(f"WebSocket client connected from {websocket.remote_address}")
+    _ws_connection = websocket
+    
+    try:
+        async for message in websocket:
+            try:
+                request = json.loads(message)
+                logger.info(f"WebSocket request received: {request.get('action')}")
+                
+                # Extension can send DOM data or respond to our requests
+                # For now, we just maintain the connection
+                # Actual request/response happens in workflowy_glimpse()
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid JSON from WebSocket: {e}")
+            except Exception as e:
+                logger.error(f"WebSocket message error: {e}")
+                
+    except Exception as e:
+        logger.info(f"WebSocket connection closed: {e}")
+    finally:
+        if _ws_connection == websocket:
+            _ws_connection = None
+        logger.info("WebSocket client disconnected")
+
+
+async def start_websocket_server():
+    """Start WebSocket server for Chrome extension communication."""
+    try:
+        import websockets
+    except ImportError:
+        logger.warning("websockets library not installed. WebSocket cache unavailable.")
+        logger.warning("Install with: pip install websockets")
+        return
+    
+    logger.info("Starting WebSocket server on ws://localhost:8765")
+    
+    try:
+        async with websockets.serve(websocket_handler, "localhost", 8765):
+            logger.info("✅ WebSocket server listening on port 8765")
+            await asyncio.Future()  # Run forever
+    except Exception as e:
+        logger.error(f"WebSocket server failed to start: {e}")
+        logger.error("GLIMPSE will fall back to API fetching")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastMCP):  # type: ignore[no-untyped-def]
     """Manage server lifecycle."""
-    global _client, _rate_limiter
+    global _client, _rate_limiter, _ws_server_task
 
     # Setup
     logger.info("Starting WorkFlowy MCP server")
@@ -53,11 +121,25 @@ async def lifespan(_app: FastMCP):  # type: ignore[no-untyped-def]
     _client = WorkFlowyClient(api_config)
 
     logger.info(f"WorkFlowy client initialized with base URL: {api_config.base_url}")
+    
+    # Start WebSocket server in background task
+    _ws_server_task = asyncio.create_task(start_websocket_server())
+    logger.info("WebSocket server task created")
 
     yield
 
     # Cleanup
     logger.info("Shutting down WorkFlowy MCP server")
+    
+    # Cancel WebSocket server
+    if _ws_server_task:
+        _ws_server_task.cancel()
+        try:
+            await _ws_server_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("WebSocket server stopped")
+    
     if _client:
         await _client.close()
         _client = None
@@ -614,19 +696,24 @@ async def glimpse(
     
     GLIMPSE command - efficient context loading for agent analysis.
     
+    Tries WebSocket DOM extraction first (if Chrome extension connected).
+    Falls back to API fetch if WebSocket unavailable.
+    
     Args:
         node_id: Root node UUID to read from
         
     Returns:
-        Dictionary with root metadata, children tree, node count, and depth
+        Dictionary with root metadata, children tree, node count, depth, and source indicator
     """
     client = get_client()
+    ws_conn = get_ws_connection()  # Check if extension is connected
     
     if _rate_limiter:
         await _rate_limiter.acquire()
     
     try:
-        result = await client.workflowy_glimpse(node_id)
+        # Pass WebSocket connection to client method
+        result = await client.workflowy_glimpse(node_id, _ws_connection=ws_conn)
         if _rate_limiter:
             _rate_limiter.on_success()
         return result

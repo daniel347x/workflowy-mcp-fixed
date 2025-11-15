@@ -267,8 +267,19 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         except httpx.NetworkError as e:
             raise NetworkError(f"Network error: {str(e)}") from e
 
-    async def update_node(self, node_id: str, request: NodeUpdateRequest) -> WorkFlowyNode:
-        """Update an existing node."""
+    async def update_node(self, node_id: str, request: NodeUpdateRequest, max_retries: int = 5) -> WorkFlowyNode:
+        """Update an existing node with exponential backoff retry.
+        
+        Args:
+            node_id: The ID of the node to update
+            request: Node update request
+            max_retries: Maximum retry attempts (default 5)
+        """
+        import asyncio
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        
         # Validate and escape note field if being updated
         if request.note is not None:
             # Note: update_node doesn't have _internal_call flag yet, always validates
@@ -286,82 +297,236 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
             # Log warning if escaping occurred
             if message and "AUTO-ESCAPED" in message:
-                import logging
-                logging.getLogger(__name__).info(message)
+                logger.info(message)
         
-        try:
-            response = await self.client.post(
-                f"/nodes/{node_id}", json=request.model_dump(exclude_none=True)
-            )
-            data = await self._handle_response(response)
-            # API returns {"status": "ok"} - fetch updated node
-            if isinstance(data, dict) and data.get('status') == 'ok':
-                get_response = await self.client.get(f"/nodes/{node_id}")
-                node_data = await self._handle_response(get_response)
-                return WorkFlowyNode(**node_data["node"])
-            else:
-                # Fallback for unexpected format
-                return WorkFlowyNode(**data)
-        except httpx.TimeoutException as err:
-            raise TimeoutError("update_node") from err
-        except httpx.NetworkError as e:
-            raise NetworkError(f"Network error: {str(e)}") from e
+        retry_count = 0
+        base_delay = 1.0
+        
+        while retry_count < max_retries:
+            # Force 1s delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(1.0)
+            
+            try:
+                response = await self.client.post(
+                    f"/nodes/{node_id}", json=request.model_dump(exclude_none=True)
+                )
+                data = await self._handle_response(response)
+                # API returns {"status": "ok"} - fetch updated node
+                if isinstance(data, dict) and data.get('status') == 'ok':
+                    get_response = await self.client.get(f"/nodes/{node_id}")
+                    node_data = await self._handle_response(get_response)
+                    return WorkFlowyNode(**node_data["node"])
+                else:
+                    # Fallback for unexpected format
+                    return WorkFlowyNode(**data)
+                    
+            except RateLimitError as e:
+                retry_count += 1
+                retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
+                logger.warning(
+                    f"Rate limited on update_node. Retry after {retry_after}s. "
+                    f"Attempt {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(retry_after)
+                else:
+                    raise
+                    
+            except NetworkError as e:
+                retry_count += 1
+                logger.warning(
+                    f"Network error on update_node: {e}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise
+                    
+            except httpx.TimeoutException as err:
+                raise TimeoutError("update_node") from err
+        
+        raise NetworkError("update_node failed after maximum retries")
 
-    async def get_node(self, node_id: str) -> WorkFlowyNode:
-        """Retrieve a specific node by ID."""
-        try:
-            response = await self.client.get(f"/nodes/{node_id}")
-            data = await self._handle_response(response)
-            # API returns {"node": {...}} structure
-            if isinstance(data, dict) and "node" in data:
-                return WorkFlowyNode(**data["node"])
-            else:
-                # Fallback for unexpected format
-                return WorkFlowyNode(**data)
-        except httpx.TimeoutException as err:
-            raise TimeoutError("get_node") from err
-        except httpx.NetworkError as e:
-            raise NetworkError(f"Network error: {str(e)}") from e
+    async def get_node(self, node_id: str, max_retries: int = 5) -> WorkFlowyNode:
+        """Retrieve a specific node by ID with exponential backoff retry.
+        
+        Args:
+            node_id: The ID of the node to retrieve
+            max_retries: Maximum retry attempts (default 5)
+        """
+        import asyncio
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        retry_count = 0
+        base_delay = 1.0
+        
+        while retry_count < max_retries:
+            # Force 1s delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(1.0)
+            
+            try:
+                response = await self.client.get(f"/nodes/{node_id}")
+                data = await self._handle_response(response)
+                # API returns {"node": {...}} structure
+                if isinstance(data, dict) and "node" in data:
+                    return WorkFlowyNode(**data["node"])
+                else:
+                    # Fallback for unexpected format
+                    return WorkFlowyNode(**data)
+                    
+            except RateLimitError as e:
+                retry_count += 1
+                retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
+                logger.warning(
+                    f"Rate limited on get_node. Retry after {retry_after}s. "
+                    f"Attempt {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(retry_after)
+                else:
+                    raise
+                    
+            except NetworkError as e:
+                retry_count += 1
+                logger.warning(
+                    f"Network error on get_node: {e}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise
+                    
+            except httpx.TimeoutException as err:
+                raise TimeoutError("get_node") from err
+        
+        raise NetworkError("get_node failed after maximum retries")
 
-    async def list_nodes(self, request: NodeListRequest) -> tuple[list[WorkFlowyNode], int]:
-        """List nodes with optional filtering."""
-        try:
-            # exclude_none=True ensures parent_id is omitted entirely for root nodes
-            # (API requires absence of parameter, not null value)
-            # Build params manually to ensure snake_case (API expects parent_id not parentId)
-            params = {}
-            if request.parentId is not None:
-                params['parent_id'] = request.parentId
-            response = await self.client.get("/nodes", params=params)
-            response_data: list[Any] | dict[str, Any] = await self._handle_response(response)
+    async def list_nodes(self, request: NodeListRequest, max_retries: int = 5) -> tuple[list[WorkFlowyNode], int]:
+        """List nodes with optional filtering and exponential backoff retry.
+        
+        Args:
+            request: Node list request
+            max_retries: Maximum retry attempts (default 5)
+        """
+        import asyncio
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        retry_count = 0
+        base_delay = 1.0
+        
+        while retry_count < max_retries:
+            # Force 1s delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(1.0)
+            
+            try:
+                # exclude_none=True ensures parent_id is omitted entirely for root nodes
+                # (API requires absence of parameter, not null value)
+                # Build params manually to ensure snake_case (API expects parent_id not parentId)
+                params = {}
+                if request.parentId is not None:
+                    params['parent_id'] = request.parentId
+                response = await self.client.get("/nodes", params=params)
+                response_data: list[Any] | dict[str, Any] = await self._handle_response(response)
 
-            # Assuming API returns an array of nodes directly
-            # (Need to verify actual response structure)
-            nodes: list[WorkFlowyNode] = []
-            if isinstance(response_data, dict):
-                if "nodes" in response_data:
-                    nodes = [WorkFlowyNode(**node_data) for node_data in response_data["nodes"]]
-            elif isinstance(response_data, list):
-                nodes = [WorkFlowyNode(**node_data) for node_data in response_data]
+                # Assuming API returns an array of nodes directly
+                # (Need to verify actual response structure)
+                nodes: list[WorkFlowyNode] = []
+                if isinstance(response_data, dict):
+                    if "nodes" in response_data:
+                        nodes = [WorkFlowyNode(**node_data) for node_data in response_data["nodes"]]
+                elif isinstance(response_data, list):
+                    nodes = [WorkFlowyNode(**node_data) for node_data in response_data]
 
-            total = len(nodes)  # API doesn't provide a total count
-            return nodes, total
-        except httpx.TimeoutException as err:
-            raise TimeoutError("list_nodes") from err
-        except httpx.NetworkError as e:
-            raise NetworkError(f"Network error: {str(e)}") from e
+                total = len(nodes)  # API doesn't provide a total count
+                return nodes, total
+                
+            except RateLimitError as e:
+                retry_count += 1
+                retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
+                logger.warning(
+                    f"Rate limited on list_nodes. Retry after {retry_after}s. "
+                    f"Attempt {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(retry_after)
+                else:
+                    raise
+                    
+            except NetworkError as e:
+                retry_count += 1
+                logger.warning(
+                    f"Network error on list_nodes: {e}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise
+                    
+            except httpx.TimeoutException as err:
+                raise TimeoutError("list_nodes") from err
+        
+        raise NetworkError("list_nodes failed after maximum retries")
 
-    async def delete_node(self, node_id: str) -> bool:
-        """Delete a node and all its children."""
-        try:
-            response = await self.client.delete(f"/nodes/{node_id}")
-            # Delete endpoint returns just a message, not nested data
-            await self._handle_response(response)
-            return True
-        except httpx.TimeoutException as err:
-            raise TimeoutError("delete_node") from err
-        except httpx.NetworkError as e:
-            raise NetworkError(f"Network error: {str(e)}") from e
+    async def delete_node(self, node_id: str, max_retries: int = 5) -> bool:
+        """Delete a node and all its children with exponential backoff retry.
+        
+        Args:
+            node_id: The ID of the node to delete
+            max_retries: Maximum retry attempts (default 5)
+        """
+        import asyncio
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        retry_count = 0
+        base_delay = 1.0
+        
+        while retry_count < max_retries:
+            # Force 1s delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(1.0)
+            
+            try:
+                response = await self.client.delete(f"/nodes/{node_id}")
+                # Delete endpoint returns just a message, not nested data
+                await self._handle_response(response)
+                return True
+                
+            except RateLimitError as e:
+                retry_count += 1
+                retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
+                logger.warning(
+                    f"Rate limited on delete_node. Retry after {retry_after}s. "
+                    f"Attempt {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(retry_after)
+                else:
+                    raise
+                    
+            except NetworkError as e:
+                retry_count += 1
+                logger.warning(
+                    f"Network error on delete_node: {e}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise
+                    
+            except httpx.TimeoutException as err:
+                raise TimeoutError("delete_node") from err
+        
+        raise NetworkError("delete_node failed after maximum retries")
 
     async def complete_node(self, node_id: str) -> WorkFlowyNode:
         """Mark a node as completed."""
@@ -404,87 +569,170 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         node_id: str,
         parent_id: str | None = None,
         position: str = "top",
+        max_retries: int = 5,
     ) -> bool:
-        """Move a node to a new parent.
+        """Move a node to a new parent with exponential backoff retry.
         
         Args:
             node_id: The ID of the node to move
             parent_id: The new parent node ID (UUID, target key like 'inbox', or None for root)
             position: Where to place the node ('top' or 'bottom', default 'top')
+            max_retries: Maximum retry attempts (default 5)
             
         Returns:
             True if move was successful
         """
-        try:
-            payload = {"position": position}
-            if parent_id is not None:
-                payload["parent_id"] = parent_id
+        import asyncio
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        retry_count = 0
+        base_delay = 1.0
+        
+        while retry_count < max_retries:
+            # Force 1s delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(1.0)
             
-            response = await self.client.post(f"/nodes/{node_id}/move", json=payload)
-            data = await self._handle_response(response)
-            # API returns {"status": "ok"}
-            return data.get("status") == "ok"
-        except httpx.TimeoutException as err:
-            raise TimeoutError("move_node") from err
-        except httpx.NetworkError as e:
-            raise NetworkError(f"Network error: {str(e)}") from e
+            try:
+                payload = {"position": position}
+                if parent_id is not None:
+                    payload["parent_id"] = parent_id
+                
+                response = await self.client.post(f"/nodes/{node_id}/move", json=payload)
+                data = await self._handle_response(response)
+                # API returns {"status": "ok"}
+                return data.get("status") == "ok"
+                
+            except RateLimitError as e:
+                retry_count += 1
+                retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
+                logger.warning(
+                    f"Rate limited on move_node. Retry after {retry_after}s. "
+                    f"Attempt {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(retry_after)
+                else:
+                    raise
+                    
+            except NetworkError as e:
+                retry_count += 1
+                logger.warning(
+                    f"Network error on move_node: {e}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise
+                    
+            except httpx.TimeoutException as err:
+                raise TimeoutError("move_node") from err
+        
+        raise NetworkError("move_node failed after maximum retries")
 
     async def export_nodes(
         self,
         node_id: str | None = None,
+        max_retries: int = 5,
     ) -> dict[str, Any]:
-        """Export all nodes or filter to specific node's subtree.
+        """Export all nodes or filter to specific node's subtree with exponential backoff retry.
         
         Args:
             node_id: Optional node ID to export only that node and its descendants.
                      If None, exports all nodes in the account.
+            max_retries: Maximum retry attempts (default 5)
             
         Returns:
             Dictionary with 'nodes' list containing all exported nodes.
             If node_id is provided, filters to only that node and descendants.
         """
-        try:
-            # API exports all nodes as flat list (no parameters supported)
-            response = await self.client.get("/nodes-export")
-            data = await self._handle_response(response)
+        import asyncio
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        retry_count = 0
+        base_delay = 1.0
+        
+        while retry_count < max_retries:
+            # Force 1s delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(1.0)
             
-            # If no filtering requested, return everything
-            if node_id is None:
-                return data
-            
-            # Filter to specific node and its descendants
-            all_nodes = data.get("nodes", [])
-            
-            # Build set of node IDs to include (target node + all descendants)
-            included_ids = {node_id}
-            nodes_by_id = {node["id"]: node for node in all_nodes}
-            
-            # Find all descendants recursively
-            def add_descendants(parent_id: str) -> None:
-                for node in all_nodes:
-                    if node.get("parent_id") == parent_id and node["id"] not in included_ids:
-                        included_ids.add(node["id"])
-                        add_descendants(node["id"])
-            
-            # Start with target node's children
-            if node_id in nodes_by_id:
-                add_descendants(node_id)
-            
-            # Filter nodes list
-            filtered_nodes = [node for node in all_nodes if node["id"] in included_ids]
-            
-            return {"nodes": filtered_nodes}
-            
-        except httpx.TimeoutException as err:
-            raise TimeoutError("export_nodes") from err
-        except httpx.NetworkError as e:
-            raise NetworkError(f"Network error: {str(e)}") from e
+            try:
+                # API exports all nodes as flat list (no parameters supported)
+                response = await self.client.get("/nodes-export")
+                data = await self._handle_response(response)
+                
+                all_nodes = data.get("nodes", [])
+                total_before_filter = len(all_nodes)
+                
+                # If no filtering requested, return everything
+                if node_id is None:
+                    data["_total_fetched_from_api"] = total_before_filter
+                    return data
+                
+                # Filter to specific node and its descendants
+                
+                # Build set of node IDs to include (target node + all descendants)
+                included_ids = {node_id}
+                nodes_by_id = {node["id"]: node for node in all_nodes}
+                
+                # Find all descendants recursively
+                def add_descendants(parent_id: str) -> None:
+                    for node in all_nodes:
+                        if node.get("parent_id") == parent_id and node["id"] not in included_ids:
+                            included_ids.add(node["id"])
+                            add_descendants(node["id"])
+                
+                # Start with target node's children
+                if node_id in nodes_by_id:
+                    add_descendants(node_id)
+                
+                # Filter nodes list
+                filtered_nodes = [node for node in all_nodes if node["id"] in included_ids]
+                
+                return {
+                    "nodes": filtered_nodes,
+                    "_total_fetched_from_api": total_before_filter,
+                    "_filtered_count": len(filtered_nodes)
+                }
+                
+            except RateLimitError as e:
+                retry_count += 1
+                retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
+                logger.warning(
+                    f"Rate limited on export_nodes. Retry after {retry_after}s. "
+                    f"Attempt {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(retry_after)
+                else:
+                    raise
+                    
+            except NetworkError as e:
+                retry_count += 1
+                logger.warning(
+                    f"Network error on export_nodes: {e}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise
+                    
+            except httpx.TimeoutException as err:
+                raise TimeoutError("export_nodes") from err
+        
+        raise NetworkError("export_nodes failed after maximum retries")
 
     async def bulk_export_to_file(
         self,
         node_id: str,
         output_file: str,
         include_metadata: bool = True,
+        use_efficient_traversal: bool = False,
     ) -> dict[str, Any]:
         """Export node tree to hierarchical JSON file AND Markdown file.
         
@@ -496,10 +744,46 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         Returns:
             {"success": True, "file_path": "...", "markdown_file": "...", "node_count": N, "depth": M}
         """
-        try:
-            # Fetch flat node list
+        # EFFICIENT TRAVERSAL: Use list_nodes BFS instead of fetching entire account
+        total_nodes_fetched = 0
+        api_calls_made = 0
+        if use_efficient_traversal:
+            from collections import deque
+            flat_nodes = []
+            queue = deque([node_id])
+            visited = set()
+            
+            while queue:
+                parent = queue.popleft()
+                if parent in visited:
+                    continue
+                visited.add(parent)
+                
+                # Fetch immediate children only
+                request = NodeListRequest(parentId=parent)
+                children, count = await self.list_nodes(request)
+                api_calls_made += 1  # Track each list_nodes API call
+                total_nodes_fetched += count  # Use the count from list_nodes
+                
+                for child in children:
+                    child_dict = child.model_dump()
+                    flat_nodes.append(child_dict)
+                    queue.append(child.id)
+            
+            # Add the root node itself
+            root_node_data = await self.get_node(node_id)
+            api_calls_made += 1  # Track get_node API call
+            flat_nodes.insert(0, root_node_data.model_dump())
+            total_nodes_fetched += 1
+        else:
+            # OLD METHOD: Fetch entire account (100K+ nodes for Dan!)
             raw_data = await self.export_nodes(node_id)
             flat_nodes = raw_data.get("nodes", [])
+            # Extract the ACTUAL count from API (before filtering)
+            total_nodes_fetched = raw_data.get("_total_fetched_from_api", len(flat_nodes))
+            api_calls_made = 1  # Single export_nodes call (but fetches ALL nodes!)
+        
+        try:
             
             if not flat_nodes:
                 return {
@@ -571,7 +855,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "file_path": output_file,
                 "markdown_file": markdown_file,
                 "node_count": len(flat_nodes),
-                "depth": max_depth
+                "depth": max_depth,
+                "total_nodes_fetched": total_nodes_fetched,
+                "api_calls_made": api_calls_made,
+                "efficient_traversal": use_efficient_traversal
             }
             
         except Exception as e:
@@ -859,13 +1146,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
         return '\n'.join(markdown_lines)
     
-    async def workflowy_glimpse(self, node_id: str) -> dict[str, Any]:
+    async def workflowy_glimpse(self, node_id: str, use_efficient_traversal: bool = False, _ws_connection=None) -> dict[str, Any]:
         """Load entire node tree into context (no file intermediary).
         
         GLIMPSE command - direct context loading for agent analysis.
         
+        Can use WebSocket connection to Chrome extension for DOM extraction (bypasses API).
+        Falls back to API fetch if WebSocket not available.
+        
         Args:
             node_id: Root node UUID to read from
+            _ws_connection: WebSocket connection from server.py (internal parameter)
             
         Returns:
             {
@@ -873,21 +1164,93 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "root": {"id": "...", "name": "...", "note": "..."},  # Root node metadata
                 "children": [...],  # Children only (for round-trip editing)
                 "node_count": N,
-                "depth": M
+                "depth": M,
+                "_source": "websocket" | "api"  # How data was obtained
             }
             
         Note: root metadata lets you read the node's prompt/content.
               children array is for round-trip editing (prevents root duplication).
         """
         import asyncio
+        import json as json_module
+        import logging
         
-        # Rate limit protection - 500ms delay before API call
-        await asyncio.sleep(0.5)
+        logger = logging.getLogger(__name__)
+        
+        # ===== TRY WEBSOCKET FIRST (if connected) =====
+        if _ws_connection:
+            try:
+                logger.info(f"🔌 Attempting WebSocket DOM extraction for node {node_id[:8]}...")
+                
+                # Send request to extension
+                request = {
+                    "action": "extract_dom",
+                    "node_id": node_id
+                }
+                await _ws_connection.send(json_module.dumps(request))
+                logger.info("  Request sent to extension, awaiting response...")
+                
+                # Wait for response (with 5s timeout)
+                response_text = await asyncio.wait_for(
+                    _ws_connection.recv(),
+                    timeout=5.0
+                )
+                
+                response = json_module.loads(response_text)
+                logger.info(f"  ✅ WebSocket response received: {response.get('node_count', 0)} nodes")
+                
+                # Validate response structure
+                if response.get('success') and 'children' in response:
+                    # Add source indicator
+                    response['_source'] = 'websocket'
+                    logger.info("✅ GLIMPSE via WebSocket successful")
+                    return response
+                else:
+                    logger.warning("  WebSocket response invalid, falling back to API")
+                    
+            except asyncio.TimeoutError:
+                logger.warning("  WebSocket timeout (5s), falling back to API")
+            except Exception as e:
+                logger.warning(f"  WebSocket error: {e}, falling back to API")
+        
+        # ===== FALLBACK TO API FETCH =====
+        
+        # EFFICIENT TRAVERSAL: Use list_nodes BFS instead of fetching entire account
+        total_nodes_fetched = 0
+        if use_efficient_traversal:
+            from collections import deque
+            flat_nodes = []
+            queue = deque([node_id])
+            visited = set()
+            
+            while queue:
+                parent = queue.popleft()
+                if parent in visited:
+                    continue
+                visited.add(parent)
+                
+                # Fetch immediate children only
+                request = NodeListRequest(parentId=parent)
+                children, count = await self.list_nodes(request)
+                total_nodes_fetched += count  # Use the count from list_nodes
+                
+                for child in children:
+                    child_dict = child.model_dump()
+                    flat_nodes.append(child_dict)
+                    queue.append(child.id)
+            
+            # Add the root node itself
+            root_node_data = await self.get_node(node_id)
+            flat_nodes.insert(0, root_node_data.model_dump())
+            total_nodes_fetched += 1  # Count the root node too
+        else:
+            # OLD METHOD: Fetch entire account (100K+ nodes for Dan!)
+            raw_data = await self.export_nodes(node_id)
+            all_nodes = raw_data.get("nodes", [])
+            total_nodes_fetched = len(all_nodes)
+            flat_nodes = all_nodes  # Then filters client-side
         
         try:
-            # Fetch flat node list
-            raw_data = await self.export_nodes(node_id)
-            flat_nodes = raw_data.get("nodes", [])
             
             if not flat_nodes:
                 return {
@@ -926,7 +1289,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "root": root_metadata,
                 "children": children,
                 "node_count": len(flat_nodes),
-                "depth": max_depth
+                "depth": max_depth,
+                "_source": "api"  # Indicate data came from API (not WebSocket)
             }
             
         except Exception as e:
@@ -1001,9 +1365,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         import json
         
         logger = logging.getLogger(__name__)
-        
-        # Rate limit protection - 500ms delay
-        await asyncio.sleep(0.5)
         
         # 🔧 AUTO-FIX: Detect if nodes is stringified JSON instead of list
         stringify_strategy_used = None
@@ -1229,11 +1590,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             base_delay = 1.0
             
             while retry_count < max_retries:
+                # Force 1s delay at START of each iteration (rate limit protection)
+                await asyncio.sleep(1.0)
+                
                 try:
-                    # Fixed safety delay (500ms between calls)
-                    await asyncio.sleep(0.5)
                     stats["api_calls"] += 1
-                    
                     node = await self.create_node(request, _internal_call=internal)
                     return node
                     
@@ -1403,9 +1764,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         logger = logging.getLogger(__name__)
 
-        # Rate limit protection - 100ms delay
-        await asyncio.sleep(0.1)
-        
         # Read JSON file
         try:
             with open(json_file, 'r', encoding='utf-8') as f:

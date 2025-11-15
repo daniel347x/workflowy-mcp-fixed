@@ -53,6 +53,13 @@ async def reconcile_tree(
 
     The function performs Create -> Move -> Reorder -> Update -> Delete.
     """
+    
+    # Open debug log file
+    debug_log = open(r'E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log', 'w', encoding='utf-8')
+    
+    def log(msg):
+        debug_log.write(msg + '\n')
+        debug_log.flush()
 
     # ------------- helpers -------------
     def index_source(nodes: List[Node], parent_id: Optional[str] = None, order_acc: Optional[List[Node]] = None) -> List[Node]:
@@ -66,7 +73,7 @@ async def reconcile_tree(
             index_source(n.get('children', []), n.get('id'), order_acc)
         return order_acc
 
-    def snapshot_target(root_parent: str):
+    async def snapshot_target(root_parent: str):
         # BFS traversal of existing subtree under root_parent to map nodes
         Map_T: Dict[str, Node] = {}
         Parent_T: Dict[str, Optional[str]] = {}
@@ -78,7 +85,7 @@ async def reconcile_tree(
             if p in visited_parents:
                 continue
             visited_parents.add(p)
-            children = list_nodes(p)  # must be immediate children in current visual order
+            children = await list_nodes(p)  # must be immediate children in current visual order
             for ch in children:
                 cid = ch['id']
                 Map_T[cid] = ch
@@ -95,7 +102,7 @@ async def reconcile_tree(
         for i, n in enumerate(source_nodes):
             n['_desired_parent'] = root_parent
             n['_desired_index'] = i
-        seq = index_source(source_nodes)  # fills _desired_parent/_desired_index recursively
+        seq = index_source(source_nodes, root_parent)  # fills _desired_parent/_desired_index recursively
         for n in seq:
             nid = n.get('id')
             Map_S[nid] = n  # nid can be None for new nodes
@@ -132,21 +139,37 @@ async def reconcile_tree(
         )
 
     # ------------- phase 0: build maps -------------
-    Map_T, Parent_T, Children_T = snapshot_target(parent_uuid)
+    log(f"\n[PHASE 0] Building maps for parent {parent_uuid}")
+    Map_T, Parent_T, Children_T = await snapshot_target(parent_uuid)
+    log(f"   Target snapshot: {len(Map_T)} nodes found in Workflowy")
+    log(f"   Target UUIDs: {list(Map_T.keys())}")
     Map_S, Parent_S, Order_S = desired_maps(source_json, parent_uuid)
+    log(f"   Source JSON: {len(Map_S)} nodes expected")
+    log(f"   Source UUIDs: {list(Map_S.keys())}")
+    log(f"   Source UUIDs that are NOT None: {[k for k in Map_S.keys() if k is not None]}")
+    log(f"   UUIDs in BOTH: {set(Map_T.keys()) & set(k for k in Map_S.keys() if k is not None)}")
+    log(f"   UUIDs ONLY in Target: {set(Map_T.keys()) - set(k for k in Map_S.keys() if k is not None)}")
+    log(f"   UUIDs ONLY in Source: {set(k for k in Map_S.keys() if k is not None) - set(Map_T.keys())}")
 
     # ------------- phase 1: CREATE (top-down) -------------
-    def ensure_created(nodes: List[Node], desired_parent: Optional[str]):
+    create_count = 0
+    async def ensure_created(nodes: List[Node], desired_parent: Optional[str]):
+        nonlocal create_count
         for n in nodes:
             nid = n.get('id')
+            node_name = n.get('name', 'unnamed')
+            log(f"   Checking if exists: {nid} (name: {node_name})")
             if not nid or nid not in Map_T:
+                create_count += 1
+                log(f"      >>> CREATING new node '{node_name}' under parent {desired_parent}")
                 payload = {
                     'name': n.get('name'),
                     'note': n.get('note'),
                     'data': n.get('data'),
                     'completed': bool(n.get('completed', False)),
                 }
-                new_id = create_node(desired_parent, payload)
+                new_id = await create_node(desired_parent, payload)
+                log(f"      >>> CREATED with new UUID: {new_id}")
                 n['id'] = new_id
                 nid = new_id
                 # reflect in target maps immediately
@@ -154,47 +177,69 @@ async def reconcile_tree(
                 Parent_T[nid] = desired_parent
                 if desired_parent is not None:
                     Children_T[desired_parent].append(nid)
+            else:
+                log(f"      (already exists, skipping create)")
             # recurse
-            ensure_created(n.get('children', []), nid)
+            await ensure_created(n.get('children', []), nid)
 
-    ensure_created(source_json, parent_uuid)
+    log(f"\n[PHASE 1] CREATE (top-down)")
+    await ensure_created(source_json, parent_uuid)
+    log(f"   CREATE phase complete - created {create_count} new nodes")
 
     # Recompute desired maps now that new nodes have IDs
     Map_S, Parent_S, Order_S = desired_maps(source_json, parent_uuid)
 
     # ------------- phase 2: MOVE (root-to-leaf following source) -------------
+    log(f"\n[PHASE 2] MOVE (root-to-leaf)")
     def preorder(nodes: List[Node]):
         for n in nodes:
             yield n
             for c in preorder(n.get('children', [])):
                 yield c
 
+    move_count = 0
     for n in preorder(source_json):
         nid = n['id']
         desired_parent = n.get('_desired_parent')
         current_parent = Parent_T.get(nid)
+        log(f"   Checking node {nid} (name: {n.get('name')})")
+        log(f"      Current parent: {current_parent}")
+        log(f"      Desired parent: {desired_parent}")
         if desired_parent != current_parent:
+            move_count += 1
+            log(f"      >>> MOVING {nid} from {current_parent} to {desired_parent}")
             # reparent; position will be normalized in reorder phase
-            move_node(nid, desired_parent, position="bottom")
+            await move_node(nid, desired_parent, position="bottom")
             # update target maps
             if current_parent and nid in Children_T[current_parent]:
                 Children_T[current_parent].remove(nid)
             Parent_T[nid] = desired_parent
             if desired_parent is not None:
                 Children_T[desired_parent].append(nid)
+        else:
+            log(f"      (no move needed)")
+    log(f"   MOVE phase complete - moved {move_count} nodes")
 
     # ------------- phase 3: REORDER siblings per parent -------------
+    log(f"\n[PHASE 3] REORDER siblings")
     # With only top/bottom available, enforce exact order by moving each desired child to TOP in reverse order.
     # This yields the exact desired sequence at the top of the list; any extra siblings remain below and
     # will be removed in the delete phase.
+    reorder_count = 0
     for p, desired in Order_S.items():
         if p is None:
             continue
         desired_ids = [x for x in desired if x is not None]
+        log(f"   Parent {p}: Reordering {len(desired_ids)} children")
+        log(f"      Desired order (reversed for TOP positioning): {list(reversed(desired_ids))}")
         for cid in reversed(desired_ids):
-            move_node(cid, p, position="top")
+            reorder_count += 1
+            log(f"      >>> REORDER: Moving {cid} to TOP of parent {p}")
+            await move_node(cid, p, position="top")
+    log(f"   REORDER phase complete - processed {len(Order_S)} parents, {reorder_count} reorder moves")
 
     # ------------- phase 4: UPDATE content -------------
+    log(f"\n[PHASE 4] UPDATE content")
     for nid, tgt in list(Map_T.items()):
         src = Map_S.get(nid)
         if src:
@@ -205,19 +250,32 @@ async def reconcile_tree(
                     'data': src.get('data'),
                     'completed': bool(src.get('completed', False)),
                 }
-                update_node(nid, payload)
+                await update_node(nid, payload)
+    log(f"   UPDATE phase complete")
 
     # ------------- phase 5: DELETE (delete-roots only) -------------
+    log(f"\n[PHASE 5] DELETE (delete-roots only)")
     ids_in_source = {n['id'] for n in preorder(source_json)}
+    log(f"   Source IDs (from preorder): {ids_in_source}")
 
     # Snapshot Map_T again under the parent to catch any nodes not visited in source
-    Map_T2, Parent_T2, _ = snapshot_target(parent_uuid)
+    log(f"   Re-snapshotting target under parent {parent_uuid}...")
+    Map_T2, Parent_T2, _ = await snapshot_target(parent_uuid)
     ids_in_target = set(Map_T2.keys())
+    log(f"   Target IDs (after reconciliation): {ids_in_target}")
 
     to_delete = ids_in_target - ids_in_source
+    log(f"   To delete (target - source): {to_delete}")
     delete_roots = compute_delete_roots(to_delete, Parent_T2)
+    log(f"   Delete roots: {delete_roots}")
+    log(f"   Target has {len(ids_in_target)} nodes, Source expects {len(ids_in_source)} nodes")
+    log(f"   To delete: {len(to_delete)} nodes, Delete roots: {len(delete_roots)} nodes")
     for d in delete_roots:
-        delete_node(d)
+        log(f"   >>> DELETING root: {d} (name: {Map_T2.get(d, {}).get('name', 'unknown')})")
+        await delete_node(d)
+    log(f"   DELETE phase complete")
+    
+    debug_log.close()
 
 
 __all__ = [
