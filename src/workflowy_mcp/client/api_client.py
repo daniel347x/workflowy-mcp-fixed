@@ -77,7 +77,7 @@ class WorkFlowyClient:
         # CHECK 2: Literal \n or \r\n or \t patterns (common agent mistakes) - BLOCK
         # Skip this check if called from bulk operations (for testing)
         if not skip_newline_check and ("\\n" in escaped_note or "\\r\\n" in escaped_note or "\\t" in escaped_note):
-error_msg = """✅ ALMOST SUCCEEDED - One simple formatting change needed, then retry this same ETCH call!
+            error_msg = """✅ ALMOST SUCCEEDED - One simple formatting change needed, then retry this same ETCH call!
 
 ❌ NEWLINE FORMAT ERROR - Literal escape sequences detected in note field
 
