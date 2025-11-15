@@ -853,14 +853,22 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # Calculate max depth
             max_depth = self._calculate_max_depth(hierarchical_tree)
             
+            # Wrap with metadata for safe round-trip editing
+            export_package = {
+                "export_root_id": node_id,
+                "export_root_name": root_node_info.get('name') if root_node_info else 'Unknown',
+                "export_timestamp": hierarchical_tree[0].get('modifiedAt') if hierarchical_tree else None,
+                "nodes": hierarchical_tree
+            }
+            
             # Write JSON file (working copy)
             with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(hierarchical_tree, f, indent=2, ensure_ascii=False)
+                json.dump(export_package, f, indent=2, ensure_ascii=False)
             
             # Create JSON backup (.original.json)
             json_backup = output_file.replace('.json', '.original.json')
             with open(json_backup, 'w', encoding='utf-8') as f:
-                json.dump(hierarchical_tree, f, indent=2, ensure_ascii=False)
+                json.dump(export_package, f, indent=2, ensure_ascii=False)
             
             # Generate and write Markdown file (working copy)
             markdown_file = output_file.replace('.json', '.md')
@@ -1824,7 +1832,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
     async def bulk_import_from_file(
         self,
         json_file: str,
-        parent_id: str,
+        parent_id: str = None,
+        dry_run: bool = False,
+        import_policy: str = 'strict',
     ) -> dict[str, Any]:
         """Create multiple Workflowy nodes from JSON file.
         
@@ -1833,7 +1843,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         Args:
             json_file: Absolute path to JSON file with node structure
-            parent_id: Parent UUID where nodes should be created
+            parent_id: Parent UUID where nodes should be created (optional - reads from JSON if not provided)
+            dry_run: If True, returns operation plan without executing (default False)
+            import_policy: 'strict' (abort on mismatch) | 'rebase' (use file's root) | 'clone' (strip IDs)
             
         Returns:
             {
@@ -1857,7 +1869,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # Read JSON file
         try:
             with open(json_file, 'r', encoding='utf-8') as f:
-                nodes_to_create = json.load(f)
+                payload = json.load(f)
         except Exception as e:
             return {
                 "success": False,
@@ -1869,7 +1881,61 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "errors": [f"Failed to read JSON file: {str(e)}"]
             }
         
-        if not isinstance(nodes_to_create, list):
+        # Handle both old format (array) and new format (dict with metadata)
+        if isinstance(payload, dict) and 'nodes' in payload:
+            # New format with metadata
+            export_root_id = payload.get('export_root_id')
+            nodes_to_create = payload.get('nodes', [])
+            logger.info(f"Detected export package with export_root_id={export_root_id}")
+            
+            # Use export_root_id as default if parent_id not provided
+            target_backup_file = None
+            if parent_id is None:
+                if export_root_id:
+                    parent_id = export_root_id
+                    logger.info(f"Using export_root_id as parent_id: {parent_id}")
+                else:
+                    return {
+                        "success": False,
+                        "nodes_created": 0,
+                        "root_node_ids": [],
+                        "api_calls": 0,
+                        "retries": 0,
+                        "rate_limit_hits": 0,
+                        "errors": ["No parent_id provided and no export_root_id found in JSON file"]
+                    }
+            else:
+                # parent_id was explicitly provided - check if it's different from export_root_id
+                if export_root_id and parent_id != export_root_id:
+                    # AUTO-BACKUP: They're overriding the parent - backup target first!
+                    from datetime import datetime
+                    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    target_backup_file = json_file.replace('.json', f'.target_backup_{timestamp}.json')
+                    logger.warning(f"Parent override detected! export_root_id={export_root_id}, provided parent_id={parent_id}")
+                    logger.info(f"Auto-backing up target to: {target_backup_file}")
+                    try:
+                        backup_result = await self.bulk_export_to_file(parent_id, target_backup_file)
+                        logger.info(f"Target backup complete: {backup_result.get('node_count', 0)} nodes")
+                    except Exception as e:
+                        logger.error(f"Target backup failed: {e}")
+                        # Continue anyway - backup failure shouldn't block import
+        elif isinstance(payload, list):
+            # Old format (backward compatibility)
+            nodes_to_create = payload
+            logger.info("Detected legacy JSON format (array without metadata)")
+            
+            if parent_id is None:
+                return {
+                    "success": False,
+                    "nodes_created": 0,
+                    "root_node_ids": [],
+                    "api_calls": 0,
+                    "retries": 0,
+                    "rate_limit_hits": 0,
+                    "errors": ["Legacy format requires explicit parent_id parameter"]
+                }
+        else:
+            # Invalid format
             return {
                 "success": False,
                 "nodes_created": 0,
@@ -2009,7 +2075,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # ============ EXECUTE RECONCILIATION ============
         
         try:
-            await reconcile_tree(
+            result_plan = await reconcile_tree(
                 source_json=nodes_to_create,
                 parent_uuid=parent_id,
                 list_nodes=list_nodes_wrapper,
@@ -2017,13 +2083,32 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 update_node=update_node_wrapper,
                 delete_node=delete_node_wrapper,
                 move_node=move_node_wrapper,
-                export_nodes=export_nodes_wrapper
+                export_nodes=export_nodes_wrapper,
+                import_policy=import_policy,
+                dry_run=dry_run
             )
+            
+            # If dry_run, return the plan
+            if dry_run and result_plan:
+                return {
+                    "success": True,
+                    "dry_run": True,
+                    "plan": result_plan,
+                    "nodes_created": 0,
+                    "nodes_updated": 0,
+                    "nodes_deleted": 0,
+                    "nodes_moved": 0,
+                    "root_node_ids": [],
+                    "api_calls": 0,
+                    "retries": 0,
+                    "rate_limit_hits": 0,
+                    "errors": []
+                }
             
             # Reconciliation complete - gather root IDs
             root_ids = [n.get('id') for n in nodes_to_create if n.get('id')]
             
-            return {
+            result = {
                 "success": len(stats["errors"]) == 0,
                 "nodes_created": stats["nodes_created"],
                 "nodes_updated": stats["nodes_updated"],
@@ -2035,6 +2120,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "rate_limit_hits": stats["rate_limit_hits"],
                 "errors": stats["errors"]
             }
+            
+            # Add backup file info if auto-backup was created
+            if target_backup_file:
+                result["target_backup"] = target_backup_file
+            
+            return result
             
         except Exception as e:
             error_msg = f"Bulk import failed: {str(e)}"
