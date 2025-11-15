@@ -1287,8 +1287,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
     async def workflowy_glimpse_full(self, node_id: str, use_efficient_traversal: bool = False) -> dict[str, Any]:
         """Load entire node tree via API (bypass WebSocket).
         
-        Thin wrapper around workflowy_glimpse that forces full API fetch
-        regardless of WebSocket availability.
+        Mode 2 (Agent hunts) - Full API fetch regardless of WebSocket availability.
         
         Use when:
         - Agent needs to hunt for parent UUIDs (Key Files doesn't have it)
@@ -1302,13 +1301,90 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         Returns:
             Same format as workflowy_glimpse with _source="api"
         """
-        # Call glimpse with WebSocket params explicitly set to None (forces API fallback)
-        return await self.workflowy_glimpse(
-            node_id=node_id,
-            use_efficient_traversal=use_efficient_traversal,
-            _ws_connection=None,  # Force API fetch
-            _ws_queue=None        # Bypass WebSocket
-        )
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # EFFICIENT TRAVERSAL: Use list_nodes BFS instead of fetching entire account
+        total_nodes_fetched = 0
+        if use_efficient_traversal:
+            from collections import deque
+            flat_nodes = []
+            queue = deque([node_id])
+            visited = set()
+            
+            while queue:
+                parent = queue.popleft()
+                if parent in visited:
+                    continue
+                visited.add(parent)
+                
+                # Fetch immediate children only
+                request = NodeListRequest(parentId=parent)
+                children, count = await self.list_nodes(request)
+                total_nodes_fetched += count  # Use the count from list_nodes
+                
+                for child in children:
+                    child_dict = child.model_dump()
+                    flat_nodes.append(child_dict)
+                    queue.append(child.id)
+            
+            # Add the root node itself
+            root_node_data = await self.get_node(node_id)
+            flat_nodes.insert(0, root_node_data.model_dump())
+            total_nodes_fetched += 1  # Count the root node too
+        else:
+            # OLD METHOD: Fetch entire account (100K+ nodes for Dan!)
+            raw_data = await self.export_nodes(node_id)
+            all_nodes = raw_data.get("nodes", [])
+            total_nodes_fetched = len(all_nodes)
+            flat_nodes = all_nodes  # Then filters client-side
+        
+        try:
+            
+            if not flat_nodes:
+                return {
+                    "success": True,
+                    "root": None,
+                    "children": [],
+                    "node_count": 0,
+                    "depth": 0,
+                    "_source": "api"
+                }
+            
+            # Build hierarchical tree
+            hierarchical_tree = self._build_hierarchy(flat_nodes, include_metadata=True)
+            
+            # Extract root node metadata and children separately
+            root_metadata = None
+            children = []
+            
+            if hierarchical_tree and len(hierarchical_tree) == 1:
+                root_node = hierarchical_tree[0]
+                root_metadata = {
+                    "id": root_node.get('id'),
+                    "name": root_node.get('name'),
+                    "note": root_node.get('note'),
+                    "parent_id": root_node.get('parent_id')
+                }
+                children = root_node.get('children', [])
+            else:
+                # Multiple roots or no clear root - return as-is
+                children = hierarchical_tree
+            
+            # Calculate max depth
+            max_depth = self._calculate_max_depth(children)
+            
+            return {
+                "success": True,
+                "root": root_metadata,
+                "children": children,
+                "node_count": len(flat_nodes),
+                "depth": max_depth,
+                "_source": "api"  # Indicate data came from API (not WebSocket)
+            }
+            
+        except Exception as e:
+            raise NetworkError(f"GLIMPSE FULL failed: {str(e)}") from e
     
     async def workflowy_etch(
         self,
