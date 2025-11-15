@@ -837,7 +837,9 @@ async def etch(
 )
 async def bulk_import(
     json_file: str,
-    parent_id: str,
+    parent_id: str | None = None,
+    dry_run: bool = False,
+    import_policy: str = 'strict',
 ) -> dict:
     """Create a tree of nodes from a JSON structure.
 
@@ -854,7 +856,7 @@ async def bulk_import(
     # due to the recursive nature of the operation.
 
     try:
-        result = await client.bulk_import_from_file(json_file, parent_id)
+        result = await client.bulk_import_from_file(json_file, parent_id, dry_run, import_policy)
         return result
     except Exception as e:
         # Top-level exception capture
