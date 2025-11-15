@@ -2000,6 +2000,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             stats["api_calls"] += 1
             stats["nodes_moved"] += 1
         
+        async def export_nodes_wrapper(node_uuid: str) -> dict:
+            """Wrapper for export_nodes - single bulk API call."""
+            raw_data = await self.export_nodes(node_uuid)
+            stats["api_calls"] += 1
+            return raw_data
+        
         # ============ EXECUTE RECONCILIATION ============
         
         try:
@@ -2010,7 +2016,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 create_node=create_node_wrapper,
                 update_node=update_node_wrapper,
                 delete_node=delete_node_wrapper,
-                move_node=move_node_wrapper
+                move_node=move_node_wrapper,
+                export_nodes=export_nodes_wrapper
             )
             
             # Reconciliation complete - gather root IDs

@@ -30,6 +30,7 @@ Reordering with only top/bottom:
   delete phase.
 """
 from collections import deque, defaultdict
+from datetime import datetime
 from typing import Callable, Dict, List, Optional, Iterable
 
 Node = Dict
@@ -43,6 +44,7 @@ async def reconcile_tree(
     update_node: Callable[[str, Dict], None],
     delete_node: Callable[[str], None],
     move_node: Callable[..., None],
+    export_nodes: Callable[[str], Dict] = None,
 ) -> None:
     """
     Reconcile the Workflowy subtree under parent_uuid to match source_json.
@@ -58,7 +60,8 @@ async def reconcile_tree(
     debug_log = open(r'E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log', 'w', encoding='utf-8')
     
     def log(msg):
-        debug_log.write(msg + '\n')
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]  # HH:MM:SS.mmm
+        debug_log.write(f"[{timestamp}] {msg}\n")
         debug_log.flush()
 
     # ------------- helpers -------------
@@ -73,25 +76,66 @@ async def reconcile_tree(
             index_source(n.get('children', []), n.get('id'), order_acc)
         return order_acc
 
-    async def snapshot_target(root_parent: str):
-        # BFS traversal of existing subtree under root_parent to map nodes
+    async def snapshot_target(root_parent: str, use_efficient_traversal: bool = False, export_func = None):
+        # Snapshot existing subtree under root_parent to map nodes
         Map_T: Dict[str, Node] = {}
         Parent_T: Dict[str, Optional[str]] = {}
         Children_T: Dict[str, List[str]] = defaultdict(list)
-        q: deque[str] = deque([root_parent])
-        visited_parents: set[str] = set()
-        while q:
-            p = q.popleft()
-            if p in visited_parents:
-                continue
-            visited_parents.add(p)
-            children = await list_nodes(p)  # must be immediate children in current visual order
-            for ch in children:
-                cid = ch['id']
-                Map_T[cid] = ch
-                Parent_T[cid] = p
-                Children_T[p].append(cid)
-                q.append(cid)
+        
+        if use_efficient_traversal:
+            # BFS traversal using list_nodes (CAUSES RATE LIMITS - avoid!)
+            q: deque[str] = deque([root_parent])
+            visited_parents: set[str] = set()
+            while q:
+                p = q.popleft()
+                if p in visited_parents:
+                    continue
+                visited_parents.add(p)
+                children = await list_nodes(p)
+                for ch in children:
+                    cid = ch['id']
+                    Map_T[cid] = ch
+                    Parent_T[cid] = p
+                    Children_T[p].append(cid)
+                    q.append(cid)
+        else:
+            # RECOMMENDED: Single bulk export (empirically better, avoids rate limits)
+            # This is how glimpseFull works - one API call gets everything
+            log(f"   Using bulk export for snapshot (avoids rate limit issues)")
+            
+            if export_func is None:
+                log(f"   WARNING: export_nodes not provided, falling back to BFS list_nodes (slow!)")
+                # Fallback to BFS if export_nodes not available
+                q: deque[str] = deque([root_parent])
+                visited_parents: set[str] = set()
+                while q:
+                    p = q.popleft()
+                    if p in visited_parents:
+                        continue
+                    visited_parents.add(p)
+                    children = await list_nodes(p)
+                    for ch in children:
+                        cid = ch['id']
+                        Map_T[cid] = ch
+                        Parent_T[cid] = p
+                        Children_T[p].append(cid)
+                        q.append(cid)
+            else:
+                # Use bulk export - single API call!
+                log(f"   Calling export_nodes({root_parent})...")
+                raw_data = await export_func(root_parent)
+                all_nodes = raw_data.get('nodes', [])
+                log(f"   Bulk export returned {len(all_nodes)} nodes")
+                
+                # Build parent/children maps from flat list
+                for node in all_nodes:
+                    nid = node['id']
+                    Map_T[nid] = node
+                    parent_id = node.get('parent_id')
+                    Parent_T[nid] = parent_id
+                    if parent_id is not None:
+                        Children_T[parent_id].append(nid)
+        
         return Map_T, Parent_T, Children_T
 
     def desired_maps(source_nodes: List[Node], root_parent: str):
@@ -140,7 +184,7 @@ async def reconcile_tree(
 
     # ------------- phase 0: build maps -------------
     log(f"\n[PHASE 0] Building maps for parent {parent_uuid}")
-    Map_T, Parent_T, Children_T = await snapshot_target(parent_uuid)
+    Map_T, Parent_T, Children_T = await snapshot_target(parent_uuid, use_efficient_traversal=False, export_func=export_nodes)
     log(f"   Target snapshot: {len(Map_T)} nodes found in Workflowy")
     log(f"   Target UUIDs: {list(Map_T.keys())}")
     Map_S, Parent_S, Order_S = desired_maps(source_json, parent_uuid)
@@ -260,7 +304,7 @@ async def reconcile_tree(
 
     # Snapshot Map_T again under the parent to catch any nodes not visited in source
     log(f"   Re-snapshotting target under parent {parent_uuid}...")
-    Map_T2, Parent_T2, _ = await snapshot_target(parent_uuid)
+    Map_T2, Parent_T2, _ = await snapshot_target(parent_uuid, use_efficient_traversal=False, export_func=export_nodes)
     ids_in_target = set(Map_T2.keys())
     log(f"   Target IDs (after reconciliation): {ids_in_target}")
 
