@@ -1146,7 +1146,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
         return '\n'.join(markdown_lines)
     
-    async def workflowy_glimpse(self, node_id: str, use_efficient_traversal: bool = False, _ws_connection=None) -> dict[str, Any]:
+    async def workflowy_glimpse(self, node_id: str, use_efficient_traversal: bool = False, _ws_connection=None, _ws_queue=None) -> dict[str, Any]:
         """Load entire node tree into context (no file intermediary).
         
         GLIMPSE command - direct context loading for agent analysis.
@@ -1177,8 +1177,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         logger = logging.getLogger(__name__)
         
-        # ===== TRY WEBSOCKET FIRST (if connected) =====
-        if _ws_connection:
+        # ===== TRY WEBSOCKET FIRST (if connected and queue available) =====
+        if _ws_connection and _ws_queue:
             try:
                 logger.info(f"🔌 Attempting WebSocket DOM extraction for node {node_id[:8]}...")
                 
@@ -1188,16 +1188,18 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "node_id": node_id
                 }
                 await _ws_connection.send(json_module.dumps(request))
-                logger.info("  Request sent to extension, awaiting response...")
+                logger.info("  Request sent to extension, awaiting response from queue...")
                 
-                # Wait for response (with 5s timeout)
-                response_text = await asyncio.wait_for(
-                    _ws_connection.recv(),
+                # Wait for response from QUEUE (not direct recv - avoids concurrency conflict)
+                response = await asyncio.wait_for(
+                    _ws_queue.get(),
                     timeout=5.0
                 )
                 
-                response = json_module.loads(response_text)
-                logger.info(f"  ✅ WebSocket response received: {response.get('node_count', 0)} nodes")
+                logger.info(f"  📦 WebSocket response from queue: {response.get('node_count', 0)} nodes")
+                logger.info(f"  🔍 Response keys: {list(response.keys())}")
+                logger.info(f"  🔍 Has 'success': {response.get('success')}")
+                logger.info(f"  🔍 Has 'children': {'children' in response}")
                 
                 # Validate response structure
                 if response.get('success') and 'children' in response:

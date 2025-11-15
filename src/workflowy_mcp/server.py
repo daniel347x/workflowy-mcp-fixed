@@ -26,6 +26,7 @@ _rate_limiter: AdaptiveRateLimiter | None = None
 # Global WebSocket connection for DOM cache
 _ws_connection = None
 _ws_server_task = None
+_ws_message_queue = None  # asyncio.Queue for message routing
 
 
 def get_client() -> WorkFlowyClient:
@@ -37,45 +38,60 @@ def get_client() -> WorkFlowyClient:
 
 
 def get_ws_connection():
-    """Get the current WebSocket connection (if any)."""
-    global _ws_connection
-    return _ws_connection
+    """Get the current WebSocket connection and message queue (if any)."""
+    global _ws_connection, _ws_message_queue
+    return _ws_connection, _ws_message_queue
 
 
-async def websocket_handler(websocket, path):
+async def websocket_handler(websocket):
     """Handle WebSocket connections from Chrome extension.
+    
+    Uses message queue pattern to avoid recv() conflicts.
     
     Extension sends requests:
     {"action": "extract_dom", "node_id": "uuid"}
     
     Extension receives responses with DOM tree data.
     """
-    global _ws_connection
+    global _ws_connection, _ws_message_queue
     
     logger.info(f"WebSocket client connected from {websocket.remote_address}")
     _ws_connection = websocket
+    _ws_message_queue = asyncio.Queue()  # Fresh queue for this connection
     
     try:
+        # Keep connection alive - wait for messages indefinitely
         async for message in websocket:
             try:
-                request = json.loads(message)
-                logger.info(f"WebSocket request received: {request.get('action')}")
+                data = json.loads(message)
+                action = data.get('action')
+                logger.info(f"WebSocket message received: {action}")
                 
-                # Extension can send DOM data or respond to our requests
-                # For now, we just maintain the connection
-                # Actual request/response happens in workflowy_glimpse()
+                # Handle ping to keep connection alive
+                if action == 'ping':
+                    await websocket.send(json.dumps({"action": "pong"}))
+                    logger.info("Sent pong response")
+                    continue
+                
+                # Put all other messages in queue for workflowy_glimpse() to consume
+                await _ws_message_queue.put(data)
+                logger.info(f"Message queued for processing: {action}")
                 
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON from WebSocket: {e}")
             except Exception as e:
                 logger.error(f"WebSocket message error: {e}")
+        
+        # If loop exits naturally, connection was closed by client
+        logger.info("WebSocket client disconnected (connection closed by client)")
                 
     except Exception as e:
-        logger.info(f"WebSocket connection closed: {e}")
+        logger.info(f"WebSocket connection closed with error: {e}")
     finally:
         if _ws_connection == websocket:
             _ws_connection = None
-        logger.info("WebSocket client disconnected")
+            _ws_message_queue = None
+        logger.info("WebSocket client cleaned up")
 
 
 async def start_websocket_server():
@@ -90,9 +106,12 @@ async def start_websocket_server():
     logger.info("Starting WebSocket server on ws://localhost:8765")
     
     try:
-        async with websockets.serve(websocket_handler, "localhost", 8765):
+        async with websockets.serve(websocket_handler, "localhost", 8765) as server:
             logger.info("✅ WebSocket server listening on port 8765")
-            await asyncio.Future()  # Run forever
+            logger.info("WebSocket server will accept connections indefinitely...")
+            
+            # Keep server running forever
+            await asyncio.Event().wait()
     except Exception as e:
         logger.error(f"WebSocket server failed to start: {e}")
         logger.error("GLIMPSE will fall back to API fetching")
@@ -706,14 +725,14 @@ async def glimpse(
         Dictionary with root metadata, children tree, node count, depth, and source indicator
     """
     client = get_client()
-    ws_conn = get_ws_connection()  # Check if extension is connected
+    ws_conn, ws_queue = get_ws_connection()  # Check if extension is connected
     
     if _rate_limiter:
         await _rate_limiter.acquire()
     
     try:
-        # Pass WebSocket connection to client method
-        result = await client.workflowy_glimpse(node_id, _ws_connection=ws_conn)
+        # Pass WebSocket connection AND queue to client method
+        result = await client.workflowy_glimpse(node_id, _ws_connection=ws_conn, _ws_queue=ws_queue)
         if _rate_limiter:
             _rate_limiter.on_success()
         return result
