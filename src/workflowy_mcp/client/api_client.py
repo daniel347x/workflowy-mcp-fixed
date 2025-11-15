@@ -77,24 +77,47 @@ class WorkFlowyClient:
         # CHECK 2: Literal \n or \r\n or \t patterns (common agent mistakes) - BLOCK
         # Skip this check if called from bulk operations (for testing)
         if not skip_newline_check and ("\\n" in escaped_note or "\\r\\n" in escaped_note or "\\t" in escaped_note):
-            error_msg = """❌ NEWLINE FORMAT ERROR - Literal escape sequences detected in note field
+error_msg = """✅ ALMOST SUCCEEDED - One simple formatting change needed, then retry this same ETCH call!
+
+❌ NEWLINE FORMAT ERROR - Literal escape sequences detected in note field
 
 Your note parameter contains literal backslash-n characters (\\n) which will appear 
 as visible "\\n" text in Workflowy instead of actual newlines.
 
-📚 CORRECT FORMAT (for workflowy_create_node / workflowy_update_node):
+📝 HOW TO FIX:
 
-    workflowy_create_node(
-        name="Node name",
-        note="Line 1
+In your ETCH call, look at the "note" fields in your nodes parameter.
+
+❌ If you see: note: "Line 1\\n\\nLine 2"
+✅ Change to: note: "Line 1
+Line 2"
+
+LITERALLY press Enter/Return key INSIDE the note string to create line breaks.
+Your cursor should move to next line while typing the parameter.
+
+The note string should VISUALLY span multiple lines in your tool call.
+
+🔍 VISUAL CHECK: Count the lines in your note parameter as you type it.
+   - If note has 3 lines of content, you should see 3 lines of text in the parameter
+   - The opening quote and closing quote should be on different lines
+
+Try again with this format - the ETCH will succeed!
+
+📚 CORRECT FORMAT (for workflowy_create_node / workflowy_update_node / workflowy_etch):
+
+    workflowy_etch(
+        nodes=[{
+            "name": "Node name",
+            "note": "Line 1
 Line 2
 Line 3"  # Press Enter - actual newlines, NOT \\n
+        }]
     )
 
 ❌ WRONG: note="Line 1\\n\\nLine 2"  # Produces literal backslash-n
 ✅ CORRECT: note="Line 1
 
-Line 2"  # Actual newlines in parameter
+Line 2"  # Actual newlines in parameter (spans multiple lines visually)
 
 📖 Complete technical documentation:
    MAJOR VAULT FORGE VYRTHEX
