@@ -1231,95 +1231,84 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     logger.info("✅ GLIMPSE via WebSocket successful")
                     return response
                 else:
-                    logger.warning("  WebSocket response invalid, falling back to API")
+                    logger.warning("  WebSocket response invalid")
+                    raise NetworkError(
+                        "WebSocket GLIMPSE failed - invalid response structure.\n\n"
+                        "Options:\n"
+                        "1. Verify Workflowy desktop app is open and connected\n"
+                        "2. Check extension console for errors\n"
+                        "3. Use workflowy_glimpse_full() to fetch complete tree via API\n\n"
+                        "Note: workflowy_glimpse() requires WebSocket connection to extract \n"
+                        "only expanded nodes. Use glimpseFull for Mode 2 (hunting) operations."
+                    )
                     
             except asyncio.TimeoutError:
-                logger.warning("  WebSocket timeout (5s), falling back to API")
+                logger.warning("  WebSocket timeout (5s)")
+                raise NetworkError(
+                    "WebSocket GLIMPSE timeout (5 seconds).\n\n"
+                    "Possible causes:\n"
+                    "- Extension not connected or not responding\n"
+                    "- DOM extraction taking longer than expected\n"
+                    "- Workflowy desktop app not running\n\n"
+                    "Options:\n"
+                    "1. Verify Workflowy desktop app is open\n"
+                    "2. Check extension console for errors\n"
+                    "3. Use workflowy_glimpse_full() to fetch complete tree via API\n\n"
+                    "Note: workflowy_glimpse() is WebSocket-only (Mode 1: Dan shows you).\n"
+                    "Use glimpseFull for Mode 2 (Agent hunts) operations."
+                )
             except Exception as e:
-                logger.warning(f"  WebSocket error: {e}, falling back to API")
+                logger.warning(f"  WebSocket error: {e}")
+                raise NetworkError(
+                    f"WebSocket GLIMPSE error: {str(e)}\n\n"
+                    "WebSocket connection failed or extension error occurred.\n\n"
+                    "Options:\n"
+                    "1. Verify Workflowy desktop app is open and extension loaded\n"
+                    "2. Check Workflowy console (F12) for extension errors\n"
+                    "3. Restart Workflowy desktop app\n"
+                    "4. Use workflowy_glimpse_full() to fetch complete tree via API\n\n"
+                    "Note: workflowy_glimpse() requires active WebSocket connection.\n"
+                    "Use glimpseFull when WebSocket unavailable."
+                ) from e
         
-        # ===== FALLBACK TO API FETCH =====
+        # If WebSocket connection not available, raise error immediately
+        raise NetworkError(
+            "WebSocket GLIMPSE unavailable - no WebSocket connection.\n\n"
+            "GLIMPSE requires WebSocket connection to Workflowy desktop app.\n\n"
+            "Options:\n"
+            "1. Ensure Workflowy desktop app is running\n"
+            "2. Verify extension is loaded and connected (check console)\n"
+            "3. Restart MCP connector to initialize WebSocket server\n"
+            "4. Use workflowy_glimpse_full() to fetch complete tree via API\n\n"
+            "Mode 1 (Dan shows you): Requires WebSocket - use glimpse()\n"
+            "Mode 2 (Agent hunts): Bypass WebSocket - use glimpseFull()"
+        )
+    
+    async def workflowy_glimpse_full(self, node_id: str, use_efficient_traversal: bool = False) -> dict[str, Any]:
+        """Load entire node tree via API (bypass WebSocket).
         
-        # EFFICIENT TRAVERSAL: Use list_nodes BFS instead of fetching entire account
-        total_nodes_fetched = 0
-        if use_efficient_traversal:
-            from collections import deque
-            flat_nodes = []
-            queue = deque([node_id])
-            visited = set()
-            
-            while queue:
-                parent = queue.popleft()
-                if parent in visited:
-                    continue
-                visited.add(parent)
-                
-                # Fetch immediate children only
-                request = NodeListRequest(parentId=parent)
-                children, count = await self.list_nodes(request)
-                total_nodes_fetched += count  # Use the count from list_nodes
-                
-                for child in children:
-                    child_dict = child.model_dump()
-                    flat_nodes.append(child_dict)
-                    queue.append(child.id)
-            
-            # Add the root node itself
-            root_node_data = await self.get_node(node_id)
-            flat_nodes.insert(0, root_node_data.model_dump())
-            total_nodes_fetched += 1  # Count the root node too
-        else:
-            # OLD METHOD: Fetch entire account (100K+ nodes for Dan!)
-            raw_data = await self.export_nodes(node_id)
-            all_nodes = raw_data.get("nodes", [])
-            total_nodes_fetched = len(all_nodes)
-            flat_nodes = all_nodes  # Then filters client-side
+        Thin wrapper around workflowy_glimpse that forces full API fetch
+        regardless of WebSocket availability.
         
-        try:
+        Use when:
+        - Agent needs to hunt for parent UUIDs (Key Files doesn't have it)
+        - Dan wants complete node tree regardless of expansion state
+        - WebSocket selective extraction not needed
+        
+        Args:
+            node_id: Root node UUID to read from
+            use_efficient_traversal: Use BFS traversal (default False)
             
-            if not flat_nodes:
-                return {
-                    "success": True,
-                    "root": None,
-                    "children": [],
-                    "node_count": 0,
-                    "depth": 0
-                }
-            
-            # Build hierarchical tree
-            hierarchical_tree = self._build_hierarchy(flat_nodes, include_metadata=True)
-            
-            # Extract root node metadata and children separately
-            root_metadata = None
-            children = []
-            
-            if hierarchical_tree and len(hierarchical_tree) == 1:
-                root_node = hierarchical_tree[0]
-                root_metadata = {
-                    "id": root_node.get('id'),
-                    "name": root_node.get('name'),
-                    "note": root_node.get('note'),
-                    "parent_id": root_node.get('parent_id')
-                }
-                children = root_node.get('children', [])
-            else:
-                # Multiple roots or no clear root - return as-is
-                children = hierarchical_tree
-            
-            # Calculate max depth
-            max_depth = self._calculate_max_depth(children)
-            
-            return {
-                "success": True,
-                "root": root_metadata,
-                "children": children,
-                "node_count": len(flat_nodes),
-                "depth": max_depth,
-                "_source": "api"  # Indicate data came from API (not WebSocket)
-            }
-            
-        except Exception as e:
-            raise NetworkError(f"Bulk read failed: {str(e)}") from e
+        Returns:
+            Same format as workflowy_glimpse with _source="api"
+        """
+        # Call glimpse with WebSocket params explicitly set to None (forces API fallback)
+        return await self.workflowy_glimpse(
+            node_id=node_id,
+            use_efficient_traversal=use_efficient_traversal,
+            _ws_connection=None,  # Force API fetch
+            _ws_queue=None        # Bypass WebSocket
+        )
     
     async def workflowy_etch(
         self,
