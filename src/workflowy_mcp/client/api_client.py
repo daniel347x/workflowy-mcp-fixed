@@ -2040,7 +2040,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 name=data.get('name'),
                 parent_id=parent_uuid,
                 note=data.get('note'),
-                layoutMode=data.get('data', {}).get('layoutMode'),
+                layoutMode=(data.get('data') or {}).get('layoutMode'),  # Handle data=None gracefully
                 position='bottom'
             )
             node = await self.create_node(request, _internal_call=True)
@@ -2053,7 +2053,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             request = NodeUpdateRequest(
                 name=data.get('name'),
                 note=data.get('note'),
-                layoutMode=data.get('data', {}).get('layoutMode')
+                layoutMode=(data.get('data') or {}).get('layoutMode')  # Handle data=None gracefully
             )
             await self.update_node(node_uuid, request)
             stats["api_calls"] += 1
