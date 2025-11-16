@@ -1326,7 +1326,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "Mode 2 (Agent hunts): Bypass WebSocket - use glimpseFull()"
         )
     
-    async def workflowy_glimpse_full(self, node_id: str, use_efficient_traversal: bool = False, depth: int | None = None, size_limit: int | None = None) -> dict[str, Any]:
+    async def workflowy_glimpse_full(self, node_id: str, use_efficient_traversal: bool = False, depth: int | None = None, size_limit: int = 1000) -> dict[str, Any]:
         """Load entire node tree via API (bypass WebSocket).
         
         Mode 2 (Agent hunts) - Full API fetch regardless of WebSocket availability.

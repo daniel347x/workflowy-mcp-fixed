@@ -750,7 +750,7 @@ async def glimpse(
 async def glimpse_full(
     node_id: str,
     depth: int | None = None,
-    size_limit: int | None = None,
+    size_limit: int = 1000,
 ) -> dict:
     """Load entire node tree via full API fetch (bypass WebSocket).
     
@@ -764,7 +764,7 @@ async def glimpse_full(
     Args:
         node_id: Root node UUID to read from
         depth: Maximum depth to traverse (1=direct children only, 2=two levels, None=full tree)
-        size_limit: Maximum number of nodes to return (raises error if exceeded)
+        size_limit: Maximum number of nodes to return (default 1000, raises error if exceeded)
         
     Returns:
         Same format as workflowy_glimpse with _source="api"
