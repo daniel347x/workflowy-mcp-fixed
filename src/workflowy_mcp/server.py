@@ -749,6 +749,8 @@ async def glimpse(
 )
 async def glimpse_full(
     node_id: str,
+    depth: int | None = None,
+    size_limit: int | None = None,
 ) -> dict:
     """Load entire node tree via full API fetch (bypass WebSocket).
     
@@ -761,6 +763,8 @@ async def glimpse_full(
     
     Args:
         node_id: Root node UUID to read from
+        depth: Maximum depth to traverse (1=direct children only, 2=two levels, None=full tree)
+        size_limit: Maximum number of nodes to return (raises error if exceeded)
         
     Returns:
         Same format as workflowy_glimpse with _source="api"
@@ -772,13 +776,13 @@ async def glimpse_full(
     
     try:
         # Call glimpse_full on client (bypasses WebSocket by design)
-        result = await client.workflowy_glimpse_full(node_id)
+        result = await client.workflowy_glimpse_full(node_id, depth=depth, size_limit=size_limit)
         if _rate_limiter:
             _rate_limiter.on_success()
         return result
     except Exception as e:
         if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
-            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+            _rate_limiter.on_rate_lock(getattr(e, "retry_after", None))
         raise
 
 
