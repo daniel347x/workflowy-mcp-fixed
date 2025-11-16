@@ -957,6 +957,35 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         return max_child_depth
     
+    def _limit_depth(self, nodes: list[dict[str, Any]], max_depth: int, current_depth: int = 1) -> list[dict[str, Any]]:
+        """Limit node tree to specified depth.
+        
+        Args:
+            nodes: List of nodes at current level
+            max_depth: Maximum depth to include (1=direct children only, 2=two levels, etc.)
+            current_depth: Current depth in recursion (starts at 1)
+            
+        Returns:
+            Depth-limited tree (children arrays truncated at max_depth)
+        """
+        if not nodes or current_depth > max_depth:
+            return []
+        
+        limited_nodes = []
+        for node in nodes:
+            node_copy = node.copy()
+            
+            if current_depth < max_depth and node.get('children'):
+                # Recursively limit children
+                node_copy['children'] = self._limit_depth(node['children'], max_depth, current_depth + 1)
+            else:
+                # At max depth - truncate children
+                node_copy['children'] = []
+            
+            limited_nodes.append(node_copy)
+        
+        return limited_nodes
+    
     def _generate_markdown(
         self,
         nodes: list[dict[str, Any]],
@@ -1297,7 +1326,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "Mode 2 (Agent hunts): Bypass WebSocket - use glimpseFull()"
         )
     
-    async def workflowy_glimpse_full(self, node_id: str, use_efficient_traversal: bool = False) -> dict[str, Any]:
+    async def workflowy_glimpse_full(self, node_id: str, use_efficient_traversal: bool = False, depth: int | None = None, size_limit: int | None = None) -> dict[str, Any]:
         """Load entire node tree via API (bypass WebSocket).
         
         Mode 2 (Agent hunts) - Full API fetch regardless of WebSocket availability.
@@ -1310,6 +1339,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         Args:
             node_id: Root node UUID to read from
             use_efficient_traversal: Use BFS traversal (default False)
+            depth: Maximum depth to traverse (1=direct children only, 2=two levels, None=full tree)
+            size_limit: Maximum number of nodes to return (raises error if exceeded)
             
         Returns:
             Same format as workflowy_glimpse with _source="api"
@@ -1364,6 +1395,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "_source": "api"
                 }
             
+            # Check size_limit BEFORE building hierarchy (early exit)
+            if size_limit is not None and len(flat_nodes) > size_limit:
+                raise NetworkError(
+                    f"Tree size ({len(flat_nodes)} nodes) exceeds limit ({size_limit} nodes).\n\n"
+                    f"Options:\n"
+                    f"1. Increase size_limit parameter: glimpseFull(node_id, size_limit={len(flat_nodes)})\n"
+                    f"2. Use depth parameter to limit traversal: glimpseFull(node_id, depth=2)\n"
+                    f"3. Use GLIMPSE (WebSocket) for selective extraction\n\n"
+                    f"This safety prevents accidental 50MB+ tree fetches."
+                )
+            
             # Build hierarchical tree
             hierarchical_tree = self._build_hierarchy(flat_nodes, include_metadata=True)
             
@@ -1383,6 +1425,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             else:
                 # Multiple roots or no clear root - return as-is
                 children = hierarchical_tree
+            
+            # Apply depth limiting if requested
+            if depth is not None:
+                children = self._limit_depth(children, depth)
             
             # Calculate max depth
             max_depth = self._calculate_max_depth(children)
