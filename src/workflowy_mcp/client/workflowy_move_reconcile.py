@@ -349,15 +349,28 @@ async def reconcile_tree(
                     log(f"      [DRY-RUN] Would CREATE '{node_name}' under parent {desired_parent} -> {new_id}")
                 else:
                     log(f"      >>> CREATING new node '{node_name}' under parent {desired_parent}")
-                    payload = {
-                        'name': n.get('name'),
-                        'note': n.get('note'),
-                        'data': n.get('data'),
-                        'completed': bool(n.get('completed', False)),
-                    }
-                    new_id = await create_node(desired_parent, payload)
-                    log(f"      >>> CREATED with new UUID: {new_id}")
-                    n['id'] = new_id
+                    try:
+                        payload = {
+                            'name': n.get('name'),
+                            'note': n.get('note'),
+                            'data': n.get('data'),
+                            'completed': bool(n.get('completed', False)),
+                        }
+                        log(f"      >>> Payload prepared: name={payload.get('name')}, note_length={len(payload.get('note') or '')}, data={payload.get('data')}")
+                        
+                        if desired_parent is None:
+                            log(f"      >>> ERROR: desired_parent is None for node '{node_name}'")
+                            log(f"      >>> Node structure: {n}")
+                            raise ValueError(f"Cannot create node '{node_name}' - desired_parent is None. Check parent_id in JSON.")
+                        
+                        new_id = await create_node(desired_parent, payload)
+                        log(f"      >>> CREATED with new UUID: {new_id}")
+                        n['id'] = new_id
+                    except Exception as e:
+                        log(f"      >>> CREATE FAILED for '{node_name}': {type(e).__name__}: {str(e)}")
+                        log(f"      >>> Node details: id={nid}, desired_parent={desired_parent}")
+                        log(f"      >>> Full node structure: {n}")
+                        raise
                     nid = new_id
                     # reflect in target maps immediately
                     Map_T[nid] = {'id': nid, 'parent_id': desired_parent, **payload}
@@ -400,8 +413,14 @@ async def reconcile_tree(
             if dry_run:
                 log(f"      [DRY-RUN] Would MOVE {nid} from {current_parent} to {desired_parent}")
             else:
-                log(f"      >>> MOVING {nid} from {current_parent} to {desired_parent}")
-                await move_node(nid, desired_parent, position="bottom")
+                try:
+                    log(f"      >>> MOVING {nid} from {current_parent} to {desired_parent}")
+                    await move_node(nid, desired_parent, position="bottom")
+                    log(f"      >>> MOVE SUCCESS for {nid}")
+                except Exception as e:
+                    log(f"      >>> MOVE FAILED for {nid}: {type(e).__name__}: {str(e)}")
+                    log(f"      >>> Node name: {n.get('name')}")
+                    raise
             planned_moves.append({'id': nid, 'from': current_parent, 'to': desired_parent})
             # simulate/update maps
             if current_parent and nid in Children_T[current_parent]:
@@ -427,8 +446,13 @@ async def reconcile_tree(
             if dry_run:
                 log(f"      [DRY-RUN] Would REORDER: move {cid} to TOP of parent {p}")
             else:
-                log(f"      >>> REORDER: Moving {cid} to TOP of parent {p}")
-                await move_node(cid, p, position="top")
+                try:
+                    log(f"      >>> REORDER: Moving {cid} to TOP of parent {p}")
+                    await move_node(cid, p, position="top")
+                    log(f"      >>> REORDER SUCCESS for {cid}")
+                except Exception as e:
+                    log(f"      >>> REORDER FAILED for {cid}: {type(e).__name__}: {str(e)}")
+                    raise
             planned_reorders.append({'id': cid, 'parent': p, 'position': 'top', 'sequence_index': idx})
     log(f"   REORDER phase complete - processed {len(Order_S)} parents, {reorder_count} reorder moves")
 
@@ -449,7 +473,14 @@ async def reconcile_tree(
                 if dry_run:
                     log(f"      [DRY-RUN] Would UPDATE {nid} -> {payload}")
                 else:
-                    await update_node(nid, payload)
+                    try:
+                        log(f"      >>> UPDATING node {nid}: name={payload.get('name')}")
+                        await update_node(nid, payload)
+                        log(f"      >>> UPDATE SUCCESS for {nid}")
+                    except Exception as e:
+                        log(f"      >>> UPDATE FAILED for {nid}: {type(e).__name__}: {str(e)}")
+                        log(f"      >>> Payload: {payload}")
+                        raise
                 planned_updates.append({'id': nid, 'payload': payload})
     log(f"   UPDATE phase complete - {update_count} updates")
 
@@ -497,8 +528,14 @@ async def reconcile_tree(
         return log_summary_and_close(note="Aborted by delete threshold")
 
     for d in planned_delete_roots:
-        log(f"   >>> DELETING root: {d} (name: {Map_T2.get(d, {}).get('name', 'unknown')})")
-        await delete_node(d)
+        try:
+            node_name = Map_T2.get(d, {}).get('name', 'unknown')
+            log(f"   >>> DELETING root: {d} (name: {node_name})")
+            await delete_node(d)
+            log(f"   >>> DELETE SUCCESS for {d}")
+        except Exception as e:
+            log(f"   >>> DELETE FAILED for {d}: {type(e).__name__}: {str(e)}")
+            raise
     log(f"   DELETE phase complete")
     
     return log_summary_and_close()
