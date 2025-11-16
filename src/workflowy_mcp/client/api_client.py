@@ -1102,13 +1102,18 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         try:
             # Read JSON file
             with open(json_file, 'r', encoding='utf-8') as f:
-                nodes = json.load(f)
+                data = json.load(f)
             
-            if not isinstance(nodes, list):
+            # Handle both bare array AND metadata wrapper (from bulk_export)
+            if isinstance(data, dict) and "nodes" in data:
+                nodes = data["nodes"]  # Extract from metadata wrapper
+            elif isinstance(data, list):
+                nodes = data  # Already bare array
+            else:
                 return {
                     "success": False,
                     "markdown_file": None,
-                    "error": "JSON must contain an array of nodes"
+                    "error": f"JSON must be array or dict with 'nodes' key. Got: {type(data).__name__}"
                 }
             
             # Generate Markdown WITH metadata (enables UUID tracking in diffs)
