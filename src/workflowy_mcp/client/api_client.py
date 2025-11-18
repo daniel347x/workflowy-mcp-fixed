@@ -44,16 +44,17 @@ class WorkFlowyClient:
         
         Handles:
         1. Angle brackets (auto-escape to HTML entities - Workflowy renderer bug workaround)
-        2. Literal backslash-n escape sequences (block with error - common agent mistake)
+        
+        REMOVED: Literal backslash-n validation (moved to MCP connector level)
         
         Args:
             note: Note content to validate/escape
-            skip_newline_check: If True, skip literal backslash-n validation (for testing/bulk ops)
+            skip_newline_check: DEPRECATED - check removed, parameter kept for compatibility
             
         Returns:
             (processed_note, warning_message)
-            - processed_note: Escaped/fixed note (or None if blocking error)
-            - warning_message: Info message if changes made, or error if blocked
+            - processed_note: Escaped/fixed note
+            - warning_message: Info message if changes made
         """
         if note is None:
             return (None, None)
@@ -61,7 +62,7 @@ class WorkFlowyClient:
         # Check for override token (for documentation that needs literal sequences)
         OVERRIDE_TOKEN = "<<<LITERAL_BACKSLASH_N_INTENTIONAL>>>"
         if note.startswith(OVERRIDE_TOKEN):
-            # Strip token and allow literal \n characters
+            # Strip token and return as-is
             return (note, None)  # Caller strips token before API call
         
         # CHECK 1: Auto-escape angle brackets (Workflowy renderer bug workaround)
@@ -73,64 +74,6 @@ class WorkFlowyClient:
         if '<' in note or '>' in note:
             escaped_note = note.replace('<', '&lt;').replace('>', '&gt;')
             angle_bracket_escaped = True
-        
-        # CHECK 2: Literal \n or \r\n or \t patterns (common agent mistakes) - BLOCK
-        # Skip this check if called from bulk operations (for testing)
-        if not skip_newline_check and ("\\n" in escaped_note or "\\r\\n" in escaped_note or "\\t" in escaped_note):
-            error_msg = """✅ ALMOST SUCCEEDED - One simple formatting change needed, then retry this same ETCH call!
-
-❌ NEWLINE FORMAT ERROR - Literal escape sequences detected in note field
-
-Your note parameter contains literal backslash-n characters (\\n) which will appear 
-as visible "\\n" text in Workflowy instead of actual newlines.
-
-📝 HOW TO FIX:
-
-In your ETCH call, look at the "note" fields in your nodes parameter.
-
-❌ If you see: note: "Line 1\\n\\nLine 2"
-✅ Change to: note: "Line 1
-Line 2"
-
-LITERALLY press Enter/Return key INSIDE the note string to create line breaks.
-Your cursor should move to next line while typing the parameter.
-
-The note string should VISUALLY span multiple lines in your tool call.
-
-🔍 VISUAL CHECK: Count the lines in your note parameter as you type it.
-   - If note has 3 lines of content, you should see 3 lines of text in the parameter
-   - The opening quote and closing quote should be on different lines
-
-Try again with this format - the ETCH will succeed!
-
-📚 CORRECT FORMAT (for workflowy_create_node / workflowy_update_node / workflowy_etch):
-
-    workflowy_etch(
-        nodes=[{
-            "name": "Node name",
-            "note": "Line 1
-Line 2
-Line 3"  # Press Enter - actual newlines, NOT \\n
-        }]
-    )
-
-❌ WRONG: note="Line 1\\n\\nLine 2"  # Produces literal backslash-n
-✅ CORRECT: note="Line 1
-
-Line 2"  # Actual newlines in parameter (spans multiple lines visually)
-
-📖 Complete technical documentation:
-   MAJOR VAULT FORGE VYRTHEX
-   UUID: eabd9f9f-7994-4ea2-9684-c7e974aaf692
-   Location: Work > AI Dagger > MAJOR VAULT FORGE
-
-⚙️ OVERRIDE (if you truly want literal \\n characters):
-   Prefix note with: <<<LITERAL_BACKSLASH_N_INTENTIONAL>>>
-   
-   Example for documentation:
-   note="<<<LITERAL_BACKSLASH_N_INTENTIONAL>>>Use \\n for newlines"
-"""
-            return (None, error_msg)  # Blocking error
         
         # Return processed note with optional warning
         if angle_bracket_escaped:
@@ -880,11 +823,34 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             markdown_backup = output_file.replace('.json', '.original.md')
             with open(markdown_backup, 'w', encoding='utf-8') as f:
                 f.write(markdown_content)
-            
+
+            # Create Keystone backup
+            keystone_path = None
+            try:
+                import shutil
+                from datetime import datetime
+                import uuid
+
+                backup_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_backups"
+                os.makedirs(backup_dir, exist_ok=True)
+                
+                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                node_name_slug = "".join(c for c in root_node_info.get('name', 'Unknown') if c.isalnum() or c in " _-").rstrip()[:50]
+                short_uuid = str(uuid.uuid4())[:6]
+
+                keystone_filename = f"{timestamp}-{node_name_slug}-{short_uuid}.json"
+                keystone_path = os.path.join(backup_dir, keystone_filename)
+
+                shutil.copy2(output_file, keystone_path)
+            except Exception as e:
+                # Log but don't fail the main export if backup fails
+                print(f"Keystone backup creation failed: {e}")
+
             return {
                 "success": True,
                 "file_path": output_file,
                 "markdown_file": markdown_file,
+                "keystone_backup_path": keystone_path,
                 "node_count": len(flat_nodes),
                 "depth": max_depth,
                 "total_nodes_fetched": total_nodes_fetched,
@@ -2195,3 +2161,65 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "rate_limit_hits": stats["rate_limit_hits"],
                 "errors": stats["errors"]
             }
+
+    def nexus_list_keystones(self) -> dict[str, Any]:
+        """List all available NEXUS Keystone backups."""
+        backup_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_backups"
+        if not os.path.exists(backup_dir):
+            return {"success": True, "keystones": [], "message": "Backup directory does not exist."}
+        
+        keystones = []
+        for filename in os.listdir(backup_dir):
+            if filename.endswith(".json"):
+                parts = filename.replace('.json', '').split('-')
+                if len(parts) >= 3:
+                    keystone_id = parts[-1]
+                    timestamp = parts[0]
+                    node_name = "-".join(parts[1:-1])
+                    keystones.append({
+                        "keystone_id": keystone_id,
+                        "timestamp": timestamp,
+                        "node_name": node_name,
+                        "filename": filename
+                    })
+        
+        return {"success": True, "keystones": sorted(keystones, key=lambda k: k['timestamp'], reverse=True)}
+
+    async def nexus_restore_keystone(self, keystone_id: str) -> dict[str, Any]:
+        """Restore a Workflowy node tree from a NEXUS Keystone backup."""
+        backup_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_backups"
+        
+        target_file = None
+        for filename in os.listdir(backup_dir):
+            if keystone_id in filename and filename.endswith(".json"):
+                target_file = os.path.join(backup_dir, filename)
+                break
+
+        if not target_file:
+            return {"success": False, "error": f"Keystone with ID '{keystone_id}' not found."}
+
+        # The bulk_import_from_file function will handle the restoration.
+        # It reads the export_root_id from the JSON and uses it as the parent_id.
+        return await self.bulk_import_from_file(json_file=target_file)
+
+    def nexus_purge_keystones(self, keystone_ids: list[str]) -> dict[str, Any]:
+        """Delete one or more NEXUS Keystone backup files."""
+        backup_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_backups"
+        purged_files = []
+        errors = []
+
+        for keystone_id in keystone_ids:
+            found = False
+            for filename in os.listdir(backup_dir):
+                if keystone_id in filename and filename.endswith(".json"):
+                    try:
+                        os.remove(os.path.join(backup_dir, filename))
+                        purged_files.append(filename)
+                        found = True
+                        break 
+                    except Exception as e:
+                        errors.append(f"Failed to delete {filename}: {e}")
+            if not found and not any(keystone_id in e for e in errors):
+                 errors.append(f"Keystone with ID '{keystone_id}' not found.")
+        
+        return {"success": len(errors) == 0, "purged_count": len(purged_files), "purged_files": purged_files, "errors": errors}

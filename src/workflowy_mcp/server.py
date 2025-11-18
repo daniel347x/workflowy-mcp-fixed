@@ -222,7 +222,9 @@ This is a WARNING function. You should be using GLIMPSE or ETCH instead.
 1. Ask Dan: "May I have permission to call {function_name}?"
 2. Dan will check a secret file for the authorization code
 3. If Dan grants permission, he'll provide the code
-4. Call again with: secret_code="[code-from-Dan]"
+4. Call the SAME function again with the EXACT SAME parameters you used the first time, but add: secret_code="[code-from-Dan]" (do not change anything else).
+
+   Example (arguments object): { "name": "...", "parent_id": "...", "note": "...", "secret_code": "[code-from-Dan]" }
 
 🚫 IF DAN SAYS NO:
 - You are NOT the exception
@@ -873,6 +875,39 @@ async def bulk_import(
             "rate_limit_hits": 0,
             "errors": [f"An unexpected error occurred: {str(e)}"]
         }
+
+
+# Tool: List Nexus Keystones
+@mcp.tool(
+    name="nexus_list_keystones",
+    description="List all available NEXUS Keystone backups."
+)
+def nexus_list_keystones() -> dict:
+    """List all available NEXUS Keystone backups."""
+    client = get_client()
+    return client.nexus_list_keystones()
+
+
+# Tool: Restore Nexus Keystone
+@mcp.tool(
+    name="nexus_restore_keystone",
+    description="Restore a Workflowy node tree from a NEXUS Keystone backup."
+)
+async def nexus_restore_keystone(keystone_id: str) -> dict:
+    """Restore a Workflowy node tree from a NEXUS Keystone backup."""
+    client = get_client()
+    return await client.nexus_restore_keystone(keystone_id)
+
+
+# Tool: Purge Nexus Keystones
+@mcp.tool(
+    name="nexus_purge_keystones",
+    description="Delete one or more NEXUS Keystone backup files."
+)
+def nexus_purge_keystones(keystone_ids: list[str]) -> dict:
+    """Delete one or more NEXUS Keystone backup files."""
+    client = get_client()
+    return client.nexus_purge_keystones(keystone_ids)
 
 
 # Resource: WorkFlowy Outline
