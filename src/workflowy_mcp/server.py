@@ -649,10 +649,10 @@ async def export_node(
 
 # Tool: Bulk Export to JSON File
 @mcp.tool(
-    name="workflowy_bulk_export",
-    description="Export a Workflowy node and its entire subtree to a JSON file."
+    name="nexus_scry",
+    description="Export a Workflowy node and its entire subtree to a JSON file, creating a Keystone backup."
 )
-async def bulk_export(
+async def nexus_scry(
     node_id: str,
     output_file: str,
     include_metadata: bool = True,
@@ -836,12 +836,12 @@ async def etch(
         }
 
 
-# Tool: Bulk Import from JSON File
+# Tool: Weave (Bulk Import from JSON File)
 @mcp.tool(
-    name="workflowy_bulk_import",
-    description="Create multiple Workflowy nodes from a hierarchical JSON file."
+    name="nexus_weave",
+    description="Create/update a Workflowy node tree from a hierarchical JSON file."
 )
-async def bulk_import(
+async def nexus_weave(
     json_file: str,
     parent_id: str | None = None,
     dry_run: bool = False,
