@@ -49,9 +49,77 @@ Reordering with only top/bottom:
 from collections import deque, defaultdict
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Iterable, Union, Any
+import json
+import os
 
 Node = Dict
 
+async def _perform_backup(
+    parent_uuid_to_backup: str,
+    export_nodes: Callable[[str], Dict],
+    create_node: Callable[[str, Dict], str],
+    list_nodes: Callable[[str], List[Node]],
+    log: Callable[[str], None]
+):
+    """Exports a node tree and re-imports it into a dated backup location."""
+    
+    NEXUS_BACKUP_ROOT_ID = "c9fdeebf-b201-457b-8b91-00226b024444"
+    
+    log(f"[BACKUP] Starting point-in-time backup for node: {parent_uuid_to_backup}")
+
+    try:
+        # 1. Export the current state of the target node
+        exported_data = await export_nodes(parent_uuid_to_backup)
+        original_node_name = exported_data.get("export_root_name", "Unknown Node")
+        log(f"[BACKUP] Successfully exported '{original_node_name}' with {len(exported_data.get('nodes', []))} child nodes.")
+
+        # 2. Determine the backup destination folder (YYYY-MM)
+        current_date = datetime.now()
+        folder_name = current_date.strftime("%Y-%m")
+        
+        # Check if the folder already exists
+        nexus_children = await list_nodes(NEXUS_BACKUP_ROOT_ID)
+        backup_folder_id = None
+        for child in nexus_children:
+            if child.get("name") == folder_name:
+                backup_folder_id = child.get("id")
+                log(f"[BACKUP] Found existing backup folder '{folder_name}' with ID: {backup_folder_id}")
+                break
+        
+        if not backup_folder_id:
+            log(f"[BACKUP] No backup folder for '{folder_name}' found. Creating it now.")
+            new_folder_node = {
+                'name': folder_name,
+                'note': f'Backups for {current_date.strftime("%B %Y")}'
+            }
+            backup_folder_id = await create_node(NEXUS_BACKUP_ROOT_ID, new_folder_node)
+            log(f"[BACKUP] Created new backup folder with ID: {backup_folder_id}")
+
+        # 3. Create the root node for this specific backup
+        backup_node_name = f"Backup - {original_node_name} - {current_date.strftime('%Y-%m-%d %H:%M:%S')}"
+        backup_root_payload = {'name': backup_node_name}
+        new_backup_root_id = await create_node(backup_folder_id, backup_root_payload)
+        log(f"[BACKUP] Created root backup node '{backup_node_name}' with ID: {new_backup_root_id}")
+
+        # 4. Recursively import the exported nodes under the new backup root
+        async def recursive_import(nodes: List[Node], new_parent_id: str):
+            for node_data in nodes:
+                children = node_data.pop("children", [])
+                # Clean up metadata that shouldn't be copied
+                node_data.pop("id", None)
+                node_data.pop("parent_id", None)
+                
+                new_node_id = await create_node(new_parent_id, node_data)
+                if children:
+                    await recursive_import(children, new_node_id)
+        
+        await recursive_import(exported_data.get('nodes', []), new_backup_root_id)
+        log(f"[BACKUP] Successfully imported all nodes into the backup location.")
+
+    except Exception as e:
+        log(f"[BACKUP] ERROR: Point-in-time backup failed: {type(e).__name__}: {str(e)}")
+        # We don't re-raise the exception. The main operation should proceed even if backup fails,
+        # but the failure is logged for debugging.
 
 async def reconcile_tree(
     source_json: Union[List[Node], Dict],
@@ -90,6 +158,13 @@ async def reconcile_tree(
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]  # HH:MM:SS.mmm
         debug_log.write(f"[{timestamp}] {msg}\n")
         debug_log.flush()
+
+    # Perform a point-in-time backup before any operations
+    if not dry_run and export_nodes is not None:
+        await _perform_backup(parent_uuid, export_nodes, create_node, list_nodes, log)
+    elif not dry_run:
+        log("[BACKUP] Skipping backup because export_nodes function was not provided.")
+
 
     # Planning containers for summary and dry-run plan
     planned_creates: List[Dict[str, Any]] = []
