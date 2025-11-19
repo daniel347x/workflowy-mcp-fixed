@@ -4,7 +4,8 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Literal
+from datetime import datetime
+from typing import Literal, Any, Awaitable, Callable
 
 from fastmcp import FastMCP
 
@@ -27,6 +28,11 @@ _rate_limiter: AdaptiveRateLimiter | None = None
 _ws_connection = None
 _ws_server_task = None
 _ws_message_queue = None  # asyncio.Queue for message routing
+
+# In-memory job registry for long-running operations (ETCH, NEXUS, etc.)
+_jobs: dict[str, dict[str, Any]] = {}
+_job_counter: int = 0
+_job_lock: asyncio.Lock = asyncio.Lock()
 
 
 def get_client() -> WorkFlowyClient:
@@ -172,6 +178,78 @@ mcp = FastMCP(
     instructions="MCP server for managing WorkFlowy outlines and nodes",
     lifespan=lifespan,
 )
+
+
+# In-memory job management for long-running operations (ETCH, NEXUS, etc.)
+async def _start_background_job(
+    kind: str,
+    payload: dict[str, Any],
+    coro_factory: Callable[[str], Awaitable[dict]],
+) -> dict:
+    # Start a background job and return a lightweight handle.
+    global _job_counter, _jobs
+
+    async with _job_lock:
+        _job_counter += 1
+        job_id = f"{kind}-{_job_counter}"
+
+    _jobs[job_id] = {
+        "job_id": job_id,
+        "kind": kind,
+        "status": "pending",  # pending | running | completed | failed
+        "payload": payload,
+        "result": None,
+        "error": None,
+        "started_at": datetime.utcnow().isoformat(),
+        "finished_at": None,
+    }
+
+    async def runner() -> None:
+        try:
+            _jobs[job_id]["status"] = "running"
+            result = await coro_factory(job_id)
+            _jobs[job_id]["result"] = result
+            _jobs[job_id]["status"] = "completed" if result.get("success", True) else "failed"
+        except Exception as e:  # noqa: BLE001
+            _jobs[job_id]["error"] = f"{type(e).__name__}: {e}"
+            _jobs[job_id]["status"] = "failed"
+        finally:
+            _jobs[job_id]["finished_at"] = datetime.utcnow().isoformat()
+
+    asyncio.create_task(runner())
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "status": "started",
+        "kind": kind,
+    }
+
+
+@mcp.tool(
+    name="mcp_job_status",
+    description="Get status/result for long-running MCP jobs (ETCH, NEXUS, etc.).",
+)
+async def mcp_job_status(job_id: str | None = None) -> dict:
+    # Return status for one job (if job_id given) or all jobs.
+    if job_id is None:
+        jobs = []
+        for job in _jobs.values():
+            jobs.append({
+                "job_id": job.get("job_id"),
+                "kind": job.get("kind"),
+                "status": job.get("status"),
+                "started_at": job.get("started_at"),
+                "finished_at": job.get("finished_at"),
+            })
+        return {"success": True, "jobs": jobs}
+
+    job = _jobs.get(job_id)
+    if not job:
+        return {"success": False, "error": f"Unknown job_id: {job_id}"}
+
+    view = {k: v for k, v in job.items() if k != "payload"}
+    return {"success": True, **view}
 
 
 # 🔐 SECRET CODE VALIDATION - Brute Force Agent Training Override
@@ -799,27 +877,27 @@ async def etch(
     replace_all: bool = False,
 ) -> dict:
     """Create multiple nodes from JSON structure.
-    
+
     ETCH command - simple additive node creation (no UUIDs, no updates/moves).
     Fallback: If this fails, use INSCRIBE scroll (write_file → bulk_import).
-    
+
     DEFAULT: Additive (skip existing by name, add new children only)
     REPLACE: Wipe all children, create fresh
-    
+
     For complex operations (moves/updates with UUIDs): Use NEXUS scroll instead.
-    
+
     Args:
         parent_id: Parent UUID where nodes should be created
         nodes: List of node objects (NO UUIDs - just name/note/children)
         replace_all: If True, delete ALL existing children first. Default False.
-        
+
     Returns:
         Dictionary with success status, nodes created, skipped (if append_only), API call stats, and errors
     """
     client = get_client()
-    
+
     # Rate limiter handled within workflowy_etch method due to recursive operations
-    
+
     try:
         result = await client.workflowy_etch(parent_id, nodes, replace_all=replace_all)
         return result
@@ -834,6 +912,29 @@ async def etch(
             "rate_limit_hits": 0,
             "errors": [f"An unexpected error occurred: {str(e)}"]
         }
+
+
+@mcp.tool(
+    name="workflowy_etch_async",
+    description="Start an async ETCH job (Workflowy node creation) and return a job_id for status polling.",
+)
+async def etch_async(
+    parent_id: str,
+    nodes: list[dict] | str,
+    replace_all: bool = False,
+) -> dict:
+    """Start ETCH as a background job and return a job_id."""
+    client = get_client()
+
+    async def run_etch(job_id: str) -> dict:  # job_id reserved for future logging
+        return await client.workflowy_etch(parent_id, nodes, replace_all=replace_all)
+
+    payload = {
+        "parent_id": parent_id,
+        "replace_all": replace_all,
+    }
+
+    return await _start_background_job("etch", payload, run_etch)
 
 
 # Tool: Weave (Bulk Import from JSON File)
@@ -875,6 +976,32 @@ async def nexus_weave(
             "rate_limit_hits": 0,
             "errors": [f"An unexpected error occurred: {str(e)}"]
         }
+
+
+@mcp.tool(
+    name="nexus_weave_async",
+    description="Start an async NEXUS weave (bulk import from JSON) and return a job_id for status polling.",
+)
+async def nexus_weave_async(
+    json_file: str,
+    parent_id: str | None = None,
+    dry_run: bool = False,
+    import_policy: str = "strict",
+) -> dict:
+    """Start NEXUS weave as a background job and return a job_id."""
+    client = get_client()
+
+    async def run_weave(job_id: str) -> dict:  # job_id reserved for future logging
+        return await client.bulk_import_from_file(json_file, parent_id, dry_run, import_policy)
+
+    payload = {
+        "json_file": json_file,
+        "parent_id": parent_id,
+        "dry_run": dry_run,
+        "import_policy": import_policy,
+    }
+
+    return await _start_background_job("nexus_weave", payload, run_weave)
 
 
 # Tool: List Nexus Keystones
