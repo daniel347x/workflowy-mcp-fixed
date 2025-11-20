@@ -734,6 +734,8 @@ async def nexus_scry(
     node_id: str,
     output_file: str,
     include_metadata: bool = True,
+    max_depth: int | None = None,
+    child_count_limit: int | None = None,
 ) -> dict:
     """Export a node tree to a hierarchical JSON file.
 
@@ -741,6 +743,11 @@ async def nexus_scry(
         node_id: The UUID of the root node to export from.
         output_file: The absolute path where the JSON output file should be written.
         include_metadata: Whether to include metadata fields like created_at and modified_at (default True).
+        max_depth: Optional depth limit for the EDITABLE JSON/Markdown view (None = full depth).
+        child_count_limit: Optional maximum immediate child count to fully materialize per
+            parent in the EDITABLE JSON. Parents whose immediate child count exceeds this
+            limit are treated as opaque subtrees in the editable JSON while accurate
+            counts are still computed from the full tree.
 
     Returns:
         A dictionary with success status, file path, node count, and tree depth.
@@ -751,7 +758,14 @@ async def nexus_scry(
         await _rate_limiter.acquire()
 
     try:
-        result = await client.bulk_export_to_file(node_id, output_file, include_metadata)
+        result = await client.bulk_export_to_file(
+            node_id=node_id,
+            output_file=output_file,
+            include_metadata=include_metadata,
+            use_efficient_traversal=False,
+            max_depth=max_depth,
+            child_count_limit=child_count_limit,
+        )
         if _rate_limiter:
             _rate_limiter.on_success()
         return result

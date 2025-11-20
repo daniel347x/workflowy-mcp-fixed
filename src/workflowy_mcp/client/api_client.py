@@ -699,6 +699,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         output_file: str,
         include_metadata: bool = True,
         use_efficient_traversal: bool = False,
+        max_depth: int | None = None,
+        child_count_limit: int | None = None,
     ) -> dict[str, Any]:
         """Export node tree to hierarchical JSON file AND Markdown file.
         
@@ -706,6 +708,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             node_id: Root node UUID to export from
             output_file: Absolute path where JSON should be written
             include_metadata: Include created_at, modified_at fields (default True)
+            use_efficient_traversal: Use BFS traversal (default False)
+            max_depth: Optional depth limit for exported tree (None = full depth)
+            child_count_limit: Optional maximum immediate child count to fully display
+                per parent. If a parent has more children than this limit, its children
+                are treated as an opaque subtree in the editable JSON while counts are
+                still computed from the full tree.
             
         Returns:
             {"success": True, "file_path": "...", "markdown_file": "...", "node_count": N, "depth": M}
@@ -793,8 +801,21 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # Extract only children (skip root for round-trip editing)
                 hierarchical_tree = root_node.get('children', [])
             
-            # Calculate max depth
-            max_depth = self._calculate_max_depth(hierarchical_tree)
+            # Annotate counts and children_status, and optionally truncate children
+            # for large/deep trees in the EDITABLE JSON. The reconciliation algorithm
+            # understands children_status != 'complete' as an opaque subtree: it will
+            # not attempt per-child deletes/reorders under those parents while still
+            # allowing parent moves/deletes and new children to be added safely.
+            if hierarchical_tree:
+                self._annotate_child_counts_and_truncate(
+                    hierarchical_tree,
+                    max_depth=max_depth,
+                    child_count_limit=child_count_limit,
+                    current_depth=1,
+                )
+            
+            # Calculate overall tree depth after optional truncation (for reporting)
+            tree_depth = self._calculate_max_depth(hierarchical_tree)
             
             # Wrap with metadata for safe round-trip editing
             export_package = {
@@ -852,7 +873,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "markdown_file": markdown_file,
                 "keystone_backup_path": keystone_path,
                 "node_count": len(flat_nodes),
-                "depth": max_depth,
+                "depth": tree_depth,
                 "total_nodes_fetched": total_nodes_fetched,
                 "api_calls_made": api_calls_made,
                 "efficient_traversal": use_efficient_traversal
@@ -951,6 +972,98 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             limited_nodes.append(node_copy)
         
         return limited_nodes
+    
+    def _annotate_child_counts_and_truncate(
+        self,
+        nodes: list[dict[str, Any]],
+        max_depth: int | None = None,
+        child_count_limit: int | None = None,
+        current_depth: int = 1,
+    ) -> int:
+        """Annotate child/descendant counts and optionally truncate children.
+
+        This operates on the EDITABLE JSON used by NEXUS scrolls. It computes
+        per-node:
+
+        - immediate_child_count: number of direct children in the FULL tree
+        - total_descendant_count: total descendants (excluding the node itself)
+        - children_status:
+            - "complete"                => children list is fully loaded/editable
+            - "truncated_by_depth"      => depth limit applied at this level
+            - "truncated_by_count"      => child_count_limit applied at this level
+
+        For nodes whose children_status != "complete", the reconciliation
+        algorithm treats the children as an opaque subtree: it will not perform
+        per-child deletes/reorders, but parent moves/deletes and new children
+        remain safe.
+
+        Args:
+            nodes: List of nodes at this level (full children still attached)
+            max_depth: Optional depth limit (None = no depth truncation)
+            child_count_limit: Optional maximum immediate child count to fully
+                materialize per parent (None = no count truncation)
+            current_depth: Current depth in recursion (starts at 1)
+
+        Returns:
+            Total descendant count (sum over all nodes in this list), used by
+            callers if they need aggregate information.
+        """
+        if not nodes:
+            return 0
+
+        total_descendants_here = 0
+
+        for node in nodes:
+            children = node.get('children') or []
+
+            # First, recursively annotate children so counts are based on the
+            # FULL tree before any truncation is applied.
+            child_desc_total = 0
+            if children:
+                child_desc_total = self._annotate_child_counts_and_truncate(
+                    children,
+                    max_depth=max_depth,
+                    child_count_limit=child_count_limit,
+                    current_depth=current_depth + 1,
+                )
+
+            immediate_count = len(children)
+            total_desc_for_node = child_desc_total + immediate_count
+
+            node['immediate_child_count'] = immediate_count
+            node['total_descendant_count'] = total_desc_for_node
+
+            # Decide whether this node's children should be truncated in the
+            # EDITABLE JSON view.
+            status = 'complete'
+            truncate_children = False
+
+            # Depth-based truncation wins first: at or beyond max_depth, we
+            # keep the node itself but hide its children while still exposing
+            # accurate counts.
+            if max_depth is not None and current_depth >= max_depth and immediate_count > 0:
+                status = 'truncated_by_depth'
+                truncate_children = True
+
+            # If not truncated by depth, consider child_count_limit.
+            if (
+                not truncate_children
+                and child_count_limit is not None
+                and immediate_count > child_count_limit
+            ):
+                status = 'truncated_by_count'
+                truncate_children = True
+
+            if truncate_children:
+                # Children remain present in the FULL tree we already used for
+                # counts, but are hidden in the editable JSON so the agent is
+                # not forced to manage enormous child arrays.
+                node['children'] = []
+
+            node['children_status'] = status
+            total_descendants_here += total_desc_for_node
+
+        return total_descendants_here
     
     def _generate_markdown(
         self,
