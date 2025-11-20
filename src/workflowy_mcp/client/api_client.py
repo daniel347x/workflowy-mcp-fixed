@@ -156,13 +156,19 @@ class WorkFlowyClient:
         except json.JSONDecodeError as err:
             raise NetworkError("Invalid response format from API") from err
 
-    async def create_node(self, request: NodeCreateRequest, _internal_call: bool = False) -> WorkFlowyNode:
-        """Create a new node in WorkFlowy.
+    async def create_node(self, request: NodeCreateRequest, _internal_call: bool = False, max_retries: int = 5) -> WorkFlowyNode:
+        """Create a new node in WorkFlowy with exponential backoff retry.
         
         Args:
             request: Node creation request
             _internal_call: Internal flag - bypasses single-node forcing function (not exposed to MCP)
+            max_retries: Maximum retry attempts (default 5)
         """
+        import asyncio
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         # Check for single-node override token (skip if internal call)
         if not _internal_call:
             SINGLE_NODE_TOKEN = "<<<I_REALLY_NEED_SINGLE_NODE>>>"
@@ -213,25 +219,54 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         # Log warning if escaping occurred
         if message and "AUTO-ESCAPED" in message:
-            import logging
-            logging.getLogger(__name__).info(message)
-        
-        try:
-            response = await self.client.post("/nodes/", json=request.model_dump(exclude_none=True))
-            data = await self._handle_response(response)
-            # Create endpoint returns just {"item_id": "..."}
-            item_id = data.get("item_id")
-            if not item_id:
-                raise NetworkError(f"Invalid response from create endpoint: {data}")
+            logger.info(message)
 
-            # Fetch the created node to get actual saved state (including note field)
-            get_response = await self.client.get(f"/nodes/{item_id}")
-            node_data = await self._handle_response(get_response)
-            return WorkFlowyNode(**node_data["node"])
-        except httpx.TimeoutException as err:
-            raise TimeoutError("create_node") from err
-        except httpx.NetworkError as e:
-            raise NetworkError(f"Network error: {str(e)}") from e
+        retry_count = 0
+        base_delay = 1.0
+
+        while retry_count < max_retries:
+            # Force 1s delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(1.0)
+
+            try:
+                response = await self.client.post("/nodes/", json=request.model_dump(exclude_none=True))
+                data = await self._handle_response(response)
+                # Create endpoint returns just {"item_id": "..."}
+                item_id = data.get("item_id")
+                if not item_id:
+                    raise NetworkError(f"Invalid response from create endpoint: {data}")
+
+                # Fetch the created node to get actual saved state (including note field)
+                get_response = await self.client.get(f"/nodes/{item_id}")
+                node_data = await self._handle_response(get_response)
+                return WorkFlowyNode(**node_data["node"])
+
+            except RateLimitError as e:
+                retry_count += 1
+                retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
+                logger.warning(
+                    f"Rate limited on create_node. Retry after {retry_after}s. "
+                    f"Attempt {retry_count}/{max_retries}"
+                )
+                if retry_count < max_retries:
+                    await asyncio.sleep(retry_after)
+                else:
+                    raise
+
+            except NetworkError as e:
+                retry_count += 1
+                logger.warning(
+                    f"Network error on create_node: {e}. Retry {retry_count}/{max_retries}"
+                )
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise
+
+            except httpx.TimeoutException as err:
+                raise TimeoutError("create_node") from err
+
+        raise NetworkError("create_node failed after maximum retries")
 
     async def update_node(self, node_id: str, request: NodeUpdateRequest, max_retries: int = 5) -> WorkFlowyNode:
         """Update an existing node with exponential backoff retry.
@@ -494,41 +529,109 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         raise NetworkError("delete_node failed after maximum retries")
 
-    async def complete_node(self, node_id: str) -> WorkFlowyNode:
-        """Mark a node as completed."""
-        try:
-            response = await self.client.post(f"/nodes/{node_id}/complete")
-            data = await self._handle_response(response)
-            # API returns {"status": "ok"} - fetch updated node
-            if isinstance(data, dict) and data.get('status') == 'ok':
-                get_response = await self.client.get(f"/nodes/{node_id}")
-                node_data = await self._handle_response(get_response)
-                return WorkFlowyNode(**node_data["node"])
-            else:
-                # Fallback for unexpected format
-                return WorkFlowyNode(**data)
-        except httpx.TimeoutException as err:
-            raise TimeoutError("complete_node") from err
-        except httpx.NetworkError as e:
-            raise NetworkError(f"Network error: {str(e)}") from e
+    async def complete_node(self, node_id: str, max_retries: int = 5) -> WorkFlowyNode:
+        """Mark a node as completed with exponential backoff retry."""
+        import asyncio
+        import logging
 
-    async def uncomplete_node(self, node_id: str) -> WorkFlowyNode:
-        """Mark a node as not completed."""
-        try:
-            response = await self.client.post(f"/nodes/{node_id}/uncomplete")
-            data = await self._handle_response(response)
-            # API returns {"status": "ok"} - fetch updated node
-            if isinstance(data, dict) and data.get('status') == 'ok':
-                get_response = await self.client.get(f"/nodes/{node_id}")
-                node_data = await self._handle_response(get_response)
-                return WorkFlowyNode(**node_data["node"])
-            else:
-                # Fallback for unexpected format
-                return WorkFlowyNode(**data)
-        except httpx.TimeoutException as err:
-            raise TimeoutError("uncomplete_node") from err
-        except httpx.NetworkError as e:
-            raise NetworkError(f"Network error: {str(e)}") from e
+        logger = logging.getLogger(__name__)
+        retry_count = 0
+        base_delay = 1.0
+
+        while retry_count < max_retries:
+            # Force 1s delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(1.0)
+
+            try:
+                response = await self.client.post(f"/nodes/{node_id}/complete")
+                data = await self._handle_response(response)
+                # API returns {"status": "ok"} - fetch updated node
+                if isinstance(data, dict) and data.get('status') == 'ok':
+                    get_response = await self.client.get(f"/nodes/{node_id}")
+                    node_data = await self._handle_response(get_response)
+                    return WorkFlowyNode(**node_data["node"])
+                else:
+                    # Fallback for unexpected format
+                    return WorkFlowyNode(**data)
+
+            except RateLimitError as e:
+                retry_count += 1
+                retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
+                logger.warning(
+                    f"Rate limited on complete_node. Retry after {retry_after}s. "
+                    f"Attempt {retry_count}/{max_retries}"
+                )
+                if retry_count < max_retries:
+                    await asyncio.sleep(retry_after)
+                else:
+                    raise
+
+            except NetworkError as e:
+                retry_count += 1
+                logger.warning(
+                    f"Network error on complete_node: {e}. Retry {retry_count}/{max_retries}"
+                )
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise
+
+            except httpx.TimeoutException as err:
+                raise TimeoutError("complete_node") from err
+
+        raise NetworkError("complete_node failed after maximum retries")
+
+    async def uncomplete_node(self, node_id: str, max_retries: int = 5) -> WorkFlowyNode:
+        """Mark a node as not completed with exponential backoff retry."""
+        import asyncio
+        import logging
+
+        logger = logging.getLogger(__name__)
+        retry_count = 0
+        base_delay = 1.0
+
+        while retry_count < max_retries:
+            # Force 1s delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(1.0)
+
+            try:
+                response = await self.client.post(f"/nodes/{node_id}/uncomplete")
+                data = await self._handle_response(response)
+                # API returns {"status": "ok"} - fetch updated node
+                if isinstance(data, dict) and data.get('status') == 'ok':
+                    get_response = await self.client.get(f"/nodes/{node_id}")
+                    node_data = await self._handle_response(get_response)
+                    return WorkFlowyNode(**node_data["node"])
+                else:
+                    # Fallback for unexpected format
+                    return WorkFlowyNode(**data)
+
+            except RateLimitError as e:
+                retry_count += 1
+                retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
+                logger.warning(
+                    f"Rate limited on uncomplete_node. Retry after {retry_after}s. "
+                    f"Attempt {retry_count}/{max_retries}"
+                )
+                if retry_count < max_retries:
+                    await asyncio.sleep(retry_after)
+                else:
+                    raise
+
+            except NetworkError as e:
+                retry_count += 1
+                logger.warning(
+                    f"Network error on uncomplete_node: {e}. Retry {retry_count}/{max_retries}"
+                )
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise
+
+            except httpx.TimeoutException as err:
+                raise TimeoutError("uncomplete_node") from err
+
+        raise NetworkError("uncomplete_node failed after maximum retries")
 
     async def move_node(
         self,
