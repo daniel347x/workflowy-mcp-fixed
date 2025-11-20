@@ -334,6 +334,37 @@ async def reconcile_tree(
     parent_refs.add(parent_uuid)
     log(f"   Protected parent refs (will not delete): {parent_refs}")
 
+    # Detect parents whose children are not fully loaded in the source JSON.
+    #
+    # Primary signal is children_status != 'complete', but we also infer
+    # truncation from a mismatch between immediate_child_count and the
+    # length of the children array. This makes the detection robust even if
+    # children_status is dropped during JSON editing, as long as counts
+    # were annotated by SCRY.
+    truncated_parents: set[str] = set()
+    for nid, node in Map_S.items():
+        if nid is None:
+            continue
+
+        status = node.get('children_status')
+        immediate = node.get('immediate_child_count')
+        children = node.get('children') or []
+
+        # Implied truncation: counts say there are more children than the
+        # editable JSON currently exposes.
+        implied_truncation = (
+            isinstance(immediate, int) and
+            immediate > len(children)
+        )
+
+        if (status is not None and status != 'complete') or implied_truncation:
+            truncated_parents.add(nid)
+
+    if truncated_parents:
+        log(f"   Truncated parents (children not fully loaded in source): {truncated_parents}")
+    else:
+        log("   No truncated parents detected (all children fully loaded in source)")
+
     # ------------- phase 1: CREATE (top-down) -------------
     create_count = 0
     async def ensure_created(nodes: List[Node], desired_parent: Optional[str]):
@@ -439,6 +470,25 @@ async def reconcile_tree(
         if p is None:
             continue
         desired_ids = [x for x in desired if x is not None]
+        if not desired_ids:
+            continue
+
+        # If this parent has truncated children in the source JSON, we treat its
+        # existing children as an opaque blob: we can still move/delete the parent
+        # as a whole, and we can append new children, but we do NOT try to
+        # selectively reorder potentially-hidden originals.
+        if p in truncated_parents:
+            log(f"   Parent {p}: children_status != 'complete' in source; skipping REORDER to avoid touching hidden children")
+            continue
+
+        # Compare current order vs desired order. If they already match, skip
+        # emitting no-op move operations that would just burn rate limit.
+        current_children = Children_T.get(p, [])
+        current_ids = [cid for cid in current_children if cid in desired_ids]
+        if current_ids == desired_ids:
+            log(f"   Parent {p}: children already in desired order; skipping REORDER")
+            continue
+
         log(f"   Parent {p}: Reordering {len(desired_ids)} children")
         log(f"      Desired order (reversed for TOP positioning): {list(reversed(desired_ids))}")
         for idx, cid in enumerate(reversed(desired_ids)):
@@ -503,7 +553,23 @@ async def reconcile_tree(
         ids_in_target.discard(parent_uuid)
     log(f"   Target IDs (after reconciliation, excluding root): {ids_in_target}")
 
-    to_delete_before_protection = ids_in_target - ids_in_source
+    # Raw delete candidates: nodes present in target snapshot but absent from
+    # the source JSON. For parents whose children were not fully loaded in the
+    # source (truncated_parents), we must NOT interpret missing descendants as
+    # deletes – they were simply never shown.
+    def is_hidden_descendant(node_id: str, truncated_roots: set[str], parent_map: Dict[str, Optional[str]]) -> bool:
+        cur = parent_map.get(node_id)
+        while cur is not None:
+            if cur in truncated_roots:
+                return True
+            cur = parent_map.get(cur)
+        return False
+
+    raw_delete_candidates = ids_in_target - ids_in_source
+    to_delete_before_protection = {
+        tid for tid in raw_delete_candidates
+        if not is_hidden_descendant(tid, truncated_parents, Parent_T2)
+    }
     # Guardrail: protect all parents referenced in source (containers)
     to_delete = to_delete_before_protection - parent_refs
 
