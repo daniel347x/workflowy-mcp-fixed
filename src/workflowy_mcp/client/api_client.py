@@ -156,13 +156,13 @@ class WorkFlowyClient:
         except json.JSONDecodeError as err:
             raise NetworkError("Invalid response format from API") from err
 
-    async def create_node(self, request: NodeCreateRequest, _internal_call: bool = False, max_retries: int = 5) -> WorkFlowyNode:
+    async def create_node(self, request: NodeCreateRequest, _internal_call: bool = False, max_retries: int = 10) -> WorkFlowyNode:
         """Create a new node in WorkFlowy with exponential backoff retry.
         
         Args:
             request: Node creation request
             _internal_call: Internal flag - bypasses single-node forcing function (not exposed to MCP)
-            max_retries: Maximum retry attempts (default 5)
+            max_retries: Maximum retry attempts (default 10)
         """
         import asyncio
         import logging
@@ -2364,6 +2364,18 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             error_msg = f"Bulk import failed: {str(e)}"
             logger.error(error_msg)
             stats["errors"].append(error_msg)
+
+            # Also append a final ERROR line to the reconcile debug log so the
+            # log file clearly shows the failure cause at the end of the run.
+            try:
+                from datetime import datetime
+                log_path = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\reconcile_debug.log"
+                ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                with open(log_path, "a", encoding="utf-8") as dbg:
+                    dbg.write(f"[{ts}] ERROR: {error_msg}\n")
+            except Exception:
+                # Logging to reconcile_debug.log is best-effort only
+                pass
             
             return {
                 "success": False,
