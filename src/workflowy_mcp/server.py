@@ -196,12 +196,13 @@ async def _start_background_job(
     _jobs[job_id] = {
         "job_id": job_id,
         "kind": kind,
-        "status": "pending",  # pending | running | completed | failed
+        "status": "pending",  # pending | running | completed | failed | cancelling
         "payload": payload,
         "result": None,
         "error": None,
         "started_at": datetime.utcnow().isoformat(),
         "finished_at": None,
+        "_task": None,  # internal field, not exposed in status
     }
 
     async def runner() -> None:
@@ -210,13 +211,18 @@ async def _start_background_job(
             result = await coro_factory(job_id)
             _jobs[job_id]["result"] = result
             _jobs[job_id]["status"] = "completed" if result.get("success", True) else "failed"
+        except asyncio.CancelledError:
+            # Explicit cancellation via mcp_cancel_job
+            _jobs[job_id]["error"] = "CancelledError: Job was cancelled by user request"
+            _jobs[job_id]["status"] = "failed"
         except Exception as e:  # noqa: BLE001
             _jobs[job_id]["error"] = f"{type(e).__name__}: {e}"
             _jobs[job_id]["status"] = "failed"
         finally:
             _jobs[job_id]["finished_at"] = datetime.utcnow().isoformat()
 
-    asyncio.create_task(runner())
+    task = asyncio.create_task(runner())
+    _jobs[job_id]["_task"] = task
 
     return {
         "success": True,
@@ -248,8 +254,38 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
     if not job:
         return {"success": False, "error": f"Unknown job_id: {job_id}"}
 
-    view = {k: v for k, v in job.items() if k != "payload"}
+    # Do not expose internal task handle
+    view = {k: v for k, v in job.items() if k not in ("payload", "_task")}
     return {"success": True, **view}
+
+
+@mcp.tool(
+    name="mcp_cancel_job",
+    description="Request cancellation of a long-running MCP job (ETCH, NEXUS, etc.).",
+)
+async def mcp_cancel_job(job_id: str) -> dict:
+    """Attempt to cancel a background MCP job.
+
+    This sends an asyncio.CancelledError into the job task. The job will
+    transition to status='failed' with an error message indicating
+    cancellation.
+    """
+    job = _jobs.get(job_id)
+    if not job:
+        return {"success": False, "error": f"Unknown job_id: {job_id}"}
+
+    task = job.get("_task")
+    if task is None:
+        return {"success": False, "error": "Job has no associated task (cannot cancel)."}
+
+    if task.done():
+        return {"success": False, "error": "Job already completed."}
+
+    # Mark as cancelling for visibility; runner will finalize status
+    job["status"] = "cancelling"
+    task.cancel()
+
+    return {"success": True, "job_id": job_id, "status": "cancelling"}
 
 
 # 🔐 SECRET CODE VALIDATION - Brute Force Agent Training Override
