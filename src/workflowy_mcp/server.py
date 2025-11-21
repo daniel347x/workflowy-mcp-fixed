@@ -362,7 +362,7 @@ async def create_single_node_base(
     """Deprecated - use ETCH instead."""
     raise ValueError("""⚠️ FUNCTION RENAMED
 
-The function 'workflowy_create_single_node' has been renamed to 'workflowy_create_single_node__WARNING__prefer_bulk_import'.
+The function 'workflowy_create_single_node' has been renamed to 'workflowy_create_single_node__WARNING__prefer_ETCH'.
 
 BUT MORE IMPORTANTLY: Use workflowy_etch (ETCH command) instead!
 
@@ -381,7 +381,7 @@ ETCH is better:
 """)
 
 # Tool: Create Single Node (With Warning)
-@mcp.tool(name="workflowy_create_single_node__WARNING__prefer_bulk_import", description="⚠️ WARNING: For 2+ nodes, use workflowy_bulk_import instead (vastly more efficient). This creates ONE node only.")
+@mcp.tool(name="workflowy_create_single_node__WARNING__prefer_ETCH", description="⚠️ WARNING: Prefer workflowy_etch (ETCH) instead. This creates ONE node only.")
 async def create_node(
     name: str,
     parent_id: str | None = None,
@@ -393,7 +393,7 @@ async def create_node(
 ) -> dict:
     """Create a SINGLE node in WorkFlowy.
     
-    ⚠️ WARNING: For creating 2+ nodes, use workflowy_bulk_import instead.
+    ⚠️ WARNING: Prefer workflowy_etch (ETCH) for creating 2+ nodes.
     
     This tool is ONLY for:
     - Adding one VYRTHEX to existing log (real-time work)
@@ -413,7 +413,7 @@ async def create_node(
         Dictionary with node data and warning message
     """
     # 🔐 SECRET CODE VALIDATION
-    is_valid, error = validate_secret_code(secret_code, "workflowy_create_single_node__WARNING__prefer_bulk_import")
+    is_valid, error = validate_secret_code(secret_code, "workflowy_create_single_node__WARNING__prefer_ETCH")
     if not is_valid:
         raise ValueError(error)
     
@@ -438,7 +438,7 @@ async def create_node(
         # Return node data with warning message
         return {
             **node.model_dump(),
-            "_warning": "⚠️ WARNING: You just created a SINGLE node. For 2+ nodes, use workflowy_bulk_import instead (2 tool calls vs 10+)."
+            "_warning": "⚠️ WARNING: You just created a SINGLE node. For 2+ nodes, use workflowy_etch instead (same performance, more capability)."
         }
     except Exception as e:
         if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
