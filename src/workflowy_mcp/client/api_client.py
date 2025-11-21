@@ -2114,70 +2114,45 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "errors": [f"Failed to read JSON file: {str(e)}"]
             }
         
-        # Handle both old format (array) and new format (dict with metadata)
-        if isinstance(payload, dict) and 'nodes' in payload:
-            # New format with metadata
-            export_root_id = payload.get('export_root_id')
-            nodes_to_create = payload.get('nodes', [])
-            logger.info(f"Detected export package with export_root_id={export_root_id}")
-            
-            # Use export_root_id as default if parent_id not provided
-            target_backup_file = None
-            if parent_id is None:
-                if export_root_id:
-                    parent_id = export_root_id
-                    logger.info(f"Using export_root_id as parent_id: {parent_id}")
-                else:
-                    return {
-                        "success": False,
-                        "nodes_created": 0,
-                        "root_node_ids": [],
-                        "api_calls": 0,
-                        "retries": 0,
-                        "rate_limit_hits": 0,
-                        "errors": ["No parent_id provided and no export_root_id found in JSON file"]
-                    }
-            else:
-                # parent_id was explicitly provided - check if it's different from export_root_id
-                if export_root_id and parent_id != export_root_id:
-                    # AUTO-BACKUP: They're overriding the parent - backup target first!
-                    from datetime import datetime
-                    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                    target_backup_file = json_file.replace('.json', f'.target_backup_{timestamp}.json')
-                    logger.warning(f"Parent override detected! export_root_id={export_root_id}, provided parent_id={parent_id}")
-                    logger.info(f"Auto-backing up target to: {target_backup_file}")
-                    try:
-                        backup_result = await self.bulk_export_to_file(parent_id, target_backup_file)
-                        logger.info(f"Target backup complete: {backup_result.get('node_count', 0)} nodes")
-                    except Exception as e:
-                        logger.error(f"Target backup failed: {e}")
-                        # Continue anyway - backup failure shouldn't block import
-        elif isinstance(payload, list):
-            # Old format (backward compatibility)
-            nodes_to_create = payload
-            logger.info("Detected legacy JSON format (array without metadata)")
-            
-            if parent_id is None:
-                return {
-                    "success": False,
-                    "nodes_created": 0,
-                    "root_node_ids": [],
-                    "api_calls": 0,
-                    "retries": 0,
-                    "rate_limit_hits": 0,
-                    "errors": ["Legacy format requires explicit parent_id parameter"]
-                }
+        # Handle ONLY new format: dict with metadata + nodes
+        # Legacy bare-array format is no longer supported for NEXUS weaves.
+        if not (isinstance(payload, dict) and 'nodes' in payload):
+            raise NetworkError(
+                "NEXUS JSON must be an object with 'export_root_id' and 'nodes' keys (metadata wrapper). "
+                "Re-scry the Workflowy node to regenerate a valid SCRI file."
+            )
+        
+        export_root_id = payload.get('export_root_id')
+        nodes_to_create = payload.get('nodes')
+        logger.info(f"Detected export package with export_root_id={export_root_id}")
+        
+        # Validate header fields
+        if not export_root_id or not isinstance(nodes_to_create, list):
+            raise NetworkError(
+                "NEXUS SCRY header malformed: 'export_root_id' missing or 'nodes' is not a list. "
+                "Do not strip or rewrite the guardian block; re-scry if needed."
+            )
+        
+        # Use export_root_id as default if parent_id not provided
+        target_backup_file = None
+        if parent_id is None:
+            parent_id = export_root_id
+            logger.info(f"Using export_root_id as parent_id: {parent_id}")
         else:
-            # Invalid format
-            return {
-                "success": False,
-                "nodes_created": 0,
-                "root_node_ids": [],
-                "api_calls": 0,
-                "retries": 0,
-                "rate_limit_hits": 0,
-                "errors": ["JSON must contain an array of nodes"]
-            }
+            # parent_id was explicitly provided - check if it's different from export_root_id
+            if export_root_id and parent_id != export_root_id:
+                # AUTO-BACKUP: They're overriding the parent - backup target first!
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                target_backup_file = json_file.replace('.json', f'.target_backup_{timestamp}.json')
+                logger.warning(f"Parent override detected! export_root_id={export_root_id}, provided parent_id={parent_id}")
+                logger.info(f"Auto-backing up target to: {target_backup_file}")
+                try:
+                    backup_result = await self.bulk_export_to_file(parent_id, target_backup_file)
+                    logger.info(f"Target backup complete: {backup_result.get('node_count', 0)} nodes")
+                except Exception as e:
+                    logger.error(f"Target backup failed: {e}")
+                    # Continue anyway - backup failure shouldn't block import
         
         # 🔥 VALIDATE & AUTO-ESCAPE NOTE FIELDS (angle brackets & newline escapes) 🔥
         def validate_and_escape_nodes_recursive(nodes_list: list[dict[str, Any]], path: str = "root") -> tuple[bool, str | None, list[str]]:
@@ -2308,8 +2283,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # ============ EXECUTE RECONCILIATION ============
         
         try:
+            # Pass full payload (including export_root_id and guardian metadata)
+            # so the reconciliation algorithm can enforce parent consistency.
             result_plan = await reconcile_tree(
-                source_json=nodes_to_create,
+                source_json=payload,
                 parent_uuid=parent_id,
                 list_nodes=list_nodes_wrapper,
                 create_node=create_node_wrapper,
