@@ -338,7 +338,7 @@ This is a WARNING function. You should be using GLIMPSE or ETCH instead.
 3. If Dan grants permission, he'll provide the code
 4. Call the SAME function again with the EXACT SAME parameters you used the first time, but add: secret_code="[code-from-Dan]" (do not change anything else).
 
-   Example (arguments object): { "name": "...", "parent_id": "...", "note": "...", "secret_code": "[code-from-Dan]" }
+   Example (arguments object): {{ "name": "...", "parent_id": "...", "note": "...", "secret_code": "[code-from-Dan]" }}
 
 🚫 IF DAN SAYS NO:
 - You are NOT the exception
