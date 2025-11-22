@@ -85,7 +85,10 @@ async def reconcile_tree(
     
     # Open debug log file
     debug_log = open(r'E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log', 'w', encoding='utf-8')
-    
+
+    # Record start time of this WEAVE for rate-limit aware phases (e.g., DELETE)
+    weave_start_time = datetime.now()
+
     def log(msg):
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]  # HH:MM:SS.mmm
         debug_log.write(f"[{timestamp}] {msg}\n")
@@ -539,6 +542,34 @@ async def reconcile_tree(
     if skip_delete:
         log("   Clone mode active: SKIPPING DELETE phase by design.")
         return log_summary_and_close(note="Clone mode: no deletes")
+
+    # Known Workflowy behavior: /nodes-export is limited to ~1 call/minute.
+    # We almost always hit rate limits here because a bulk export was already
+    # performed at the start of the WEAVE (Phase 0), and DELETE typically
+    # begins <60s later. To reduce noisy 429s and make behavior predictable,
+    # wait until at least ~65 seconds have elapsed since weave_start_time
+    # before issuing the DELETE-phase bulk export.
+    try:
+        import asyncio
+        min_elapsed = 65.0  # seconds
+        now = datetime.now()
+        elapsed = (now - weave_start_time).total_seconds()
+        if elapsed < min_elapsed:
+            wait_seconds = min_elapsed - elapsed
+            log(
+                f"   DELETE phase: waiting {wait_seconds:.1f}s before bulk export "
+                f"to respect Workflowy /nodes-export rate limit (elapsed since WEAVE_START={elapsed:.1f}s)"
+            )
+            await asyncio.sleep(wait_seconds)
+            now2 = datetime.now()
+            elapsed2 = (now2 - weave_start_time).total_seconds()
+            log(
+                f"   DELETE phase: wait complete; elapsed since WEAVE_START={elapsed2:.1f}s. "
+                f"Proceeding to bulk export snapshot."
+            )
+    except Exception:
+        # If anything goes wrong with timing/sleep, continue without blocking DELETE.
+        pass
 
     ids_in_source = {n['id'] for n in preorder(source_nodes)}
     log(f"   Source IDs (from preorder): {ids_in_source}")

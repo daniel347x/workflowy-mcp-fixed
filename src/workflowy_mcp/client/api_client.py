@@ -156,6 +156,23 @@ class WorkFlowyClient:
         except json.JSONDecodeError as err:
             raise NetworkError("Invalid response format from API") from err
 
+    def _log_reconcile_retry(self, message: str) -> None:
+        """Best-effort mirror of rate-limit retry info into reconcile_debug.log.
+
+        This is in addition to normal logger output and is safe to call even when
+        no reconciliation is running (it simply appends to the standard log file
+        path used by the NEXUS reconciliation algorithm).
+        """
+        try:
+            from datetime import datetime
+            log_path = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\reconcile_debug.log"
+            ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            with open(log_path, "a", encoding="utf-8") as dbg:
+                dbg.write(f"[{ts}] {message}\n")
+        except Exception:
+            # Never let logging failures affect API behavior
+            pass
+
     async def create_node(self, request: NodeCreateRequest, _internal_call: bool = False, max_retries: int = 10) -> WorkFlowyNode:
         """Create a new node in WorkFlowy with exponential backoff retry.
         
@@ -268,7 +285,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         raise NetworkError("create_node failed after maximum retries")
 
-    async def update_node(self, node_id: str, request: NodeUpdateRequest, max_retries: int = 5) -> WorkFlowyNode:
+    async def update_node(self, node_id: str, request: NodeUpdateRequest, max_retries: int = 10) -> WorkFlowyNode:
         """Update an existing node with exponential backoff retry.
         
         Args:
@@ -350,7 +367,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         raise NetworkError("update_node failed after maximum retries")
 
-    async def get_node(self, node_id: str, max_retries: int = 5) -> WorkFlowyNode:
+    async def get_node(self, node_id: str, max_retries: int = 10) -> WorkFlowyNode:
         """Retrieve a specific node by ID with exponential backoff retry.
         
         Args:
@@ -407,7 +424,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         raise NetworkError("get_node failed after maximum retries")
 
-    async def list_nodes(self, request: NodeListRequest, max_retries: int = 5) -> tuple[list[WorkFlowyNode], int]:
+    async def list_nodes(self, request: NodeListRequest, max_retries: int = 10) -> tuple[list[WorkFlowyNode], int]:
         """List nodes with optional filtering and exponential backoff retry.
         
         Args:
@@ -476,7 +493,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         raise NetworkError("list_nodes failed after maximum retries")
 
-    async def delete_node(self, node_id: str, max_retries: int = 5) -> bool:
+    async def delete_node(self, node_id: str, max_retries: int = 10) -> bool:
         """Delete a node and all its children with exponential backoff retry.
         
         Args:
@@ -498,19 +515,35 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 response = await self.client.delete(f"/nodes/{node_id}")
                 # Delete endpoint returns just a message, not nested data
                 await self._handle_response(response)
+                # If we reached here after one or more retries, log success to reconcile log
+                if retry_count > 0:
+                    success_msg = (
+                        f"delete_node {node_id} succeeded after {retry_count + 1}/{max_retries} attempts "
+                        f"following rate limiting or transient errors."
+                    )
+                    logger.info(success_msg)
+                    self._log_reconcile_retry(success_msg)
                 return True
                 
             except RateLimitError as e:
                 retry_count += 1
                 retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
-                logger.warning(
-                    f"Rate limited on delete_node. Retry after {retry_after}s. "
+                retry_msg = (
+                    f"Rate limited on delete_node {node_id}. Retry after {retry_after}s. "
                     f"Attempt {retry_count}/{max_retries}"
                 )
+                logger.warning(retry_msg)
+                self._log_reconcile_retry(retry_msg)
                 
                 if retry_count < max_retries:
                     await asyncio.sleep(retry_after)
                 else:
+                    final_msg = (
+                        f"delete_node {node_id} exhausted retries ({retry_count}/{max_retries}) "
+                        f"due to rate limiting – aborting."
+                    )
+                    logger.error(final_msg)
+                    self._log_reconcile_retry(final_msg)
                     raise
                     
             except NetworkError as e:
@@ -529,7 +562,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         raise NetworkError("delete_node failed after maximum retries")
 
-    async def complete_node(self, node_id: str, max_retries: int = 5) -> WorkFlowyNode:
+    async def complete_node(self, node_id: str, max_retries: int = 10) -> WorkFlowyNode:
         """Mark a node as completed with exponential backoff retry."""
         import asyncio
         import logging
@@ -581,7 +614,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         raise NetworkError("complete_node failed after maximum retries")
 
-    async def uncomplete_node(self, node_id: str, max_retries: int = 5) -> WorkFlowyNode:
+    async def uncomplete_node(self, node_id: str, max_retries: int = 10) -> WorkFlowyNode:
         """Mark a node as not completed with exponential backoff retry."""
         import asyncio
         import logging
@@ -638,7 +671,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         node_id: str,
         parent_id: str | None = None,
         position: str = "top",
-        max_retries: int = 5,
+        max_retries: int = 10,
     ) -> bool:
         """Move a node to a new parent with exponential backoff retry.
         
@@ -704,7 +737,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
     async def export_nodes(
         self,
         node_id: str | None = None,
-        max_retries: int = 5,
+        max_retries: int = 10,
     ) -> dict[str, Any]:
         """Export all nodes or filter to specific node's subtree with exponential backoff retry.
         
@@ -739,6 +772,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # If no filtering requested, return everything
                 if node_id is None:
                     data["_total_fetched_from_api"] = total_before_filter
+                    if retry_count > 0:
+                        success_msg = (
+                            f"export_nodes (full account or subtree) succeeded after {retry_count + 1}/{max_retries} attempts "
+                            f"following rate limiting or transient errors."
+                        )
+                        logger.info(success_msg)
+                        self._log_reconcile_retry(success_msg)
                     return data
                 
                 # Filter to specific node and its descendants
@@ -761,6 +801,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # Filter nodes list
                 filtered_nodes = [node for node in all_nodes if node["id"] in included_ids]
                 
+                if retry_count > 0:
+                    success_msg = (
+                        f"export_nodes (filtered subtree {node_id}) succeeded after {retry_count + 1}/{max_retries} attempts "
+                        f"following rate limiting or transient errors."
+                    )
+                    logger.info(success_msg)
+                    self._log_reconcile_retry(success_msg)
+                
                 return {
                     "nodes": filtered_nodes,
                     "_total_fetched_from_api": total_before_filter,
@@ -770,10 +818,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             except RateLimitError as e:
                 retry_count += 1
                 retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
-                logger.warning(
+                retry_msg = (
                     f"Rate limited on export_nodes. Retry after {retry_after}s. "
                     f"Attempt {retry_count}/{max_retries}"
                 )
+                logger.warning(retry_msg)
+                self._log_reconcile_retry(retry_msg)
                 
                 if retry_count < max_retries:
                     await asyncio.sleep(retry_after)
@@ -1907,7 +1957,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         async def create_node_with_retry(
             request: NodeCreateRequest,
-            max_retries: int = 5,
+            max_retries: int = 10,
             internal: bool = False
         ) -> WorkFlowyNode | None:
             """Create node with exponential backoff retry.
