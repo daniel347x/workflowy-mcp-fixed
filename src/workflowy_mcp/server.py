@@ -761,6 +761,200 @@ async def export_node(
         raise
 
 
+# PHANTOM GEMSTONE NEXUS – High-level MCP tools
+@mcp.tool(
+    name="nexus_summon",
+    description=(
+        "INITIATE a CORINTHIAN NEXUS on the ETHER: perform a COARSE SCRY of Workflowy "
+        "under a root to reveal a limited TERRAIN (a new geography named by your "
+        "NEXUS TAG). Choose max_depth and child_limit carefully—keep them minimal. "
+        "Later, you will IGNITE the ETHER more deeply on selected SHARDS."
+    ),
+)
+async def nexus_summon(
+    nexus_tag: str,
+    workflowy_root_id: str,
+    max_depth: int,
+    child_limit: int,
+    reset_if_exists: bool = False,
+) -> dict:
+    """SCRY the ETHER under a root to create a coarse TERRAIN bound to a NEXUS TAG.
+
+    This reveals a limited TERRAIN—a new geography named by your NEXUS TAG.
+    Keep the SCRY shallow: choose max_depth and child_limit carefully.
+    Later you will IGNITE the ETHER more deeply on selected SHARDS.
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.nexus_summon(
+            nexus_tag=nexus_tag,
+            workflowy_root_id=workflowy_root_id,
+            max_depth=max_depth,
+            child_limit=child_limit,
+            reset_if_exists=reset_if_exists,
+        )
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
+@mcp.tool(
+    name="nexus_ignite_shards",
+    description=(
+        "IGNITE selected SHARDS so the ETHER glows more deeply around them, revealing "
+        "deeper layers (but not necessarily to FULL depth). The deeper revelation is "
+        "captured as a PHANTOM GEM (S0), an unrefracted witness of those subtrees."
+    ),
+)
+async def nexus_ignite_shards(
+    nexus_tag: str,
+    root_ids: list[str],
+    max_depth: int | None = None,
+    child_limit: int | None = None,
+    per_root_limits: dict[str, dict[str, int]] | None = None,
+) -> dict:
+    """IGNITE SHARDS in the TERRAIN so the ETHER glows more deeply around them.
+
+    From an existing TERRAIN, mark specific nodes as SHARDS and IGNITE them. The
+    ETHER glows around these SHARDS, revealing deeper layers (but not necessarily
+    to full depth). The revealed structure is condensed into a PHANTOM GEM (S0).
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.nexus_ignite_shards(
+            nexus_tag=nexus_tag,
+            root_ids=root_ids,
+            max_depth=max_depth,
+            child_limit=child_limit,
+            per_root_limits=per_root_limits,
+        )
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
+@mcp.tool(
+    name="nexus_anchor_gems",
+    description=(
+        "Let the PHANTOM GEM ILLUMINATE the TRUE GEMS that were ALWAYS PRESENT in "
+        "the TERRAIN but not yet revealed: where SHARDS were marked, the TERRAIN "
+        "now shimmers with deeper revealed structure (FIRST IMBUE—NOTHING CHANGES "
+        "in the ETHER). The PHANTOM GEM remains a REFLECTION: an untouched witness."
+    ),
+)
+async def nexus_anchor_gems(
+    nexus_tag: str,
+) -> dict:
+    """ANCHOR the PHANTOM GEM into the TERRAIN to create SHIMMERING TERRAIN.
+
+    The PHANTOM GEM now illuminates the TRUE GEMS that were always present in
+    the TERRAIN but not yet revealed. Where SHARDS were marked, the TERRAIN now
+    shimmers with deeper revealed structure (FIRST IMBUE—Workflowy remains
+    untouched). The PHANTOM GEM stays as an unrefracted witness.
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.nexus_anchor_gems(nexus_tag=nexus_tag)
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
+@mcp.tool(
+    name="nexus_anchor_jewels",
+    description=(
+        "Anchor the PHANTOM JEWELS (S1) within the SHIMMERING TERRAIN (T1), "
+        "transmuting the REVEALED GEMS into NEW JEWELS that are an exact "
+        "impregnation of the PHANTOM JEWELS. The TERRAIN becomes ENCHANTED (SECOND "
+        "IMBUE), with the PHANTOM GEM (S0) as witness to the ORIGINAL state. The "
+        "ENCHANTED TERRAIN is now EMBODIED and REAL as JSON—Workflowy remains "
+        "untouched until WEAVE."
+    ),
+)
+async def nexus_anchor_jewels(
+    nexus_tag: str,
+) -> dict:
+    """ANCHOR PHANTOM JEWELS into SHIMMERING TERRAIN to create ENCHANTED TERRAIN.
+
+    This performs the SECOND IMBUE: anchoring PHANTOM JEWELS (S1) within the
+    SHIMMERING TERRAIN (T1), transmuting the REVEALED GEMS into NEW JEWELS that
+    are an exact impregnation of the PHANTOM JEWELS. The TERRAIN becomes
+    ENCHANTED, with the PHANTOM GEM (S0) as witness to the original state. The
+    ENCHANTED TERRAIN is real as JSON, but the ETHER (Workflowy) is still
+    untouched.
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.nexus_anchor_jewels(nexus_tag=nexus_tag)
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
+@mcp.tool(
+    name="nexus_weave_enchanted",
+    description=(
+        "WEAVE the ENCHANTED TERRAIN (T2) back into the living Workflowy ETHER, "
+        "completing the PHANTOM GEMSTONE NEXUS. Can run as a DRY RUN to simulate "
+        "which parts of the ETHER would be transmuted before actually weaving."
+    ),
+)
+async def nexus_weave_enchanted(
+    nexus_tag: str,
+    dry_run: bool = False,
+) -> dict:
+    """WEAVE ENCHANTED TERRAIN back into the ETHER.
+
+    Take the ENCHANTED TERRAIN (T2) you have crafted in JSON form and WEAVE it
+    back into the living Workflowy ETHER. In dry_run mode, simulate the
+    transmutation without touching the ETHER; otherwise, perform the weave with
+    reconcile safeguards.
+    """
+    client = get_client()
+
+    # Rate limiting is managed within the client for reconcile operations.
+    try:
+        result = await client.nexus_weave_enchanted(nexus_tag=nexus_tag, dry_run=dry_run)
+        return result
+    except Exception as e:  # noqa: BLE001
+        return {
+            "success": False,
+            "errors": [f"WEAVE failed: {type(e).__name__}: {e}"],
+        }
+
+
 # Tool: Bulk Export to JSON File
 @mcp.tool(
     name="nexus_scry",

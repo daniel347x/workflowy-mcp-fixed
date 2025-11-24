@@ -2459,7 +2459,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
     def nexus_purge_keystones(self, keystone_ids: list[str]) -> dict[str, Any]:
         """Delete one or more NEXUS Keystone backup files."""
-        backup_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_backups"
+        backup_dir = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_backups"
         purged_files = []
         errors = []
 
@@ -2475,6 +2475,488 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     except Exception as e:
                         errors.append(f"Failed to delete {filename}: {e}")
             if not found and not any(keystone_id in e for e in errors):
-                 errors.append(f"Keystone with ID '{keystone_id}' not found.")
-        
+                errors.append(f"Keystone with ID '{keystone_id}' not found.")
+
         return {"success": len(errors) == 0, "purged_count": len(purged_files), "purged_files": purged_files, "errors": errors}
+
+    def _get_nexus_dir(self, nexus_tag: str) -> str:
+        """Resolve base directory for a CORINTHIAN NEXUS run and ensure it exists.
+
+        This keeps all intermediate JSON under a single tree per nexus_tag, e.g.:
+        E:\\...\\TODO\\temp\\nexus_runs\\<nexus_tag>\\coarse_terrain.json
+        """
+        base_dir = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_runs"
+        run_dir = os.path.join(base_dir, nexus_tag)
+        os.makedirs(run_dir, exist_ok=True)
+        return run_dir
+
+    async def nexus_summon(
+        self,
+        nexus_tag: str,
+        workflowy_root_id: str,
+        max_depth: int,
+        child_limit: int,
+    ) -> dict[str, Any]:
+        """SCRY → coarse_terrain.json for a new CORINTHIAN NEXUS.
+
+        This is the initiating stage of the PHANTOM GEMSTONE pipeline. It:
+        - Exports a hierarchical SCRY of the Workflowy subtree rooted at
+          ``workflowy_root_id`` using bulk_export_to_file, with the given
+          ``max_depth`` and ``child_limit`` parameters.
+        - Writes the result to ``coarse_terrain.json`` under the directory for
+          ``nexus_tag``.
+
+        The resulting JSON is the coarse TERRAIN (T0) used by later stages:
+        - nexus_ignite_shards (IGNITE SHARDS → phantom_gem)
+        - nexus_anchor_gems   (ANCHOR GEMS → shimmering_terrain)
+        - nexus_anchor_jewels (ANCHOR JEWELS → enchanted_terrain)
+        - nexus_weave_enchanted (WEAVE → Workflowy)
+        """
+        run_dir = self._get_nexus_dir(nexus_tag)
+        coarse_path = os.path.join(run_dir, "coarse_terrain.json")
+
+        # Use the existing bulk_export_to_file helper to perform the SCRY.
+        # We deliberately use use_efficient_traversal=False so that
+        # max_depth/child_limit semantics are handled by the NEXUS export
+        # pipeline (annotate_child_counts_and_truncate).
+        result = await self.bulk_export_to_file(
+            node_id=workflowy_root_id,
+            output_file=coarse_path,
+            include_metadata=True,
+            use_efficient_traversal=False,
+            max_depth=max_depth,
+            child_count_limit=child_limit,
+        )
+
+        # Optionally, record a tiny manifest stub for this NEXUS run. We keep
+        # it minimal here; richer tracking can be layered on later.
+        manifest_path = os.path.join(run_dir, "nexus_manifest.json")
+        try:
+            from datetime import datetime
+
+            manifest = {
+                "nexus_tag": nexus_tag,
+                "workflowy_root_id": workflowy_root_id,
+                "max_depth": max_depth,
+                "child_limit": child_limit,
+                "stage": "coarse_terrain",
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+            }
+            with open(manifest_path, "w", encoding="utf-8") as mf:
+                json.dump(manifest, mf, indent=2)
+        except Exception:
+            # Manifest is best-effort only; never block NEXUS on this.
+            pass
+
+        return {
+            "success": bool(result.get("success", True)),
+            "nexus_tag": nexus_tag,
+            "coarse_terrain": coarse_path,
+            "node_count": result.get("node_count"),
+            "depth": result.get("depth"),
+        }
+
+    async def nexus_ignite_shards(
+        self,
+        nexus_tag: str,
+        root_ids: list[str],
+        max_depth: int | None = None,
+        child_limit: int | None = None,
+        per_root_limits: dict[str, dict[str, int]] | None = None,
+    ) -> dict[str, Any]:
+        """IGNITE SHARDS → phantom_gem.json (PHANTOM GEM S0).
+
+        This stage performs a shards-only deeper SCRY for the selected roots and
+        writes the result to ``phantom_gem.json`` under the directory for
+        ``nexus_tag``. It does **not** produce a new terrain file; instead, it
+        prepares the PHANTOM GEM that later stages (ANCHOR GEMS, QUILLSTORM,
+        ANCHOR JEWELS) will use.
+
+        Depth/child semantics:
+        - The underlying export fetches full subtrees for each root, but
+          ``max_depth`` and ``child_limit`` are applied at the JSON level via
+          _annotate_child_counts_and_truncate, mirroring the NEXUS SCRY
+          behavior used in bulk_export_to_file.
+        - per_root_limits (if provided) can override max_depth/child_limit on a
+          per-root basis: {root_id: {"max_depth": d, "child_limit": c}}.
+
+        SAFETY INVARIANT:
+        - The set of roots must be disjoint: no root may be an ancestor or
+          descendant of another root in the coarse_terrain tree. If such a
+          relationship is detected, this tool fails with a clear error rather
+          than attempting to construct an overlapping PHANTOM GEM.
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        run_dir = self._get_nexus_dir(nexus_tag)
+        coarse_path = os.path.join(run_dir, "coarse_terrain.json")
+        phantom_path = os.path.join(run_dir, "phantom_gem.json")
+
+        # Ensure coarse terrain exists for this nexus_tag (Tool 1 must run first).
+        if not os.path.exists(coarse_path):
+            raise NetworkError(
+                "coarse_terrain.json not found for nexus_tag. "
+                "Call nexus_summon(...) before nexus_ignite_shards(...)."
+            )
+
+        if not root_ids:
+            # Nothing to ignite; write an empty phantom gem and return.
+            empty_payload = {"nexus_tag": nexus_tag, "roots": [], "nodes": []}
+            try:
+                with open(phantom_path, "w", encoding="utf-8") as f:
+                    json.dump(empty_payload, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                raise NetworkError(f"Failed to write empty phantom_gem.json: {e}") from e
+
+            return {
+                "success": True,
+                "nexus_tag": nexus_tag,
+                "phantom_gem": phantom_path,
+                "roots": [],
+                "node_count": 0,
+            }
+
+        # HARD SAFETY: roots must be pairwise disjoint (no ancestor/descendant
+        # relationships) according to the coarse_terrain tree.
+        try:
+            with open(coarse_path, "r", encoding="utf-8") as f:
+                coarse_data = json.load(f)
+        except Exception as e:
+            raise NetworkError(f"Failed to read coarse_terrain.json: {e}") from e
+
+        if not (isinstance(coarse_data, dict) and "nodes" in coarse_data):
+            raise NetworkError(
+                "coarse_terrain.json must be an export package with 'nodes' key. "
+                "Re-summon the NEXUS via nexus_summon(...) if this is not the case."
+            )
+
+        terrain_nodes: list[dict[str, Any]] = coarse_data.get("nodes", [])
+
+        # Build parent map from hierarchical nodes (id -> parent_id).
+        parent_by_id: dict[str, str | None] = {}
+
+        def _index_parents(nodes: list[dict[str, Any]], parent_id: str | None) -> None:
+            for node in nodes:
+                nid = node.get("id")
+                if nid:
+                    parent_by_id[nid] = parent_id
+                    children = node.get("children") or []
+                    if children:
+                        _index_parents(children, nid)
+
+        _index_parents(terrain_nodes, None)
+
+        # Normalize roots: dedupe while preserving order.
+        unique_root_ids: list[str] = []
+        for rid in root_ids:
+            if rid not in unique_root_ids:
+                unique_root_ids.append(rid)
+        roots_set = set(unique_root_ids)
+
+        # Ensure all roots exist in the coarse terrain tree.
+        missing = [rid for rid in roots_set if rid not in parent_by_id]
+        if missing:
+            raise NetworkError(
+                "nexus_ignite_shards: one or more roots are not present in coarse_terrain.json "
+                f"for nexus_tag={nexus_tag}: {missing}. "
+                "Choose roots from the current coarse SCRY (nexus_summon)."
+            )
+
+        # Enforce disjointness: walk ancestor chain for each root and ensure we
+        # never encounter another root_id in that chain.
+        for rid in roots_set:
+            parent = parent_by_id.get(rid)
+            while parent is not None:
+                if parent in roots_set:
+                    raise NetworkError(
+                        "nexus_ignite_shards: invalid root set; roots must be disjoint.\n"
+                        f"Root '{rid}' is a descendant of root '{parent}'.\n"
+                        "Choose either the ancestor or the deeper branch, but not both."
+                    )
+                parent = parent_by_id.get(parent)
+
+        gem_nodes: list[dict[str, Any]] = []
+        roots_resolved: list[str] = []
+        total_nodes_fetched = 0
+
+        per_root_limits = per_root_limits or {}
+
+        for root_id in unique_root_ids:
+            limits = per_root_limits.get(root_id, {})
+            root_max_depth = limits.get("max_depth", max_depth)
+            root_child_limit = limits.get("child_limit", child_limit)
+
+            try:
+                raw = await self.export_nodes(node_id=root_id)
+            except Exception as e:
+                logger.error(f"nexus_ignite_shards: export failed for root {root_id}: {e}")
+                continue
+
+            flat_nodes = raw.get("nodes", [])
+            if not flat_nodes:
+                logger.warning(f"nexus_ignite_shards: no nodes returned for root {root_id}")
+                continue
+
+            total_nodes_fetched += raw.get("_total_fetched_from_api", len(flat_nodes))
+
+            # Build hierarchy and locate the subtree for this root
+            tree = self._build_hierarchy(flat_nodes, include_metadata=True)
+            if not tree:
+                logger.warning(f"nexus_ignite_shards: hierarchy empty for root {root_id}")
+                continue
+
+            root_subtree = None
+            for candidate in tree:
+                if candidate.get("id") == root_id:
+                    root_subtree = candidate
+                    break
+
+            if root_subtree is None:
+                root_subtree = tree[0]
+                logger.warning(
+                    "nexus_ignite_shards: could not find root %s in hierarchy; "
+                    "using first root %s",
+                    root_id,
+                    root_subtree.get("id"),
+                )
+
+            # Annotate/truncate subtree according to limits for this root
+            self._annotate_child_counts_and_truncate(
+                [root_subtree],
+                max_depth=root_max_depth,
+                child_count_limit=root_child_limit,
+                current_depth=1,
+            )
+
+            gem_nodes.append(root_subtree)
+            roots_resolved.append(root_id)
+
+        phantom_payload = {
+            "nexus_tag": nexus_tag,
+            "roots": roots_resolved,
+            "nodes": gem_nodes,
+        }
+
+        try:
+            with open(phantom_path, "w", encoding="utf-8") as f:
+                json.dump(phantom_payload, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            raise NetworkError(f"Failed to write phantom_gem.json: {e}") from e
+
+        return {
+            "success": True,
+            "nexus_tag": nexus_tag,
+            "phantom_gem": phantom_path,
+            "roots": roots_resolved,
+            "node_count": total_nodes_fetched,
+        }
+
+    async def nexus_anchor_gems(self, nexus_tag: str) -> dict[str, Any]:
+        """ANCHOR GEMS → shimmering_terrain.json.
+
+        This stage imprints the PHANTOM GEM (phantom_gem.json) into the coarse
+        TERRAIN (coarse_terrain.json) to produce SHIMMERING TERRAIN
+        (shimmering_terrain.json) for the given nexus_tag.
+
+        Files under this nexus_tag directory:
+        - coarse_terrain.json   (T0)
+        - phantom_gem.json      (S0; unrefracted GEM)
+        - shimmering_terrain.json (T1; anchored gems)
+
+        The phantom_gem remains unchanged as the witness GEM S0; later stages
+        (QUILLSTORM on phantom_gem → phantom_jewel.json and
+        nexus_anchor_jewels) consume it.
+        """
+        run_dir = self._get_nexus_dir(nexus_tag)
+        coarse_path = os.path.join(run_dir, "coarse_terrain.json")
+        phantom_path = os.path.join(run_dir, "phantom_gem.json")
+        shimmering_path = os.path.join(run_dir, "shimmering_terrain.json")
+
+        if not os.path.exists(coarse_path):
+            raise NetworkError(
+                "coarse_terrain.json not found for nexus_tag. "
+                "Call nexus_summon(...) before nexus_anchor_gems(...)."
+            )
+
+        if not os.path.exists(phantom_path):
+            raise NetworkError(
+                "phantom_gem.json not found for nexus_tag. "
+                "Call nexus_ignite_shards(...) before nexus_anchor_gems(...)."
+            )
+
+        try:
+            with open(coarse_path, "r", encoding="utf-8") as f:
+                coarse_data = json.load(f)
+        except Exception as e:
+            raise NetworkError(f"Failed to read coarse_terrain.json: {e}") from e
+
+        try:
+            with open(phantom_path, "r", encoding="utf-8") as f:
+                phantom_data = json.load(f)
+        except Exception as e:
+            raise NetworkError(f"Failed to read phantom_gem.json: {e}") from e
+
+        # Expect phantom_gem payload of the form:
+        # {"nexus_tag": ..., "roots": [R1, R2, ...], "nodes": [subtree_R1, subtree_R2, ...]}
+        phantom_roots: list[str] = phantom_data.get("roots", [])
+        phantom_nodes: list[dict[str, Any]] = phantom_data.get("nodes", [])
+
+        if not phantom_roots or not phantom_nodes:
+            # Nothing to anchor; copy coarse terrain forward unchanged.
+            try:
+                with open(shimmering_path, "w", encoding="utf-8") as f:
+                    json.dump(coarse_data, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                raise NetworkError(f"Failed to write shimmering_terrain.json: {e}") from e
+
+            return {
+                "success": True,
+                "nexus_tag": nexus_tag,
+                "shimmering_terrain": shimmering_path,
+                "roots": [],
+            }
+
+        # Build a lookup from phantom root id → subtree
+        subtree_by_id: dict[str, dict[str, Any]] = {}
+        for subtree in phantom_nodes:
+            rid = subtree.get("id")
+            if rid:
+                subtree_by_id[rid] = subtree
+
+        # Coarse terrain is an export package with metadata and "nodes" array.
+        # We only modify the editable "nodes" list, leaving header untouched.
+        if not (isinstance(coarse_data, dict) and "nodes" in coarse_data):
+            raise NetworkError(
+                "coarse_terrain.json must be an export package with 'nodes' key. "
+                "Re-summon the NEXUS via nexus_summon(...) if this is not the case."
+            )
+
+        terrain_nodes: list[dict[str, Any]] = coarse_data.get("nodes", [])
+
+        def replace_subtree_in_list(nodes: list[dict[str, Any]]) -> None:
+            """Recursively replace any subtree whose id matches a phantom root."""
+            for idx, node in enumerate(nodes):
+                nid = node.get("id")
+                if nid in subtree_by_id:
+                    # Replace this node with the phantom subtree deep copy
+                    nodes[idx] = subtree_by_id[nid]
+                else:
+                    children = node.get("children") or []
+                    if children:
+                        replace_subtree_in_list(children)
+
+        replace_subtree_in_list(terrain_nodes)
+
+        # Write shimmering terrain out; header from coarse_terrain is preserved.
+        coarse_data["nodes"] = terrain_nodes
+        try:
+            with open(shimmering_path, "w", encoding="utf-8") as f:
+                json.dump(coarse_data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            raise NetworkError(f"Failed to write shimmering_terrain.json: {e}") from e
+
+        return {
+            "success": True,
+            "nexus_tag": nexus_tag,
+            "shimmering_terrain": shimmering_path,
+            "roots": phantom_roots,
+        }
+
+    async def nexus_anchor_jewels(self, nexus_tag: str) -> dict[str, Any]:
+        """ANCHOR JEWELS → enchanted_terrain.json.
+
+        This stage performs the 3-way SHARD FUSE (T/S0/S1) at the JSON level,
+        using the existing fuse-shard-3way implementation in nexus_json_tools.
+
+        Inputs under this nexus_tag directory:
+        - shimmering_terrain.json  (T1)
+        - phantom_gem.json         (S0; witness GEM)
+        - phantom_jewel.json       (S1; morphed GEM via QUILLSTORM on S0)
+
+        Output:
+        - enchanted_terrain.json   (T2), ready for WEAVE back into Workflowy.
+        """
+        import shutil
+        import importlib
+
+        run_dir = self._get_nexus_dir(nexus_tag)
+        shimmering_path = os.path.join(run_dir, "shimmering_terrain.json")
+        phantom_gem_path = os.path.join(run_dir, "phantom_gem.json")
+        phantom_jewel_path = os.path.join(run_dir, "phantom_jewel.json")
+        enchanted_path = os.path.join(run_dir, "enchanted_terrain.json")
+
+        if not os.path.exists(shimmering_path):
+            raise NetworkError(
+                "shimmering_terrain.json not found for nexus_tag. "
+                "Call nexus_anchor_gems(...) before nexus_anchor_jewels(...)."
+            )
+
+        if not os.path.exists(phantom_gem_path):
+            raise NetworkError(
+                "phantom_gem.json not found for nexus_tag. "
+                "Call nexus_ignite_shards(...) before nexus_anchor_jewels(...)."
+            )
+
+        if not os.path.exists(phantom_jewel_path):
+            raise NetworkError(
+                "phantom_jewel.json not found for nexus_tag. "
+                "Create it by applying a QUILLSTORM to phantom_gem.json "
+                "(QUILLSTRIKE → edits → QUILLMORPH)."
+            )
+
+        # Start from a copy of shimmering_terrain.json so T1 is preserved.
+        try:
+            shutil.copy2(shimmering_path, enchanted_path)
+        except Exception as e:
+            raise NetworkError(
+                "Failed to create enchanted_terrain.json from shimmering_terrain.json: "
+                f"{e}"
+            ) from e
+
+        # Import nexus_json_tools from the project root so we can call its
+        # fuse-shard-3way CLI entrypoint programmatically.
+        try:
+            client_dir = os.path.dirname(os.path.abspath(__file__))
+            wf_mcp_dir = os.path.dirname(client_dir)
+            mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+            project_root = os.path.dirname(mcp_servers_dir)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+            nexus_tools = importlib.import_module("nexus_json_tools")
+        except Exception as e:
+            raise NetworkError(f"Failed to import nexus_json_tools: {e}") from e
+
+        # Call fuse-shard-3way as if via CLI, but with enchanted_terrain.json as
+        # the target SCRY so shimmering_terrain.json remains unchanged.
+        try:
+            # nexus_json_tools.main() may call sys.exit(), so we catch
+            # SystemExit explicitly to interpret non-zero as an error.
+            argv = [
+                enchanted_path,
+                "fuse-shard-3way",
+                "--witness-shard",
+                phantom_gem_path,
+                "--morphed-shard",
+                phantom_jewel_path,
+                "--target-scry",
+                enchanted_path,
+            ]
+            try:
+                nexus_tools.main(argv)
+            except SystemExit as se:
+                code = se.code or 0
+                if code != 0:
+                    raise NetworkError(
+                        f"nexus_anchor_jewels: fuse-shard-3way exited with code {code}"
+                    ) from se
+        except Exception as e:
+            raise NetworkError(f"nexus_anchor_jewels: fuse-shard-3way failed: {e}") from e
+
+        return {
+            "success": True,
+            "nexus_tag": nexus_tag,
+            "shimmering_terrain": shimmering_path,
+            "enchanted_terrain": enchanted_path,
+        }
