@@ -1646,13 +1646,40 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
             # Build hierarchical tree
             hierarchical_tree = self._build_hierarchy(flat_nodes, include_metadata=True)
-            
+
+            # LOGGING: inspect root candidates from hierarchy for debugging
+            try:
+                logger.info(
+                    "workflowy_glimpse_full: node_id=%s use_efficient_traversal=%s flat_nodes=%d roots=%d",
+                    node_id,
+                    use_efficient_traversal,
+                    len(flat_nodes),
+                    len(hierarchical_tree),
+                )
+                for idx, root_candidate in enumerate(hierarchical_tree[:10]):
+                    logger.info(
+                        "  root_candidate[%d]: id=%s name=%s parent_id=%s children=%d",
+                        idx,
+                        root_candidate.get("id"),
+                        root_candidate.get("name"),
+                        root_candidate.get("parent_id"),
+                        len(root_candidate.get("children") or []),
+                    )
+            except Exception:
+                # Logging must never break GLIMPSE FULL
+                pass
+
             # Extract root node metadata and children separately
             root_metadata = None
             children = []
             
             if hierarchical_tree and len(hierarchical_tree) == 1:
                 root_node = hierarchical_tree[0]
+                logger.info(
+                    "workflowy_glimpse_full: using single-root path id=%s name=%s",
+                    root_node.get("id"),
+                    root_node.get("name"),
+                )
                 root_metadata = {
                     "id": root_node.get('id'),
                     "name": root_node.get('name'),
@@ -1661,6 +1688,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 }
                 children = root_node.get('children', [])
             else:
+                logger.warning(
+                    "workflowy_glimpse_full: multiple-root path len=%d; returning children list directly",
+                    len(hierarchical_tree),
+                )
                 # Multiple roots or no clear root - return as-is
                 children = hierarchical_tree
             
@@ -3220,6 +3251,15 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "parent_id": root_meta.get("parent_id"),
             "children": root_children,
         }
+
+        # LOGGING: observe chosen root vs requested root and child count
+        logger.info(
+            "nexus_start_exploration: root_id=%s root_node_id=%s root_node_name=%s children=%d",
+            root_id,
+            root_node["id"],
+            root_node.get("name"),
+            len(root_children),
+        )
 
         # Assign handles R, A/B/C..., A.1, A.2, etc.
         handles: dict[str, dict[str, Any]] = {}
