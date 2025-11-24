@@ -894,6 +894,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 
                 for child in children:
                     child_dict = child.model_dump()
+                    # Ensure parent_id is recorded for hierarchy reconstruction
+                    if "parent_id" not in child_dict and "parentId" not in child_dict:
+                        child_dict["parent_id"] = parent
                     flat_nodes.append(child_dict)
                     queue.append(child.id)
             
@@ -1601,6 +1604,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 
                 for child in children:
                     child_dict = child.model_dump()
+                    # Ensure parent_id is recorded for hierarchy reconstruction
+                    if "parent_id" not in child_dict and "parentId" not in child_dict:
+                        child_dict["parent_id"] = parent
                     flat_nodes.append(child_dict)
                     queue.append(child.id)
             
