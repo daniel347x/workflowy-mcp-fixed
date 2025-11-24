@@ -945,6 +945,47 @@ async def nexus_anchor_jewels(
 
 
 @mcp.tool(
+    name="nexus_transform_jewel",
+    description=(
+        "Apply JEWELSTORM semantic operations to a NEXUS working_gem JSON file "
+        "(PHANTOM GEM working copy). This is the semantic analogue of edit_file "
+        "for PHANTOM GEM JSON: MOVE_NODE, DELETE_NODE, RENAME_NODE, SET_NOTE, "
+        "SET_ATTRS, CREATE_NODE, all referencing nodes by jewel_id."
+    ),
+)
+def nexus_transform_jewel(
+    jewel_file: str,
+    operations: list[dict[str, Any]],
+    dry_run: bool = False,
+    stop_on_error: bool = True,
+) -> dict:
+    """JEWELSTORM transform on a NEXUS working_gem JSON file.
+
+    This tool wraps nexus_json_tools.transform_jewel via the WorkFlowyClient,
+    providing an MCP-friendly interface for JEWELSTORM operations.
+
+    Args:
+        jewel_file: Absolute path to working_gem JSON (typically a QUILLSTRIKE
+                    working stone derived from phantom_gem.json).
+        operations: List of operation dicts. Each must include an "op" key and
+                    operation-specific fields (e.g., jewel_id, parent_jewel_id,
+                    position, etc.).
+        dry_run: If True, simulate only (no file write).
+        stop_on_error: If True, abort on first error (no write).
+
+    Returns:
+        Result dict from transform_jewel with success flag, counts, and errors.
+    """
+    client = get_client()
+    return client.nexus_transform_jewel(
+        jewel_file=jewel_file,
+        operations=operations,
+        dry_run=dry_run,
+        stop_on_error=stop_on_error,
+    )
+
+
+@mcp.tool(
     name="nexus_weave_enchanted",
     description=(
         "WEAVE the ENCHANTED TERRAIN (T2) back into the living Workflowy ETHER, "

@@ -2479,6 +2479,41 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         return {"success": len(errors) == 0, "purged_count": len(purged_files), "purged_files": purged_files, "errors": errors}
 
+    def nexus_transform_jewel(
+        self,
+        jewel_file: str,
+        operations: list[dict[str, Any]],
+        dry_run: bool = False,
+        stop_on_error: bool = True,
+    ) -> dict[str, Any]:
+        """Apply JEWELSTORM semantic operations to a NEXUS working_gem JSON file.
+
+        This is an offline operation that delegates to nexus_json_tools.transform_jewel,
+        using the same project-root import strategy as other NEXUS helpers.
+        """
+        import importlib
+
+        try:
+            client_dir = os.path.dirname(os.path.abspath(__file__))
+            wf_mcp_dir = os.path.dirname(client_dir)
+            mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+            project_root = os.path.dirname(mcp_servers_dir)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+            nexus_tools = importlib.import_module("nexus_json_tools")
+        except Exception as e:  # noqa: BLE001
+            raise NetworkError(f"Failed to import nexus_json_tools for transform_jewel: {e}") from e
+
+        try:
+            return nexus_tools.transform_jewel(  # type: ignore[attr-defined]
+                jewel_file=jewel_file,
+                operations=operations,
+                dry_run=dry_run,
+                stop_on_error=stop_on_error,
+            )
+        except Exception as e:  # noqa: BLE001
+            raise NetworkError(f"transform_jewel failed: {e}") from e
+
     def _get_nexus_dir(self, nexus_tag: str) -> str:
         """Resolve base directory for a CORINTHIAN NEXUS run and ensure it exists.
 
