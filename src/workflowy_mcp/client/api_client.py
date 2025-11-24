@@ -896,6 +896,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     child_dict = child.model_dump()
                     # Ensure parent_id is recorded for hierarchy reconstruction
                     if "parent_id" not in child_dict and "parentId" not in child_dict:
+                        # FORCE parent_id linking for efficient traversal to ensure _build_hierarchy succeeds
                         child_dict["parent_id"] = parent
                     flat_nodes.append(child_dict)
                     queue.append(child.id)
@@ -1606,6 +1607,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     child_dict = child.model_dump()
                     # Ensure parent_id is recorded for hierarchy reconstruction
                     if "parent_id" not in child_dict and "parentId" not in child_dict:
+                        # FORCE parent_id linking for efficient traversal to ensure _build_hierarchy succeeds
                         child_dict["parent_id"] = parent
                     flat_nodes.append(child_dict)
                     queue.append(child.id)
@@ -1673,6 +1675,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             root_metadata = None
             children = []
             
+            # Strategy 1: Single root found
             if hierarchical_tree and len(hierarchical_tree) == 1:
                 root_node = hierarchical_tree[0]
                 logger.info(
@@ -1687,13 +1690,33 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "parent_id": root_node.get('parent_id')
                 }
                 children = root_node.get('children', [])
+                
+            # Strategy 2: Multiple roots - Find the one matching requested node_id
             else:
-                logger.warning(
-                    "workflowy_glimpse_full: multiple-root path len=%d; returning children list directly",
-                    len(hierarchical_tree),
-                )
-                # Multiple roots or no clear root - return as-is
-                children = hierarchical_tree
+                target_root = next((r for r in hierarchical_tree if r.get("id") == node_id), None)
+                
+                if target_root:
+                    logger.info(
+                        "workflowy_glimpse_full: multiple roots (%d), but found target root id=%s name=%s. Using it.",
+                        len(hierarchical_tree),
+                        target_root.get("id"),
+                        target_root.get("name"),
+                    )
+                    root_metadata = {
+                        "id": target_root.get('id'),
+                        "name": target_root.get('name'),
+                        "note": target_root.get('note'),
+                        "parent_id": target_root.get('parent_id')
+                    }
+                    children = target_root.get('children', [])
+                else:
+                    # Fallback: Return all roots as children (artificial root behavior)
+                    logger.warning(
+                        "workflowy_glimpse_full: multiple roots (%d) and target %s NOT found in top level; returning list directly",
+                        len(hierarchical_tree),
+                        node_id
+                    )
+                    children = hierarchical_tree
             
             # Apply depth limiting if requested
             if depth is not None:
