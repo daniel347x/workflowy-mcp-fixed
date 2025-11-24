@@ -1,5 +1,8 @@
 """WorkFlowy MCP server implementation using FastMCP."""
 
+import sys
+print("DEBUG: Workflowy MCP Server loaded from " + __file__, file=sys.stderr)
+
 import asyncio
 import json
 import logging
