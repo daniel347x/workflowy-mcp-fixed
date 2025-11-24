@@ -3092,3 +3092,464 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "shimmering_terrain": shimmering_path,
             "enchanted_terrain": enchanted_path,
         }
+
+    def _get_explore_sessions_dir(self) -> str:
+        """Return base directory for exploration session JSON files and ensure it exists.
+
+        Sessions are stored outside the NEXUS run tree so that multiple nexus_tag
+        values can share the same exploration mechanism. Each session file is
+        named <session_id>.json and contains the cached tree plus handle/state
+        metadata.
+        """
+        base_dir = (
+            r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_explore_sessions"
+        )
+        os.makedirs(base_dir, exist_ok=True)
+        return base_dir
+
+    def _compute_exploration_frontier(
+        self,
+        session: dict[str, Any],
+        frontier_size: int,
+        max_depth_per_frontier: int,
+    ) -> list[dict[str, Any]]:
+        """Compute the next frontier for an exploration session.
+
+        This is a simple handle-based frontier computation:
+        - Candidate parents are handles with status in {open, candidate}.
+        - For each candidate parent, we surface its direct children (one level
+          down) that are not closed or finalized, in original Workflowy order.
+        - We stop once frontier_size entries have been collected.
+
+        max_depth_per_frontier is reserved for future use (e.g. allowing
+        multi-level expansions in a single step). For v1 we always surface
+        only direct children of the candidate parents.
+        """
+        handles = session.get("handles", {}) or {}
+        state = session.get("state", {}) or {}
+
+        frontier: list[dict[str, Any]] = []
+
+        # Candidate parents: any handle that is currently open or a candidate.
+        candidate_parents = [
+            h for h, st in state.items() if st.get("status") in {"open", "candidate"}
+        ]
+
+        for parent_handle in candidate_parents:
+            meta = handles.get(parent_handle) or {}
+            child_handles = meta.get("children", []) or []
+
+            for child_handle in child_handles:
+                child_state = state.get(child_handle, {"status": "unseen"})
+                if child_state.get("status") in {"closed", "finalized"}:
+                    continue
+
+                child_meta = handles.get(child_handle) or {}
+                frontier.append(
+                    {
+                        "handle": child_handle,
+                        "path": child_handle,
+                        "parent_handle": parent_handle,
+                        "name_preview": child_meta.get("name", ""),
+                        "child_count": len(child_meta.get("children", []) or []),
+                        "depth": child_meta.get("depth", 0),
+                        "status": child_state.get("status", "candidate"),
+                    }
+                )
+
+                if len(frontier) >= frontier_size:
+                    return frontier
+
+        return frontier
+
+    async def nexus_start_exploration(
+        self,
+        nexus_tag: str,
+        root_id: str,
+        source_mode: str = "glimpse_full",
+        max_nodes: int = 200000,
+        session_hint: str | None = None,
+        frontier_size: int = 5,
+        max_depth_per_frontier: int = 1,
+    ) -> dict[str, Any]:
+        """Initialize an exploration session over a Workflowy subtree.
+
+        v1 implementation uses workflowy_glimpse_full regardless of source_mode
+        (summon/glimpse_full/existing are treated identically for now). The
+        GLIMPSE result is cached in a JSON session file along with handle and
+        state metadata, and an initial frontier is returned.
+        """
+        import logging
+        import uuid
+        from datetime import datetime
+
+        logger = logging.getLogger(__name__)
+
+        # Fetch subtree once via GLIMPSE FULL (Agent hunts mode)
+        glimpse = await self.workflowy_glimpse_full(
+            node_id=root_id,
+            use_efficient_traversal=True,
+            depth=None,
+            size_limit=max_nodes,
+        )
+
+        if not glimpse.get("success"):
+            raise NetworkError(
+                f"nexus_start_exploration: glimpseFull failed for root {root_id}: "
+                f"{glimpse.get('error', 'unknown error')}"
+            )
+
+        root_meta = glimpse.get("root") or {
+            "id": root_id,
+            "name": "Root",
+            "note": None,
+            "parent_id": None,
+        }
+        root_children = glimpse.get("children", []) or []
+
+        root_node = {
+            "id": root_meta.get("id", root_id),
+            "name": root_meta.get("name", "Root"),
+            "note": root_meta.get("note"),
+            "parent_id": root_meta.get("parent_id"),
+            "children": root_children,
+        }
+
+        # Assign handles R, A/B/C..., A.1, A.2, etc.
+        handles: dict[str, dict[str, Any]] = {}
+
+        def alpha_handle(index: int) -> str:
+            """Convert 0-based index to Excel-like column name (A, B, ... AA, AB...)."""
+            letters = ""
+            n = index
+            while True:
+                n, rem = divmod(n, 26)
+                letters = chr(ord("A") + rem) + letters
+                if n == 0:
+                    break
+                n -= 1
+            return letters
+
+        def walk(node: dict[str, Any], handle: str, parent_handle: str | None, depth: int, top_level: bool = False) -> None:
+            children = node.get("children", []) or []
+            child_handles: list[str] = []
+
+            if top_level:
+                # First level under R uses alphabetic handles A, B, C, ...
+                for idx, child in enumerate(children):
+                    ch = alpha_handle(idx)
+                    child_handles.append(ch)
+                    walk(child, ch, "R", depth + 1, top_level=False)
+            else:
+                for idx, child in enumerate(children):
+                    ch = f"{handle}.{idx + 1}"
+                    child_handles.append(ch)
+                    walk(child, ch, handle, depth + 1, top_level=False)
+
+            handles[handle] = {
+                "id": node.get("id"),
+                "name": node.get("name", "Untitled"),
+                "parent": parent_handle,
+                "children": child_handles,
+                "depth": depth,
+            }
+
+        # Root handle R
+        walk(root_node, "R", None, 0, top_level=True)
+
+        # Initial state: R open, direct children candidate
+        state: dict[str, dict[str, Any]] = {
+            "R": {"status": "open", "max_depth": None}
+        }
+        for child_handle in handles.get("R", {}).get("children", []) or []:
+            state[child_handle] = {"status": "candidate", "max_depth": None}
+
+        session_id = f"{nexus_tag}-{uuid.uuid4().hex[:8]}"
+        session = {
+            "session_id": session_id,
+            "nexus_tag": nexus_tag,
+            "root_id": root_node["id"],
+            "root_name": root_node.get("name"),
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "source_mode": source_mode,
+            "max_nodes": max_nodes,
+            "handles": handles,
+            "state": state,
+            "root_node": root_node,
+            "steps": 0,
+            "glimpse_stats": {
+                "node_count": glimpse.get("node_count", 0),
+                "depth": glimpse.get("depth", 0),
+                "_source": glimpse.get("_source", "api"),
+            },
+        }
+
+        # Compute initial frontier
+        frontier = self._compute_exploration_frontier(
+            session,
+            frontier_size=frontier_size,
+            max_depth_per_frontier=max_depth_per_frontier,
+        )
+
+        # Persist session to disk
+        try:
+            sessions_dir = self._get_explore_sessions_dir()
+            session_path = os.path.join(sessions_dir, f"{session_id}.json")
+            with open(session_path, "w", encoding="utf-8") as f:
+                json.dump(session, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Failed to persist exploration session {session_id}: {e}")
+            raise NetworkError(f"Failed to persist exploration session: {e}") from e
+
+        root_summary = {
+            "name": root_node.get("name", "Root"),
+            "child_count": len(handles.get("R", {}).get("children", []) or []),
+        }
+
+        return {
+            "success": True,
+            "session_id": session_id,
+            "nexus_tag": nexus_tag,
+            "root_handle": "R",
+            "root_summary": root_summary,
+            "frontier": frontier,
+            "stats": {
+                "total_nodes_indexed": glimpse.get("node_count", 0),
+                "truncated": False,
+            },
+        }
+
+    async def nexus_explore_step(
+        self,
+        session_id: str,
+        actions: list[dict[str, Any]] | None = None,
+        frontier_size: int = 5,
+        max_depth_per_frontier: int = 1,
+        include_history_summary: bool = True,
+    ) -> dict[str, Any]:
+        """Apply exploration actions and return the next frontier.
+
+        This is the agent's primary loop for exploration. Each call can:
+        - mark one or more handles as open / close / finalize / reopen, and
+        - request a new frontier of up to frontier_size entries.
+        """
+        import logging
+        import json as json_module
+        from datetime import datetime
+
+        logger = logging.getLogger(__name__)
+
+        sessions_dir = self._get_explore_sessions_dir()
+        session_path = os.path.join(sessions_dir, f"{session_id}.json")
+
+        if not os.path.exists(session_path):
+            raise NetworkError(f"Exploration session '{session_id}' not found.")
+
+        try:
+            with open(session_path, "r", encoding="utf-8") as f:
+                session = json_module.load(f)
+        except Exception as e:
+            raise NetworkError(f"Failed to load exploration session '{session_id}': {e}") from e
+
+        handles = session.get("handles", {}) or {}
+        state = session.get("state", {}) or {}
+
+        # Apply actions
+        actions = actions or []
+        for action in actions:
+            handle = action.get("handle")
+            act = action.get("action")
+            max_depth = action.get("max_depth")
+
+            if handle not in handles:
+                raise NetworkError(f"Unknown handle in actions: '{handle}'")
+
+            if handle not in state:
+                state[handle] = {"status": "unseen", "max_depth": None}
+
+            entry = state[handle]
+
+            if act == "open":
+                entry["status"] = "open"
+            elif act == "close":
+                entry["status"] = "closed"
+            elif act == "finalize":
+                entry["status"] = "finalized"
+                entry["max_depth"] = max_depth
+            elif act == "reopen":
+                entry["status"] = "open"
+            else:
+                raise NetworkError(f"Unsupported exploration action: '{act}'")
+
+        # Recompute frontier
+        frontier = self._compute_exploration_frontier(
+            {"handles": handles, "state": state},
+            frontier_size=frontier_size,
+            max_depth_per_frontier=max_depth_per_frontier,
+        )
+
+        # Update session state and persist
+        session["handles"] = handles
+        session["state"] = state
+        session["steps"] = int(session.get("steps", 0)) + 1
+        session["updated_at"] = datetime.utcnow().isoformat() + "Z"
+
+        try:
+            with open(session_path, "w", encoding="utf-8") as f:
+                json_module.dump(session, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Failed to persist exploration session '{session_id}' after step: {e}")
+            raise NetworkError(f"Failed to persist exploration session: {e}") from e
+
+        history_summary = None
+        if include_history_summary:
+            history_summary = {
+                "open": [h for h, st in state.items() if st.get("status") == "open"],
+                "finalized": [h for h, st in state.items() if st.get("status") == "finalized"],
+                "closed": [h for h, st in state.items() if st.get("status") == "closed"],
+                "steps": session["steps"],
+            }
+
+        result: dict[str, Any] = {
+            "success": True,
+            "session_id": session_id,
+            "frontier": frontier,
+        }
+        if history_summary is not None:
+            result["history_summary"] = history_summary
+
+        return result
+
+    async def nexus_finalize_exploration(
+        self,
+        session_id: str,
+        include_terrain: bool = True,
+    ) -> dict[str, Any]:
+        """Finalize an exploration session into phantom_gem.json (+ optional terrain).
+
+        v1 implementation:
+        - Reads the session JSON (tree, handles, state)
+        - Collects all handles with status=finalized
+        - For each finalized handle, extracts the corresponding subtree from
+          the cached root tree and applies an optional per-branch max_depth
+          (if provided during finalize actions)
+        - Writes phantom_gem.json under the NEXUS run directory for nexus_tag
+          with the standard payload: {nexus_tag, roots, nodes}
+        - If include_terrain=True and no coarse_terrain.json exists yet, writes
+          a minimal TERRAIN using the cached root tree.
+        """
+        import logging
+        import json as json_module
+        import copy
+
+        logger = logging.getLogger(__name__)
+
+        sessions_dir = self._get_explore_sessions_dir()
+        session_path = os.path.join(sessions_dir, f"{session_id}.json")
+
+        if not os.path.exists(session_path):
+            raise NetworkError(f"Exploration session '{session_id}' not found.")
+
+        try:
+            with open(session_path, "r", encoding="utf-8") as f:
+                session = json_module.load(f)
+        except Exception as e:
+            raise NetworkError(f"Failed to load exploration session '{session_id}': {e}") from e
+
+        nexus_tag = session.get("nexus_tag")
+        if not nexus_tag:
+            raise NetworkError(
+                f"Exploration session '{session_id}' missing nexus_tag; cannot finalize."
+            )
+
+        handles = session.get("handles", {}) or {}
+        state = session.get("state", {}) or {}
+        root_node = session.get("root_node") or {}
+
+        # Collect finalized handles
+        finalized_handles = [
+            h for h, st in state.items() if st.get("status") == "finalized"
+        ]
+        if not finalized_handles:
+            raise NetworkError(
+                f"Exploration session '{session_id}' has no finalized paths to export."
+            )
+
+        # Helper: extract subtree by Workflowy id
+        def extract_subtree(node: dict[str, Any], target_id: str) -> dict[str, Any] | None:
+            if node.get("id") == target_id:
+                return copy.deepcopy(node)
+            for child in node.get("children", []) or []:
+                found = extract_subtree(child, target_id)
+                if found is not None:
+                    return found
+            return None
+
+        gem_nodes: list[dict[str, Any]] = []
+        root_ids: list[str] = []
+
+        for handle in finalized_handles:
+            meta = handles.get(handle) or {}
+            node_id = meta.get("id")
+            if not node_id:
+                logger.warning(
+                    f"nexus_finalize_exploration: handle '{handle}' has no associated node id; skipping."
+                )
+                continue
+
+            subtree = extract_subtree(root_node, node_id)
+            if subtree is None:
+                logger.warning(
+                    f"nexus_finalize_exploration: could not find subtree for node id {node_id}; skipping."
+                )
+                continue
+
+            max_depth = state.get(handle, {}).get("max_depth")
+            if max_depth is not None:
+                # Limit depth relative to this subtree root
+                limited_list = self._limit_depth([subtree], max_depth=max_depth, current_depth=1)
+                subtree = limited_list[0] if limited_list else subtree
+
+            gem_nodes.append(subtree)
+            root_ids.append(node_id)
+
+        run_dir = self._get_nexus_dir(nexus_tag)
+        phantom_path = os.path.join(run_dir, "phantom_gem.json")
+        coarse_path = os.path.join(run_dir, "coarse_terrain.json")
+
+        phantom_payload = {
+            "nexus_tag": nexus_tag,
+            "roots": root_ids,
+            "nodes": gem_nodes,
+        }
+
+        try:
+            os.makedirs(run_dir, exist_ok=True)
+            with open(phantom_path, "w", encoding="utf-8") as f:
+                json_module.dump(phantom_payload, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            raise NetworkError(f"Failed to write phantom_gem.json: {e}") from e
+
+        # Optionally create a minimal coarse_terrain.json if one does not exist
+        if include_terrain and not os.path.exists(coarse_path):
+            try:
+                coarse_payload = {
+                    "export_root_id": session.get("root_id"),
+                    "nodes": [root_node],
+                }
+                with open(coarse_path, "w", encoding="utf-8") as f:
+                    json_module.dump(coarse_payload, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                logger.error(
+                    f"Failed to write coarse_terrain.json during finalize_exploration: {e}"
+                )
+
+        return {
+            "success": True,
+            "session_id": session_id,
+            "nexus_tag": nexus_tag,
+            "phantom_gem": phantom_path,
+            "coarse_terrain": coarse_path if os.path.exists(coarse_path) else None,
+            "finalized_branch_count": len(root_ids),
+            "node_count": len(gem_nodes),
+        }

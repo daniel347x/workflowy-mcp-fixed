@@ -1017,6 +1017,115 @@ async def nexus_weave_enchanted(
         }
 
 
+@mcp.tool(
+    name="nexus_start_exploration",
+    description=(
+        "Initialize an exploration session over a Workflowy subtree and return "
+        "an initial frontier of handles for agent-driven navigation."
+    ),
+)
+async def nexus_start_exploration(
+    nexus_tag: str,
+    root_id: str,
+    source_mode: str = "glimpse_full",
+    max_nodes: int = 200000,
+    session_hint: str | None = None,
+    frontier_size: int = 5,
+    max_depth_per_frontier: int = 1,
+) -> dict:
+    """Start an exploration session over a Workflowy subtree."""
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.nexus_start_exploration(
+            nexus_tag=nexus_tag,
+            root_id=root_id,
+            source_mode=source_mode,
+            max_nodes=max_nodes,
+            session_hint=session_hint,
+            frontier_size=frontier_size,
+            max_depth_per_frontier=max_depth_per_frontier,
+        )
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
+@mcp.tool(
+    name="nexus_explore_step",
+    description=(
+        "Apply exploration actions (open/close/finalize/reopen) to an exploration "
+        "session and return the next frontier of handles."
+    ),
+)
+async def nexus_explore_step(
+    session_id: str,
+    actions: list[dict[str, Any]] | None = None,
+    frontier_size: int = 5,
+    max_depth_per_frontier: int = 1,
+    include_history_summary: bool = True,
+) -> dict:
+    """Apply exploration actions and return the next frontier."""
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.nexus_explore_step(
+            session_id=session_id,
+            actions=actions,
+            frontier_size=frontier_size,
+            max_depth_per_frontier=max_depth_per_frontier,
+            include_history_summary=include_history_summary,
+        )
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
+@mcp.tool(
+    name="nexus_finalize_exploration",
+    description=(
+        "Finalize an exploration session into phantom_gem.json (+ optional "
+        "coarse_terrain.json) for use with NEXUS JEWELSTORM and WEAVE."
+    ),
+)
+async def nexus_finalize_exploration(
+    session_id: str,
+    include_terrain: bool = True,
+) -> dict:
+    """Finalize an exploration session into PHANTOM GEM (+ optional TERRAIN)."""
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.nexus_finalize_exploration(
+            session_id=session_id,
+            include_terrain=include_terrain,
+        )
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
 # Tool: Bulk Export to JSON File
 @mcp.tool(
     name="nexus_scry",
