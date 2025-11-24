@@ -37,6 +37,17 @@ class WorkFlowyClient:
         self.config = config
         self.base_url = config.base_url
         self._client: httpx.AsyncClient | None = None
+        
+    def _log_debug(self, message: str) -> None:
+        """Log debug messages to file to bypass connector stderr swallowing."""
+        try:
+            from datetime import datetime
+            log_path = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log"
+            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] {message}\n")
+        except Exception:
+            pass
     
     @staticmethod
     def _validate_note_field(note: str | None, skip_newline_check: bool = False) -> tuple[str | None, str | None]:
@@ -1651,22 +1662,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             # LOGGING: inspect root candidates from hierarchy for debugging
             try:
-                logger.info(
-                    "workflowy_glimpse_full: node_id=%s use_efficient_traversal=%s flat_nodes=%d roots=%d",
-                    node_id,
-                    use_efficient_traversal,
-                    len(flat_nodes),
-                    len(hierarchical_tree),
-                )
+                self._log_debug(f"workflowy_glimpse_full: node_id={node_id} use_efficient_traversal={use_efficient_traversal} flat_nodes={len(flat_nodes)} roots={len(hierarchical_tree)}")
                 for idx, root_candidate in enumerate(hierarchical_tree[:10]):
-                    logger.info(
-                        "  root_candidate[%d]: id=%s name=%s parent_id=%s children=%d",
-                        idx,
-                        root_candidate.get("id"),
-                        root_candidate.get("name"),
-                        root_candidate.get("parent_id"),
-                        len(root_candidate.get("children") or []),
-                    )
+                    self._log_debug(f"  root_candidate[{idx}]: id={root_candidate.get('id')} name={root_candidate.get('name')} parent_id={root_candidate.get('parent_id')} children={len(root_candidate.get('children') or [])}")
             except Exception:
                 # Logging must never break GLIMPSE FULL
                 pass
@@ -1678,11 +1676,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # Strategy 1: Single root found
             if hierarchical_tree and len(hierarchical_tree) == 1:
                 root_node = hierarchical_tree[0]
-                logger.info(
-                    "workflowy_glimpse_full: using single-root path id=%s name=%s",
-                    root_node.get("id"),
-                    root_node.get("name"),
-                )
+                self._log_debug(f"workflowy_glimpse_full: using single-root path id={root_node.get('id')} name={root_node.get('name')}")
                 root_metadata = {
                     "id": root_node.get('id'),
                     "name": root_node.get('name'),
@@ -1696,12 +1690,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 target_root = next((r for r in hierarchical_tree if r.get("id") == node_id), None)
                 
                 if target_root:
-                    logger.info(
-                        "workflowy_glimpse_full: multiple roots (%d), but found target root id=%s name=%s. Using it.",
-                        len(hierarchical_tree),
-                        target_root.get("id"),
-                        target_root.get("name"),
-                    )
+                    self._log_debug(f"workflowy_glimpse_full: multiple roots ({len(hierarchical_tree)}), but found target root id={target_root.get('id')} name={target_root.get('name')}. Using it.")
                     root_metadata = {
                         "id": target_root.get('id'),
                         "name": target_root.get('name'),
@@ -1711,11 +1700,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     children = target_root.get('children', [])
                 else:
                     # Fallback: Return all roots as children (artificial root behavior)
-                    logger.warning(
-                        "workflowy_glimpse_full: multiple roots (%d) and target %s NOT found in top level; returning list directly",
-                        len(hierarchical_tree),
-                        node_id
-                    )
+                    self._log_debug(f"workflowy_glimpse_full: multiple roots ({len(hierarchical_tree)}) and target {node_id} NOT found in top level; returning list directly")
                     children = hierarchical_tree
             
             # Apply depth limiting if requested
@@ -3276,13 +3261,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         }
 
         # LOGGING: observe chosen root vs requested root and child count
-        logger.info(
-            "nexus_start_exploration: root_id=%s root_node_id=%s root_node_name=%s children=%d",
-            root_id,
-            root_node["id"],
-            root_node.get("name"),
-            len(root_children),
-        )
+        self._log_debug(f"nexus_start_exploration: root_id={root_id} root_node_id={root_node['id']} root_node_name={root_node.get('name')} children={len(root_children)}")
 
         # Assign handles R, A/B/C..., A.1, A.2, etc.
         handles: dict[str, dict[str, Any]] = {}
