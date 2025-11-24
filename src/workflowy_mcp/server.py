@@ -1508,6 +1508,19 @@ async def get_outline() -> str:
 if __name__ == "__main__":
     # Setup logging
     setup_logging()
+    
+    # FORCE VISIBLE LOGGING TO STDERR (Override)
+    # This ensures logs show up in the MCP connector console
+    import sys
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    
+    # Check if a handler exists; if not, add StreamHandler(sys.stderr)
+    has_console = any(isinstance(h, logging.StreamHandler) and h.stream == sys.stderr for h in root.handlers)
+    if not has_console:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        root.addHandler(handler)
 
     # Run the server
 
