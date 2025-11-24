@@ -1,6 +1,13 @@
 """WorkFlowy MCP server implementation using FastMCP."""
 
 import sys
+from datetime import datetime
+# Also log to file to debug deployment/environment
+try:
+    with open(r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log", "a", encoding="utf-8") as f:
+        f.write(f"[{datetime.now().isoformat()}] DEBUG: Workflowy MCP Server loaded from {__file__}\n")
+except Exception:
+    pass
 print("DEBUG: Workflowy MCP Server loaded from " + __file__, file=sys.stderr)
 
 import asyncio
