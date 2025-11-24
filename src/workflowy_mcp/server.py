@@ -729,6 +729,27 @@ async def move_node(
             _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
         raise
 
+@mcp.tool(
+    name="nexus_glimpse",
+    description=(
+        "GLIMPSE → TERRAIN + PHANTOM GEM (zero API calls). "
+        "Captures what you've expanded in Workflowy via WebSocket GLIMPSE and creates both "
+        "coarse_terrain.json and phantom_gem.json from that single local extraction. "
+        "No Workflowy API calls, instant, you control granularity by expanding nodes."
+    ),
+)
+async def nexus_glimpse(
+    nexus_tag: str,
+    workflowy_root_id: str,
+    reset_if_exists: bool = False,
+) -> dict[str, Any]:
+    """GLIMPSE-based NEXUS initialization (zero API calls)."""
+    client = get_client()
+    return await client.nexus_glimpse(
+        nexus_tag=nexus_tag,
+        workflowy_root_id=workflowy_root_id,
+        reset_if_exists=reset_if_exists,
+    )
 
 # Tool: Export Nodes
 @mcp.tool(name="workflowy_export_node", description="Export a WorkFlowy node with all its children")

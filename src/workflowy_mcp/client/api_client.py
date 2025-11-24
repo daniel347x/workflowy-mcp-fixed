@@ -2753,6 +2753,103 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "node_count": total_nodes_fetched,
         }
 
+    async def nexus_glimpse(
+        self,
+        nexus_tag: str,
+        workflowy_root_id: str,
+        reset_if_exists: bool = False,
+    ) -> dict[str, Any]:
+        """GLIMPSE → TERRAIN + PHANTOM GEM (zero API calls).
+
+        Ultimate usability: instead of nexus_summon + nexus_ignite_shards (both via API),
+        GLIMPSE what you've expanded in Workflowy → both TERRAIN and PHANTOM GEM created
+        from that single local WebSocket extraction.
+
+        - Zero Workflowy /nodes-export API calls
+        - Dan controls granularity (expand what you want, GLIMPSE captures it)
+        - PHANTOM GEM = exactly what Dan sees
+        - Instant (no rate-limit delays)
+
+        Args:
+            nexus_tag: Human-readable tag for this NEXUS run.
+            workflowy_root_id: Root node UUID to GLIMPSE.
+            reset_if_exists: If True, overwrite existing NEXUS state for this tag.
+
+        Returns:
+            {"success": True, "nexus_tag": str, "coarse_terrain": path, "phantom_gem": path,
+            "node_count": int, "depth": int, "_source": "glimpse"}
+        """
+        import shutil
+
+        run_dir = self._get_nexus_dir(nexus_tag)
+        coarse_path = os.path.join(run_dir, "coarse_terrain.json")
+        phantom_gem_path = os.path.join(run_dir, "phantom_gem.json")
+
+        if os.path.exists(run_dir):
+            if not reset_if_exists:
+                raise NetworkError(
+                    f"NEXUS state already exists for tag '{nexus_tag}'. "
+                    "Use reset_if_exists=True to overwrite."
+                )
+            try:
+                shutil.rmtree(run_dir)
+            except Exception as e:
+                raise NetworkError(f"Failed to reset NEXUS state for tag '{nexus_tag}': {e}") from e
+
+        try:
+            os.makedirs(run_dir, exist_ok=True)
+        except Exception as e:
+            raise NetworkError(f"Failed to create NEXUS directory for tag '{nexus_tag}': {e}") from e
+
+        try:
+            glimpse_result = await self.workflowy_glimpse(workflowy_root_id)
+        except Exception as e:
+            raise NetworkError(f"GLIMPSE failed for root {workflowy_root_id}: {e}") from e
+
+        if not glimpse_result.get("success"):
+            raise NetworkError(
+                f"GLIMPSE returned failure for root {workflowy_root_id}: "
+                f"{glimpse_result.get('error', 'unknown error')}"
+            )
+
+        terrain_data = {
+            "export_root_id": workflowy_root_id,
+            "nodes": [
+                {
+                    "id": glimpse_result["root"]["id"],
+                    "name": glimpse_result["root"]["name"],
+                    "note": glimpse_result["root"].get("note"),
+                    "parent_id": glimpse_result["root"].get("parent_id"),
+                    "children": glimpse_result.get("children", []),
+                    "immediate_child_count": len(glimpse_result.get("children", [])),
+                    "total_descendant_count": glimpse_result.get("node_count", 1) - 1,
+                    "children_status": "complete",
+                }
+            ],
+        }
+
+        try:
+            with open(coarse_path, "w", encoding="utf-8") as f:
+                json.dump(terrain_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            raise NetworkError(f"Failed to write coarse_terrain.json: {e}") from e
+
+        try:
+            with open(phantom_gem_path, "w", encoding="utf-8") as f:
+                json.dump(terrain_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            raise NetworkError(f"Failed to write phantom_gem.json: {e}") from e
+
+        return {
+            "success": True,
+            "nexus_tag": nexus_tag,
+            "coarse_terrain": coarse_path,
+            "phantom_gem": phantom_gem_path,
+            "node_count": glimpse_result.get("node_count", 0),
+            "depth": glimpse_result.get("depth", 0),
+            "_source": "glimpse",
+        }
+
     async def nexus_anchor_gems(self, nexus_tag: str) -> dict[str, Any]:
         """ANCHOR GEMS → shimmering_terrain.json.
 
