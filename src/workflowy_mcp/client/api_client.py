@@ -3906,6 +3906,73 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         state = session.get("state", {}) or {}
         exploration_mode = session.get("exploration_mode", "manual")
 
+        def _summarize_descendants(branch_handle: str) -> dict[str, Any]:
+            """Summarize descendant decisions for a branch handle.
+
+            Returns a dict with:
+                {
+                    "descendant_count": int,
+                    "has_decided": bool,
+                    "has_undecided": bool,
+                    "accepted_leaf_count": int,
+                    "rejected_leaf_count": int,
+                }
+
+            We intentionally only count *leaf* accepts/rejects for the
+            accepted/rejected counters; non-leaf decisions still influence
+            has_decided/has_undecided.
+            """
+            # Gather all descendant handles via BFS
+            queue: list[str] = list(handles.get(branch_handle, {}).get("children", []) or [])
+            descendants: list[str] = []
+            while queue:
+                h = queue.pop(0)
+                descendants.append(h)
+                child_handles = handles.get(h, {}).get("children", []) or []
+                if child_handles:
+                    queue.extend(child_handles)
+
+            if not descendants:
+                return {
+                    "descendant_count": 0,
+                    "has_decided": False,
+                    "has_undecided": False,
+                    "accepted_leaf_count": 0,
+                    "rejected_leaf_count": 0,
+                }
+
+            accepted_leaves = 0
+            rejected_leaves = 0
+            has_decided = False
+            has_undecided = False
+
+            for h in descendants:
+                st = state.get(h, {"status": "unseen"})
+                status = st.get("status")
+                if status in {"finalized", "closed"}:
+                    has_decided = True
+                else:
+                    has_undecided = True
+
+                # Leaf = no children in the cached tree
+                child_handles = handles.get(h, {}).get("children", []) or []
+                is_leaf = not child_handles
+                if not is_leaf:
+                    continue
+
+                if status == "finalized":
+                    accepted_leaves += 1
+                elif status == "closed":
+                    rejected_leaves += 1
+
+            return {
+                "descendant_count": len(descendants),
+                "has_decided": has_decided,
+                "has_undecided": has_undecided,
+                "accepted_leaf_count": accepted_leaves,
+                "rejected_leaf_count": rejected_leaves,
+            }
+
         # Apply actions
         actions = actions or []
         for action in actions:
@@ -3987,12 +4054,132 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 entry["selection_type"] = None
                 entry["max_depth"] = None
             elif act == "accept_subtree":
-                entry["status"] = "finalized"
-                entry["selection_type"] = "subtree"
-                entry["max_depth"] = max_depth
+                summary = _summarize_descendants(handle)
+                desc_count = summary["descendant_count"]
+                has_decided = summary["has_decided"]
+                has_undecided = summary["has_undecided"]
+                accepted_leaves = summary["accepted_leaf_count"]
+                rejected_leaves = summary["rejected_leaf_count"]
+
+                if desc_count == 0:
+                    # No descendants at all: this is effectively a leaf; require
+                    # leaf-level decisions instead of subtree semantics.
+                    raise NetworkError(
+                        f"Handle '{handle}' has no descendants; use 'accept_leaf' / 'reject_leaf' "
+                        "for leaves instead of 'accept_subtree'."
+                    )
+
+                # Mixed case: some descendants decided, some not → force DFS
+                # further down rather than allowing a coarse branch decision.
+                if has_decided and has_undecided:
+                    session["handles"] = handles
+                    session["state"] = state
+                    current_frontier = self._compute_exploration_frontier(
+                        session,
+                        frontier_size=1,
+                        max_depth_per_frontier=max_depth_per_frontier,
+                    )
+                    next_handle = current_frontier[0]["handle"] if current_frontier else None
+                    next_name = (
+                        (handles.get(next_handle) or {}).get("name", "Untitled")
+                        if next_handle
+                        else None
+                    )
+                    base_msg = (
+                        f"Cannot accept_subtree on branch '{handle}' while some descendants are "
+                        "still undecided and others have already been decided.\n\n"
+                        "Finish exploring this branch in depth-first order first."
+                    )
+                    if next_handle:
+                        base_msg += (
+                            f"\n\nNext DFS node is '{next_handle}' ({next_name!r}). "
+                            "Make a leaf-level decision there with 'accept_leaf' / 'reject_leaf', "
+                            "or close/reopen branches as needed."
+                        )
+                    raise NetworkError(base_msg)
+
+                # All descendants undecided: branch-only shell, children opaque.
+                if not has_decided and has_undecided:
+                    entry["status"] = "finalized"
+                    entry["selection_type"] = "subtree"
+                    entry["max_depth"] = max_depth
+                    entry["subtree_mode"] = "shell"
+                # All descendants decided: behavior depends on leaf outcomes.
+                elif has_decided and not has_undecided:
+                    if accepted_leaves > 0:
+                        # Some leaves already accepted – accepting the subtree is
+                        # a no-op. The minimal covering tree will be built from
+                        # leaf decisions (branch becomes a path element).
+                        continue
+                    # All descendants rejected: include branch-only shell (no children).
+                    if rejected_leaves > 0:
+                        entry["status"] = "finalized"
+                        entry["selection_type"] = "subtree"
+                        entry["max_depth"] = max_depth
+                        entry["subtree_mode"] = "shell"
+                    else:
+                        # Should not happen (decided but no leaf outcomes), but
+                        # guard defensively.
+                        raise NetworkError(
+                            f"accept_subtree on '{handle}' encountered an inconsistent descendant summary."
+                        )
+                else:
+                    # No descendants and no decisions – already handled above.
+                    raise NetworkError(
+                        f"accept_subtree on '{handle}' is not applicable in the current state."
+                    )
             elif act == "reject_subtree":
-                # Explicitly reject this entire branch as a subtree decision.
-                # Children are treated as covered for DFS and finalization.
+                summary = _summarize_descendants(handle)
+                desc_count = summary["descendant_count"]
+                has_decided = summary["has_decided"]
+                has_undecided = summary["has_undecided"]
+                accepted_leaves = summary["accepted_leaf_count"]
+
+                if desc_count == 0:
+                    raise NetworkError(
+                        f"Handle '{handle}' has no descendants; use 'reject_leaf' "
+                        "for leaves instead of 'reject_subtree'."
+                    )
+
+                if has_decided and has_undecided:
+                    session["handles"] = handles
+                    session["state"] = state
+                    current_frontier = self._compute_exploration_frontier(
+                        session,
+                        frontier_size=1,
+                        max_depth_per_frontier=max_depth_per_frontier,
+                    )
+                    next_handle = current_frontier[0]["handle"] if current_frontier else None
+                    next_name = (
+                        (handles.get(next_handle) or {}).get("name", "Untitled")
+                        if next_handle
+                        else None
+                    )
+                    base_msg = (
+                        f"Cannot reject_subtree on branch '{handle}' while some descendants are "
+                        "still undecided and others have already been decided.\n\n"
+                        "Finish exploring this branch in depth-first order first."
+                    )
+                    if next_handle:
+                        base_msg += (
+                            f"\n\nNext DFS node is '{next_handle}' ({next_name!r}). "
+                            "Make a leaf-level decision there with 'accept_leaf' / 'reject_leaf', "
+                            "or close/reopen branches as needed."
+                        )
+                    raise NetworkError(base_msg)
+
+                # All descendants decided but some leaves accepted – do not allow
+                # a branch-wide reject that silently overrides positive decisions.
+                if has_decided and not has_undecided and accepted_leaves > 0:
+                    raise NetworkError(
+                        f"Cannot reject_subtree on branch '{handle}' because one or more leaves "
+                        "under this branch have already been accepted. "
+                        "Revisit those leaves with 'reject_leaf' or use 'reopen_branch' first."
+                    )
+
+                # All descendants undecided, or all decided with no accepted leaves:
+                # mark this branch as a rejected subtree so completeness logic
+                # can treat descendants as covered.
                 entry["status"] = "closed"
                 entry["selection_type"] = "subtree"
                 entry["max_depth"] = max_depth
@@ -4228,12 +4415,30 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "and the phantom gem will be a true minimal covering tree."
             )
 
+        # Build a reverse map from node_id to handle for convenience
+        handle_by_node_id: dict[str, str] = {}
+        for h, meta in handles.items():
+            nid = meta.get("id")
+            if nid:
+                handle_by_node_id[nid] = h
+
         needed_ids: set[str] = set()
 
-        # 1) Accept subtrees: include subtree roots and ALL descendants
-        for _handle, node_id, selection_type, _max_depth in finalized_entries:
+        # Classify subtree selections into "shell" (branch-only) vs full-subtree
+        subtree_shell_node_ids: set[str] = set()
+        true_subtree_root_ids: set[str] = set()
+
+        for handle, node_id, selection_type, _max_depth in finalized_entries:
             if selection_type != "subtree":
                 continue
+            st = state.get(handle, {})
+            if st.get("subtree_mode") == "shell":
+                subtree_shell_node_ids.add(node_id)
+            else:
+                true_subtree_root_ids.add(node_id)
+
+        # 1) Accept full subtrees: include subtree roots and ALL descendants
+        for node_id in true_subtree_root_ids:
             if node_id not in node_by_id:
                 logger.warning(
                     f"nexus_finalize_exploration: subtree root id {node_id} not found in tree; skipping."
@@ -4248,16 +4453,31 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 for child_id in children_by_id.get(cur, []):
                     stack.append(child_id)
 
-        # 2) Accept leaves: include leaf and all ancestors up to root
-        for _handle, node_id, selection_type, _max_depth in finalized_entries:
-            if selection_type != "leaf":
-                continue
+        # 2) Include branch-only shells (no descendants from this selection)
+        for node_id in subtree_shell_node_ids:
             if node_id not in node_by_id:
                 logger.warning(
-                    f"nexus_finalize_exploration: leaf id {node_id} not found in tree; skipping."
+                    f"nexus_finalize_exploration: subtree shell id {node_id} not found in tree; skipping."
                 )
                 continue
-            cur = node_id
+            needed_ids.add(node_id)
+
+        # 3) Accept leaves: include leaf and all ancestors up to root
+        accepted_leaf_ids: set[str] = set()
+
+        for nid, _node in node_by_id.items():
+            # Leaf = no children in cached tree
+            if children_by_id.get(nid):
+                continue
+            handle_for_node = handle_by_node_id.get(nid)
+            if not handle_for_node:
+                continue
+            st = state.get(handle_for_node, {"status": "unseen"})
+            if st.get("status") == "finalized":
+                accepted_leaf_ids.add(nid)
+
+        for leaf_id in accepted_leaf_ids:
+            cur = leaf_id
             while cur is not None:
                 if cur in needed_ids:
                     break
@@ -4269,6 +4489,23 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 f"Exploration session '{session_id}' computed empty minimal covering tree; "
                 f"no accepted leaves or subtrees."
             )
+
+        # Assign gem roles: default path_element, override for leaves and explicit subtree selections
+        role_by_node_id: dict[str, str] = {}
+        for nid in needed_ids:
+            role_by_node_id[nid] = "path_element"
+
+        for nid in subtree_shell_node_ids:
+            if nid in role_by_node_id:
+                role_by_node_id[nid] = "subtree_selected"
+
+        for nid in true_subtree_root_ids:
+            if nid in role_by_node_id:
+                role_by_node_id[nid] = "subtree_selected"
+
+        for nid in accepted_leaf_ids:
+            if nid in role_by_node_id:
+                role_by_node_id[nid] = "leaf_selected"
 
         # Determine disjoint roots of the minimal covering forest: nodes that are
         # needed but whose parent is either None or not needed.
@@ -4298,6 +4535,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 return None
 
             new_node = {k: v for k, v in node.items() if k != "children"}
+            role = role_by_node_id.get(nid)
+            if role:
+                new_node["gem_role"] = role
             new_children: list[dict[str, Any]] = []
             for child in node.get("children", []) or []:
                 pruned_child = copy_pruned_subtree(child)
