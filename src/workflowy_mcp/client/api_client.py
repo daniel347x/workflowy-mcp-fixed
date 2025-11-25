@@ -3300,43 +3300,68 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # the frontier compact while still providing strong guidance.
         MAX_CHILDREN_HINT = 10
 
-        for parent_handle in candidate_parents:
-            meta = handles.get(parent_handle) or {}
-            child_handles = meta.get("children", []) or []
+        if not candidate_parents or frontier_size <= 0:
+            return frontier
 
-            for child_handle in child_handles:
-                child_state = state.get(child_handle, {"status": "unseen"})
-                if child_state.get("status") in {"closed", "finalized"}:
-                    continue
+        # Round-robin across open parents: walk each parent's children in strips
+        # (A child, B child, C child, then A's next, etc.) until we either fill
+        # the frontier or run out of candidates.
+        parent_indices: dict[str, int] = {h: 0 for h in candidate_parents}
 
-                child_meta = handles.get(child_handle) or {}
-                grandchild_handles = child_meta.get("children", []) or []
+        while len(frontier) < frontier_size:
+            made_progress = False
 
-                # Build children_hint: preview of this node's immediate children by
-                # name, in original order, capped at MAX_CHILDREN_HINT.
-                children_hint: list[str] = []
-                if grandchild_handles:
-                    for ch in grandchild_handles[:MAX_CHILDREN_HINT]:
-                        ch_meta = handles.get(ch) or {}
-                        ch_name = ch_meta.get("name")
-                        if ch_name:
-                            children_hint.append(ch_name)
+            for parent_handle in candidate_parents:
+                meta = handles.get(parent_handle) or {}
+                child_handles = meta.get("children", []) or []
 
-                frontier.append(
-                    {
-                        "handle": child_handle,
-                        "path": child_handle,
-                        "parent_handle": parent_handle,
-                        "name_preview": child_meta.get("name", ""),
-                        "child_count": len(grandchild_handles),
-                        "children_hint": children_hint,
-                        "depth": child_meta.get("depth", 0),
-                        "status": child_state.get("status", "candidate"),
-                    }
-                )
+                idx = parent_indices.get(parent_handle, 0)
+                # Advance this parent's index until we either exhaust its
+                # children or find a child that is not closed/finalized.
+                while idx < len(child_handles) and len(frontier) < frontier_size:
+                    child_handle = child_handles[idx]
+                    parent_indices[parent_handle] = idx + 1
+                    idx += 1
+
+                    child_state = state.get(child_handle, {"status": "unseen"})
+                    if child_state.get("status") in {"closed", "finalized"}:
+                        continue
+
+                    child_meta = handles.get(child_handle) or {}
+                    grandchild_handles = child_meta.get("children", []) or []
+
+                    # Build children_hint: preview of this node's immediate children
+                    # by name, in original order, capped at MAX_CHILDREN_HINT.
+                    children_hint: list[str] = []
+                    if grandchild_handles:
+                        for ch in grandchild_handles[:MAX_CHILDREN_HINT]:
+                            ch_meta = handles.get(ch) or {}
+                            ch_name = ch_meta.get("name")
+                            if ch_name:
+                                children_hint.append(ch_name)
+
+                    frontier.append(
+                        {
+                            "handle": child_handle,
+                            "path": child_handle,
+                            "parent_handle": parent_handle,
+                            "name_preview": child_meta.get("name", ""),
+                            "child_count": len(grandchild_handles),
+                            "children_hint": children_hint,
+                            "depth": child_meta.get("depth", 0),
+                            "status": child_state.get("status", "candidate"),
+                        }
+                    )
+
+                    made_progress = True
+                    break  # Move to next parent in round-robin
 
                 if len(frontier) >= frontier_size:
-                    return frontier
+                    break
+
+            if not made_progress:
+                # No parent was able to contribute a new frontier entry.
+                break
 
         return frontier
 
