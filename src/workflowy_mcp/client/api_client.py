@@ -3697,9 +3697,22 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # Optionally create a minimal coarse_terrain.json if one does not exist
         if include_terrain and not os.path.exists(coarse_path):
             try:
+                export_root_id = session.get("root_id")
+                export_root_name = session.get("root_name") or root_node.get("name", "Root")
+                export_timestamp = None  # Exploration does not track per-node timestamps
+
+                # IMPORTANT: children only – do NOT include the root node itself here.
+                # This keeps the NEXUS invariant that 'nodes' holds the children of
+                # export_root_id, matching bulk_export_to_file and nexus_glimpse,
+                # and prevents the reconciliation algorithm from trying to create
+                # the root as a child of itself.
+                root_children = root_node.get("children", []) or []
+
                 coarse_payload = {
-                    "export_root_id": session.get("root_id"),
-                    "nodes": [root_node],
+                    "export_root_id": export_root_id,
+                    "export_root_name": export_root_name,
+                    "export_timestamp": export_timestamp,
+                    "nodes": root_children,
                 }
                 with open(coarse_path, "w", encoding="utf-8") as f:
                     json_module.dump(coarse_payload, f, indent=2, ensure_ascii=False)
