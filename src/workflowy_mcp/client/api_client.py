@@ -2910,6 +2910,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         nexus_tag: str,
         workflowy_root_id: str,
         reset_if_exists: bool = False,
+        mode: str = "full",
         _ws_connection=None,
         _ws_queue=None,
     ) -> dict[str, Any]:
@@ -2928,18 +2929,33 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             nexus_tag: Human-readable tag for this NEXUS run.
             workflowy_root_id: Root node UUID to GLIMPSE.
             reset_if_exists: If True, overwrite existing NEXUS state for this tag.
+            mode: Output mode control:
+                "full" (default) - Write T0 + S0 + T1 (all identical). Skip directly to QUILLSTORM.
+                "coarse_terrain_only" - Write only T0. Use for hybrid workflow: GLIMPSE for map,
+                                        then nexus_ignite_shards on specific roots later.
             _ws_connection: WebSocket connection from server.py (internal)
             _ws_queue: WebSocket message queue from server.py (internal)
 
         Returns:
-            {"success": True, "nexus_tag": str, "coarse_terrain": path, "phantom_gem": path,
-            "node_count": int, "depth": int, "_source": "glimpse"}
+            mode="full":
+                {"success": True, "nexus_tag": str, "coarse_terrain": path, "phantom_gem": path,
+                 "shimmering_terrain": path, "node_count": int, "depth": int, "_source": "glimpse"}
+            mode="coarse_terrain_only":
+                {"success": True, "nexus_tag": str, "coarse_terrain": path,
+                 "node_count": int, "depth": int, "_source": "glimpse"}
         """
         import shutil
+
+        # Validate mode parameter
+        if mode not in ("full", "coarse_terrain_only"):
+            raise NetworkError(
+                f"Invalid mode '{mode}'. Must be 'full' or 'coarse_terrain_only'."
+            )
 
         run_dir = self._get_nexus_dir(nexus_tag)
         coarse_path = os.path.join(run_dir, "coarse_terrain.json")
         phantom_gem_path = os.path.join(run_dir, "phantom_gem.json")
+        shimmering_path = os.path.join(run_dir, "shimmering_terrain.json")
 
         if os.path.exists(run_dir):
             if not reset_if_exists:
@@ -2981,37 +2997,233 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "nodes": children,  # Children with children_status annotations
         }
 
+        # Always write coarse_terrain.json
         try:
             with open(coarse_path, "w", encoding="utf-8") as f:
                 json.dump(terrain_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             raise NetworkError(f"Failed to write coarse_terrain.json: {e}") from e
 
-        try:
-            with open(phantom_gem_path, "w", encoding="utf-8") as f:
-                json.dump(terrain_data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            raise NetworkError(f"Failed to write phantom_gem.json: {e}") from e
-
-        # GLIMPSE path: terrain = gem = shimmering (no IGNITE SHARDS step)
-        # Write shimmering_terrain.json (identical to coarse_terrain for GLIMPSE)
-        shimmering_path = os.path.join(run_dir, "shimmering_terrain.json")
-        try:
-            with open(shimmering_path, "w", encoding="utf-8") as f:
-                json.dump(terrain_data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            raise NetworkError(f"Failed to write shimmering_terrain.json: {e}") from e
-
-        return {
+        result = {
             "success": True,
             "nexus_tag": nexus_tag,
             "coarse_terrain": coarse_path,
-            "phantom_gem": phantom_gem_path,
-            "shimmering_terrain": shimmering_path,
             "node_count": glimpse_result.get("node_count", 0),
             "depth": glimpse_result.get("depth", 0),
             "_source": "glimpse",
+            "mode": mode,
         }
+
+        if mode == "full":
+            # GLIMPSE path: T0 = S0 = T1 (all identical)
+            # Write phantom_gem.json and shimmering_terrain.json
+            try:
+                with open(phantom_gem_path, "w", encoding="utf-8") as f:
+                    json.dump(terrain_data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                raise NetworkError(f"Failed to write phantom_gem.json: {e}") from e
+
+            try:
+                with open(shimmering_path, "w", encoding="utf-8") as f:
+                    json.dump(terrain_data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                raise NetworkError(f"Failed to write shimmering_terrain.json: {e}") from e
+
+            result["phantom_gem"] = phantom_gem_path
+            result["shimmering_terrain"] = shimmering_path
+
+        # mode="coarse_terrain_only": only coarse_terrain.json written
+        # User will call nexus_ignite_shards later to create phantom_gem.json
+
+        return result
+
+    async def nexus_glimpse_full(
+        self,
+        nexus_tag: str,
+        workflowy_root_id: str,
+        reset_if_exists: bool = False,
+        mode: str = "full",
+        max_depth: int | None = None,
+        child_limit: int | None = None,
+        max_nodes: int = 200000,
+    ) -> dict[str, Any]:
+        """GLIMPSE FULL → TERRAIN + PHANTOM GEM (API-based, ignores UI expansion).
+
+        API-based cousin of nexus_glimpse. Fetches the complete subtree via Workflowy API,
+        regardless of what's expanded in the UI. Unlike nexus_summon, this REQUIRES a
+        full-depth tree with no truncation.
+
+        Use when:
+        • Tree is too large for Dan to manually expand
+        • You want the complete subtree for understanding/context
+        • Agent-driven workflows where Dan isn't interacting with Workflowy
+
+        Args:
+            nexus_tag: Human-readable tag for this NEXUS run.
+            workflowy_root_id: Root node UUID to fetch.
+            reset_if_exists: If True, overwrite existing NEXUS state for this tag.
+            mode: Output mode control:
+                "full" (default) - Write T0 + S0 + T1 (all identical). Skip directly to QUILLSTORM.
+                "coarse_terrain_only" - Write only T0. Use for hybrid workflow: GLIMPSE for map,
+                                        then nexus_ignite_shards on specific roots later.
+            max_depth: Optional depth limit (errors if tree exceeds this).
+            child_limit: Optional child count limit per node (errors if any node exceeds this).
+            max_nodes: Maximum total node count (default 200000). Errors if tree is larger.
+
+        Returns:
+            mode="full":
+                {"success": True, "nexus_tag": str, "coarse_terrain": path, "phantom_gem": path,
+                 "shimmering_terrain": path, "node_count": int, "depth": int, "_source": "api"}
+            mode="coarse_terrain_only":
+                {"success": True, "nexus_tag": str, "coarse_terrain": path,
+                 "node_count": int, "depth": int, "_source": "api"}
+
+        Raises:
+            NetworkError: If tree would be truncated (exceeds max_depth, child_limit, or max_nodes)
+        """
+        import shutil
+
+        # Validate mode parameter
+        if mode not in ("full", "coarse_terrain_only"):
+            raise NetworkError(
+                f"Invalid mode '{mode}'. Must be 'full' or 'coarse_terrain_only'."
+            )
+
+        run_dir = self._get_nexus_dir(nexus_tag)
+        coarse_path = os.path.join(run_dir, "coarse_terrain.json")
+        phantom_gem_path = os.path.join(run_dir, "phantom_gem.json")
+        shimmering_path = os.path.join(run_dir, "shimmering_terrain.json")
+
+        if os.path.exists(run_dir):
+            if not reset_if_exists:
+                raise NetworkError(
+                    f"NEXUS state already exists for tag '{nexus_tag}'. "
+                    "Use reset_if_exists=True to overwrite."
+                )
+            try:
+                shutil.rmtree(run_dir)
+            except Exception as e:
+                raise NetworkError(f"Failed to reset NEXUS state for tag '{nexus_tag}': {e}") from e
+
+        try:
+            os.makedirs(run_dir, exist_ok=True)
+        except Exception as e:
+            raise NetworkError(f"Failed to create NEXUS directory for tag '{nexus_tag}': {e}") from e
+
+        # Fetch full tree via API
+        try:
+            glimpse_result = await self.workflowy_glimpse_full(
+                node_id=workflowy_root_id,
+                use_efficient_traversal=True,
+                depth=None,  # Always fetch full depth
+                size_limit=max_nodes,
+            )
+        except Exception as e:
+            raise NetworkError(f"GLIMPSE FULL failed for root {workflowy_root_id}: {e}") from e
+
+        if not glimpse_result.get("success"):
+            raise NetworkError(
+                f"GLIMPSE FULL returned failure for root {workflowy_root_id}: "
+                f"{glimpse_result.get('error', 'unknown error')}"
+            )
+
+        # Extract metadata and children
+        root_meta = glimpse_result.get("root") or {
+            "id": workflowy_root_id,
+            "name": "Root",
+            "note": None,
+        }
+        children = glimpse_result.get("children", []) or []
+        node_count = glimpse_result.get("node_count", len(children) + 1)
+        tree_depth = glimpse_result.get("depth", 0)
+
+        # HARD REQUIREMENT: No truncation allowed for nexus_glimpse_full
+        # Check if limits would have caused truncation
+        if max_depth is not None and tree_depth > max_depth:
+            raise NetworkError(
+                f"nexus_glimpse_full requires full-depth tree. "
+                f"Tree depth ({tree_depth}) exceeds max_depth ({max_depth}). "
+                f"Either increase max_depth or use nexus_summon for truncated trees."
+            )
+
+        if child_limit is not None:
+            # Check if any node in the tree exceeds child_limit
+            def check_child_limit(nodes: list[dict[str, Any]]) -> tuple[bool, str, int]:
+                for node in nodes:
+                    node_children = node.get("children", []) or []
+                    if len(node_children) > child_limit:
+                        return True, node.get("name", "Unnamed"), len(node_children)
+                    exceeded, name, count = check_child_limit(node_children)
+                    if exceeded:
+                        return exceeded, name, count
+                return False, "", 0
+
+            exceeded, node_name, actual_count = check_child_limit(children)
+            if exceeded:
+                raise NetworkError(
+                    f"nexus_glimpse_full requires full-depth tree. "
+                    f"Node '{node_name}' has {actual_count} children, exceeding child_limit ({child_limit}). "
+                    f"Either increase child_limit or use nexus_summon for truncated trees."
+                )
+
+        # Build terrain data structure
+        terrain_data = {
+            "export_root_id": workflowy_root_id,
+            "export_root_name": root_meta.get("name", "Root"),
+            "export_timestamp": None,
+            "nodes": children,
+        }
+
+        # Annotate children_status as 'complete' (API fetch is always complete)
+        def annotate_complete(nodes: list[dict[str, Any]]) -> None:
+            for node in nodes:
+                node["children_status"] = "complete"
+                node["has_hidden_children"] = False
+                grandchildren = node.get("children", []) or []
+                if grandchildren:
+                    annotate_complete(grandchildren)
+
+        annotate_complete(children)
+
+        # Always write coarse_terrain.json
+        try:
+            with open(coarse_path, "w", encoding="utf-8") as f:
+                json.dump(terrain_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            raise NetworkError(f"Failed to write coarse_terrain.json: {e}") from e
+
+        result = {
+            "success": True,
+            "nexus_tag": nexus_tag,
+            "coarse_terrain": coarse_path,
+            "node_count": node_count,
+            "depth": tree_depth,
+            "_source": "api",
+            "mode": mode,
+        }
+
+        if mode == "full":
+            # GLIMPSE FULL path: T0 = S0 = T1 (all identical)
+            # Write phantom_gem.json and shimmering_terrain.json
+            try:
+                with open(phantom_gem_path, "w", encoding="utf-8") as f:
+                    json.dump(terrain_data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                raise NetworkError(f"Failed to write phantom_gem.json: {e}") from e
+
+            try:
+                with open(shimmering_path, "w", encoding="utf-8") as f:
+                    json.dump(terrain_data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                raise NetworkError(f"Failed to write shimmering_terrain.json: {e}") from e
+
+            result["phantom_gem"] = phantom_gem_path
+            result["shimmering_terrain"] = shimmering_path
+
+        # mode="coarse_terrain_only": only coarse_terrain.json written
+        # User will call nexus_ignite_shards later to create phantom_gem.json
+
+        return result
 
     async def nexus_anchor_gems(self, nexus_tag: str) -> dict[str, Any]:
         """ANCHOR GEMS → shimmering_terrain.json.

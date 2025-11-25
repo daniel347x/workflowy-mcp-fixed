@@ -752,16 +752,48 @@ async def nexus_glimpse(
     nexus_tag: str,
     workflowy_root_id: str,
     reset_if_exists: bool = False,
+    mode: str = "full",
 ) -> dict[str, Any]:
-    """GLIMPSE-based NEXUS initialization (zero API calls)."""
+    """GLIMPSE-based NEXUS initialization."""
     client = get_client()
     ws_conn, ws_queue = get_ws_connection()  # Get WebSocket connection
     return await client.nexus_glimpse(
         nexus_tag=nexus_tag,
         workflowy_root_id=workflowy_root_id,
         reset_if_exists=reset_if_exists,
+        mode=mode,
         _ws_connection=ws_conn,
         _ws_queue=ws_queue,
+    )
+
+@mcp.tool(
+    name="nexus_glimpse_full",
+    description=(
+        "GLIMPSE FULL → TERRAIN + PHANTOM GEM (API-based, ignores UI expansion). "
+        "API cousin of nexus_glimpse that fetches the complete subtree via Workflowy API. "
+        "Unlike nexus_summon, this REQUIRES a full-depth tree (errors if truncation needed). "
+        "Use for agent-driven workflows or when tree is too large to manually expand."
+    ),
+)
+async def nexus_glimpse_full(
+    nexus_tag: str,
+    workflowy_root_id: str,
+    reset_if_exists: bool = False,
+    mode: str = "full",
+    max_depth: int | None = None,
+    child_limit: int | None = None,
+    max_nodes: int = 200000,
+) -> dict[str, Any]:
+    """API-based GLIMPSE FULL (complete subtree, no truncation)."""
+    client = get_client()
+    return await client.nexus_glimpse_full(
+        nexus_tag=nexus_tag,
+        workflowy_root_id=workflowy_root_id,
+        reset_if_exists=reset_if_exists,
+        mode=mode,
+        max_depth=max_depth,
+        child_limit=child_limit,
+        max_nodes=max_nodes,
     )
 
 # Tool: Export Nodes
