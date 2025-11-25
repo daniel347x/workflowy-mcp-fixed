@@ -2966,20 +2966,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 f"{glimpse_result.get('error', 'unknown error')}"
             )
 
+        # Mirror bulk_export_to_file structure: metadata wrapper + children only
+        # Root info goes in metadata, NOT in nodes array (prevents root duplication)
         terrain_data = {
             "export_root_id": workflowy_root_id,
-            "nodes": [
-                {
-                    "id": glimpse_result["root"]["id"],
-                    "name": glimpse_result["root"]["name"],
-                    "note": glimpse_result["root"].get("note"),
-                    "parent_id": glimpse_result["root"].get("parent_id"),
-                    "children": glimpse_result.get("children", []),
-                    "immediate_child_count": len(glimpse_result.get("children", [])),
-                    "total_descendant_count": glimpse_result.get("node_count", 1) - 1,
-                    "children_status": "complete",
-                }
-            ],
+            "export_root_name": glimpse_result["root"]["name"],
+            "export_timestamp": None,  # GLIMPSE doesn't have timestamp
+            "nodes": glimpse_result.get("children", []),  # Children only, not wrapped root
         }
 
         try:
