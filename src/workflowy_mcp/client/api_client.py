@@ -905,9 +905,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 
                 for child in children:
                     child_dict = child.model_dump()
-                    # Ensure parent_id is recorded for hierarchy reconstruction
-                    if "parent_id" not in child_dict and "parentId" not in child_dict:
-                        # FORCE parent_id linking for efficient traversal to ensure _build_hierarchy succeeds
+                    # Ensure parent_id is recorded for hierarchy reconstruction.
+                    # Some model dumps include parentId=None; in that case, we
+                    # override to the BFS parent we just queried.
+                    parent_id = child_dict.get("parent_id") or child_dict.get("parentId")
+                    if not parent_id:
                         child_dict["parent_id"] = parent
                     flat_nodes.append(child_dict)
                     queue.append(child.id)
@@ -1616,9 +1618,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 
                 for child in children:
                     child_dict = child.model_dump()
-                    # Ensure parent_id is recorded for hierarchy reconstruction
-                    if "parent_id" not in child_dict and "parentId" not in child_dict:
-                        # FORCE parent_id linking for efficient traversal to ensure _build_hierarchy succeeds
+                    # Ensure parent_id is recorded for hierarchy reconstruction.
+                    # Some model dumps include parentId=None; in that case, we
+                    # override to the BFS parent we just queried.
+                    parent_id = child_dict.get("parent_id") or child_dict.get("parentId")
+                    if not parent_id:
                         child_dict["parent_id"] = parent
                     flat_nodes.append(child_dict)
                     queue.append(child.id)
@@ -3175,9 +3179,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         frontier: list[dict[str, Any]] = []
 
-        # Candidate parents: any handle that is currently open or a candidate.
+        # Candidate parents: any handle that is currently open.
+        # Candidate handles themselves are frontier entries, not parents, until
+        # the agent explicitly opens them.
         candidate_parents = [
-            h for h, st in state.items() if st.get("status") in {"open", "candidate"}
+            h for h, st in state.items() if st.get("status") == "open"
         ]
 
         for parent_handle in candidate_parents:
