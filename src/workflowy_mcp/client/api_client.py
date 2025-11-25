@@ -2908,6 +2908,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         nexus_tag: str,
         workflowy_root_id: str,
         reset_if_exists: bool = False,
+        _ws_connection=None,
+        _ws_queue=None,
     ) -> dict[str, Any]:
         """GLIMPSE → TERRAIN + PHANTOM GEM (zero API calls).
 
@@ -2924,6 +2926,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             nexus_tag: Human-readable tag for this NEXUS run.
             workflowy_root_id: Root node UUID to GLIMPSE.
             reset_if_exists: If True, overwrite existing NEXUS state for this tag.
+            _ws_connection: WebSocket connection from server.py (internal)
+            _ws_queue: WebSocket message queue from server.py (internal)
 
         Returns:
             {"success": True, "nexus_tag": str, "coarse_terrain": path, "phantom_gem": path,
@@ -2952,7 +2956,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             raise NetworkError(f"Failed to create NEXUS directory for tag '{nexus_tag}': {e}") from e
 
         try:
-            glimpse_result = await self.workflowy_glimpse(workflowy_root_id)
+            glimpse_result = await self.workflowy_glimpse(workflowy_root_id, _ws_connection=_ws_connection, _ws_queue=_ws_queue)
         except Exception as e:
             raise NetworkError(f"GLIMPSE failed for root {workflowy_root_id}: {e}") from e
 

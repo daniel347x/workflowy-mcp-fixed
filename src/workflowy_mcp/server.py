@@ -755,10 +755,13 @@ async def nexus_glimpse(
 ) -> dict[str, Any]:
     """GLIMPSE-based NEXUS initialization (zero API calls)."""
     client = get_client()
+    ws_conn, ws_queue = get_ws_connection()  # Get WebSocket connection
     return await client.nexus_glimpse(
         nexus_tag=nexus_tag,
         workflowy_root_id=workflowy_root_id,
         reset_if_exists=reset_if_exists,
+        _ws_connection=ws_conn,
+        _ws_queue=ws_queue,
     )
 
 # Tool: Export Nodes
