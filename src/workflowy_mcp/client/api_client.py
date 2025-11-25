@@ -3296,6 +3296,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             h for h, st in state.items() if st.get("status") == "open"
         ]
 
+        # Limit on how many immediate child names we surface per entry to keep
+        # the frontier compact while still providing strong guidance.
+        MAX_CHILDREN_HINT = 10
+
         for parent_handle in candidate_parents:
             meta = handles.get(parent_handle) or {}
             child_handles = meta.get("children", []) or []
@@ -3306,13 +3310,26 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     continue
 
                 child_meta = handles.get(child_handle) or {}
+                grandchild_handles = child_meta.get("children", []) or []
+
+                # Build children_hint: preview of this node's immediate children by
+                # name, in original order, capped at MAX_CHILDREN_HINT.
+                children_hint: list[str] = []
+                if grandchild_handles:
+                    for ch in grandchild_handles[:MAX_CHILDREN_HINT]:
+                        ch_meta = handles.get(ch) or {}
+                        ch_name = ch_meta.get("name")
+                        if ch_name:
+                            children_hint.append(ch_name)
+
                 frontier.append(
                     {
                         "handle": child_handle,
                         "path": child_handle,
                         "parent_handle": parent_handle,
                         "name_preview": child_meta.get("name", ""),
-                        "child_count": len(child_meta.get("children", []) or []),
+                        "child_count": len(grandchild_handles),
+                        "children_hint": children_hint,
                         "depth": child_meta.get("depth", 0),
                         "status": child_state.get("status", "candidate"),
                     }
