@@ -2609,6 +2609,28 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         except Exception as e:  # noqa: BLE001
             raise NetworkError(f"transform_jewel failed: {e}") from e
 
+    def _annotate_glimpse_children_status(self, nodes: list[dict[str, Any]]) -> None:
+        """Annotate children_status for GLIMPSE-extracted nodes (recursive).
+        
+        Sets children_status based on has_hidden_children metadata from WebSocket:
+        - has_hidden_children=True → 'truncated_by_expansion' (SAFE: don't delete hidden)
+        - has_hidden_children=False → 'complete' (SAFE: can reconcile children)
+        
+        This prevents accidental deletion of collapsed branches during NEXUS WEAVE.
+        """
+        for node in nodes:
+            has_hidden = node.get('has_hidden_children', False)
+            
+            if has_hidden:
+                node['children_status'] = 'truncated_by_expansion'
+            else:
+                node['children_status'] = 'complete'
+            
+            # Recursively annotate grandchildren
+            grandchildren = node.get('children', [])
+            if grandchildren:
+                self._annotate_glimpse_children_status(grandchildren)
+    
     def _get_nexus_dir(self, nexus_tag: str) -> str:
         """Resolve base directory for a CORINTHIAN NEXUS run and ensure it exists.
 
@@ -2946,13 +2968,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 f"{glimpse_result.get('error', 'unknown error')}"
             )
 
+        # Extract children and annotate with children_status for NEXUS safety
+        children = glimpse_result.get("children", [])
+        self._annotate_glimpse_children_status(children)
+
         # Mirror bulk_export_to_file structure: metadata wrapper + children only
         # Root info goes in metadata, NOT in nodes array (prevents root duplication)
         terrain_data = {
             "export_root_id": workflowy_root_id,
             "export_root_name": glimpse_result["root"]["name"],
             "export_timestamp": None,  # GLIMPSE doesn't have timestamp
-            "nodes": glimpse_result.get("children", []),  # Children only, not wrapped root
+            "nodes": children,  # Children with children_status annotations
         }
 
         try:
