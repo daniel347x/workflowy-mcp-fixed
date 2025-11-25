@@ -3506,6 +3506,104 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         frontier: list[dict[str, Any]] = []
 
+        exploration_mode = session.get("exploration_mode", "manual")
+
+        # DFS-GUIDED MODE: Present exactly one undecided handle in a canonical
+        # depth-first order. This gently nudges agents to advance through the
+        # tree one node at a time, making explicit decisions, instead of
+        # skipping large unexplored branches.
+        if exploration_mode == "dfs_guided":
+
+            def _is_covered_or_decided(h: str) -> bool:
+                """Return True if this handle is already accounted for.
+
+                A handle is accounted for if:
+                - Its own status is finalized/closed, OR
+                - It is under an ancestor whose selection_type == "subtree" and
+                  that ancestor is finalized/closed.
+                """
+                st = state.get(h, {"status": "unseen"})
+                if st.get("status") in {"finalized", "closed"}:
+                    return True
+
+                parent_handle = handles.get(h, {}).get("parent")
+                while parent_handle:
+                    anc_state = state.get(parent_handle, {})
+                    if (
+                        anc_state.get("status") in {"finalized", "closed"}
+                        and anc_state.get("selection_type") == "subtree"
+                    ):
+                        return True
+                    parent_handle = handles.get(parent_handle, {}).get("parent")
+                return False
+
+            dfs_order: list[str] = []
+
+            def _visit(handle: str) -> None:
+                # Skip synthetic root handle as a frontier entry
+                if handle != "R":
+                    dfs_order.append(handle)
+                for ch in handles.get(handle, {}).get("children", []) or []:
+                    _visit(ch)
+
+            _visit("R")
+
+            next_handle: str | None = None
+            for h in dfs_order:
+                if not _is_covered_or_decided(h):
+                    next_handle = h
+                    break
+
+            if next_handle is None:
+                # Everything is decided or covered; no further frontier.
+                return frontier
+
+            meta = handles.get(next_handle, {}) or {}
+            grandchild_handles = meta.get("children", []) or []
+
+            # Build children_hint for context when the node has children.
+            children_hint: list[str] = []
+            MAX_CHILDREN_HINT = 10
+            if grandchild_handles:
+                for ch in grandchild_handles[:MAX_CHILDREN_HINT]:
+                    ch_meta = handles.get(ch, {}) or {}
+                    ch_name = ch_meta.get("name")
+                    if ch_name:
+                        children_hint.append(ch_name)
+
+            is_leaf = len(grandchild_handles) == 0
+            if is_leaf:
+                guidance = (
+                    "Leaf node. Prefer making decisions here: use "
+                    "'accept_leaf' or 'reject_leaf'. Rejecting an entire branch "
+                    "is appropriate only when you are sure all of its contents "
+                    "are irrelevant."
+                )
+            else:
+                guidance = (
+                    "Branch node. dfs-guided mode will walk you through its "
+                    "descendants; use 'accept_subtree' or 'reject_subtree' only "
+                    "when you intentionally want to include or exclude this "
+                    "whole branch without inspecting each leaf."
+                )
+
+            frontier.append(
+                {
+                    "handle": next_handle,
+                    "path": next_handle,
+                    "parent_handle": meta.get("parent"),
+                    "name_preview": meta.get("name", ""),
+                    "child_count": len(grandchild_handles),
+                    "children_hint": children_hint,
+                    "depth": meta.get("depth", 0),
+                    "status": state.get(next_handle, {}).get("status", "candidate"),
+                    "is_leaf": is_leaf,
+                    "guidance": guidance,
+                }
+            )
+
+            return frontier
+
         # Candidate parents: any handle that is currently open.
         # Candidate handles themselves are frontier entries, not parents, until
         # the agent explicitly opens them.
@@ -3711,6 +3809,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "root_name": root_node.get("name"),
             "created_at": datetime.utcnow().isoformat() + "Z",
             "source_mode": source_mode,
+            "exploration_mode": "dfs_guided",
             "max_nodes": max_nodes,
             "handles": handles,
             "state": state,
@@ -3882,15 +3981,15 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 raise NetworkError(f"Unsupported exploration action: '{act}'")
 
         # Recompute frontier
+        session["handles"] = handles
+        session["state"] = state
         frontier = self._compute_exploration_frontier(
-            {"handles": handles, "state": state},
+            session,
             frontier_size=frontier_size,
             max_depth_per_frontier=max_depth_per_frontier,
         )
 
         # Update session state and persist
-        session["handles"] = handles
-        session["state"] = state
         session["steps"] = int(session.get("steps", 0)) + 1
         session["updated_at"] = datetime.utcnow().isoformat() + "Z"
 
@@ -4017,6 +4116,66 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         if not finalized_entries:
             raise NetworkError(
                 f"Exploration session '{session_id}' has no finalized paths to export."
+            )
+
+        # COMPLETENESS CHECK: ensure every handle is either explicitly decided
+        # (status in {finalized, closed}) or covered by an ancestor subtree
+        # decision (selection_type == "subtree"). This prevents accidental
+        # partial exploration like the Claude failure case.
+        uncovered_handles: list[str] = []
+
+        for handle, meta in handles.items():
+            # Skip synthetic root handle
+            if handle == "R":
+                continue
+
+            st = state.get(handle, {"status": "unseen"})
+            status = st.get("status")
+
+            # Explicitly decided handles are fine
+            if status in {"finalized", "closed"}:
+                continue
+
+            # Check ancestor chain for a subtree decision that covers this node
+            ancestor_handle = meta.get("parent")
+            covered_by_subtree = False
+            while ancestor_handle:
+                anc_state = state.get(ancestor_handle, {})
+                if (
+                    anc_state.get("status") in {"finalized", "closed"}
+                    and anc_state.get("selection_type") == "subtree"
+                ):
+                    covered_by_subtree = True
+                    break
+                ancestor_handle = handles.get(ancestor_handle, {}).get("parent")
+
+            if not covered_by_subtree:
+                uncovered_handles.append(handle)
+
+        if uncovered_handles:
+            # Build a human-readable summary of uncovered top-level and nested
+            # handles to make the mistake visible and correctable.
+            details_lines: list[str] = []
+            for h in uncovered_handles[:50]:  # cap to avoid overwhelming output
+                meta = handles.get(h, {})
+                name = meta.get("name", "Untitled")
+                parent_handle = meta.get("parent") or "<root>"
+                details_lines.append(f"- {h} (name='{name}', parent='{parent_handle}')")
+
+            more_note = "" if len(uncovered_handles) <= 50 else f"\n…and {len(uncovered_handles) - 50} more handles."  # noqa: E501
+
+            raise NetworkError(
+                "Incomplete exploration detected during nexus_finalize_exploration.\n\n"
+                "You attempted to finalize without accounting for all branches.\n\n"
+                "Handles that are neither explicitly accepted/rejected nor covered "
+                "by an accepted/rejected subtree decision:\n"
+                + "\n".join(details_lines)
+                + more_note
+                + "\n\nTo proceed safely, either:\n"
+                "• Visit these handles and decide with 'accept_leaf' / 'reject_leaf', OR\n"
+                "• Use 'accept_subtree' / 'reject_subtree' on an ancestor branch to cover them.\n\n"
+                "Once every handle is accounted for, nexus_finalize_exploration will succeed "
+                "and the phantom gem will be a true minimal covering tree."
             )
 
         needed_ids: set[str] = set()
