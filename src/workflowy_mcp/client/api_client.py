@@ -3487,7 +3487,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         """Compute the next frontier for an exploration session.
 
         This is a simple handle-based frontier computation:
-        - Candidate parents are handles with status in {open, candidate}.
+        - Candidate parents are handles with status in {open}.
         - For each candidate parent, we surface its direct children (one level
           down) that are not closed or finalized, in original Workflowy order.
         - We stop once frontier_size entries have been collected.
@@ -3495,6 +3495,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         max_depth_per_frontier is reserved for future use (e.g. allowing
         multi-level expansions in a single step). For v1 we always surface
         only direct children of the candidate parents.
+
+        Leaf-first guidance (v2 enhancement): frontier entries now include
+        "is_leaf" and a short "guidance" string to steer agents toward
+        making decisions at leaves (accept_leaf / reject_leaf) rather than
+        prematurely rejecting whole branches.
         """
         handles = session.get("handles", {}) or {}
         state = session.get("state", {}) or {}
@@ -3552,6 +3557,20 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             if ch_name:
                                 children_hint.append(ch_name)
 
+                    is_leaf = len(grandchild_handles) == 0
+                    if is_leaf:
+                        guidance = (
+                            "Leaf node. Prefer making decisions here: use "
+                            "'accept_leaf' or 'reject_leaf'. Backtrack or close "
+                            "an entire branch only after you've inspected its leaves."
+                        )
+                    else:
+                        guidance = (
+                            "Branch node. Consider 'open' to explore children; "
+                            "use 'accept_subtree' sparingly. Exploring down to "
+                            "leaves yields smaller, more targeted phantom gems."
+                        )
+
                     frontier.append(
                         {
                             "handle": child_handle,
@@ -3562,6 +3581,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             "children_hint": children_hint,
                             "depth": child_meta.get("depth", 0),
                             "status": child_state.get("status", "candidate"),
+                            "is_leaf": is_leaf,
+                            "guidance": guidance,
                         }
                     )
 
@@ -3749,6 +3770,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         This is the agent's primary loop for exploration. Each call can:
         - mark one or more handles as open / close / finalize / reopen, and
+        - in leaf-first mode, use accept_leaf / reject_leaf / accept_subtree /
+          reject_subtree / backtrack / reopen_branch to drive selection.
         - request a new frontier of up to frontier_size entries.
         """
         import logging
@@ -3783,19 +3806,78 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 raise NetworkError(f"Unknown handle in actions: '{handle}'")
 
             if handle not in state:
-                state[handle] = {"status": "unseen", "max_depth": None}
+                state[handle] = {"status": "unseen", "max_depth": None, "selection_type": None}
 
             entry = state[handle]
+            # Ensure selection_type key is always present for downstream logic
+            if "selection_type" not in entry:
+                entry["selection_type"] = None
 
             if act == "open":
                 entry["status"] = "open"
             elif act == "close":
                 entry["status"] = "closed"
+                entry["selection_type"] = None
+                entry["max_depth"] = None
             elif act == "finalize":
+                # Backwards-compatible: plain finalize means subtree selection
                 entry["status"] = "finalized"
                 entry["max_depth"] = max_depth
+                if entry.get("selection_type") is None:
+                    entry["selection_type"] = "subtree"
             elif act == "reopen":
                 entry["status"] = "open"
+                entry["selection_type"] = None
+                entry["max_depth"] = None
+
+            # Leaf-first enhancements
+            elif act == "accept_leaf":
+                entry["status"] = "finalized"
+                entry["selection_type"] = "leaf"
+                entry["max_depth"] = max_depth
+            elif act == "reject_leaf":
+                entry["status"] = "closed"
+                entry["selection_type"] = None
+                entry["max_depth"] = None
+            elif act == "accept_subtree":
+                entry["status"] = "finalized"
+                entry["selection_type"] = "subtree"
+                entry["max_depth"] = max_depth
+            elif act == "reject_subtree":
+                entry["status"] = "closed"
+                entry["selection_type"] = None
+                entry["max_depth"] = None
+            elif act == "backtrack":
+                # In this v2 implementation, backtrack behaves like a careful
+                # branch-level close. If the branch is already decided, we
+                # require explicit reopen_branch instead of silently changing
+                # history.
+                if entry.get("status") in {"finalized", "closed"}:
+                    raise NetworkError(
+                        "Handle '{handle}' has already been decided. Use 'reopen_branch' "
+                        "to re-open this branch for exploration."
+                    )
+                entry["status"] = "closed"
+                entry["selection_type"] = None
+                entry["max_depth"] = None
+            elif act == "reopen_branch":
+                # Re-open this handle and all descendants for re-exploration.
+                # The branch root becomes open; descendants become candidates.
+                queue = [handle]
+                while queue:
+                    h = queue.pop(0)
+                    st = state.get(h, {"status": "unseen", "max_depth": None, "selection_type": None})
+                    if h == handle:
+                        st["status"] = "open"
+                    else:
+                        st["status"] = "candidate"
+                    st["max_depth"] = None
+                    st["selection_type"] = None
+                    state[h] = st
+
+                    child_handles = handles.get(h, {}).get("children", []) or []
+                    for ch in child_handles:
+                        queue.append(ch)
             else:
                 raise NetworkError(f"Unsupported exploration action: '{act}'")
 
@@ -3832,6 +3914,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "success": True,
             "session_id": session_id,
             "frontier": frontier,
+            "guidance": (
+                "Leaf-first exploration is encouraged. Open branches to reach leaves; "
+                "make decisions with 'accept_leaf' / 'reject_leaf' where possible. "
+                "Use 'accept_subtree' sparingly for whole branches, and 'reopen_branch' "
+                "if you need to reconsider a decided branch."
+            ),
         }
         if history_summary is not None:
             result["history_summary"] = history_summary
@@ -3845,12 +3933,19 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
     ) -> dict[str, Any]:
         """Finalize an exploration session into phantom_gem.json (+ optional terrain).
 
-        v1 implementation:
+        v2 implementation (leaf-first aware):
         - Reads the session JSON (tree, handles, state)
-        - Collects all handles with status=finalized
-        - For each finalized handle, extracts the corresponding subtree from
-          the cached root tree and applies an optional per-branch max_depth
-          (if provided during finalize actions)
+        - Interprets finalized handles with an optional selection_type:
+            • selection_type == "leaf"    → treat as an accepted leaf
+            • selection_type == "subtree" → treat as an accepted subtree root
+            • selection_type is None      → backwards-compatible, treated as subtree
+        - Computes the MINIMAL COVERING TREE over the cached root tree:
+            • All descendants of accepted subtrees are included
+            • For accepted leaves, all ancestors up to the root are included
+            • Siblings and unrelated branches are pruned
+        - The resulting set of needed nodes is partitioned into disjoint
+          subtrees (roots whose parent is not needed). These become the
+          phantom_gem roots and nodes.
         - Writes phantom_gem.json under the NEXUS run directory for nexus_tag
           with the standard payload: {nexus_tag, roots, nodes}
         - If include_terrain=True and no coarse_terrain.json exists yet, writes
@@ -3884,29 +3979,30 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         state = session.get("state", {}) or {}
         root_node = session.get("root_node") or {}
 
-        # Collect finalized handles
-        finalized_handles = [
-            h for h, st in state.items() if st.get("status") == "finalized"
-        ]
-        if not finalized_handles:
-            raise NetworkError(
-                f"Exploration session '{session_id}' has no finalized paths to export."
-            )
+        # Build basic indexes over the cached tree
+        node_by_id: dict[str, dict[str, Any]] = {}
+        parent_by_id: dict[str, str | None] = {}
+        children_by_id: dict[str, list[str]] = {}
 
-        # Helper: extract subtree by Workflowy id
-        def extract_subtree(node: dict[str, Any], target_id: str) -> dict[str, Any] | None:
-            if node.get("id") == target_id:
-                return copy.deepcopy(node)
+        def index_tree(node: dict[str, Any], parent_id: str | None) -> None:
+            nid = node.get("id")
+            if nid:
+                node_by_id[nid] = node
+                parent_by_id[nid] = parent_id
+                children_by_id.setdefault(nid, [])
             for child in node.get("children", []) or []:
-                found = extract_subtree(child, target_id)
-                if found is not None:
-                    return found
-            return None
+                cid = child.get("id")
+                if cid:
+                    children_by_id.setdefault(nid, []).append(cid)
+                index_tree(child, nid)
 
-        gem_nodes: list[dict[str, Any]] = []
-        root_ids: list[str] = []
+        index_tree(root_node, None)
 
-        for handle in finalized_handles:
+        # Collect finalized entries with selection types
+        finalized_entries: list[tuple[str, str, str | None, int | None]] = []
+        for handle, st in state.items():
+            if st.get("status") != "finalized":
+                continue
             meta = handles.get(handle) or {}
             node_id = meta.get("id")
             if not node_id:
@@ -3914,22 +4010,101 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     f"nexus_finalize_exploration: handle '{handle}' has no associated node id; skipping."
                 )
                 continue
+            selection_type = st.get("selection_type") or "subtree"  # backwards-compatible default
+            max_depth = st.get("max_depth")
+            finalized_entries.append((handle, node_id, selection_type, max_depth))
 
-            subtree = extract_subtree(root_node, node_id)
-            if subtree is None:
+        if not finalized_entries:
+            raise NetworkError(
+                f"Exploration session '{session_id}' has no finalized paths to export."
+            )
+
+        needed_ids: set[str] = set()
+
+        # 1) Accept subtrees: include subtree roots and ALL descendants
+        for _handle, node_id, selection_type, _max_depth in finalized_entries:
+            if selection_type != "subtree":
+                continue
+            if node_id not in node_by_id:
                 logger.warning(
-                    f"nexus_finalize_exploration: could not find subtree for node id {node_id}; skipping."
+                    f"nexus_finalize_exploration: subtree root id {node_id} not found in tree; skipping."
                 )
                 continue
+            stack = [node_id]
+            while stack:
+                cur = stack.pop()
+                if cur in needed_ids:
+                    continue
+                needed_ids.add(cur)
+                for child_id in children_by_id.get(cur, []):
+                    stack.append(child_id)
 
-            max_depth = state.get(handle, {}).get("max_depth")
-            if max_depth is not None:
-                # Limit depth relative to this subtree root
-                limited_list = self._limit_depth([subtree], max_depth=max_depth, current_depth=1)
-                subtree = limited_list[0] if limited_list else subtree
+        # 2) Accept leaves: include leaf and all ancestors up to root
+        for _handle, node_id, selection_type, _max_depth in finalized_entries:
+            if selection_type != "leaf":
+                continue
+            if node_id not in node_by_id:
+                logger.warning(
+                    f"nexus_finalize_exploration: leaf id {node_id} not found in tree; skipping."
+                )
+                continue
+            cur = node_id
+            while cur is not None:
+                if cur in needed_ids:
+                    break
+                needed_ids.add(cur)
+                cur = parent_by_id.get(cur)
 
-            gem_nodes.append(subtree)
-            root_ids.append(node_id)
+        if not needed_ids:
+            raise NetworkError(
+                f"Exploration session '{session_id}' computed empty minimal covering tree; "
+                f"no accepted leaves or subtrees."
+            )
+
+        # Determine disjoint roots of the minimal covering forest: nodes that are
+        # needed but whose parent is either None or not needed.
+        root_ids: list[str] = []
+        for nid in needed_ids:
+            parent_id = parent_by_id.get(nid)
+            if parent_id is None or parent_id not in needed_ids:
+                root_ids.append(nid)
+
+        # Stable ordering: preserve original traversal order as much as possible
+        # by walking the cached tree and selecting needed roots in that order.
+        ordered_root_ids: list[str] = []
+
+        def collect_roots_in_order(node: dict[str, Any]) -> None:
+            nid = node.get("id")
+            if nid in root_ids and nid not in ordered_root_ids:
+                ordered_root_ids.append(nid)
+            for child in node.get("children", []) or []:
+                collect_roots_in_order(child)
+
+        collect_roots_in_order(root_node)
+
+        # Helper: recursively copy only needed nodes under a given root id
+        def copy_pruned_subtree(node: dict[str, Any]) -> dict[str, Any] | None:
+            nid = node.get("id")
+            if nid not in needed_ids:
+                return None
+
+            new_node = {k: v for k, v in node.items() if k != "children"}
+            new_children: list[dict[str, Any]] = []
+            for child in node.get("children", []) or []:
+                pruned_child = copy_pruned_subtree(child)
+                if pruned_child is not None:
+                    new_children.append(pruned_child)
+            new_node["children"] = new_children
+            return new_node
+
+        gem_nodes: list[dict[str, Any]] = []
+        for root_id in ordered_root_ids:
+            original = node_by_id.get(root_id)
+            if not original:
+                continue
+            pruned = copy_pruned_subtree(original)
+            if pruned is not None:
+                gem_nodes.append(pruned)
 
         run_dir = self._get_nexus_dir(nexus_tag)
         phantom_path = os.path.join(run_dir, "phantom_gem.json")
@@ -3937,7 +4112,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         phantom_payload = {
             "nexus_tag": nexus_tag,
-            "roots": root_ids,
+            "roots": ordered_root_ids,
             "nodes": gem_nodes,
         }
 
@@ -3981,6 +4156,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "nexus_tag": nexus_tag,
             "phantom_gem": phantom_path,
             "coarse_terrain": coarse_path if os.path.exists(coarse_path) else None,
-            "finalized_branch_count": len(root_ids),
+            "finalized_branch_count": len(ordered_root_ids),
             "node_count": len(gem_nodes),
         }
