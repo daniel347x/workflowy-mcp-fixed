@@ -1955,27 +1955,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         # Log warnings if any escaping occurred
         if warnings:
-            logger.info(f"\u2705 Auto-escaped angle brackets in {len(warnings)} note(s)")
-            for warning in warnings:
-                logger.info(f"  - {warning}")
-                
-        # Validate and escape NOTE fields in entire tree (modifies nodes in-place)
-        success, error_msg, warnings = validate_and_escape_notes_recursive(nodes)
-        
-        if not success:
-            return {
-                "success": False,
-                "nodes_created": 0,
-                "root_node_ids": [],
-                "api_calls": 0,
-                "retries": 0,
-                "rate_limit_hits": 0,
-                "errors": [error_msg or "Note field validation failed"]
-            }
-        
-        # Log warnings if any escaping occurred
-        if warnings:
-            logger.info(f"\u2705 Auto-escaped angle brackets in {len(warnings)} note(s)")
+            logger.info(f"\u2705 Auto-escaped angle brackets in {len(warnings)} node(s)")
             for warning in warnings:
                 logger.info(f"  - {warning}")
         
