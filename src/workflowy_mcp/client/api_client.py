@@ -3515,15 +3515,26 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         if exploration_mode == "dfs_guided":
 
             def _is_covered_or_decided(h: str) -> bool:
-                """Return True if this handle is already accounted for.
+                """Return True if this handle is already accounted for in DFS.
 
                 A handle is accounted for if:
                 - Its own status is finalized/closed, OR
+                - It is an *opened* branch (status == "open" and has children),
+                  in which case DFS should descend to its children rather than
+                  revisiting the branch handle itself, OR
                 - It is under an ancestor whose selection_type == "subtree" and
                   that ancestor is finalized/closed.
                 """
                 st = state.get(h, {"status": "unseen"})
-                if st.get("status") in {"finalized", "closed"}:
+                status = st.get("status")
+
+                # Explicitly decided handles are always covered
+                if status in {"finalized", "closed"}:
+                    return True
+
+                # In dfs_guided mode, once a branch has been opened we skip the
+                # branch handle itself and walk its children instead.
+                if status == "open" and (handles.get(h, {}) or {}).get("children"):
                     return True
 
                 parent_handle = handles.get(h, {}).get("parent")
@@ -3893,6 +3904,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         handles = session.get("handles", {}) or {}
         state = session.get("state", {}) or {}
+        exploration_mode = session.get("exploration_mode", "manual")
 
         # Apply actions
         actions = actions or []
@@ -3903,6 +3915,42 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             if handle not in handles:
                 raise NetworkError(f"Unknown handle in actions: '{handle}'")
+
+            # In dfs_guided mode, enforce that most actions apply only to the
+            # current DFS focus handle. This keeps navigation deterministic and
+            # brain-dead simple for agents: one node at a time.
+            if exploration_mode == "dfs_guided":
+                # Recompute current DFS frontier based on the *current* state
+                # before applying this action.
+                session["handles"] = handles
+                session["state"] = state
+                current_frontier = self._compute_exploration_frontier(
+                    session,
+                    frontier_size=1,
+                    max_depth_per_frontier=max_depth_per_frontier,
+                )
+                current_handle = current_frontier[0]["handle"] if current_frontier else None
+
+                # Allow branch-wide corrections from anywhere via reopen_branch,
+                # but require all other decisions to target the current handle.
+                if act not in {"reopen_branch"} and current_handle and handle != current_handle:
+                    meta = handles.get(current_handle, {}) or {}
+                    current_name = meta.get("name", "Untitled")
+                    raise NetworkError(
+                        "DFS-guided exploration is currently focused on handle "
+                        f"'{current_handle}' ({current_name!r}).\n\n"
+                        f"You attempted to apply '{act}' to handle '{handle}', which "
+                        "would violate the depth-first traversal order.\n\n"
+                        "To proceed safely, either:\n"
+                        "• Make a decision about the current handle using one of:\n"
+                        "  - 'accept_leaf' / 'reject_leaf' (for leaves)\n"
+                        "  - 'accept_subtree' / 'reject_subtree' (for whole branches),\n"
+                        "  - 'backtrack' (close this branch without including it), or\n"
+                        "• Use 'reopen_branch' on a previously decided branch that you\n"
+                        "  intentionally want to revisit.\n\n"
+                        "This keeps NEXUS exploration deterministic and ensures minimal,\n"
+                        "reproducible phantom gems across conversations."
+                    )
 
             if handle not in state:
                 state[handle] = {"status": "unseen", "max_depth": None, "selection_type": None}
@@ -3943,9 +3991,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 entry["selection_type"] = "subtree"
                 entry["max_depth"] = max_depth
             elif act == "reject_subtree":
+                # Explicitly reject this entire branch as a subtree decision.
+                # Children are treated as covered for DFS and finalization.
                 entry["status"] = "closed"
-                entry["selection_type"] = None
-                entry["max_depth"] = None
+                entry["selection_type"] = "subtree"
+                entry["max_depth"] = max_depth
             elif act == "backtrack":
                 # In this v2 implementation, backtrack behaves like a careful
                 # branch-level close. If the branch is already decided, we
@@ -3953,7 +4003,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # history.
                 if entry.get("status") in {"finalized", "closed"}:
                     raise NetworkError(
-                        "Handle '{handle}' has already been decided. Use 'reopen_branch' "
+                        f"Handle '{handle}' has already been decided. Use 'reopen_branch' "
                         "to re-open this branch for exploration."
                     )
                 entry["status"] = "closed"
