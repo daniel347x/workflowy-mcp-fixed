@@ -2993,11 +2993,21 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         except Exception as e:
             raise NetworkError(f"Failed to write phantom_gem.json: {e}") from e
 
+        # GLIMPSE path: terrain = gem = shimmering (no IGNITE SHARDS step)
+        # Write shimmering_terrain.json (identical to coarse_terrain for GLIMPSE)
+        shimmering_path = os.path.join(run_dir, "shimmering_terrain.json")
+        try:
+            with open(shimmering_path, "w", encoding="utf-8") as f:
+                json.dump(terrain_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            raise NetworkError(f"Failed to write shimmering_terrain.json: {e}") from e
+
         return {
             "success": True,
             "nexus_tag": nexus_tag,
             "coarse_terrain": coarse_path,
             "phantom_gem": phantom_gem_path,
+            "shimmering_terrain": shimmering_path,
             "node_count": glimpse_result.get("node_count", 0),
             "depth": glimpse_result.get("depth", 0),
             "_source": "glimpse",
