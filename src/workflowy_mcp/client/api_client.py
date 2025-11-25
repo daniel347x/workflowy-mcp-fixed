@@ -105,6 +105,39 @@ class WorkFlowyClient:
             return (escaped_note, warning_msg)
         
         return (escaped_note, None)
+    
+    @staticmethod
+    def _validate_name_field(name: str | None) -> tuple[str | None, str | None]:
+        """Validate and auto-escape name field for Workflowy compatibility.
+        
+        Handles:
+        1. Angle brackets (auto-escape to HTML entities - Workflowy renderer bug workaround)
+        
+        Args:
+            name: Node name to validate/escape
+            
+        Returns:
+            (processed_name, warning_message)
+            - processed_name: Escaped/fixed name
+            - warning_message: Info message if changes made
+        """
+        if name is None:
+            return (None, None)
+        
+        # Auto-escape angle brackets (Workflowy renderer bug workaround)
+        escaped_name = name
+        angle_bracket_escaped = False
+        
+        if '<' in name or '>' in name:
+            escaped_name = name.replace('<', '&lt;').replace('>', '&gt;')
+            angle_bracket_escaped = True
+        
+        # Return processed name with optional warning
+        if angle_bracket_escaped:
+            warning_msg = "✅ AUTO-ESCAPED: Angle brackets in node name converted to HTML entities"
+            return (escaped_name, warning_msg)
+        
+        return (escaped_name, None)
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -231,12 +264,19 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 🎯 Build the ETCH habit - it's your go-to tool!
 """)
         
+        # Validate and escape name field
+        processed_name, name_warning = self._validate_name_field(request.name)
+        if processed_name is not None:
+            request.name = processed_name
+        if name_warning:
+            logger.info(name_warning)
+        
         # Validate and escape note field
         # Skip newline check if internal call (for bulk operations testing)
-        processed_note, message = self._validate_note_field(request.note, skip_newline_check=_internal_call)
+        processed_note, note_warning = self._validate_note_field(request.note, skip_newline_check=_internal_call)
         
-        if processed_note is None and message:  # Blocking error
-            raise NetworkError(message)
+        if processed_note is None and note_warning:  # Blocking error
+            raise NetworkError(note_warning)
         
         # Strip override token if present
         if processed_note and processed_note.startswith("<<<LITERAL_BACKSLASH_N_INTENTIONAL>>>"):
@@ -246,8 +286,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         request.note = processed_note
         
         # Log warning if escaping occurred
-        if message and "AUTO-ESCAPED" in message:
-            logger.info(message)
+        if note_warning and "AUTO-ESCAPED" in note_warning:
+            logger.info(note_warning)
 
         retry_count = 0
         base_delay = 1.0
@@ -308,6 +348,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         import logging
         
         logger = logging.getLogger(__name__)
+        
+        # Validate and escape name field if being updated
+        if request.name is not None:
+            processed_name, name_warning = self._validate_name_field(request.name)
+            if processed_name is not None:
+                request.name = processed_name
+            if name_warning:
+                logger.info(name_warning)
         
         # Validate and escape note field if being updated
         if request.note is not None:
@@ -1846,8 +1894,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         #
         # 🔥🔥🔥 END VALIDATION CHECKPOINT 🔥🔥🔥
         
-        def validate_and_escape_notes_recursive(nodes_list: list[dict[str, Any]], path: str = "root") -> tuple[bool, str | None, list[str]]:
-            """Recursively validate and auto-escape NOTE fields only.
+        def validate_and_escape_nodes_recursive(nodes_list: list[dict[str, Any]], path: str = "root") -> tuple[bool, str | None, list[str]]:
+            """Recursively validate and auto-escape NAME and NOTE fields.
             
             Returns:
                 (success, error_message, warnings_list)
@@ -1857,33 +1905,42 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             for idx, node in enumerate(nodes_list):
                 node_path = f"{path}[{idx}].{node.get('name', 'unnamed')}"
                 
+                # Validate and escape NAME field
+                name = node.get('name')
+                if name:
+                    processed_name, name_warning = self._validate_name_field(name)
+                    if processed_name is not None:
+                        node['name'] = processed_name
+                    if name_warning:
+                        warnings.append(f"Node: {node_path} - Name escaped")
+                
                 # Validate and escape NOTE field
                 note = node.get('note')
                 if note:
-                    processed_note, message = self._validate_note_field(note, skip_newline_check=False)
+                    processed_note, note_warning = self._validate_note_field(note, skip_newline_check=False)
                     
-                    if processed_note is None and message:  # Blocking error
-                        return (False, f"Node: {node_path}\n\n{message}", warnings)
+                    if processed_note is None and note_warning:  # Blocking error
+                        return (False, f"Node: {node_path}\n\n{note_warning}", warnings)
                     
                     # Update node with escaped/validated note
                     node['note'] = processed_note
                     
                     # Collect warning if escaping occurred
-                    if message and "AUTO-ESCAPED" in message:
-                        warnings.append(f"Node: {node_path} - Angle brackets auto-escaped")
+                    if note_warning and "AUTO-ESCAPED" in note_warning:
+                        warnings.append(f"Node: {node_path} - Note escaped")
                 
                 # Recursively process children
                 children = node.get('children', [])
                 if children:
-                    success, error_msg, child_warnings = validate_and_escape_notes_recursive(children, node_path)
+                    success, error_msg, child_warnings = validate_and_escape_nodes_recursive(children, node_path)
                     if not success:
                         return (False, error_msg, warnings)
                     warnings.extend(child_warnings)
             
             return (True, None, warnings)
         
-        # Run validation on NOTE fields
-        success, error_msg, warnings = validate_and_escape_notes_recursive(nodes)
+        # Run validation on NAME and NOTE fields
+        success, error_msg, warnings = validate_and_escape_nodes_recursive(nodes)
         
         if not success:
             return {
@@ -2253,9 +2310,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     logger.error(f"Target backup failed: {e}")
                     # Continue anyway - backup failure shouldn't block import
         
-        # 🔥 VALIDATE & AUTO-ESCAPE NOTE FIELDS (angle brackets & newline escapes) 🔥
+        # 🔥 VALIDATE & AUTO-ESCAPE NAME AND NOTE FIELDS 🔥
         def validate_and_escape_nodes_recursive(nodes_list: list[dict[str, Any]], path: str = "root") -> tuple[bool, str | None, list[str]]:
-            """Recursively validate and auto-escape all note fields in node tree.
+            """Recursively validate and auto-escape name and note fields in node tree.
             
             Returns:
                 (success, error_message, warnings_list)
@@ -2265,20 +2322,29 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             for idx, node in enumerate(nodes_list):
                 node_path = f"{path}[{idx}].{node.get('name', 'unnamed')}"
                 
-                # Validate and escape this node's note field
+                # Validate and escape NAME field
+                name = node.get('name')
+                if name:
+                    processed_name, name_warning = self._validate_name_field(name)
+                    if processed_name is not None:
+                        node['name'] = processed_name
+                    if name_warning:
+                        warnings.append(f"Node: {node_path} - Name escaped")
+                
+                # Validate and escape NOTE field
                 note = node.get('note')
                 if note:
-                    processed_note, message = self._validate_note_field(note)
+                    processed_note, note_warning = self._validate_note_field(note)
                     
-                    if processed_note is None and message:  # Blocking error
-                        return (False, f"Node: {node_path}\n\n{message}", warnings)
+                    if processed_note is None and note_warning:  # Blocking error
+                        return (False, f"Node: {node_path}\n\n{note_warning}", warnings)
                     
                     # Update node with escaped note
                     node['note'] = processed_note
                     
                     # Collect warning if escaping occurred
-                    if message and "AUTO-ESCAPED" in message:
-                        warnings.append(f"Node: {node_path} - Angle brackets auto-escaped")
+                    if note_warning and "AUTO-ESCAPED" in note_warning:
+                        warnings.append(f"Node: {node_path} - Note escaped")
                 
                 # Recursively validate children
                 children = node.get('children', [])
