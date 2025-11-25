@@ -278,6 +278,42 @@ def transform_jewel(
         node["children"] = children_nodes
         return node
 
+    def _classify_children_for_destructive_ops(node: JsonDict) -> Dict[str, Any]:
+        """Classify immediate children for destructive JEWELSTORM ops.
+
+        Returns a dict with:
+            children: list of child dict nodes
+            children_status: str
+            truncated: bool
+            has_loaded_ether_children: bool  # child has a real Workflowy id
+            has_new_children: bool           # child has no id yet (JEWEL-only)
+            category: "EMPTY" | "JEWEL_ONLY" | "ETHER_ONLY" | "MIXED"
+        """
+        children_raw = node.get("children") or []
+        children = [c for c in children_raw if isinstance(c, dict)]
+        children_status = node.get("children_status") or "complete"
+        truncated = children_status in {"truncated_by_depth", "truncated_by_count"}
+        has_loaded_ether_children = any(c.get("id") is not None for c in children)
+        has_new_children = any(c.get("id") is None for c in children)
+
+        if not children:
+            category = "EMPTY"
+        elif (not has_loaded_ether_children) and has_new_children and not truncated:
+            category = "JEWEL_ONLY"
+        elif has_loaded_ether_children and not has_new_children:
+            category = "ETHER_ONLY"
+        else:
+            category = "MIXED"
+
+        return {
+            "children": children,
+            "children_status": children_status,
+            "truncated": truncated,
+            "has_loaded_ether_children": has_loaded_ether_children,
+            "has_new_children": has_new_children,
+            "category": category,
+        }
+
     # ------- Apply operations -------
     applied_count = 0
     nodes_created = 0
@@ -377,22 +413,95 @@ def transform_jewel(
                 if not jid:
                     raise ValueError("DELETE_NODE requires 'jewel_id'")
 
-                mode = str(op.get("mode", "FAIL_IF_HAS_CHILDREN")).upper()
-                node, parent_jid, siblings = _get_node_and_parent_list(jid)
-                children = node.get("children") or []
+                delete_from_ether = bool(op.get("delete_from_ether"))
+                mode_raw = op.get("mode")
+                mode = str(mode_raw).upper() if mode_raw is not None else "SMART"
 
-                if mode == "FAIL_IF_HAS_CHILDREN" and any(
-                    isinstance(c, dict) for c in children
-                ):
-                    raise ValueError(
-                        f"DELETE_NODE {jid!r} refused: node has children and mode=FAIL_IF_HAS_CHILDREN"
-                    )
+                node, parent_jid, siblings = _get_node_and_parent_list(jid)
+                info = _classify_children_for_destructive_ops(node)
+                children = info["children"]
+                category = info["category"]
+
+                # Legacy strict mode: preserve original FAIL_IF_HAS_CHILDREN semantics
+                if mode == "FAIL_IF_HAS_CHILDREN":
+                    if children:
+                        raise ValueError(
+                            f"DELETE_NODE {jid!r} refused: node has children and mode=FAIL_IF_HAS_CHILDREN"
+                        )
+                else:
+                    # SMART semantics (default when mode not provided)
+                    if category == "MIXED":
+                        raise ValueError(
+                            f"DELETE_NODE {jid!r} refused: mixed new/ETHER/truncated children not supported; "
+                            "delete or move children individually first"
+                        )
+                    if category == "ETHER_ONLY" and not delete_from_ether:
+                        raise ValueError(
+                            f"DELETE_NODE {jid!r} refused: node has ETHER-backed children; "
+                            "set delete_from_ether=True to delete subtree in Workflowy"
+                        )
+                    # EMPTY and JEWEL_ONLY are always allowed.
 
                 # Remove from siblings and index
                 if node in siblings:
                     siblings.remove(node)
                 _remove_subtree_from_index(node)
                 nodes_deleted += 1
+
+            # DELETE_ALL_CHILDREN
+            elif op_type == "DELETE_ALL_CHILDREN":
+                jid = op.get("jewel_id")
+                if not jid:
+                    raise ValueError("DELETE_ALL_CHILDREN requires 'jewel_id'")
+
+                delete_from_ether = bool(op.get("delete_from_ether"))
+                mode_raw = op.get("mode")
+                mode = str(mode_raw).upper() if mode_raw is not None else "SMART"
+
+                node = by_jewel_id.get(jid)
+                if node is None:
+                    raise ValueError(f"Node with jewel_id/id {jid!r} not found")
+
+                info = _classify_children_for_destructive_ops(node)
+                children = info["children"]
+                category = info["category"]
+                truncated = info["truncated"]
+
+                # Nothing to do
+                if not children and not truncated:
+                    pass
+                else:
+                    # For DELETE_ALL_CHILDREN we do not support truncated children sets in v1
+                    if truncated:
+                        raise ValueError(
+                            f"DELETE_ALL_CHILDREN {jid!r} refused: children set is truncated; "
+                            "re-GLIMPSE with full children or delete the node instead"
+                        )
+
+                    if mode == "FAIL_IF_HAS_CHILDREN":
+                        if children:
+                            raise ValueError(
+                                f"DELETE_ALL_CHILDREN {jid!r} refused: node has children and "
+                                "mode=FAIL_IF_HAS_CHILDREN"
+                            )
+                    else:
+                        if category == "MIXED":
+                            raise ValueError(
+                                f"DELETE_ALL_CHILDREN {jid!r} refused: mixed new/ETHER children not supported; "
+                                "delete or move children individually first"
+                            )
+                        if category == "ETHER_ONLY" and not delete_from_ether:
+                            raise ValueError(
+                                f"DELETE_ALL_CHILDREN {jid!r} refused: children are ETHER-backed; "
+                                "set delete_from_ether=True to delete them in Workflowy"
+                            )
+                        # EMPTY and JEWEL_ONLY are always allowed here.
+
+                    # Allowed path: remove all current children from index and node
+                    for child in list(children):
+                        _remove_subtree_from_index(child)
+                    node["children"] = []
+                    nodes_deleted += len(children)
 
             # RENAME_NODE
             elif op_type == "RENAME_NODE":
@@ -1077,7 +1186,7 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
                 affected_ids.add(parent_id)
             deletes += 1
 
-        # --- CREATE: nodes present in S1 but not in S0 ---
+        # --- CREATE: nodes present in S1 but not in S0 (id-based) ---
         new_ids = ids_s1 - ids_s0
         for nid in new_ids:
             s1_node = s1_by_id.get(nid)
@@ -1108,6 +1217,44 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
             _register_subtree_in_indexes(new_node, parent_id, t_by_id, t_parent, t_children_lists)
             affected_ids.update(filter(None, [nid, parent_id]))
             creates += 1
+
+        # --- CREATE: id-less direct children from S1 under existing parents ---
+        # These are new subtrees introduced by JEWELSTORM that intentionally
+        # have no Workflowy id yet. We append them to the corresponding Territory
+        # parents so the reconciliation algorithm can CREATE them.
+        for p, s1_parent_node in s1_by_id.items():
+            if p not in ids_s1:
+                continue
+            t_parent_node = t_by_id.get(p)
+            if t_parent_node is None:
+                continue
+            t_children = t_parent_node.get("children")
+            if not isinstance(t_children, list):
+                t_children = []
+                t_parent_node["children"] = t_children
+                t_children_lists[p] = t_children
+            else:
+                t_children_lists.setdefault(p, t_children)
+
+            # Build a simple signature for existing id-less children to avoid
+            # obvious duplicates when re-running fuse on the same Territory.
+            existing_signatures: set[tuple[Any, Any]] = set()
+            for child in t_children:
+                if not isinstance(child, dict) or child.get("id") is not None:
+                    continue
+                existing_signatures.add((child.get("name"), child.get("note")))
+
+            for child in s1_parent_node.get("children") or []:
+                if not isinstance(child, dict) or child.get("id") is not None:
+                    continue
+                sig = (child.get("name"), child.get("note"))
+                if sig in existing_signatures:
+                    continue
+                new_child = copy.deepcopy(child)
+                t_children.append(new_child)
+                existing_signatures.add(sig)
+                affected_ids.add(p)
+                creates += 1
 
         # --- MOVE: nodes in both S0 and S1 whose parent changed ---
         common_ids = ids_s0 & ids_s1
@@ -1151,7 +1298,7 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
             affected_ids.update(filter(None, [nid, t_p, s1_p]))
             moves += 1
 
-        # --- REORDER: align order of visible children with S1, keep hidden children ---
+        # --- REORDER: align order of visible children with S1, keep hidden + id-less children ---
         parents_to_consider = {s1_parent[nid] for nid in ids_s1} | {root_id}
         parents_to_consider = {p for p in parents_to_consider if p is not None and p in t_by_id}
 
@@ -1177,9 +1324,15 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
 
             hidden_children: List[JsonDict] = []
             for child in children_list:
-                cid = child.get("id") if isinstance(child, dict) else None
-                if not cid:
+                if not isinstance(child, dict):
                     continue
+                cid = child.get("id")
+                # Preserve id-less children (new JEWELSTORM subtrees and hidden Territory
+                # nodes that never had an id in the shard) as part of the hidden block.
+                if cid is None:
+                    hidden_children.append(child)
+                    continue
+                # Also preserve Territory nodes that are outside the S0/S1 shard entirely.
                 if cid not in ids_s0 and cid not in ids_s1:
                     hidden_children.append(child)
 
