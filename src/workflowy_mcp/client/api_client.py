@@ -3115,6 +3115,37 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "roots": phantom_roots,
         }
 
+    async def nexus_weave_enchanted(self, nexus_tag: str, dry_run: bool = False) -> dict[str, Any]:
+        """WEAVE ENCHANTED TERRAIN → ETHER (Workflowy).
+        
+        Final step of PHANTOM GEMSTONE NEXUS. Reads enchanted_terrain.json and
+        applies it to Workflowy via bulk_import_from_file (reconciliation algorithm).
+        
+        Args:
+            nexus_tag: NEXUS tag identifying the run
+            dry_run: If True, preview operations without executing
+            
+        Returns:
+            Result from bulk_import_from_file (nodes created/updated/deleted/moved)
+        """
+        run_dir = self._get_nexus_dir(nexus_tag)
+        enchanted_path = os.path.join(run_dir, "enchanted_terrain.json")
+        
+        if not os.path.exists(enchanted_path):
+            raise NetworkError(
+                "enchanted_terrain.json not found for nexus_tag. "
+                "Call nexus_anchor_jewels(...) before nexus_weave_enchanted(...)."
+            )
+        
+        # Use bulk_import_from_file (reconciliation algorithm)
+        # parent_id=None means it reads export_root_id from JSON metadata
+        return await self.bulk_import_from_file(
+            json_file=enchanted_path,
+            parent_id=None,
+            dry_run=dry_run,
+            import_policy='strict',
+        )
+    
     async def nexus_anchor_jewels(self, nexus_tag: str) -> dict[str, Any]:
         """ANCHOR JEWELS → enchanted_terrain.json.
 
