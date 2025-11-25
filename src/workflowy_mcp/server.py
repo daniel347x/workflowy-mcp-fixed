@@ -1043,7 +1043,7 @@ async def nexus_start_exploration(
     source_mode: str = "glimpse_full",
     max_nodes: int = 200000,
     session_hint: str | None = None,
-    frontier_size: int = 5,
+    frontier_size: int = 25,
     max_depth_per_frontier: int = 1,
 ) -> dict:
     """Start an exploration session over a Workflowy subtree."""
