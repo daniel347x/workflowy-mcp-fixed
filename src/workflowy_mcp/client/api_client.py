@@ -3508,11 +3508,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         exploration_mode = session.get("exploration_mode", "manual")
 
-        # DFS-GUIDED MODE: Present exactly one undecided handle in a canonical
-        # depth-first order. This gently nudges agents to advance through the
-        # tree one node at a time, making explicit decisions, instead of
-        # skipping large unexplored branches.
-        if exploration_mode == "dfs_guided":
+        # DFS-GUIDED / DFS-FULL-WALK MODES: Present exactly one undecided handle
+        # in a canonical depth-first order. This gently nudges agents (and in
+        # strict mode, mechanically forces them) to advance through the tree one
+        # node at a time, making explicit decisions, instead of skipping large
+        # unexplored branches.
+        if exploration_mode in {"dfs_guided", "dfs_full_walk"}:
 
             def _is_covered_or_decided(h: str) -> bool:
                 """Return True if this handle is already accounted for in DFS.
@@ -3730,6 +3731,15 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         logger = logging.getLogger(__name__)
 
+        # Determine exploration mode from session_hint.
+        # DEFAULT: dfs_full_walk (strict full leaf walk, DO OR DIE).
+        # Optional override: explicitly request dfs_guided for softer behavior.
+        exploration_mode = "dfs_full_walk"
+        if session_hint:
+            hint = session_hint.strip().lower()
+            if "dfs_guided" in hint or "non_strict" in hint:
+                exploration_mode = "dfs_guided"
+
         # Fetch subtree once via GLIMPSE FULL (Agent hunts mode)
         glimpse = await self.workflowy_glimpse_full(
             node_id=root_id,
@@ -3820,7 +3830,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "root_name": root_node.get("name"),
             "created_at": datetime.utcnow().isoformat() + "Z",
             "source_mode": source_mode,
-            "exploration_mode": "dfs_guided",
+            "exploration_mode": exploration_mode,
             "max_nodes": max_nodes,
             "handles": handles,
             "state": state,
@@ -3906,6 +3916,49 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         state = session.get("state", {}) or {}
         exploration_mode = session.get("exploration_mode", "manual")
 
+        # Lazy-loaded map of guardian override tokens for this session. These
+        # allow Dan to bypass strict dfs_full_walk enforcement on a
+        # per-branch basis by providing a secret token tied to this session_id
+        # and handle.
+        guardian_overrides: dict[str, str] | None = None
+
+        def _load_guardian_overrides() -> dict[str, str]:
+            """Load per-branch guardian override tokens for strict DFS sessions.
+
+            File format (per session_id):
+                {
+                  "branch_overrides": {
+                    "A": "token-1",
+                    "B.3": "token-2"
+                  }
+                }
+
+            Any error (missing file, parse failure, etc.) is treated as "no
+            overrides" rather than failing the exploration step.
+            """
+            nonlocal guardian_overrides
+            if guardian_overrides is not None:
+                return guardian_overrides
+
+            base_dir = (
+                r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_explore_guardians"
+            )
+            path = os.path.join(base_dir, f"{session_id}.json")
+            try:
+                if not os.path.exists(path):
+                    guardian_overrides = {}
+                    return guardian_overrides
+                with open(path, "r", encoding="utf-8") as gf:
+                    data = json_module.load(gf)
+                raw = data.get("branch_overrides") or {}
+                # Normalize keys/values to strings
+                guardian_overrides = {str(k): str(v) for k, v in raw.items()}
+            except Exception:
+                # On any error, fall back to no overrides rather than failing
+                # the session.
+                guardian_overrides = {}
+            return guardian_overrides
+
         def _summarize_descendants(branch_handle: str) -> dict[str, Any]:
             """Summarize descendant decisions for a branch handle.
 
@@ -3983,10 +4036,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             if handle not in handles:
                 raise NetworkError(f"Unknown handle in actions: '{handle}'")
 
-            # In dfs_guided mode, enforce that most actions apply only to the
-            # current DFS focus handle. This keeps navigation deterministic and
-            # brain-dead simple for agents: one node at a time.
-            if exploration_mode == "dfs_guided":
+            # In dfs_guided / dfs_full_walk modes, enforce that most actions
+            # apply only to the current DFS focus handle. This keeps navigation
+            # deterministic and brain-dead simple for agents: one node at a
+            # time.
+            if exploration_mode in {"dfs_guided", "dfs_full_walk"}:
                 # Recompute current DFS frontier based on the *current* state
                 # before applying this action.
                 session["handles"] = handles
@@ -4069,6 +4123,48 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         "for leaves instead of 'accept_subtree'."
                     )
 
+                # STRICT DFS FULL-WALK MODE:
+                # In dfs_full_walk, branch-level accept is forbidden while any
+                # descendant remains undecided, unless a guardian override
+                # token is provided for this handle.
+                if exploration_mode == "dfs_full_walk" and has_undecided:
+                    guardian_token = action.get("guardian_token")
+                    overrides = _load_guardian_overrides()
+                    expected = overrides.get(handle)
+                    if not (guardian_token and expected and guardian_token == expected):
+                        # No matching guardian override → force the agent to walk
+                        # the remaining leaves.
+                        session["handles"] = handles
+                        session["state"] = state
+                        current_frontier = self._compute_exploration_frontier(
+                            session,
+                            frontier_size=1,
+                            max_depth_per_frontier=max_depth_per_frontier,
+                        )
+                        next_handle = (
+                            current_frontier[0]["handle"] if current_frontier else None
+                        )
+                        next_name = (
+                            (handles.get(next_handle) or {}).get("name", "Untitled")
+                            if next_handle
+                            else None
+                        )
+                        base_msg = (
+                            f"Strict DFS mode is active for this exploration session; "
+                            f"cannot accept_subtree on branch '{handle}' while any descendants "
+                            "remain undecided.\n\n"
+                            "Walk the branch in depth-first order and make leaf-level decisions "
+                            "with 'accept_leaf' / 'reject_leaf'."
+                        )
+                        if next_handle:
+                            base_msg += (
+                                f"\n\nNext DFS node is '{next_handle}' ({next_name!r}). "
+                                "Decide there before attempting any branch-level accept/reject."
+                            )
+                        raise NetworkError(base_msg)
+                    # If guardian override matches, fall through to the normal
+                    # (non-strict) semantics below.
+
                 # Mixed case: some descendants decided, some not → force DFS
                 # further down rather than allowing a coarse branch decision.
                 if has_decided and has_undecided:
@@ -4140,6 +4236,46 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         f"Handle '{handle}' has no descendants; use 'reject_leaf' "
                         "for leaves instead of 'reject_subtree'."
                     )
+
+                # STRICT DFS FULL-WALK MODE:
+                # In dfs_full_walk, branch-level reject is forbidden while any
+                # descendant remains undecided, unless a guardian override
+                # token is provided for this handle.
+                if exploration_mode == "dfs_full_walk" and has_undecided:
+                    guardian_token = action.get("guardian_token")
+                    overrides = _load_guardian_overrides()
+                    expected = overrides.get(handle)
+                    if not (guardian_token and expected and guardian_token == expected):
+                        session["handles"] = handles
+                        session["state"] = state
+                        current_frontier = self._compute_exploration_frontier(
+                            session,
+                            frontier_size=1,
+                            max_depth_per_frontier=max_depth_per_frontier,
+                        )
+                        next_handle = (
+                            current_frontier[0]["handle"] if current_frontier else None
+                        )
+                        next_name = (
+                            (handles.get(next_handle) or {}).get("name", "Untitled")
+                            if next_handle
+                            else None
+                        )
+                        base_msg = (
+                            f"Strict DFS mode is active for this exploration session; "
+                            f"cannot reject_subtree on branch '{handle}' while any descendants "
+                            "remain undecided.\n\n"
+                            "Walk the branch in depth-first order and make leaf-level decisions "
+                            "with 'accept_leaf' / 'reject_leaf'."
+                        )
+                        if next_handle:
+                            base_msg += (
+                                f"\n\nNext DFS node is '{next_handle}' ({next_name!r}). "
+                                "Decide there before attempting any branch-level accept/reject."
+                            )
+                        raise NetworkError(base_msg)
+                    # If guardian override matches, fall through to the normal
+                    # (non-strict) semantics below.
 
                 if has_decided and has_undecided:
                     session["handles"] = handles
