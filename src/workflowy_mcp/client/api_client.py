@@ -4049,22 +4049,24 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "rejected_leaf_count": rejected_leaves,
             }
 
-        def _auto_complete_ancestors_from_leaf(leaf_handle: str) -> None:
+        def _auto_complete_ancestors_from_decision(start_handle: str) -> None:
             """Auto-complete ancestors when all descendants are decided (RULE 1).
 
-            After an accept_leaf / reject_leaf, walk upward from this leaf and
-            auto-complete ancestors whose entire subtrees are decided:
+            This is the generalized form used for both leaf-level and
+            branch-level decisions. Starting from ``start_handle``, walk upward
+            and auto-complete ancestors whose entire subtrees are decided:
 
             - If any descendant leaf was accepted → ancestor auto-ACCEPT as a
-              path element (status='finalized', selection_type=None).
+              path element (status='finalized', selection_type='path').
             - If all descendant leaves were rejected → ancestor auto-REJECT
               (status='closed').
 
-            This happens incrementally during DFS exploration so that by the
-            time nexus_finalize_exploration runs, no explicit branch handles
-            remain undecided.
+            We never override explicit subtree selections (selection_type='subtree');
+            those remain authoritative shells/true subtrees. This runs in all
+            exploration modes (dfs_full_walk, dfs_guided, legacy), so agents
+            always benefit from smart backtracking once a region is fully decided.
             """
-            current = leaf_handle
+            current = start_handle
             while True:
                 parent_handle = (handles.get(current) or {}).get("parent")
                 if not parent_handle:
@@ -4086,7 +4088,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     break
 
                 # If any descendant remains undecided, we must not auto-complete
-                # this ancestor yet; DFS will revisit once all leaves are walked.
+                # this ancestor yet; DFS (or manual exploration) will revisit
+                # once all leaves/branches are walked.
                 if summary["has_undecided"]:
                     break
 
@@ -4124,6 +4127,15 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                 # Move one level up and see if that ancestor is now fully decided too.
                 current = parent_handle
+
+        def _auto_complete_ancestors_from_leaf(leaf_handle: str) -> None:
+            """Backward-compatible helper for leaf decisions.
+
+            Preserved for clarity; delegates to the generic ancestor
+            auto-completion logic so that leaf decisions and branch decisions
+            share the same RULE 1 behavior.
+            """
+            _auto_complete_ancestors_from_decision(leaf_handle)
 
         # Apply actions
         actions = actions or []
@@ -4423,6 +4435,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         # Some leaves already accepted – accepting the subtree is
                         # a no-op. The minimal covering tree will be built from
                         # leaf decisions (branch becomes a path element).
+                        _auto_complete_ancestors_from_decision(handle)
                         continue
                     # All descendants rejected: include branch-only shell (no children).
                     if rejected_leaves > 0:
@@ -4441,6 +4454,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     raise NetworkError(
                         f"accept_subtree on '{handle}' is not applicable in the current state."
                     )
+
+                # After any successful subtree accept, attempt ancestor auto-completion
+                # so that fully decided regions auto-backtrack in all modes.
+                _auto_complete_ancestors_from_decision(handle)
+
             elif act == "reject_subtree":
                 summary = _summarize_descendants(handle)
                 desc_count = summary["descendant_count"]
@@ -4536,6 +4554,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 entry["status"] = "closed"
                 entry["selection_type"] = "subtree"
                 entry["max_depth"] = max_depth
+
+                # After any successful subtree reject, attempt ancestor auto-completion
+                # so that fully rejected regions auto-backtrack in all modes.
+                _auto_complete_ancestors_from_decision(handle)
             elif act == "backtrack":
                 # In this v2 implementation, backtrack behaves like a careful
                 # branch-level close. If the branch is already decided, we
@@ -4894,6 +4916,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             role = role_by_node_id.get(nid)
             if role:
                 new_node["gem_role"] = role
+                # Preserve explicit shell semantics for subtree-selected shells so
+                # that downstream WEAVE can treat children as opaque even after
+                # JEWELSTORM adds new children under this parent.
+                if role == "subtree_selected" and nid in subtree_shell_node_ids:
+                    new_node["subtree_mode"] = "shell"
             new_children: list[dict[str, Any]] = []
             for child in node.get("children", []) or []:
                 pruned_child = copy_pruned_subtree(child)

@@ -362,11 +362,27 @@ async def reconcile_tree(
 
         if (status is not None and status != 'complete') or implied_truncation:
             truncated_parents.add(nid)
+            continue
+
+        # Explicit NEXUS subtree shells: subtree_mode='shell' marks a branch-only
+        # node whose children are intentionally opaque (even after JEWELSTORM
+        # adds new children under this parent). Its children must never be
+        # compared for deletes/reorders, so we always treat it as a truncated
+        # parent regardless of counts/status/child list.
+        if node.get('subtree_mode') == 'shell':
+            truncated_parents.add(nid)
+            continue
+
+        # Backwards-compatible shell detection: older gems may not carry
+        # subtree_mode but still have gem_role='subtree_selected' with no
+        # editable children. Treat those as opaque parents as well.
+        if node.get('gem_role') == 'subtree_selected' and not children:
+            truncated_parents.add(nid)
 
     if truncated_parents:
-        log(f"   Truncated parents (children not fully loaded in source): {truncated_parents}")
+        log(f"   Truncated parents (children not fully loaded in source OR opaque shells): {truncated_parents}")
     else:
-        log("   No truncated parents detected (all children fully loaded in source)")
+        log("   No truncated parents detected (all children fully loaded in source, no opaque shells)")
 
     # ------------- phase 1: CREATE (top-down) -------------
     create_count = 0
