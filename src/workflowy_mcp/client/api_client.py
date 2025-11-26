@@ -4127,6 +4127,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # Apply actions
         actions = actions or []
+        peek_results: list[dict[str, Any]] = []
         for action in actions:
             act = action.get("action")
             # Scratchpad actions do not require a handle and can be applied at any time.
@@ -4152,7 +4153,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # apply only to the current DFS focus handle. This keeps navigation
             # deterministic and brain-dead simple for agents: one node at a
             # time.
-            if exploration_mode in {"dfs_guided", "dfs_full_walk"}:
+            if exploration_mode in {"dfs_guided", "dfs_full_walk"} and act not in {"reopen_branch", "add_hint", "peek_descendants"}:
                 # Recompute current DFS frontier based on the *current* state
                 # before applying this action.
                 session["handles"] = handles
@@ -4192,6 +4193,55 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # Ensure selection_type key is always present for downstream logic
             if "selection_type" not in entry:
                 entry["selection_type"] = None
+
+            if act == "peek_descendants":
+                # Read-only peek at descendants of a handle, with a configurable
+                # node cap to keep responses compact. Does not alter state.
+                max_nodes = action.get("max_nodes") or 200
+                try:
+                    max_nodes_int = int(max_nodes)
+                except (TypeError, ValueError):
+                    max_nodes_int = 200
+                if max_nodes_int <= 0:
+                    max_nodes_int = 200
+
+                queue: list[str] = [handle]
+                visited = 0
+                nodes_preview: list[dict[str, Any]] = []
+
+                while queue and visited < max_nodes_int:
+                    h = queue.pop(0)
+                    meta = handles.get(h, {}) or {}
+                    st = state.get(h, {"status": "unseen"})
+                    child_handles = meta.get("children", []) or []
+                    is_leaf = not child_handles
+
+                    nodes_preview.append(
+                        {
+                            "handle": h,
+                            "name": meta.get("name", "Untitled"),
+                            "depth": meta.get("depth", 0),
+                            "child_count": len(child_handles),
+                            "is_leaf": is_leaf,
+                            "status": st.get("status", "unseen"),
+                        }
+                    )
+                    visited += 1
+
+                    for ch in child_handles:
+                        queue.append(ch)
+
+                truncated = bool(queue)
+                peek_results.append(
+                    {
+                        "root_handle": handle,
+                        "max_nodes": max_nodes_int,
+                        "nodes_returned": len(nodes_preview),
+                        "truncated": truncated,
+                        "nodes": nodes_preview,
+                    }
+                )
+                continue
 
             if act == "add_hint":
                 hint_text = action.get("hint")
@@ -4563,6 +4613,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         }
         if history_summary is not None:
             result["history_summary"] = history_summary
+        if peek_results:
+            result["peek_results"] = peek_results
 
         return result
 
