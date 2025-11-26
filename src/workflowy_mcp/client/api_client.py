@@ -4104,8 +4104,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     # PATH ELEMENT tying accepted leaves back toward the root.
                     if parent_entry.get("status") not in {"finalized", "closed"}:
                         parent_entry["status"] = "finalized"
-                        # selection_type remains None so finalize treats this as
-                        # a structural connector, not a subtree selection.
+                        # Mark this ancestor explicitly as a PATH element so
+                        # finalize_exploration does NOT treat it as a subtree
+                        # selection. Its inclusion in the minimal covering tree
+                        # comes from accepted leaves walking ancestors, not from
+                        # subtree-selected semantics.
+                        parent_entry["selection_type"] = "path"
                 elif rejected_leaves > 0:
                     # All descendant leaves rejected (has_undecided is False):
                     # the entire branch can be treated as rejected.
