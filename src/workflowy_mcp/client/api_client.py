@@ -1897,6 +1897,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         def validate_and_escape_nodes_recursive(nodes_list: list[dict[str, Any]], path: str = "root") -> tuple[bool, str | None, list[str]]:
             """Recursively validate and auto-escape NAME and NOTE fields.
             
+            Enforces the ETHER invariant that node names must be non-empty
+            (no empty or whitespace-only names), and auto-escapes angle brackets
+            for both names and notes.
+            
             Returns:
                 (success, error_message, warnings_list)
             """
@@ -1905,14 +1909,22 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             for idx, node in enumerate(nodes_list):
                 node_path = f"{path}[{idx}].{node.get('name', 'unnamed')}"
                 
-                # Validate and escape NAME field
+                # Validate NAME field: must be a non-empty, non-whitespace string
                 name = node.get('name')
-                if name:
-                    processed_name, name_warning = self._validate_name_field(name)
-                    if processed_name is not None:
-                        node['name'] = processed_name
-                    if name_warning:
-                        warnings.append(f"Node: {node_path} - Name escaped")
+                if not isinstance(name, str) or not name.strip():
+                    return (
+                        False,
+                        f"Node: {node_path}\n\n"
+                        "Name must be a non-empty, non-whitespace string. "
+                        "Empty names are not valid Workflowy nodes.",
+                        warnings,
+                    )
+                
+                processed_name, name_warning = self._validate_name_field(name)
+                if processed_name is not None:
+                    node['name'] = processed_name
+                if name_warning:
+                    warnings.append(f"Node: {node_path} - Name escaped")
                 
                 # Validate and escape NOTE field
                 note = node.get('note')
@@ -2294,6 +2306,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         def validate_and_escape_nodes_recursive(nodes_list: list[dict[str, Any]], path: str = "root") -> tuple[bool, str | None, list[str]]:
             """Recursively validate and auto-escape name and note fields in node tree.
             
+            Enforces the ETHER invariant that node names must be non-empty
+            (no empty or whitespace-only names), and auto-escapes angle brackets
+            for both names and notes.
+            
             Returns:
                 (success, error_message, warnings_list)
             """
@@ -2302,14 +2318,22 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             for idx, node in enumerate(nodes_list):
                 node_path = f"{path}[{idx}].{node.get('name', 'unnamed')}"
                 
-                # Validate and escape NAME field
+                # Validate NAME field: must be a non-empty, non-whitespace string
                 name = node.get('name')
-                if name:
-                    processed_name, name_warning = self._validate_name_field(name)
-                    if processed_name is not None:
-                        node['name'] = processed_name
-                    if name_warning:
-                        warnings.append(f"Node: {node_path} - Name escaped")
+                if not isinstance(name, str) or not name.strip():
+                    return (
+                        False,
+                        f"Node: {node_path}\n\n"
+                        "Name must be a non-empty, non-whitespace string. "
+                        "Empty names are invalid in enchanted_terrain.json.",
+                        warnings,
+                    )
+                
+                processed_name, name_warning = self._validate_name_field(name)
+                if processed_name is not None:
+                    node['name'] = processed_name
+                if name_warning:
+                    warnings.append(f"Node: {node_path} - Name escaped")
                 
                 # Validate and escape NOTE field
                 note = node.get('note')
@@ -3736,6 +3760,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         session_hint: str | None = None,
         frontier_size: int = 25,
         max_depth_per_frontier: int = 1,
+        editable: bool = False,
     ) -> dict[str, Any]:
         """Initialize an exploration session over a Workflowy subtree.
 
@@ -3853,6 +3878,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "source_mode": source_mode,
             "exploration_mode": exploration_mode,
             "max_nodes": max_nodes,
+            "editable": bool(editable),
             "handles": handles,
             "state": state,
             "scratchpad": "",
@@ -3938,6 +3964,23 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         handles = session.get("handles", {}) or {}
         state = session.get("state", {}) or {}
         exploration_mode = session.get("exploration_mode", "manual")
+        root_node = session.get("root_node") or {}
+
+        # Build id→node index for editable sessions so that note/tag updates
+        # mutate the cached tree that finalize_exploration will read.
+        node_by_id: dict[str, dict[str, Any]] = {}
+
+        def _index_tree_for_edit(node: dict[str, Any]) -> None:
+            nid = node.get("id")
+            if nid:
+                node_by_id[nid] = node
+            for child in node.get("children", []) or []:
+                _index_tree_for_edit(child)
+
+        if root_node:
+            _index_tree_for_edit(root_node)
+
+        editable_mode = bool(session.get("editable", False))
 
         # Lazy-loaded map of guardian override tokens for this session. These
         # allow Dan to bypass strict dfs_full_walk enforcement on a
@@ -4160,6 +4203,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             if handle not in handles:
                 raise NetworkError(f"Unknown handle in actions: '{handle}'")
+
+            if act in {"update_node_and_flag_for_acceptance", "update_note_and_flag_for_acceptance", "update_tag_and_flag_for_acceptance"} and not editable_mode:
+                raise NetworkError(
+                    "This exploration session was started with editable=False; "
+                    "update_node_and_flag_for_acceptance/update_note_and_flag_for_acceptance/update_tag_and_flag_for_acceptance "
+                    "are only allowed when editable=True. Start a new session with "
+                    "editable=True if you want to change names/notes/tags as you explore."
+                )
 
             # In dfs_guided / dfs_full_walk modes, enforce that most actions
             # apply only to the current DFS focus handle. This keeps navigation
@@ -4589,6 +4640,100 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     child_handles = handles.get(h, {}).get("children", []) or []
                     for ch in child_handles:
                         queue.append(ch)
+            elif act in {"update_node_and_flag_for_acceptance", "update_note_and_flag_for_acceptance"}:
+                if not editable_mode:
+                    raise NetworkError(
+                        "update_node_and_flag_for_acceptance/update_note_and_flag_for_acceptance is only allowed when session.editable=True"
+                    )
+
+                new_name = action.get("name")
+                new_note = action.get("note")
+
+                meta = handles.get(handle) or {}
+                node_id_for_edit = meta.get("id")
+                if not node_id_for_edit:
+                    raise NetworkError(f"Handle '{handle}' has no associated node id; cannot update node.")
+
+                target_node = node_by_id.get(node_id_for_edit)
+                if not target_node:
+                    raise NetworkError(
+                        f"Node id '{node_id_for_edit}' not found in cached exploration tree; cannot update node."
+                    )
+
+                if new_name is not None:
+                    if not isinstance(new_name, str):
+                        raise NetworkError(
+                            "update_node_and_flag_for_acceptance requires 'name' to be a string if provided"
+                        )
+                    target_node["name"] = new_name
+                    meta["name"] = new_name
+
+                if new_note is not None:
+                    if not isinstance(new_note, str):
+                        raise NetworkError(
+                            "update_node_and_flag_for_acceptance requires 'note' to be a string if provided"
+                        )
+                    target_node["note"] = new_note
+                    meta["note"] = new_note
+
+                handles[handle] = meta
+
+                child_handles = handles.get(handle, {}).get("children", []) or []
+                is_leaf = not child_handles
+
+                entry = state.setdefault(handle, {"status": "unseen", "max_depth": None, "selection_type": None})
+
+                if is_leaf:
+                    entry["status"] = "finalized"
+                    entry["selection_type"] = "leaf"
+                    entry["max_depth"] = max_depth
+                    _auto_complete_ancestors_from_leaf(handle)
+                else:
+                    entry["accept_on_finalize"] = True
+
+            elif act == "update_tag_and_flag_for_acceptance":
+                if not editable_mode:
+                    raise NetworkError("update_tag_and_flag_for_acceptance is only allowed when session.editable=True")
+
+                raw_tag = action.get("tag")
+                if not isinstance(raw_tag, str) or not raw_tag.strip():
+                    raise NetworkError("update_tag_and_flag_for_acceptance requires non-empty 'tag' string")
+
+                tag = raw_tag.strip()
+                if not tag.startswith("#"):
+                    tag = f"#{tag}"
+
+                meta = handles.get(handle) or {}
+                node_id_for_edit = meta.get("id")
+                if not node_id_for_edit:
+                    raise NetworkError(f"Handle '{handle}' has no associated node id; cannot add tag.")
+
+                target_node = node_by_id.get(node_id_for_edit)
+                if not target_node:
+                    raise NetworkError(
+                        f"Node id '{node_id_for_edit}' not found in cached exploration tree; cannot add tag."
+                    )
+
+                current_name = target_node.get("name") or ""
+                tokens = current_name.split()
+                if tag not in tokens:
+                    new_name = f"{current_name} {tag}".strip()
+                    target_node["name"] = new_name
+                    meta["name"] = new_name
+                    handles[handle] = meta
+
+                child_handles = handles.get(handle, {}).get("children", []) or []
+                is_leaf = not child_handles
+
+                entry = state.setdefault(handle, {"status": "unseen", "max_depth": None, "selection_type": None})
+
+                if is_leaf:
+                    entry["status"] = "finalized"
+                    entry["selection_type"] = "leaf"
+                    entry["max_depth"] = max_depth
+                    _auto_complete_ancestors_from_leaf(handle)
+                else:
+                    entry["accept_on_finalize"] = True
             else:
                 raise NetworkError(f"Unsupported exploration action: '{act}'")
 
@@ -4692,6 +4837,15 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         handles = session.get("handles", {}) or {}
         state = session.get("state", {}) or {}
         root_node = session.get("root_node") or {}
+
+        # Interpret any accept_on_finalize flags from editable sessions:
+        # promote flagged branches to explicit subtree selections before building
+        # the minimal gem.
+        for handle, st in state.items():
+            if st.get("accept_on_finalize") and st.get("status") not in {"finalized", "closed"}:
+                st["status"] = "finalized"
+                if st.get("selection_type") is None:
+                    st["selection_type"] = "subtree"
 
         # Build basic indexes over the cached tree
         node_by_id: dict[str, dict[str, Any]] = {}
