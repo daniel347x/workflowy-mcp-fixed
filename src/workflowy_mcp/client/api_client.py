@@ -3504,6 +3504,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         handles = session.get("handles", {}) or {}
         state = session.get("state", {}) or {}
 
+        def _collect_hints_from_ancestors(handle: str) -> list[str]:
+            """Collect hints from all ancestors of a given handle (closest first)."""
+            hints: list[str] = []
+            parent = handles.get(handle, {}).get("parent")
+            while parent:
+                parent_meta = handles.get(parent, {}) or {}
+                parent_hints = parent_meta.get("hints") or []
+                hints.extend(parent_hints)
+                parent = parent_meta.get("parent")
+            return hints
+
         frontier: list[dict[str, Any]] = []
 
         exploration_mode = session.get("exploration_mode", "manual")
@@ -3598,6 +3609,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "when you intentionally want to include or exclude this "
                     "whole branch without inspecting each leaf."
                 )
+            local_hints = meta.get("hints") or []
+            hints_from_ancestors = _collect_hints_from_ancestors(next_handle)
 
             frontier.append(
                 {
@@ -3611,6 +3624,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "status": state.get(next_handle, {}).get("status", "candidate"),
                     "is_leaf": is_leaf,
                     "guidance": guidance,
+                    "hints": local_hints,
+                    "hints_from_ancestors": hints_from_ancestors,
                 }
             )
 
@@ -3680,6 +3695,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             "use 'accept_subtree' sparingly. Exploring down to "
                             "leaves yields smaller, more targeted phantom gems."
                         )
+                    local_hints = child_meta.get("hints") or []
+                    hints_from_ancestors = _collect_hints_from_ancestors(child_handle)
 
                     frontier.append(
                         {
@@ -3693,6 +3710,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             "status": child_state.get("status", "candidate"),
                             "is_leaf": is_leaf,
                             "guidance": guidance,
+                            "hints": local_hints,
+                            "hints_from_ancestors": hints_from_ancestors,
                         }
                     )
 
@@ -3810,6 +3829,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "parent": parent_handle,
                 "children": child_handles,
                 "depth": depth,
+                "hints": [],
             }
 
         # Root handle R
@@ -3834,6 +3854,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "max_nodes": max_nodes,
             "handles": handles,
             "state": state,
+            "scratchpad": "",
             "root_node": root_node,
             "steps": 0,
             "glimpse_stats": {
@@ -3872,6 +3893,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "root_handle": "R",
             "root_summary": root_summary,
             "frontier": frontier,
+            "scratchpad": session.get("scratchpad", ""),
             "stats": {
                 "total_nodes_indexed": glimpse.get("node_count", 0),
                 "truncated": False,
@@ -4101,8 +4123,21 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # Apply actions
         actions = actions or []
         for action in actions:
-            handle = action.get("handle")
             act = action.get("action")
+            # Scratchpad actions do not require a handle and can be applied at any time.
+            if act in {"set_scratchpad", "append_scratchpad"}:
+                content = action.get("content") or ""
+                existing = session.get("scratchpad") or ""
+                if act == "set_scratchpad":
+                    session["scratchpad"] = content
+                else:
+                    if existing:
+                        session["scratchpad"] = existing + "\n" + content
+                    else:
+                        session["scratchpad"] = content
+                continue
+
+            handle = action.get("handle")
             max_depth = action.get("max_depth")
 
             if handle not in handles:
@@ -4126,7 +4161,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                 # Allow branch-wide corrections from anywhere via reopen_branch,
                 # but require all other decisions to target the current handle.
-                if act not in {"reopen_branch"} and current_handle and handle != current_handle:
+                if act not in {"reopen_branch", "add_hint"} and current_handle and handle != current_handle:
                     meta = handles.get(current_handle, {}) or {}
                     current_name = meta.get("name", "Untitled")
                     raise NetworkError(
@@ -4152,6 +4187,19 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # Ensure selection_type key is always present for downstream logic
             if "selection_type" not in entry:
                 entry["selection_type"] = None
+
+            if act == "add_hint":
+                hint_text = action.get("hint")
+                if not isinstance(hint_text, str) or not hint_text.strip():
+                    raise NetworkError("add_hint action requires non-empty 'hint' string")
+                meta = handles.get(handle) or {}
+                existing_hints = meta.get("hints")
+                if not isinstance(existing_hints, list):
+                    existing_hints = []
+                existing_hints.append(hint_text)
+                meta["hints"] = existing_hints
+                handles[handle] = meta
+                continue
 
             if act == "open":
                 entry["status"] = "open"
@@ -4460,6 +4508,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "success": True,
             "session_id": session_id,
             "frontier": frontier,
+            "scratchpad": session.get("scratchpad", ""),
             "guidance": (
                 "Leaf-first exploration is encouraged. Open branches to reach leaves; "
                 "make decisions with 'accept_leaf' / 'reject_leaf' where possible. "

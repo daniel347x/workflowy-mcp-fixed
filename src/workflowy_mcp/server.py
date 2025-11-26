@@ -1106,8 +1106,11 @@ async def nexus_start_exploration(
 @mcp.tool(
     name="nexus_explore_step",
     description=(
-        "Apply exploration actions (open/close/finalize/reopen) to an exploration "
-        "session and return the next frontier of handles."
+        "Apply exploration actions to an exploration session and return the next frontier "
+        "of handles. Supported actions include: open/close/finalize/reopen; "
+        "accept_leaf/reject_leaf; accept_subtree/reject_subtree (optional guardian_token "
+        "for strict dfs_full_walk overrides); backtrack/reopen_branch; add_hint "
+        "(per-handle); and set_scratchpad/append_scratchpad (session-global registry)."
     ),
 )
 async def nexus_explore_step(
@@ -1117,7 +1120,16 @@ async def nexus_explore_step(
     max_depth_per_frontier: int = 1,
     include_history_summary: bool = True,
 ) -> dict:
-    """Apply exploration actions and return the next frontier."""
+    """Apply exploration actions and return the next frontier.
+
+    actions[i]["action"] may be one of:
+      - "open", "close", "finalize", "reopen"
+      - "accept_leaf", "reject_leaf"
+      - "accept_subtree", "reject_subtree" (with optional "guardian_token")
+      - "backtrack", "reopen_branch"
+      - "add_hint" (attach free-text hints to a handle)
+      - "set_scratchpad", "append_scratchpad" (maintain session-global REGISTRY text)
+    """
     client = get_client()
 
     if _rate_limiter:
