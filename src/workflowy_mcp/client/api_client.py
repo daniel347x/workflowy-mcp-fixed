@@ -4026,6 +4026,78 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "rejected_leaf_count": rejected_leaves,
             }
 
+        def _auto_complete_ancestors_from_leaf(leaf_handle: str) -> None:
+            """Auto-complete ancestors when all descendants are decided (RULE 1).
+
+            After an accept_leaf / reject_leaf, walk upward from this leaf and
+            auto-complete ancestors whose entire subtrees are decided:
+
+            - If any descendant leaf was accepted → ancestor auto-ACCEPT as a
+              path element (status='finalized', selection_type=None).
+            - If all descendant leaves were rejected → ancestor auto-REJECT
+              (status='closed').
+
+            This happens incrementally during DFS exploration so that by the
+            time nexus_finalize_exploration runs, no explicit branch handles
+            remain undecided.
+            """
+            current = leaf_handle
+            while True:
+                parent_handle = (handles.get(current) or {}).get("parent")
+                if not parent_handle:
+                    # Reached synthetic root or no parent; nothing further to do.
+                    break
+
+                # Do not override explicit subtree selections (shells/true subtrees)
+                parent_entry = state.get(
+                    parent_handle,
+                    {"status": "unseen", "max_depth": None, "selection_type": None},
+                )
+                if parent_entry.get("selection_type") == "subtree":
+                    current = parent_handle
+                    continue
+
+                summary = _summarize_descendants(parent_handle)
+                if summary["descendant_count"] == 0:
+                    # No real descendants under this ancestor; nothing to auto-complete.
+                    break
+
+                # If any descendant remains undecided, we must not auto-complete
+                # this ancestor yet; DFS will revisit once all leaves are walked.
+                if summary["has_undecided"]:
+                    break
+
+                accepted_leaves = summary["accepted_leaf_count"]
+                rejected_leaves = summary["rejected_leaf_count"]
+
+                # Ensure entry exists in state for this ancestor
+                parent_entry = state.setdefault(
+                    parent_handle,
+                    {"status": "unseen", "max_depth": None, "selection_type": None},
+                )
+
+                if accepted_leaves > 0:
+                    # At least one descendant leaf accepted: ancestor becomes a
+                    # PATH ELEMENT tying accepted leaves back toward the root.
+                    if parent_entry.get("status") not in {"finalized", "closed"}:
+                        parent_entry["status"] = "finalized"
+                        # selection_type remains None so finalize treats this as
+                        # a structural connector, not a subtree selection.
+                elif rejected_leaves > 0:
+                    # All descendant leaves rejected (has_undecided is False):
+                    # the entire branch can be treated as rejected.
+                    if parent_entry.get("status") not in {"finalized", "closed"}:
+                        parent_entry["status"] = "closed"
+                        parent_entry["selection_type"] = None
+                        parent_entry["max_depth"] = None
+                else:
+                    # All descendants decided but no leaf outcomes recorded; this
+                    # is an edge case (e.g., internal nodes only). We stop here.
+                    break
+
+                # Move one level up and see if that ancestor is now fully decided too.
+                current = parent_handle
+
         # Apply actions
         actions = actions or []
         for action in actions:
@@ -4103,10 +4175,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 entry["status"] = "finalized"
                 entry["selection_type"] = "leaf"
                 entry["max_depth"] = max_depth
+                _auto_complete_ancestors_from_leaf(handle)
             elif act == "reject_leaf":
                 entry["status"] = "closed"
                 entry["selection_type"] = None
                 entry["max_depth"] = None
+                _auto_complete_ancestors_from_leaf(handle)
             elif act == "accept_subtree":
                 summary = _summarize_descendants(handle)
                 desc_count = summary["descendant_count"]
