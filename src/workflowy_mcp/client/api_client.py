@@ -3826,6 +3826,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             handles[handle] = {
                 "id": node.get("id"),
                 "name": node.get("name", "Untitled"),
+                "note": node.get("note"),
                 "parent": parent_handle,
                 "children": child_handles,
                 "depth": depth,
@@ -4225,6 +4226,46 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 entry["max_depth"] = max_depth
                 _auto_complete_ancestors_from_leaf(handle)
             elif act == "reject_leaf":
+                entry["status"] = "closed"
+                entry["selection_type"] = None
+                entry["max_depth"] = None
+                _auto_complete_ancestors_from_leaf(handle)
+            elif act == "replace_leaf_node_with_appended_scratch_note":
+                # Capture good wording from a leaf node into the scratchpad while
+                # excluding the node from the minimal phantom gem. This behaves
+                # like a reject_leaf decision for gem construction, but preserves
+                # the leaf's name/note in the exploration scratchpad for later use.
+                child_handles = handles.get(handle, {}).get("children", []) or []
+                if child_handles:
+                    raise NetworkError(
+                        "replace_leaf_node_with_appended_scratch_note is only valid on leaf "
+                        "handles (no children in cached tree)."
+                    )
+                meta = handles.get(handle) or {}
+                name = meta.get("name", "Untitled")
+                node_id_for_scratch = meta.get("id")
+                note_preview = meta.get("note") or ""
+
+                # Build a compact, human-readable scratch entry
+                header_parts = [f"[DROPPED_LEAF] {handle}", f'"{name}"']
+                if node_id_for_scratch:
+                    header_parts.append(f"id={node_id_for_scratch}")
+                header_line = " ".join(header_parts)
+
+                scratch_lines = [header_line]
+                if note_preview.strip():
+                    scratch_lines.append(note_preview)
+                else:
+                    scratch_lines.append("<no note>")
+
+                snippet = "\n".join(scratch_lines)
+                existing_scratch = session.get("scratchpad") or ""
+                if existing_scratch:
+                    session["scratchpad"] = existing_scratch + "\n\n" + snippet
+                else:
+                    session["scratchpad"] = snippet
+
+                # Semantically treat this as a rejected leaf for the minimal gem
                 entry["status"] = "closed"
                 entry["selection_type"] = None
                 entry["max_depth"] = None
@@ -4818,10 +4859,30 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         phantom_path = os.path.join(run_dir, "phantom_gem.json")
         coarse_path = os.path.join(run_dir, "coarse_terrain.json")
 
+        # Pack exploration scratchpad and per-handle hints into the phantom gem
+        # so GEMSTORM / transform_gem can use this scaffolding later.
+        scratchpad_text = session.get("scratchpad", "")
+        hints_export: list[dict[str, Any]] = []
+        for handle_key, meta in handles.items():
+            handle_hints = meta.get("hints") or []
+            if not handle_hints:
+                continue
+            hints_export.append(
+                {
+                    "handle": handle_key,
+                    "node_id": meta.get("id"),
+                    "name": meta.get("name"),
+                    "depth": meta.get("depth"),
+                    "hints": handle_hints,
+                }
+            )
+
         phantom_payload = {
             "nexus_tag": nexus_tag,
             "roots": ordered_root_ids,
             "nodes": gem_nodes,
+            "scratchpad": scratchpad_text,
+            "hints": hints_export,
         }
 
         try:
