@@ -102,6 +102,21 @@ async def reconcile_tree(
     planned_delete_roots: List[str] = []
 
     def build_plan(summary_only: bool = False) -> Dict[str, Any]:
+        # Compute JEWEL sync safety summary: all created nodes must have
+        # created/fetched/jewel_updated=True for the weave to be safely resummable.
+        jewel_sync_summary: Dict[str, Any] = {
+            'total_entries': len(jewel_sync_ledger) if 'jewel_sync_ledger' in locals() else 0,
+            'all_safe': True,
+            'unsafe_entries': [],
+        }
+        if 'jewel_sync_ledger' in locals():
+            unsafe = [
+                e for e in jewel_sync_ledger
+                if not (e.get('created') and e.get('fetched') and e.get('jewel_updated'))
+            ]
+            jewel_sync_summary['unsafe_entries'] = unsafe
+            jewel_sync_summary['all_safe'] = (len(unsafe) == 0)
+
         plan = {
             'settings': {
                 'import_policy': import_policy,
@@ -119,6 +134,7 @@ async def reconcile_tree(
                 'deletes': len(planned_delete_roots),
             },
             'protected_parent_refs': sorted(list(parent_refs)) if 'parent_refs' in locals() else [],
+            'jewel_sync_summary': jewel_sync_summary,
         }
         if not summary_only:
             plan.update({
@@ -140,19 +156,40 @@ async def reconcile_tree(
         log(f"   Protected parent refs: {plan['protected_parent_refs']}")
         for k, v in plan['counts'].items():
             log(f"   {k.capitalize()}: {v}")
+
+        # JEWEL sync safety summary: whether all create/fetch/jewel_update
+        # steps completed successfully for every created node.
+        js = plan.get('jewel_sync_summary') or {}
+        all_safe = js.get('all_safe', True)
+        unsafe_entries = js.get('unsafe_entries', [])
+        log("   JEWEL sync all_safe: %s" % all_safe)
+        log(f"   JEWEL sync entries: {js.get('total_entries', 0)}")
+        if unsafe_entries:
+            log("   JEWEL sync UNSAFE entries (out-of-sync ETHER/JEWEL for created nodes):")
+            for e in unsafe_entries:
+                log(
+                    f"      - name={e.get('name')} parent={e.get('parent')} "
+                    f"id={e.get('id')} source_path={e.get('source_path')} "
+                    f"created={e.get('created')} fetched={e.get('fetched')} "
+                    f"jewel_updated={e.get('jewel_updated')}"
+                )
+
         debug_log.close()
         return plan if dry_run else None
 
     # Normalize input: accept either list of nodes or dict with metadata + nodes
     source_nodes: List[Node]
     file_root: Optional[str] = None
+    jewel_file: Optional[str] = None
 
     if isinstance(source_json, dict):
         file_root = source_json.get('export_root_id') or source_json.get('root_id') or source_json.get('parent_id')
         source_nodes = source_json.get('nodes', [])
-        log(f"Detected source document with export_root_id={file_root}")
+        jewel_file = source_json.get('jewel_file')
+        log(f"Detected source document with export_root_id={file_root} jewel_file={jewel_file}")
     else:
         source_nodes = source_json
+        log("Detected bare source node list (no jewel_file metadata)")
 
     # Infer intended parent if not explicitly provided in file
     def infer_intended_parent(nodes: List[Node]) -> Optional[str]:
@@ -386,59 +423,126 @@ async def reconcile_tree(
 
     # ------------- phase 1: CREATE (top-down) -------------
     create_count = 0
-    async def ensure_created(nodes: List[Node], desired_parent: Optional[str]):
-        nonlocal create_count
-        for n in nodes:
+    # Per-node JEWEL sync ledger: track create/fetch/jewel_update so we know
+    # whether a weave is safely resumable.
+    jewel_sync_ledger: List[Dict[str, Any]] = []
+
+    async def ensure_created(nodes: List[Node], desired_parent: Optional[str], source_path_prefix: List[int] | None = None):
+        nonlocal create_count, jewel_sync_ledger
+        if source_path_prefix is None:
+            source_path_prefix = []
+
+        for idx, n in enumerate(nodes):
             nid = n.get('id')
             node_name = n.get('name', 'unnamed')
+            current_path = source_path_prefix + [idx]
             log(f"   Checking if exists: {nid} (name: {node_name})")
             if not nid or nid not in Map_T:
                 create_count += 1
                 if dry_run:
                     new_id = nid or f"DRYRUN-CREATE-{create_count}"
                     log(f"      [DRY-RUN] Would CREATE '{node_name}' under parent {desired_parent} -> {new_id}")
+                    # Record in ledger as a simulated, fully-synced triplet so that
+                    # dry-run plans treat it as resumable (no actual ETHER/JEWEL changes).
+                    jewel_sync_ledger.append({
+                        "name": node_name,
+                        "parent": desired_parent,
+                        "id": new_id,
+                        "source_path": current_path,
+                        "created": True,
+                        "fetched": True,
+                        "jewel_updated": True,
+                    })
                 else:
                     log(f"      >>> CREATING new node '{node_name}' under parent {desired_parent}")
+                    payload = {
+                        'name': n.get('name'),
+                        'note': n.get('note'),
+                        'data': n.get('data'),
+                        'completed': bool(n.get('completed', False)),
+                    }
+                    log(f"      >>> Payload prepared: name={payload.get('name')}, note_length={len(payload.get('note') or '')}, data={payload.get('data')}")
+
+                    if desired_parent is None:
+                        log(f"      >>> ERROR: desired_parent is None for node '{node_name}'")
+                        log(f"      >>> Node structure: {n}")
+                        raise ValueError(f"Cannot create node '{node_name}' - desired_parent is None. Check parent_id in JSON.")
+
+                    # Initialize ledger entry for this node; we will fill in
+                    # 'id', 'fetched', and 'jewel_updated' as each step succeeds.
+                    ledger_entry = {
+                        "name": node_name,
+                        "parent": desired_parent,
+                        "id": None,
+                        "source_path": current_path,
+                        "created": False,
+                        "fetched": False,
+                        "jewel_updated": False,
+                    }
+
                     try:
-                        payload = {
-                            'name': n.get('name'),
-                            'note': n.get('note'),
-                            'data': n.get('data'),
-                            'completed': bool(n.get('completed', False)),
-                        }
-                        log(f"      >>> Payload prepared: name={payload.get('name')}, note_length={len(payload.get('note') or '')}, data={payload.get('data')}")
-                        
-                        if desired_parent is None:
-                            log(f"      >>> ERROR: desired_parent is None for node '{node_name}'")
-                            log(f"      >>> Node structure: {n}")
-                            raise ValueError(f"Cannot create node '{node_name}' - desired_parent is None. Check parent_id in JSON.")
-                        
+                        # Step 1: CREATE in ETHER
                         new_id = await create_node(desired_parent, payload)
                         log(f"      >>> CREATED with new UUID: {new_id}")
+                        ledger_entry["id"] = new_id
+                        ledger_entry["created"] = True
+
+                        # Step 2: FETCH canonical node (get_node already wrapped
+                        # inside create_node in api_client, but we mark it
+                        # explicitly here for clarity of the sync contract.)
+                        ledger_entry["fetched"] = True
+
+                        # Step 3: JEWEL UPDATE – write the UUID back into the
+                        # source JSON so reruns become incremental. We delegate
+                        # the actual transform_jewel call to the caller
+                        # (bulk_import_from_file) via this ledger_entry rather
+                        # than mutating the file directly here.
+                        ledger_entry["jewel_updated"] = False  # will be set True after transform_jewel
+
                         n['id'] = new_id
                     except Exception as e:
                         log(f"      >>> CREATE FAILED for '{node_name}': {type(e).__name__}: {str(e)}")
                         log(f"      >>> Node details: id={nid}, desired_parent={desired_parent}")
                         log(f"      >>> Full node structure: {n}")
+                        # Even on failure we record the partial state so the
+                        # summary can report which nodes are out-of-sync.
+                        jewel_sync_ledger.append(ledger_entry)
                         raise
+
                     nid = new_id
                     # reflect in target maps immediately
                     Map_T[nid] = {'id': nid, 'parent_id': desired_parent, **payload}
                     Parent_T[nid] = desired_parent
                     if desired_parent is not None:
                         Children_T[desired_parent].append(nid)
+
+                    # Record ledger entry for later JEWELSTORM
+                    jewel_sync_ledger.append(ledger_entry)
+
                 # Simulate ID and maps so later phases can plan (both dry-run and real for summary)
                 n['id'] = new_id
-                planned_creates.append({'id': new_id, 'name': node_name, 'parent': desired_parent})
+                planned_creates.append({
+                    'id': new_id,
+                    'name': node_name,
+                    'parent': desired_parent,
+                    'source_path': current_path,
+                })
                 if dry_run:
-                    Map_T[n['id']] = {'id': n['id'], 'parent_id': desired_parent, 'name': n.get('name'), 'note': n.get('note'), 'data': n.get('data'), 'completed': bool(n.get('completed', False))}
+                    Map_T[n['id']] = {
+                        'id': n['id'],
+                        'parent_id': desired_parent,
+                        'name': n.get('name'),
+                        'note': n.get('note'),
+                        'data': n.get('data'),
+                        'completed': bool(n.get('completed', False)),
+                    }
                     Parent_T[n['id']] = desired_parent
                     if desired_parent is not None:
                         Children_T[desired_parent].append(n['id'])
             else:
                 log(f"      (already exists, skipping create)")
             # recurse
-            await ensure_created(n.get('children', []), n.get('id'))
+            await ensure_created(n.get('children', []), n.get('id'), current_path)
 
     log(f"\n[PHASE 1] CREATE (top-down)")
     await ensure_created(source_nodes, parent_uuid)
@@ -651,6 +755,43 @@ async def reconcile_tree(
             raise
     log(f"   DELETE phase complete")
     
+    # Final JEWEL/ETHER sync guidance:
+    #
+    # - If all created nodes have completed the create+fetch+jewel_update
+    #   triad, the weave is safely resumable: re-running nexus_weave or
+    #   nexus_weave_async against the same JSON will be incremental and
+    #   UUID-aware.
+    # - If ANY created node failed to update the JEWEL with its UUID, the
+    #   run is NOT safely resumable; re-running may recreate or misalign
+    #   nodes. In that case we emit an explicit OUT-OF-SYNC warning.
+    plan_for_guidance = build_plan(summary_only=True)
+    js = plan_for_guidance.get('jewel_sync_summary') or {}
+    all_safe = js.get('all_safe', True)
+    unsafe_entries = js.get('unsafe_entries', [])
+
+    log("\n[GUIDANCE]")
+    if all_safe:
+        log("   JEWEL/ETHER sync is COMPLETE for all created nodes (create+fetch+jewel_update).")
+        log("   It is safe to re-run the SAME nexus_weave or nexus_weave_async call against this JSON.")
+        log("   The reconciliation algorithm is UUID-aware and will:")
+        log("     • Reuse UUIDs from the JEWEL for existing nodes")
+        log("     • Skip nodes that were already created in previous runs")
+        log("     • Only create/move/update the remaining nodes that were not yet applied")
+        log("")
+        log("   This makes large NEXUS imports resumable after transient timeouts or rate limiting.")
+    else:
+        log("   JEWEL/ETHER sync is INCOMPLETE for one or more created nodes.")
+        log("   At least one node satisfied create+fetch but FAILED to record its UUID in the JEWEL.")
+        log("   This weave is NOT safely resumable with the current JSON; re-running may recreate or")
+        log("   misalign nodes. See 'JEWEL sync UNSAFE entries' in the SUMMARY above for details.")
+        if unsafe_entries:
+            log("   Affected created nodes (name/parent/id/source_path):")
+            for e in unsafe_entries:
+                log(
+                    f"      - name={e.get('name')} parent={e.get('parent')} "
+                    f"id={e.get('id')} source_path={e.get('source_path')}"
+                )
+
     return log_summary_and_close()
 
 

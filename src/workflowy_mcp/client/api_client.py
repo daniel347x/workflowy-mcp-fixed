@@ -2297,6 +2297,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         parent_id: str = None,
         dry_run: bool = False,
         import_policy: str = 'strict',
+        auto_upgrade_to_jewel: bool = True,
     ) -> dict[str, Any]:
         """Create multiple Workflowy nodes from JSON file.
         
@@ -2332,6 +2333,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         try:
             with open(json_file, 'r', encoding='utf-8') as f:
                 payload = json.load(f)
+            # Attach a persistent jewel_file path hint used by the reconciler
+            # for per-node JEWEL upgrades.
+            if isinstance(payload, dict):
+                payload['jewel_file'] = json_file
         except Exception as e:
             return {
                 "success": False,
@@ -2535,6 +2540,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         try:
             # Pass full payload (including export_root_id and guardian metadata)
             # so the reconciliation algorithm can enforce parent consistency.
+            # The reconciler will also populate a per-node JEWEL sync ledger
+            # (created/fetched/jewel_updated) that we can use to decide whether
+            # the weave is safely resumable after timeouts.
             result_plan = await reconcile_tree(
                 source_json=payload,
                 parent_uuid=parent_id,
@@ -2565,6 +2573,57 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "errors": []
                 }
             
+            # OPTIONAL JEWEL UPGRADE: If auto_upgrade_to_jewel is enabled and
+            # the reconciler returned a plan with per-node source_path / id
+            # mappings, we call nexus_json_tools.transform_jewel() to write
+            # the UUIDs back into the JEWEL JSON on disk. This upgrades the
+            # creation JSON into a true JEWEL so that subsequent weaves are
+            # incremental and UUID-aware.
+            if auto_upgrade_to_jewel and not dry_run and isinstance(result_plan, dict):
+                try:
+                    ts_summary = result_plan.get("jewel_sync_summary") or {}
+                    all_safe = ts_summary.get("all_safe", True)
+                    unsafe_entries = ts_summary.get("unsafe_entries", [])
+                    creates = result_plan.get("creates") or []
+                    jewel_path = None
+                    if isinstance(payload, dict):
+                        jewel_path = payload.get("jewel_file")
+                    if jewel_path and creates:
+                        import importlib
+                        client_dir = os.path.dirname(os.path.abspath(__file__))
+                        wf_mcp_dir = os.path.dirname(client_dir)
+                        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+                        project_root = os.path.dirname(mcp_servers_dir)
+                        if project_root not in sys.path:
+                            sys.path.insert(0, project_root)
+                        nexus_tools = importlib.import_module("nexus_json_tools")
+
+                        ops = []
+                        for c in creates:
+                            cid = c.get("id")
+                            path = c.get("source_path")
+                            if not cid or path is None:
+                                continue
+                            ops.append({
+                                "op": "SET_ATTRS_BY_PATH",
+                                "path": path,
+                                "attrs": {"id": cid},
+                            })
+                        if ops:
+                            jewel_result = nexus_tools.transform_jewel(
+                                jewel_file=jewel_path,
+                                operations=ops,
+                                dry_run=False,
+                                stop_on_error=True,
+                            )
+                            logger.info(
+                                "JEWEL upgrade applied via transform_jewel: "
+                                f"success={jewel_result.get('success', True)} "
+                                f"ops_applied={len(ops)}"
+                            )
+                except Exception as e:
+                    logger.error(f"JEWEL auto-upgrade failed: {e}")
+
             # Reconciliation complete - gather root IDs
             root_ids = [n.get('id') for n in nodes_to_create if n.get('id')]
             
