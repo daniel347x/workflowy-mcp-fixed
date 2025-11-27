@@ -629,6 +629,56 @@ def transform_jewel(
 
                 nodes_created += 1
 
+            # SET_ATTRS_BY_PATH (path-based attribute update, used for JEWEL UUID injection)
+            elif op_type == "SET_ATTRS_BY_PATH":
+                path = op.get("path")
+                attrs = op.get("attrs") or {}
+                if not isinstance(path, list) or not path:
+                    raise ValueError("SET_ATTRS_BY_PATH requires non-empty 'path' list")
+                if not isinstance(attrs, dict):
+                    raise ValueError("SET_ATTRS_BY_PATH 'attrs' must be a dict")
+
+                # Navigate by index path from roots
+                current_list: List[JsonDict] = roots
+                target_node: Optional[JsonDict] = None
+                for level, idx in enumerate(path):
+                    if not isinstance(idx, int):
+                        raise ValueError(
+                            f"SET_ATTRS_BY_PATH path index at position {level} must be int, got {type(idx).__name__}"
+                        )
+                    if idx < 0 or idx >= len(current_list):
+                        raise ValueError(
+                            f"SET_ATTRS_BY_PATH path index {idx} out of range at position {level}"
+                        )
+                    target_node = current_list[idx]
+                    if level < len(path) - 1:
+                        children = target_node.get("children")
+                        if not isinstance(children, list):
+                            raise ValueError(
+                                f"SET_ATTRS_BY_PATH path descends into non-list children at position {level}"
+                            )
+                        current_list = children
+
+                if target_node is None:
+                    raise ValueError("SET_ATTRS_BY_PATH could not resolve target node from path")
+
+                for key, value in attrs.items():
+                    if key == "id":
+                        if value is None:
+                            target_node.pop("id", None)
+                        else:
+                            if not isinstance(value, str):
+                                raise ValueError(
+                                    "SET_ATTRS_BY_PATH 'id' value must be a string when not None"
+                                )
+                            target_node["id"] = value
+                    else:
+                        raise ValueError(
+                            f"Unsupported attr key {key!r} in SET_ATTRS_BY_PATH (only 'id' is currently allowed)"
+                        )
+
+                attrs_updated += 1
+
             else:
                 raise ValueError(f"Unknown operation type {op_type!r}")
 
