@@ -69,6 +69,7 @@ async def reconcile_tree(
     dry_run: bool = False,
     max_delete_threshold: Optional[int] = None,
     force: bool = False,
+    log_weave_entry: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Reconcile the Workflowy subtree under parent_uuid to match source_json.
@@ -96,6 +97,24 @@ async def reconcile_tree(
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]  # HH:MM:SS.mmm
         debug_log.write(f"[{timestamp}] {msg}\n")
         debug_log.flush()
+
+    def journal(entry: Dict[str, Any]) -> None:
+        """Write a single per-node weave journal entry (best-effort).
+
+        Each entry carries a resumability_safe flag so that if the process is
+        interrupted between operations, the last line clearly indicates whether
+        the last *completed* node-level operation left the weave in a state that
+        is safe to resume.
+        """
+        if log_weave_entry is None:
+            return
+        try:
+            e = dict(entry)
+            e.setdefault("timestamp", datetime.now().isoformat())
+            log_weave_entry(e)
+        except Exception as e2:  # noqa: BLE001
+            # Journal failures must never break reconciliation; log and continue.
+            log(f"   [WARN] Failed to append weave journal entry: {type(e2).__name__}: {e2}")
 
     # Planning containers for summary and dry-run plan
     planned_creates: List[Dict[str, Any]] = []
@@ -539,6 +558,23 @@ async def reconcile_tree(
                         "jewel_updated": False,
                     }
 
+                    # Journal: node-level CREATE operation started (resumability
+                    # is UNSAFE until JEWEL update completes).
+                    journal(
+                        {
+                            "op": "create",
+                            "status": "started",
+                            "source_path": current_path,
+                            "node_name": node_name,
+                            "node_id": None,
+                            "resumability_safe": False,
+                            "message": (
+                                f"node operation CREATE started for path {current_path} - "
+                                "RESUMABILITY UNSAFE"
+                            ),
+                        }
+                    )
+
                     try:
                         # Step 1: CREATE in ETHER
                         new_id = await create_node(desired_parent, payload)
@@ -556,6 +592,24 @@ async def reconcile_tree(
                         # incremental at node granularity.
                         updated = await update_jewel_with_uuid(jewel_file, current_path, new_id)
                         ledger_entry["jewel_updated"] = bool(updated)
+
+                        # Journal: CREATE completed. Resumability is SAFE only
+                        # when JEWEL update succeeded.
+                        safe = bool(updated)
+                        journal(
+                            {
+                                "op": "create",
+                                "status": "completed_jewel_ok" if safe else "completed_jewel_failed",
+                                "source_path": current_path,
+                                "node_name": node_name,
+                                "node_id": new_id,
+                                "resumability_safe": safe,
+                                "message": (
+                                    f"node operation CREATE completed for node {new_id} at path {current_path} - "
+                                    f"RESUMABILITY {'SAFE' if safe else 'UNSAFE (JEWEL UPDATE FAILED)'}"
+                                ),
+                            }
+                        )
 
                         n['id'] = new_id
                     except Exception as e:
@@ -625,10 +679,41 @@ async def reconcile_tree(
             if dry_run:
                 log(f"      [DRY-RUN] Would MOVE {nid} from {current_parent} to {desired_parent}")
             else:
+                # Journal: MOVE operation started (resumability is UNSAFE until
+                # the move completes, because the node's parent/position may be
+                # mid-transition).
+                journal(
+                    {
+                        "op": "move",
+                        "status": "started",
+                        "node_id": nid,
+                        "from_parent": current_parent,
+                        "to_parent": desired_parent,
+                        "resumability_safe": False,
+                        "message": (
+                            f"node operation MOVE started for node {nid} from {current_parent} "
+                            f"to {desired_parent} - RESUMABILITY UNSAFE until move completes"
+                        ),
+                    }
+                )
                 try:
                     log(f"      >>> MOVING {nid} from {current_parent} to {desired_parent}")
                     await move_node(nid, desired_parent, position="bottom")
                     log(f"      >>> MOVE SUCCESS for {nid}")
+                    journal(
+                        {
+                            "op": "move",
+                            "status": "completed",
+                            "node_id": nid,
+                            "from_parent": current_parent,
+                            "to_parent": desired_parent,
+                            "resumability_safe": True,
+                            "message": (
+                                f"node operation MOVE completed for node {nid} to parent {desired_parent} - "
+                                "RESUMABILITY SAFE"
+                            ),
+                        }
+                    )
                 except Exception as e:
                     log(f"      >>> MOVE FAILED for {nid}: {type(e).__name__}: {str(e)}")
                     log(f"      >>> Node name: {n.get('name')}")
@@ -704,10 +789,34 @@ async def reconcile_tree(
                 if dry_run:
                     log(f"      [DRY-RUN] Would UPDATE {nid} -> {payload}")
                 else:
+                    journal(
+                        {
+                            "op": "update",
+                            "status": "started",
+                            "node_id": nid,
+                            "resumability_safe": False,
+                            "message": (
+                                f"node operation UPDATE started for node {nid} - "
+                                "RESUMABILITY UNSAFE until update completes"
+                            ),
+                        }
+                    )
                     try:
                         log(f"      >>> UPDATING node {nid}: name={payload.get('name')}")
                         await update_node(nid, payload)
                         log(f"      >>> UPDATE SUCCESS for {nid}")
+                        journal(
+                            {
+                                "op": "update",
+                                "status": "completed",
+                                "node_id": nid,
+                                "resumability_safe": True,
+                                "message": (
+                                    f"node operation UPDATE completed for node {nid} - "
+                                    "RESUMABILITY SAFE"
+                                ),
+                            }
+                        )
                     except Exception as e:
                         log(f"      >>> UPDATE FAILED for {nid}: {type(e).__name__}: {str(e)}")
                         log(f"      >>> Payload: {payload}")
@@ -806,8 +915,32 @@ async def reconcile_tree(
         try:
             node_name = Map_T2.get(d, {}).get('name', 'unknown')
             log(f"   >>> DELETING root: {d} (name: {node_name})")
+            journal(
+                {
+                    "op": "delete",
+                    "status": "started",
+                    "node_id": d,
+                    "resumability_safe": False,
+                    "message": (
+                        f"node operation DELETE started for node {d} (name: {node_name}) - "
+                        "RESUMABILITY UNSAFE until delete completes"
+                    ),
+                }
+            )
             await delete_node(d)
             log(f"   >>> DELETE SUCCESS for {d}")
+            journal(
+                {
+                    "op": "delete",
+                    "status": "completed",
+                    "node_id": d,
+                    "resumability_safe": True,
+                    "message": (
+                        f"node operation DELETE completed for node {d} (name: {node_name}) - "
+                        "RESUMABILITY SAFE"
+                    ),
+                }
+            )
         except Exception as e:
             log(f"   >>> DELETE FAILED for {d}: {type(e).__name__}: {str(e)}")
             raise
