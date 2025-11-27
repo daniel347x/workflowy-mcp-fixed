@@ -332,7 +332,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     raise
 
             except httpx.TimeoutException as err:
-                raise TimeoutError("create_node") from err
+                retry_count += 1
+                
+                logger.warning(
+                    f"Timeout error: {err}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise TimeoutError("create_node") from err
 
         raise NetworkError("create_node failed after maximum retries")
 
@@ -422,7 +431,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     raise
                     
             except httpx.TimeoutException as err:
-                raise TimeoutError("update_node") from err
+                retry_count += 1
+                
+                logger.warning(
+                    f"Timeout error: {err}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise TimeoutError("update_node") from err
         
         raise NetworkError("update_node failed after maximum retries")
 
@@ -479,7 +497,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     raise
                     
             except httpx.TimeoutException as err:
-                raise TimeoutError("get_node") from err
+                retry_count += 1
+                
+                logger.warning(
+                    f"Timeout error: {err}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise TimeoutError("get_node") from err
         
         raise NetworkError("get_node failed after maximum retries")
 
@@ -548,7 +575,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     raise
                     
             except httpx.TimeoutException as err:
-                raise TimeoutError("list_nodes") from err
+                retry_count += 1
+                
+                logger.warning(
+                    f"Timeout error: {err}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise TimeoutError("list_nodes") from err
         
         raise NetworkError("list_nodes failed after maximum retries")
 
@@ -617,7 +653,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     raise
                     
             except httpx.TimeoutException as err:
-                raise TimeoutError("delete_node") from err
+                retry_count += 1
+                
+                logger.warning(
+                    f"Timeout error: {err}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise TimeoutError("delete_node") from err
         
         raise NetworkError("delete_node failed after maximum retries")
 
@@ -669,7 +714,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     raise
 
             except httpx.TimeoutException as err:
-                raise TimeoutError("complete_node") from err
+                retry_count += 1
+                
+                logger.warning(
+                    f"Timeout error: {err}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise TimeoutError("complete_node") from err
 
         raise NetworkError("complete_node failed after maximum retries")
 
@@ -721,7 +775,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     raise
 
             except httpx.TimeoutException as err:
-                raise TimeoutError("uncomplete_node") from err
+                retry_count += 1
+                
+                logger.warning(
+                    f"Timeout error: {err}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise TimeoutError("uncomplete_node") from err
 
         raise NetworkError("uncomplete_node failed after maximum retries")
 
@@ -789,7 +852,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     raise
                     
             except httpx.TimeoutException as err:
-                raise TimeoutError("move_node") from err
+                retry_count += 1
+                
+                logger.warning(
+                    f"Timeout error: {err}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise TimeoutError("move_node") from err
         
         raise NetworkError("move_node failed after maximum retries")
 
@@ -901,7 +973,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     raise
                     
             except httpx.TimeoutException as err:
-                raise TimeoutError("export_nodes") from err
+                retry_count += 1
+                
+                logger.warning(
+                    f"Timeout error: {err}. Retry {retry_count}/{max_retries}"
+                )
+                
+                if retry_count < max_retries:
+                    await asyncio.sleep(base_delay * (2 ** retry_count))
+                else:
+                    raise TimeoutError("export_nodes") from err
         
         raise NetworkError("export_nodes failed after maximum retries")
 
