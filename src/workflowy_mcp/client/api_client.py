@@ -2367,6 +2367,42 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "Do not strip or rewrite the guardian block; re-scry if needed."
             )
         
+        # Minimal weave journal to detect incomplete/corrupted previous runs.
+        weave_journal_path: str | None = None
+        weave_journal: dict[str, Any] | None = None
+        journal_warning: str | None = None
+        if not dry_run:
+            weave_journal_path = json_file.replace('.json', '.weave_journal.json')
+            try:
+                if os.path.exists(weave_journal_path):
+                    with open(weave_journal_path, 'r', encoding='utf-8') as jf:
+                        prev = json.load(jf)
+                    if not prev.get('last_run_completed', True):
+                        journal_warning = (
+                            "Previous weave on this JSON did not complete cleanly at "
+                            f"{prev.get('last_run_started_at')}. JEWEL/ETHER sync may be inconsistent; "
+                            "crash-resume semantics are not guaranteed."
+                        )
+                        logger.warning(journal_warning)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Failed to read existing weave journal {weave_journal_path}: {e}")
+                journal_warning = None
+
+            from datetime import datetime
+            weave_journal = {
+                "json_file": json_file,
+                "last_run_started_at": datetime.now().isoformat(),
+                "last_run_completed": False,
+                "last_run_error": None,
+            }
+            try:
+                with open(weave_journal_path, 'w', encoding='utf-8') as jf:
+                    json.dump(weave_journal, jf, indent=2)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Failed to write weave journal {weave_journal_path}: {e}")
+                weave_journal_path = None
+                weave_journal = None
+        
         # Use export_root_id as default if parent_id not provided
         target_backup_file = None
         if parent_id is None:
@@ -2626,6 +2662,18 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             # Reconciliation complete - gather root IDs
             root_ids = [n.get('id') for n in nodes_to_create if n.get('id')]
+
+            # Mark weave journal as completed (best-effort).
+            if weave_journal is not None and weave_journal_path is not None:
+                try:
+                    from datetime import datetime
+                    weave_journal["last_run_completed"] = True
+                    weave_journal["last_run_error"] = None
+                    weave_journal["last_run_completed_at"] = datetime.now().isoformat()
+                    with open(weave_journal_path, 'w', encoding='utf-8') as jf:
+                        json.dump(weave_journal, jf, indent=2)
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"Failed to update weave journal {weave_journal_path}: {e}")
             
             result = {
                 "success": len(stats["errors"]) == 0,
@@ -2637,12 +2685,19 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "api_calls": stats["api_calls"],
                 "retries": stats["retries"],
                 "rate_limit_hits": stats["rate_limit_hits"],
-                "errors": stats["errors"]
+                "errors": stats["errors"],
             }
             
             # Add backup file info if auto-backup was created
             if target_backup_file:
                 result["target_backup"] = target_backup_file
+
+            # Surface weave journal location + previous incomplete flag to caller
+            if weave_journal_path is not None and not dry_run:
+                result["weave_journal"] = {
+                    "path": weave_journal_path,
+                    "previous_incomplete_run": bool(journal_warning),
+                }
             
             return result
             
@@ -2661,6 +2716,19 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     dbg.write(f"[{ts}] ERROR: {error_msg}\n")
             except Exception:
                 # Logging to reconcile_debug.log is best-effort only
+                pass
+
+            # Mark weave journal as failed (best-effort).
+            try:
+                from datetime import datetime
+                if weave_journal is not None and weave_journal_path is not None:
+                    weave_journal["last_run_completed"] = False
+                    weave_journal["last_run_error"] = error_msg
+                    weave_journal["last_run_failed_at"] = datetime.now().isoformat()
+                    with open(weave_journal_path, 'w', encoding='utf-8') as jf:
+                        json.dump(weave_journal, jf, indent=2)
+            except Exception:
+                # Journal updates must never break error reporting
                 pass
             
             return {

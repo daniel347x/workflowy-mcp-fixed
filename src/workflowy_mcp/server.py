@@ -13,6 +13,7 @@ print("DEBUG: Workflowy MCP Server loaded from " + __file__, file=sys.stderr)
 import asyncio
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Literal, Any, Awaitable, Callable
@@ -1430,6 +1431,7 @@ async def nexus_weave(
     parent_id: str | None = None,
     dry_run: bool = False,
     import_policy: str = 'strict',
+    max_sync_nodes: int = 100,
 ) -> dict:
     """Create a tree of nodes from a JSON structure.
 
@@ -1444,6 +1446,51 @@ async def nexus_weave(
 
     # Rate limiter is handled within the bulk_import_from_file method
     # due to the recursive nature of the operation.
+
+    # SAFETY CHECK: Large JSON trees must use nexus_weave_async by default.
+    if max_sync_nodes and max_sync_nodes > 0 and not dry_run:
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            if isinstance(data, dict) and 'nodes' in data:
+                root_nodes = data['nodes']
+            elif isinstance(data, list):
+                root_nodes = data
+            else:
+                root_nodes = []
+
+            def _count_nodes(nodes: list[dict]) -> int:
+                total = 0
+                stack = list(nodes)
+                while stack:
+                    n = stack.pop()
+                    total += 1
+                    stack.extend(n.get('children') or [])
+                return total
+
+            node_count = _count_nodes(root_nodes)
+            if node_count > max_sync_nodes:
+                return {
+                    "success": False,
+                    "nodes_created": 0,
+                    "root_node_ids": [],
+                    "api_calls": 0,
+                    "retries": 0,
+                    "rate_limit_hits": 0,
+                    "errors": [
+                        (
+                            "nexus_weave (sync) aborted: JSON contains "
+                            f"{node_count} nodes, exceeding max_sync_nodes={max_sync_nodes}. "
+                            "Use nexus_weave_async for large trees, or explicitly increase "
+                            "max_sync_nodes if you understand the risks."
+                        )
+                    ],
+                    "node_count": node_count,
+                    "max_sync_nodes": max_sync_nodes,
+                }
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"nexus_weave: failed to inspect JSON for node count: {e}")
 
     try:
         result = await client.bulk_import_from_file(json_file, parent_id, dry_run, import_policy)
