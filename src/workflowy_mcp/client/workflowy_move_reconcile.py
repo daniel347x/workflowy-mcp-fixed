@@ -49,6 +49,9 @@ Reordering with only top/bottom:
 from collections import deque, defaultdict
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Iterable, Union, Any
+import os
+import sys
+import importlib
 
 Node = Dict
 
@@ -176,6 +179,62 @@ async def reconcile_tree(
 
         debug_log.close()
         return plan if dry_run else None
+
+    async def update_jewel_with_uuid(
+        jewel_path: Optional[str],
+        source_path: List[int],
+        new_id: str,
+    ) -> bool:
+        """Best-effort per-node JEWEL update.
+
+        Writes the newly created UUID back into the JEWEL JSON at the given
+        source_path using nexus_json_tools.transform_jewel(...).
+
+        Returns True on success, False on any failure. Failures are logged but
+        do not abort the weave; the JEWEL/ETHER sync guidance at the end will
+        mark such entries as unsafe for crash-resume.
+        """
+        if not jewel_path:
+            log("      >>> JEWEL UPDATE SKIPPED: no jewel_file in source_json metadata")
+            return False
+        try:
+            log(
+                f"      >>> JEWEL UPDATE for UUID {new_id} at path {source_path} "
+                f"in {jewel_path}"
+            )
+            # Import nexus_json_tools from the project root (same strategy as
+            # bulk_import_from_file and nexus_transform_jewel).
+            client_dir = os.path.dirname(os.path.abspath(__file__))
+            wf_mcp_dir = os.path.dirname(client_dir)
+            mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+            project_root = os.path.dirname(mcp_servers_dir)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+            nexus_tools = importlib.import_module("nexus_json_tools")
+
+            ops = [{
+                "op": "SET_ATTRS_BY_PATH",
+                "path": source_path,
+                "attrs": {"id": new_id},
+            }]
+            result = nexus_tools.transform_jewel(  # type: ignore[attr-defined]
+                jewel_file=jewel_path,
+                operations=ops,
+                dry_run=False,
+                stop_on_error=True,
+            )
+            success = bool(result.get("success", True))
+            if success:
+                log("      >>> JEWEL UPDATE SUCCESS")
+            else:
+                log(f"      >>> JEWEL UPDATE FAILED: {result}")
+            return success
+        except Exception as e:
+            log(
+                f"      >>> JEWEL UPDATE ERROR for path {source_path}: "
+                f"{type(e).__name__}: {e}"
+            )
+            return False
 
     # Normalize input: accept either list of nodes or dict with metadata + nodes
     source_nodes: List[Node]
@@ -492,12 +551,11 @@ async def reconcile_tree(
                         # explicitly here for clarity of the sync contract.)
                         ledger_entry["fetched"] = True
 
-                        # Step 3: JEWEL UPDATE – write the UUID back into the
-                        # source JSON so reruns become incremental. We delegate
-                        # the actual transform_jewel call to the caller
-                        # (bulk_import_from_file) via this ledger_entry rather
-                        # than mutating the file directly here.
-                        ledger_entry["jewel_updated"] = False  # will be set True after transform_jewel
+                        # Step 3: JEWEL UPDATE – best-effort per-node write of the
+                        # UUID back into the JEWEL JSON so reruns become
+                        # incremental at node granularity.
+                        updated = await update_jewel_with_uuid(jewel_file, current_path, new_id)
+                        ledger_entry["jewel_updated"] = bool(updated)
 
                         n['id'] = new_id
                     except Exception as e:

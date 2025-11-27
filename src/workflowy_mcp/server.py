@@ -1066,7 +1066,8 @@ async def nexus_weave_enchanted(
     name="nexus_start_exploration",
     description=(
         "Initialize an exploration session over a Workflowy subtree and return "
-        "an initial frontier of handles for agent-driven navigation."
+        "an initial frontier of handles for agent-driven navigation. Set editable=True "
+        "to enable in-session note/tag edits that will be reflected in the phantom gem."
     ),
 )
 async def nexus_start_exploration(
@@ -1077,6 +1078,7 @@ async def nexus_start_exploration(
     session_hint: str | None = None,
     frontier_size: int = 25,
     max_depth_per_frontier: int = 1,
+    editable: bool = False,
 ) -> dict:
     """Start an exploration session over a Workflowy subtree."""
     client = get_client()
@@ -1093,6 +1095,7 @@ async def nexus_start_exploration(
             session_hint=session_hint,
             frontier_size=frontier_size,
             max_depth_per_frontier=max_depth_per_frontier,
+            editable=editable,
         )
         if _rate_limiter:
             _rate_limiter.on_success()
@@ -1110,7 +1113,11 @@ async def nexus_start_exploration(
         "of handles. Supported actions include: open/close/finalize/reopen; "
         "accept_leaf/reject_leaf; accept_subtree/reject_subtree (optional guardian_token "
         "for strict dfs_full_walk overrides); backtrack/reopen_branch; add_hint "
-        "(per-handle); and set_scratchpad/append_scratchpad (session-global registry)."
+        "(per-handle); set_scratchpad/append_scratchpad (session-global registry); "
+        "peek_descendants; replace_leaf_node_with_appended_scratch_note; and, when "
+        "the session was started with editable=True, update_note_and_flag_for_acceptance/" 
+        "update_tag_and_flag_for_acceptance to mutate the cached tree while marking nodes "
+        "for inclusion in the phantom gem."
     ),
 )
 async def nexus_explore_step(
@@ -1129,6 +1136,10 @@ async def nexus_explore_step(
       - "backtrack", "reopen_branch"
       - "add_hint" (attach free-text hints to a handle)
       - "set_scratchpad", "append_scratchpad" (maintain session-global REGISTRY text)
+      - "peek_descendants"
+      - "replace_leaf_node_with_appended_scratch_note"
+      - "update_note_and_flag_for_acceptance" (editable sessions only)
+      - "update_tag_and_flag_for_acceptance" (editable sessions only)
     """
     client = get_client()
 
