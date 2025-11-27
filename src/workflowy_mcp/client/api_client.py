@@ -2367,10 +2367,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "Do not strip or rewrite the guardian block; re-scry if needed."
             )
         
-        # Minimal weave journal to detect incomplete/corrupted previous runs.
+        # Minimal weave journal to detect incomplete/corrupted previous runs,
+        # plus per-node operation entries written via reconcile_tree callbacks.
         weave_journal_path: str | None = None
         weave_journal: dict[str, Any] | None = None
         journal_warning: str | None = None
+        log_weave_entry_fn = None
         if not dry_run:
             weave_journal_path = json_file.replace('.json', '.weave_journal.json')
             try:
@@ -2394,6 +2396,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "last_run_started_at": datetime.now().isoformat(),
                 "last_run_completed": False,
                 "last_run_error": None,
+                "entries": [],
             }
             try:
                 with open(weave_journal_path, 'w', encoding='utf-8') as jf:
@@ -2402,6 +2405,28 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 logger.error(f"Failed to write weave journal {weave_journal_path}: {e}")
                 weave_journal_path = None
                 weave_journal = None
+
+            # Per-node journal entry callback used by reconcile_tree to record
+            # operation-level resumability. Each entry is appended to the
+            # 'entries' array and the entire journal is re-written
+            # best-effort after each node-level operation.
+            def log_weave_entry_fn(entry: dict[str, Any]) -> None:  # type: ignore[assignment]
+                nonlocal weave_journal, weave_journal_path
+                if weave_journal is None or weave_journal_path is None:
+                    return
+                try:
+                    from datetime import datetime as _dt
+                    e = dict(entry)
+                    e.setdefault("timestamp", _dt.now().isoformat())
+                    entries = weave_journal.setdefault("entries", [])
+                    entries.append(e)
+                    with open(weave_journal_path, 'w', encoding='utf-8') as jf2:
+                        json.dump(weave_journal, jf2, indent=2)
+                except Exception as e2:  # noqa: BLE001
+                    logger.error(
+                        f"Failed to append per-node entry to weave journal {weave_journal_path}: "
+                        f"{type(e2).__name__}: {e2}"
+                    )
         
         # Use export_root_id as default if parent_id not provided
         target_backup_file = None
@@ -2589,7 +2614,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 move_node=move_node_wrapper,
                 export_nodes=export_nodes_wrapper,
                 import_policy=import_policy,
-                dry_run=dry_run
+                dry_run=dry_run,
+                log_weave_entry=log_weave_entry_fn,
             )
             
             # If dry_run, return the plan
