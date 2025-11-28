@@ -28,6 +28,14 @@ from ..models import (
     WorkFlowyNode,
 )
 
+from datetime import datetime
+
+def log_event(message: str, component: str = "CLIENT") -> None:
+    """Log an event to stderr with timestamp and consistent formatting."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 🗡️ prefix makes it easy to grep/spot in the console
+    print(f"[{timestamp}] 🗡️ [{component}] {message}", file=sys.stderr, flush=True)
+
 
 class WorkFlowyClient:
     """Async client for WorkFlowy API operations."""
@@ -47,15 +55,8 @@ class WorkFlowyClient:
         self._nodes_export_dirty_ids: set[str] = set()
         
     def _log_debug(self, message: str) -> None:
-        """Log debug messages to file to bypass connector stderr swallowing."""
-        try:
-            from datetime import datetime
-            log_path = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log"
-            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"[{timestamp}] {message}\n")
-        except Exception:
-            pass
+        """Log debug messages to stderr (unified logging)."""
+        log_event(message, "CLIENT_DEBUG")
     
     @staticmethod
     def _validate_note_field(note: str | None, skip_newline_check: bool = False) -> tuple[str | None, str | None]:
