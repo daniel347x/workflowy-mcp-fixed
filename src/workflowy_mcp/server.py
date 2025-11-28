@@ -428,6 +428,10 @@ async def _start_background_job(
     description="Get status/result for long-running MCP jobs (ETCH, NEXUS, etc.).",
 )
 async def mcp_job_status(job_id: str | None = None) -> dict:
+    # DEBUG: Force visibility check
+    import sys
+    print("TEST: STDERR PRINT from mcp_job_status", file=sys.stderr, flush=True)
+    
     # Return status for one job (if job_id given) or all jobs.
     if job_id is None:
         jobs = []
