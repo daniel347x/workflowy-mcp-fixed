@@ -56,6 +56,7 @@ class WorkFlowyClient:
         
     def _log_debug(self, message: str) -> None:
         """Log debug messages to stderr (unified logging)."""
+        # Console Visibility ONLY - keep reconcile_debug.log clean for weaves
         log_event(message, "CLIENT_DEBUG")
     
     @staticmethod
@@ -218,7 +219,7 @@ class WorkFlowyClient:
         """
         try:
             from datetime import datetime
-            log_path = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\reconcile_debug.log"
+            log_path = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log"
             ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
             with open(log_path, "a", encoding="utf-8") as dbg:
                 dbg.write(f"[{ts}] {message}\n")
