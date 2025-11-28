@@ -37,6 +37,14 @@ class WorkFlowyClient:
         self.config = config
         self.base_url = config.base_url
         self._client: httpx.AsyncClient | None = None
+
+        # /nodes-export cache and dirty tracking.
+        # _nodes_export_cache stores the last /nodes-export payload (flat nodes list).
+        # _nodes_export_dirty_ids holds UUIDs whose subtrees/ancestors have been
+        # mutated since the last refresh. A "*" entry means "treat everything as dirty".
+        self._nodes_export_cache: dict[str, Any] | None = None
+        self._nodes_export_cache_timestamp = None
+        self._nodes_export_dirty_ids: set[str] = set()
         
     def _log_debug(self, message: str) -> None:
         """Log debug messages to file to bypass connector stderr swallowing."""
@@ -217,6 +225,52 @@ class WorkFlowyClient:
             # Never let logging failures affect API behavior
             pass
 
+    def _mark_nodes_export_dirty(self, node_ids: list[str] | None = None) -> None:
+        """Mark parts of the cached /nodes-export snapshot as dirty.
+
+        When the cache is populated, this is used by mutating operations to
+        record which UUIDs (or entire regions via "*") have changed since the
+        last refresh. Subsequent export_nodes(...) calls can decide whether
+        they can safely reuse the cached snapshot for a given subtree or must
+        re-fetch from the API.
+        """
+        # If there is no cache, there's nothing to mark.
+        if self._nodes_export_cache is None:
+            return
+
+        # node_ids=None is the conservative "everything is dirty" sentinel.
+        if node_ids is None:
+            self._nodes_export_dirty_ids.add("*")
+            return
+
+        for nid in node_ids:
+            if nid:
+                self._nodes_export_dirty_ids.add(nid)
+
+    async def refresh_nodes_export_cache(self, max_retries: int = 10) -> dict[str, Any]:
+        """Force a fresh /nodes-export call and update the in-memory cache.
+
+        This is exposed via an MCP tool so Dan (or an agent) can explicitly
+        refresh the snapshot used by UUID Navigator and NEXUS without waiting
+        for an auto-refresh trigger.
+        """
+        from datetime import datetime
+
+        # Clear any previous cache and dirty markers first.
+        self._nodes_export_cache = None
+        self._nodes_export_cache_timestamp = None
+        self._nodes_export_dirty_ids.clear()
+
+        # Delegate to export_nodes with caching disabled for this call.
+        data = await self.export_nodes(node_id=None, max_retries=max_retries, use_cache=False, force_refresh=True)
+        nodes = data.get("nodes", []) or []
+
+        return {
+            "success": True,
+            "node_count": len(nodes),
+            "timestamp": datetime.now().isoformat(),
+        }
+
     async def create_node(self, request: NodeCreateRequest, _internal_call: bool = False, max_retries: int = 10) -> WorkFlowyNode:
         """Create a new node in WorkFlowy with exponential backoff retry.
         
@@ -307,7 +361,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # Fetch the created node to get actual saved state (including note field)
                 get_response = await self.client.get(f"/nodes/{item_id}")
                 node_data = await self._handle_response(get_response)
-                return WorkFlowyNode(**node_data["node"])
+                node = WorkFlowyNode(**node_data["node"])
+
+                # Best-effort: mark this node as dirty in the /nodes-export cache so that
+                # any subtree exports including it can trigger a refresh when needed.
+                try:
+                    self._mark_nodes_export_dirty([node.id])
+                except Exception:
+                    # Cache dirty marking must never affect API behavior
+                    pass
+
+                return node
 
             except RateLimitError as e:
                 retry_count += 1
@@ -401,10 +465,21 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 if isinstance(data, dict) and data.get('status') == 'ok':
                     get_response = await self.client.get(f"/nodes/{node_id}")
                     node_data = await self._handle_response(get_response)
-                    return WorkFlowyNode(**node_data["node"])
+                    node = WorkFlowyNode(**node_data["node"])
                 else:
                     # Fallback for unexpected format
-                    return WorkFlowyNode(**data)
+                    node = WorkFlowyNode(**data)
+
+                # Best-effort: mark this node as dirty so that subsequent
+                # /nodes-export-based operations touching this subtree can
+                # trigger a refresh when needed.
+                try:
+                    self._mark_nodes_export_dirty([node_id])
+                except Exception:
+                    # Cache dirty marking must never affect API behavior
+                    pass
+
+                return node
                     
             except RateLimitError as e:
                 retry_count += 1
@@ -618,6 +693,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     )
                     logger.info(success_msg)
                     self._log_reconcile_retry(success_msg)
+
+                # Best-effort: mark this node as dirty so any subsequent
+                # /nodes-export-based operations that rely on it will trigger
+                # a refresh when needed.
+                try:
+                    self._mark_nodes_export_dirty([node_id])
+                except Exception:
+                    # Cache dirty marking must never affect API behavior
+                    pass
+
                 return True
                 
             except RateLimitError as e:
@@ -825,7 +910,21 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 response = await self.client.post(f"/nodes/{node_id}/move", json=payload)
                 data = await self._handle_response(response)
                 # API returns {"status": "ok"}
-                return data.get("status") == "ok"
+                success = data.get("status") == "ok"
+
+                if success:
+                    # Best-effort: mark this node (and its new parent, if any)
+                    # as dirty so path-based exports will refresh as needed.
+                    try:
+                        ids: list[str] = [node_id]
+                        if parent_id is not None:
+                            ids.append(parent_id)
+                        self._mark_nodes_export_dirty(ids)
+                    except Exception:
+                        # Cache dirty marking must never affect API behavior
+                        pass
+
+                return success
                 
             except RateLimitError as e:
                 retry_count += 1
@@ -869,122 +968,176 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         self,
         node_id: str | None = None,
         max_retries: int = 10,
+        use_cache: bool = True,
+        force_refresh: bool = False,
     ) -> dict[str, Any]:
-        """Export all nodes or filter to specific node's subtree with exponential backoff retry.
-        
-        Args:
-            node_id: Optional node ID to export only that node and its descendants.
-                     If None, exports all nodes in the account.
-            max_retries: Maximum retry attempts (default 5)
-            
-        Returns:
-            Dictionary with 'nodes' list containing all exported nodes.
-            If node_id is provided, filters to only that node and descendants.
+        """Export all nodes or filter to specific node's subtree.
+
+        This wraps the /nodes-export endpoint with an in-memory cache and
+        dirty-id tracking so repeated subtree exports can often reuse a cached
+        snapshot. A refresh is triggered when:
+        - There is no cache yet
+        - force_refresh=True
+        - A subtree request's path-to-root intersects a dirty UUID recorded by
+          mutating operations (or the "*" sentinel is present).
         """
         import asyncio
         import logging
-        
+        from datetime import datetime
+
         logger = logging.getLogger(__name__)
-        retry_count = 0
-        base_delay = 1.0
-        
-        while retry_count < max_retries:
-            # Force 1s delay at START of each iteration (rate limit protection)
-            await asyncio.sleep(1.0)
-            
-            try:
-                # API exports all nodes as flat list (no parameters supported)
-                response = await self.client.get("/nodes-export")
-                data = await self._handle_response(response)
-                
-                all_nodes = data.get("nodes", [])
-                total_before_filter = len(all_nodes)
-                
-                # If no filtering requested, return everything
-                if node_id is None:
+
+        async def fetch_and_cache() -> dict[str, Any]:
+            """Call /nodes-export with retries and update the cache."""
+            retry_count = 0
+            base_delay = 1.0
+
+            while retry_count < max_retries:
+                # Force 1s delay at START of each iteration (rate limit protection)
+                await asyncio.sleep(1.0)
+
+                try:
+                    # API exports all nodes as flat list (no parameters supported)
+                    response = await self.client.get("/nodes-export")
+                    data = await self._handle_response(response)
+
+                    all_nodes = data.get("nodes", []) or []
+                    total_before_filter = len(all_nodes)
+
+                    # Annotate actual count from API (before any subtree filtering)
                     data["_total_fetched_from_api"] = total_before_filter
+
+                    # Update cache and clear dirty markers
+                    self._nodes_export_cache = data
+                    self._nodes_export_cache_timestamp = datetime.now()
+                    self._nodes_export_dirty_ids.clear()
+
                     if retry_count > 0:
                         success_msg = (
-                            f"export_nodes (full account or subtree) succeeded after {retry_count + 1}/{max_retries} attempts "
-                            f"following rate limiting or transient errors."
+                            "export_nodes (full account) succeeded after "
+                            f"{retry_count + 1}/{max_retries} attempts following "
+                            "rate limiting or transient errors."
                         )
                         logger.info(success_msg)
                         self._log_reconcile_retry(success_msg)
+
                     return data
-                
-                # Filter to specific node and its descendants
-                
-                # Build set of node IDs to include (target node + all descendants)
-                included_ids = {node_id}
-                nodes_by_id = {node["id"]: node for node in all_nodes}
-                
-                # Find all descendants recursively
-                def add_descendants(parent_id: str) -> None:
-                    for node in all_nodes:
-                        if node.get("parent_id") == parent_id and node["id"] not in included_ids:
-                            included_ids.add(node["id"])
-                            add_descendants(node["id"])
-                
-                # Start with target node's children
-                if node_id in nodes_by_id:
-                    add_descendants(node_id)
-                
-                # Filter nodes list
-                filtered_nodes = [node for node in all_nodes if node["id"] in included_ids]
-                
-                if retry_count > 0:
-                    success_msg = (
-                        f"export_nodes (filtered subtree {node_id}) succeeded after {retry_count + 1}/{max_retries} attempts "
-                        f"following rate limiting or transient errors."
+
+                except RateLimitError as e:
+                    retry_count += 1
+                    retry_after = getattr(e, "retry_after", None) or (base_delay * (2 ** retry_count))
+                    retry_msg = (
+                        f"Rate limited on export_nodes. Retry after {retry_after}s. "
+                        f"Attempt {retry_count}/{max_retries}"
                     )
-                    logger.info(success_msg)
-                    self._log_reconcile_retry(success_msg)
-                
-                return {
-                    "nodes": filtered_nodes,
-                    "_total_fetched_from_api": total_before_filter,
-                    "_filtered_count": len(filtered_nodes)
-                }
-                
-            except RateLimitError as e:
-                retry_count += 1
-                retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
-                retry_msg = (
-                    f"Rate limited on export_nodes. Retry after {retry_after}s. "
-                    f"Attempt {retry_count}/{max_retries}"
-                )
-                logger.warning(retry_msg)
-                self._log_reconcile_retry(retry_msg)
-                
-                if retry_count < max_retries:
-                    await asyncio.sleep(retry_after)
+                    logger.warning(retry_msg)
+                    self._log_reconcile_retry(retry_msg)
+
+                    if retry_count < max_retries:
+                        await asyncio.sleep(retry_after)
+                    else:
+                        raise
+
+                except NetworkError as e:
+                    retry_count += 1
+                    logger.warning(
+                        f"Network error on export_nodes: {e}. Retry {retry_count}/{max_retries}"
+                    )
+
+                    if retry_count < max_retries:
+                        await asyncio.sleep(base_delay * (2 ** retry_count))
+                    else:
+                        raise
+
+                except httpx.TimeoutException as err:
+                    retry_count += 1
+
+                    logger.warning(
+                        f"Timeout error: {err}. Retry {retry_count}/{max_retries}"
+                    )
+
+                    if retry_count < max_retries:
+                        await asyncio.sleep(base_delay * (2 ** retry_count))
+                    else:
+                        raise TimeoutError("export_nodes") from err
+
+            raise NetworkError("export_nodes failed after maximum retries")
+
+        # Decide whether to use the cached snapshot or fetch from the API.
+        if (not use_cache) or force_refresh or self._nodes_export_cache is None:
+            data = await fetch_and_cache()
+        else:
+            data = self._nodes_export_cache
+
+            # For subtree requests, only refresh if the path-to-root intersects a
+            # dirty UUID (or global "*" sentinel). This keeps unrelated regions
+            # fast even after mutations elsewhere.
+            if node_id is not None and self._nodes_export_dirty_ids:
+                all_nodes = data.get("nodes", []) or []
+                nodes_by_id = {n.get("id"): n for n in all_nodes if n.get("id")}
+
+                if node_id not in nodes_by_id:
+                    logger.info(
+                        f"export_nodes: node_id {node_id} not found in cached snapshot; refreshing cache"
+                    )
+                    data = await fetch_and_cache()
                 else:
-                    raise
-                    
-            except NetworkError as e:
-                retry_count += 1
-                logger.warning(
-                    f"Network error on export_nodes: {e}. Retry {retry_count}/{max_retries}"
-                )
-                
-                if retry_count < max_retries:
-                    await asyncio.sleep(base_delay * (2 ** retry_count))
-                else:
-                    raise
-                    
-            except httpx.TimeoutException as err:
-                retry_count += 1
-                
-                logger.warning(
-                    f"Timeout error: {err}. Retry {retry_count}/{max_retries}"
-                )
-                
-                if retry_count < max_retries:
-                    await asyncio.sleep(base_delay * (2 ** retry_count))
-                else:
-                    raise TimeoutError("export_nodes") from err
-        
-        raise NetworkError("export_nodes failed after maximum retries")
+                    dirty = self._nodes_export_dirty_ids
+                    path_hits_dirty = False
+                    cur = node_id
+                    visited: set[str] = set()
+
+                    while cur and cur not in visited:
+                        visited.add(cur)
+                        if cur in dirty or "*" in dirty:
+                            path_hits_dirty = True
+                            break
+                        parent_id = (
+                            nodes_by_id[cur].get("parent_id")
+                            or nodes_by_id[cur].get("parentId")
+                        )
+                        cur = parent_id
+
+                    if path_hits_dirty:
+                        logger.info(
+                            f"export_nodes: path from {node_id} intersects dirty ids; refreshing cache"
+                        )
+                        data = await fetch_and_cache()
+                    else:
+                        logger.info(
+                            f"export_nodes: using cached /nodes-export for subtree rooted at {node_id}"
+                        )
+
+        # At this point, 'data' is either fresh from API or from a safe cache.
+        all_nodes = data.get("nodes", []) or []
+        total_before_filter = len(all_nodes)
+
+        # If no filtering requested, return everything (with _total_fetched_from_api annotated).
+        if node_id is None:
+            if "_total_fetched_from_api" not in data:
+                data["_total_fetched_from_api"] = total_before_filter
+            return data
+
+        # Filter to specific node and its descendants.
+        included_ids = {node_id}
+        nodes_by_id = {node["id"]: node for node in all_nodes if node.get("id")}
+
+        def add_descendants(parent_id: str) -> None:
+            for node in all_nodes:
+                if node.get("parent_id") == parent_id and node["id"] not in included_ids:
+                    included_ids.add(node["id"])
+                    add_descendants(node["id"])
+
+        if node_id in nodes_by_id:
+            add_descendants(node_id)
+
+        filtered_nodes = [node for node in all_nodes if node["id"] in included_ids]
+
+        return {
+            "nodes": filtered_nodes,
+            "_total_fetched_from_api": data.get("_total_fetched_from_api", total_before_filter),
+            "_filtered_count": len(filtered_nodes),
+        }
 
     async def bulk_export_to_file(
         self,
@@ -2265,6 +2418,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # Add stringify strategy if auto-fix was used
             if stringify_strategy_used:
                 result["_stringify_autofix"] = stringify_strategy_used
+
+            # Best-effort: mark the parent as dirty so subsequent
+            # /nodes-export-based operations under this parent will trigger
+            # a refresh when needed.
+            if result.get("success", False):
+                try:
+                    self._mark_nodes_export_dirty([parent_id])
+                except Exception:
+                    # Cache dirty marking must never affect API behavior
+                    pass
             
             return result
             
@@ -2724,6 +2887,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "path": weave_journal_path,
                     "previous_incomplete_run": bool(journal_warning),
                 }
+
+            # Best-effort: mark the reconciliation root as dirty so subsequent
+            # /nodes-export-based operations under this parent will trigger a
+            # refresh when needed.
+            if not dry_run and parent_id:
+                try:
+                    self._mark_nodes_export_dirty([parent_id])
+                except Exception:
+                    # Cache dirty marking must never affect API behavior
+                    pass
             
             return result
             

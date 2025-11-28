@@ -250,6 +250,26 @@ async def websocket_handler(websocket):
                     target_uuid = data.get('target_uuid') or data.get('uuid')
                     await _resolve_uuid_path_and_respond(target_uuid, websocket)
                     continue
+
+                # Optional: mutation notifications from Workflowy desktop
+                # (e.g., extension sends notify_node_mutated when a node changes).
+                if action == 'notify_node_mutated':
+                    node_ids = data.get('node_ids') or data.get('node_id') or []
+                    if isinstance(node_ids, str):
+                        node_ids = [node_ids]
+                    try:
+                        client = get_client()
+                        client._mark_nodes_export_dirty(node_ids)
+                        logger.info(
+                            "Marked mutated node_ids as dirty in /nodes-export cache: %s",
+                            node_ids,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Failed to mark /nodes-export cache dirty from WebSocket notification: %s",
+                            e,
+                        )
+                    continue
                 
                 # Put all other messages in queue for workflowy_glimpse() to consume
                 await _ws_message_queue.put(data)
@@ -987,6 +1007,34 @@ async def export_node(
         if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
             _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
         raise
+
+
+@mcp.tool(
+    name="workflowy_refresh_nodes_export_cache",
+    description=(
+        "Force a fresh /nodes-export snapshot and update the local cache used "
+        "by NEXUS and the UUID Navigator."
+    ),
+)
+async def workflowy_refresh_nodes_export_cache() -> dict:
+    """Explicitly refresh the cached /nodes-export snapshot.
+
+    This is primarily useful after large out-of-band edits in Workflowy
+    desktop, or when you want to be certain the cache reflects the latest
+    ETHER state before running NEXUS or UUID Navigator operations.
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.refresh_nodes_export_cache()
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "error": str(e)}
 
 
 # PHANTOM GEMSTONE NEXUS – High-level MCP tools
