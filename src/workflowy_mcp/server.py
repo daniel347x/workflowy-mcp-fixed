@@ -1829,22 +1829,39 @@ async def get_outline() -> str:
 
 
 if __name__ == "__main__":
-    # Setup logging
-    setup_logging()
-    
-    # FORCE VISIBLE LOGGING TO STDERR (Override)
-    # This ensures logs show up in the MCP connector console
+    # ☢️ NUCLEAR LOGGING OPTION ☢️
+    # Redirect EVERYTHING to sys.stderr so it appears in MCP console
     import sys
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    import logging
     
-    # Check if a handler exists; if not, add StreamHandler(sys.stderr)
-    has_console = any(isinstance(h, logging.StreamHandler) and h.stream == sys.stderr for h in root.handlers)
-    if not has_console:
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        root.addHandler(handler)
+    # 1. Setup Root Logger to DEBUG
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    
+    # 2. Clear existing handlers to prevent duplicate/swallowed logs
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+        
+    # 3. Create NUCLEAR StreamHandler to stderr
+    handler = logging.StreamHandler(sys.stderr)
+    # Simple format: [TIME] [LEVEL] Message
+    handler.setFormatter(logging.Formatter('[%(asctime)s] [%(levelname)s] %(name)s: %(message)s', datefmt='%H:%M:%S'))
+    root.addHandler(handler)
+    
+    # 4. Monkey-patch sys.stdout to redirect to stderr (so print() works)
+    # This captures generic print() statements from any library
+    class StderrRedirector:
+        def write(self, message):
+            if message.strip(): # Avoid empty newline spam
+                sys.stderr.write(f"[STDOUT] {message}\n")
+        def flush(self):
+            sys.stderr.flush()
+            
+    sys.stdout = StderrRedirector()
+
+    # 5. Log startup confirmation
+    logging.critical("☢️ NUCLEAR LOGGING ACTIVE: DEBUG LEVEL ☢️")
+    print("Standard Output Redirection Test")
 
     # Run the server
-
     mcp.run(transport="stdio")
