@@ -45,6 +45,9 @@ _jobs: dict[str, dict[str, Any]] = {}
 _job_counter: int = 0
 _job_lock: asyncio.Lock = asyncio.Lock()
 
+# AI Dagger root (top-level for MCP workflows)
+DAGGER_ROOT_ID = "9ebad31a-2994-4d6f-be50-3499f8c53144"
+
 
 def get_client() -> WorkFlowyClient:
     """Get the global WorkFlowy client instance."""
@@ -58,6 +61,158 @@ def get_ws_connection():
     """Get the current WebSocket connection and message queue (if any)."""
     global _ws_connection, _ws_message_queue
     return _ws_connection, _ws_message_queue
+
+
+async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket) -> None:
+    """Resolve full ancestor path for target_uuid and send result back to extension.
+
+    Primary strategy:
+      - Use /nodes-export via export_nodes(DAGGER_ROOT_ID) to get the full AI Dagger
+        subtree as a flat list.
+      - Reconstruct the path from DAGGER_ROOT_ID down to target_uuid using
+        parent_id/parentId fields.
+
+    Fallback strategy:
+      - If target_uuid is not under the Dagger root (or export fails), fall back
+        to walking parentId via get_node() up to the account root.
+
+    Both strategies format markdown identically to F3 behavior (names at each
+    level, leaf UUID only) so the UUID Navigator widget always shows a complete
+    path, even when the node is not currently visible in the DOM.
+    """
+    client = get_client()
+    target = (target_uuid or "").strip()
+
+    if not target:
+        await websocket.send(json.dumps({
+            "action": "uuid_path_result",
+            "success": False,
+            "target_uuid": target_uuid,
+            "error": "No target_uuid provided",
+        }))
+        return
+
+    # First try: reconstruct path from Dagger subtree via /nodes-export
+    path_from_dagger: list[dict[str, Any]] | None = None
+    try:
+        export_data = await client.export_nodes(DAGGER_ROOT_ID)
+        flat_nodes = export_data.get("nodes", []) or []
+        nodes_by_id: dict[str, dict[str, Any]] = {}
+        for node in flat_nodes:
+            node_id = node.get("id")
+            if node_id:
+                nodes_by_id[node_id] = node
+
+        if target in nodes_by_id:
+            tmp_path: list[dict[str, Any]] = []
+            visited_ids: set[str] = set()
+            current_id = target
+
+            while current_id and current_id in nodes_by_id and current_id not in visited_ids:
+                visited_ids.add(current_id)
+                node = nodes_by_id[current_id]
+                tmp_path.append(node)
+                parent_id = node.get("parent_id") or node.get("parentId")
+                if not parent_id:
+                    break
+                current_id = parent_id
+
+            tmp_path.reverse()
+            path_from_dagger = tmp_path if tmp_path else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"UUID path DAGGER export failed for {target_uuid}: {e}")
+        path_from_dagger = None
+
+    def _name_from_flat(node_dict: dict[str, Any]) -> str:
+        return (node_dict.get("name")
+                or node_dict.get("nm")
+                or "Untitled")
+
+    # If we found the node under Dagger, use that path
+    if path_from_dagger:
+        lines: list[str] = []
+        for depth, node_dict in enumerate(path_from_dagger):
+            prefix = "#" * (depth + 1)
+            lines.append(f"{prefix} {_name_from_flat(node_dict)}")
+
+        lines.append("")
+        lines.append(f"→ `{target}`")
+
+        markdown = "\n".join(lines)
+
+        await websocket.send(json.dumps({
+            "action": "uuid_path_result",
+            "success": True,
+            "target_uuid": target_uuid,
+            "markdown": markdown,
+            "path": [
+                {
+                    "id": node_dict.get("id"),
+                    "name": _name_from_flat(node_dict),
+                    "parent_id": node_dict.get("parent_id") or node_dict.get("parentId"),
+                }
+                for node_dict in path_from_dagger
+            ],
+        }))
+        return
+
+    # Fallback: Walk parentId chain via get_node (account-root path)
+    try:
+        path_nodes = []
+        visited: set[str] = set()
+        current_id = target
+
+        while current_id and current_id not in visited:
+            visited.add(current_id)
+            node = await client.get_node(current_id)
+            path_nodes.append(node)
+            current_id = getattr(node, "parentId", None)
+
+        path_nodes.reverse()
+
+        if not path_nodes:
+            await websocket.send(json.dumps({
+                "action": "uuid_path_result",
+                "success": False,
+                "target_uuid": target_uuid,
+                "error": f"Node {target_uuid} not found in API",
+            }))
+            return
+
+        lines: list[str] = []
+        for depth, node in enumerate(path_nodes):
+            name = getattr(node, "nm", None) or "Untitled"
+            prefix = "#" * (depth + 1)
+            lines.append(f"{prefix} {name}")
+
+        lines.append("")
+        lines.append(f"→ `{target}`")
+
+        markdown = "\n".join(lines)
+
+        await websocket.send(json.dumps({
+            "action": "uuid_path_result",
+            "success": True,
+            "target_uuid": target_uuid,
+            "markdown": markdown,
+            "path": [
+                {
+                    "id": node.id,
+                    "name": getattr(node, "nm", None) or "Untitled",
+                    "parent_id": getattr(node, "parentId", None),
+                }
+                for node in path_nodes
+            ],
+        }))
+
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"UUID path resolution error for {target_uuid}: {e}")
+        await websocket.send(json.dumps({
+            "action": "uuid_path_result",
+            "success": False,
+            "target_uuid": target_uuid,
+            "error": str(e),
+        }))
 
 
 async def websocket_handler(websocket):
@@ -88,6 +243,12 @@ async def websocket_handler(websocket):
                 if action == 'ping':
                     await websocket.send(json.dumps({"action": "pong"}))
                     logger.info("Sent pong response")
+                    continue
+
+                # Handle UUID path resolution requests (UUID Navigator)
+                if action == 'resolve_uuid_path':
+                    target_uuid = data.get('target_uuid') or data.get('uuid')
+                    await _resolve_uuid_path_and_respond(target_uuid, websocket)
                     continue
                 
                 # Put all other messages in queue for workflowy_glimpse() to consume
