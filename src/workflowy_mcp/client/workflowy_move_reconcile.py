@@ -70,6 +70,7 @@ async def reconcile_tree(
     max_delete_threshold: Optional[int] = None,
     force: bool = False,
     log_weave_entry: Optional[Callable[[Dict[str, Any]], None]] = None,
+    log_debug_msg: Optional[Callable[[str], None]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Reconcile the Workflowy subtree under parent_uuid to match source_json.
@@ -95,8 +96,13 @@ async def reconcile_tree(
 
     def log(msg):
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]  # HH:MM:SS.mmm
+        # 1. File Persistence (legacy direct write)
         debug_log.write(f"[{timestamp}] {msg}\n")
         debug_log.flush()
+        
+        # 2. Callback (Console Visibility)
+        if log_debug_msg:
+            log_debug_msg(msg)
 
     def journal(entry: Dict[str, Any]) -> None:
         """Write a single per-node weave journal entry (best-effort).
