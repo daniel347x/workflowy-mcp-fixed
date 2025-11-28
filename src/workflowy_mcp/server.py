@@ -63,6 +63,13 @@ def get_ws_connection():
     return _ws_connection, _ws_message_queue
 
 
+def log_event(message: str, component: str = "SERVER") -> None:
+    """Log an event to stderr with timestamp and consistent formatting."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 🗡️ prefix makes it easy to grep/spot in the console
+    print(f"[{timestamp}] 🗡️ [{component}] {message}", file=sys.stderr, flush=True)
+
+
 async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, format_mode: str = "f3") -> None:
     """Resolve full ancestor path for target_uuid and send result back to extension.
 
@@ -102,7 +109,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         hops = 0
 
         # DEBUG: Log start of resolution
-        print(f"Resolving path for target_uuid: {target}", file=sys.stderr, flush=True)
+        log_event(f"Resolving path for target_uuid: {target}", "UUID_RES")
 
         while current_id and current_id not in visited and hops < max_hops:
             visited.add(current_id)
@@ -110,7 +117,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
             
             # DEBUG: Log each node found
             parent_id = getattr(node, "parentId", None)
-            print(f"Found node: {node.id} (name: {getattr(node, 'nm', 'Untitled')}), parent: {parent_id}", file=sys.stderr, flush=True)
+            log_event(f"Found node: {node.id} (name: {getattr(node, 'nm', 'Untitled')}), parent: {parent_id}", "UUID_RES")
             
             path_nodes.append(node)
             current_id = parent_id
@@ -119,7 +126,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         path_nodes.reverse()
         
         # DEBUG: Log final path length
-        print(f"Resolved path length: {len(path_nodes)}", file=sys.stderr, flush=True)
+        log_event(f"Resolved path length: {len(path_nodes)}", "UUID_RES")
 
         if not path_nodes:
             await websocket.send(json.dumps({
@@ -175,7 +182,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         }))
 
     except Exception as e:  # noqa: BLE001
-        print(f"UUID path resolution error for {target_uuid}: {e}", file=sys.stderr, flush=True)
+        log_event(f"UUID path resolution error for {target_uuid}: {e}", "UUID_RES")
         await websocket.send(json.dumps({
             "action": "uuid_path_result",
             "success": False,
@@ -196,7 +203,7 @@ async def websocket_handler(websocket):
     """
     global _ws_connection, _ws_message_queue
     
-    print(f"WebSocket client connected from {websocket.remote_address}", file=sys.stderr, flush=True)
+    log_event(f"WebSocket client connected from {websocket.remote_address}", "WS_HANDLER")
     _ws_connection = websocket
     _ws_message_queue = asyncio.Queue()  # Fresh queue for this connection
     
@@ -206,12 +213,12 @@ async def websocket_handler(websocket):
             try:
                 data = json.loads(message)
                 action = data.get('action')
-                print(f"WebSocket message received: {action}", file=sys.stderr, flush=True)
+                log_event(f"WebSocket message received: {action}", "WS_HANDLER")
                 
                 # Handle ping to keep connection alive
                 if action == 'ping':
                     await websocket.send(json.dumps({"action": "pong"}))
-                    print("Sent pong response", file=sys.stderr, flush=True)
+                    log_event("Sent pong response", "WS_HANDLER")
                     continue
 
                 # Handle UUID path resolution requests (UUID Navigator)
@@ -230,9 +237,9 @@ async def websocket_handler(websocket):
                             "action": "refresh_nodes_export_cache_result",
                             **result,
                         }))
-                        print(f"Refreshed /nodes-export cache via WebSocket request: {result.get('node_count')} nodes", file=sys.stderr, flush=True)
+                        log_event(f"Refreshed /nodes-export cache via WebSocket request: {result.get('node_count')} nodes", "WS_HANDLER")
                     except Exception as e:
-                        print(f"Failed to refresh /nodes-export cache from WebSocket request: {e}", file=sys.stderr, flush=True)
+                        log_event(f"Failed to refresh /nodes-export cache from WebSocket request: {e}", "WS_HANDLER")
                         try:
                             await websocket.send(json.dumps({
                                 "action": "refresh_nodes_export_cache_result",
@@ -253,30 +260,30 @@ async def websocket_handler(websocket):
                     try:
                         client = get_client()
                         client._mark_nodes_export_dirty(node_ids)
-                        print(f"Marked mutated node_ids as dirty in /nodes-export cache: {node_ids}", file=sys.stderr, flush=True)
+                        log_event(f"Marked mutated node_ids as dirty in /nodes-export cache: {node_ids}", "WS_HANDLER")
                     except Exception as e:
-                        print(f"Failed to mark /nodes-export cache dirty from WebSocket notification: {e}", file=sys.stderr, flush=True)
+                        log_event(f"Failed to mark /nodes-export cache dirty from WebSocket notification: {e}", "WS_HANDLER")
                     continue
                 
                 # Put all other messages in queue for workflowy_glimpse() to consume
                 await _ws_message_queue.put(data)
-                print(f"Message queued for processing: {action}", file=sys.stderr, flush=True)
+                log_event(f"Message queued for processing: {action}", "WS_HANDLER")
                 
             except json.JSONDecodeError as e:
-                print(f"Invalid JSON from WebSocket: {e}", file=sys.stderr, flush=True)
+                log_event(f"Invalid JSON from WebSocket: {e}", "WS_HANDLER")
             except Exception as e:
-                print(f"WebSocket message error: {e}", file=sys.stderr, flush=True)
+                log_event(f"WebSocket message error: {e}", "WS_HANDLER")
         
         # If loop exits naturally, connection was closed by client
-        print("WebSocket client disconnected (connection closed by client)", file=sys.stderr, flush=True)
+        log_event("WebSocket client disconnected (connection closed by client)", "WS_HANDLER")
                 
     except Exception as e:
-        print(f"WebSocket connection closed with error: {e}", file=sys.stderr, flush=True)
+        log_event(f"WebSocket connection closed with error: {e}", "WS_HANDLER")
     finally:
         if _ws_connection == websocket:
             _ws_connection = None
             _ws_message_queue = None
-        print("WebSocket client cleaned up", file=sys.stderr, flush=True)
+        log_event("WebSocket client cleaned up", "WS_HANDLER")
 
 
 async def start_websocket_server():
@@ -284,22 +291,22 @@ async def start_websocket_server():
     try:
         import websockets
     except ImportError:
-        print("websockets library not installed. WebSocket cache unavailable.", file=sys.stderr, flush=True)
-        print("Install with: pip install websockets", file=sys.stderr, flush=True)
+        log_event("websockets library not installed. WebSocket cache unavailable.", "WS_INIT")
+        log_event("Install with: pip install websockets", "WS_INIT")
         return
     
-    print("Starting WebSocket server on ws://localhost:8765", file=sys.stderr, flush=True)
+    log_event("Starting WebSocket server on ws://localhost:8765", "WS_INIT")
     
     try:
         async with websockets.serve(websocket_handler, "localhost", 8765) as server:
-            print("✅ WebSocket server listening on port 8765", file=sys.stderr, flush=True)
-            print("WebSocket server will accept connections indefinitely...", file=sys.stderr, flush=True)
+            log_event("✅ WebSocket server listening on port 8765", "WS_INIT")
+            log_event("WebSocket server will accept connections indefinitely...", "WS_INIT")
             
             # Keep server running forever
             await asyncio.Event().wait()
     except Exception as e:
-        print(f"WebSocket server failed to start: {e}", file=sys.stderr, flush=True)
-        print("GLIMPSE will fall back to API fetching", file=sys.stderr, flush=True)
+        log_event(f"WebSocket server failed to start: {e}", "WS_INIT")
+        log_event("GLIMPSE will fall back to API fetching", "WS_INIT")
 
 
 @asynccontextmanager
@@ -308,7 +315,7 @@ async def lifespan(_app: FastMCP):  # type: ignore[no-untyped-def]
     global _client, _rate_limiter, _ws_server_task
 
     # Setup
-    print("Starting WorkFlowy MCP server", file=sys.stderr, flush=True)
+    log_event("Starting WorkFlowy MCP server", "LIFESPAN")
 
     # Load configuration
     config = ServerConfig()  # type: ignore[call-arg]
@@ -324,16 +331,16 @@ async def lifespan(_app: FastMCP):  # type: ignore[no-untyped-def]
     # Initialize client
     _client = WorkFlowyClient(api_config)
 
-    print(f"WorkFlowy client initialized with base URL: {api_config.base_url}", file=sys.stderr, flush=True)
+    log_event(f"WorkFlowy client initialized with base URL: {api_config.base_url}", "LIFESPAN")
     
     # Start WebSocket server in background task
     _ws_server_task = asyncio.create_task(start_websocket_server())
-    print("WebSocket server task created", file=sys.stderr, flush=True)
+    log_event("WebSocket server task created", "LIFESPAN")
 
     yield
 
     # Cleanup
-    print("Shutting down WorkFlowy MCP server", file=sys.stderr, flush=True)
+    log_event("Shutting down WorkFlowy MCP server", "LIFESPAN")
     
     # Cancel WebSocket server
     if _ws_server_task:
@@ -342,7 +349,7 @@ async def lifespan(_app: FastMCP):  # type: ignore[no-untyped-def]
             await _ws_server_task
         except asyncio.CancelledError:
             pass
-        print("WebSocket server stopped", file=sys.stderr, flush=True)
+        log_event("WebSocket server stopped", "LIFESPAN")
     
     if _client:
         await _client.close()
