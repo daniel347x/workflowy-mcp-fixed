@@ -210,17 +210,24 @@ class WorkFlowyClient:
         except json.JSONDecodeError as err:
             raise NetworkError("Invalid response format from API") from err
 
-    def _log_reconcile_retry(self, message: str) -> None:
-        """Best-effort mirror of rate-limit retry info into reconcile_debug.log.
+    def _log_to_file(self, message: str, log_type: str = "reconcile") -> None:
+        """Log message to a specific debug file (best-effort).
 
-        This is in addition to normal logger output and is safe to call even when
-        no reconciliation is running (it simply appends to the standard log file
-        path used by the NEXUS reconciliation algorithm).
+        Args:
+            message: The message to log
+            log_type: "reconcile" -> reconcile_debug.log
+                      "etch"      -> etch_debug.log
         """
         try:
             from datetime import datetime
-            log_path = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log"
+            
+            filename = "reconcile_debug.log"
+            if log_type == "etch":
+                filename = "etch_debug.log"
+            
+            log_path = fr"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\{filename}"
             ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            
             with open(log_path, "a", encoding="utf-8") as dbg:
                 dbg.write(f"[{ts}] {message}\n")
         except Exception:
@@ -694,7 +701,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         f"following rate limiting or transient errors."
                     )
                     logger.info(success_msg)
-                    self._log_reconcile_retry(success_msg)
+                    self._log_to_file(success_msg, "reconcile")
 
                 # Best-effort: mark this node as dirty so any subsequent
                 # /nodes-export-based operations that rely on it will trigger
@@ -715,7 +722,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     f"Attempt {retry_count}/{max_retries}"
                 )
                 logger.warning(retry_msg)
-                self._log_reconcile_retry(retry_msg)
+                self._log_to_file(retry_msg, "reconcile")
                 
                 if retry_count < max_retries:
                     await asyncio.sleep(retry_after)
@@ -725,7 +732,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         f"due to rate limiting – aborting."
                     )
                     logger.error(final_msg)
-                    self._log_reconcile_retry(final_msg)
+                    self._log_to_file(final_msg, "reconcile")
                     raise
                     
             except NetworkError as e:
@@ -1021,7 +1028,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             "rate limiting or transient errors."
                         )
                         logger.info(success_msg)
-                        self._log_reconcile_retry(success_msg)
+                        self._log_to_file(success_msg, "reconcile")
 
                     return data
 
@@ -1033,7 +1040,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         f"Attempt {retry_count}/{max_retries}"
                     )
                     logger.warning(retry_msg)
-                    self._log_reconcile_retry(retry_msg)
+                    self._log_to_file(retry_msg, "reconcile")
 
                     if retry_count < max_retries:
                         await asyncio.sleep(retry_after)
@@ -2377,6 +2384,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     if node:
                         created_ids.append(node.id)
                         stats["nodes_created"] += 1
+                        self._log_to_file(f"  Created: {node_name} ({node.id})", "etch")
                         
                         # Recursively create children
                         if 'children' in node_data and node_data['children']:
@@ -2385,6 +2393,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 except Exception as e:
                     error_msg = f"Failed to create node '{node_data.get('name', 'unknown')}': {str(e)}"
                     logger.error(error_msg)
+                    self._log_to_file(error_msg, "etch")
                     stats["errors"].append(error_msg)
                     # Continue with other nodes
                     continue
@@ -2393,6 +2402,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         # Create the tree
         try:
+            self._log_to_file(f"Starting ETCH (replace_all={replace_all}) for parent {parent_id}", "etch")
             root_ids = await create_tree(parent_id, nodes)
             
             # Log summary if retries occurred
@@ -2402,6 +2412,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     f"({stats['rate_limit_hits']} rate limit hits). "
                     f"Consider reducing import speed."
                 )
+            
+            self._log_to_file(f"ETCH Complete: {stats['nodes_created']} nodes created", "etch")
             
             result = {
                 "success": len(stats["errors"]) == 0,
