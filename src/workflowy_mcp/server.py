@@ -101,14 +101,25 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         max_hops = 512  # hard safety cap to avoid pathological loops
         hops = 0
 
+        # DEBUG: Log start of resolution
+        logger.info(f"Resolving path for target_uuid: {target}")
+
         while current_id and current_id not in visited and hops < max_hops:
             visited.add(current_id)
             node = await client.get_node(current_id)
+            
+            # DEBUG: Log each node found
+            parent_id = getattr(node, "parentId", None)
+            logger.info(f"Found node: {node.id} (name: {getattr(node, 'nm', 'Untitled')}), parent: {parent_id}")
+            
             path_nodes.append(node)
-            current_id = getattr(node, "parentId", None)
+            current_id = parent_id
             hops += 1
 
         path_nodes.reverse()
+        
+        # DEBUG: Log final path length
+        logger.info(f"Resolved path length: {len(path_nodes)}")
 
         if not path_nodes:
             await websocket.send(json.dumps({
