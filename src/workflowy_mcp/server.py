@@ -63,7 +63,7 @@ def get_ws_connection():
     return _ws_connection, _ws_message_queue
 
 
-async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket) -> None:
+async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, format_mode: str = "f3") -> None:
     """Resolve full ancestor path for target_uuid and send result back to extension.
 
     Implementation note (v2):
@@ -77,6 +77,10 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket) -> 
     This matches F3 behavior: we render a markdown outline from the account
     root (or Dagger root, which is your top-level node) down to target_uuid,
     with the leaf UUID shown only at the bottom.
+    
+    format_mode:
+      - "f3" (default): Compact mode. One line per node.
+      - "f2": Full/Verbose mode. Node name, then UUID on next line, then blank line.
     """
     client = get_client()
     target = (target_uuid or "").strip()
@@ -116,13 +120,31 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket) -> 
             return
 
         lines: list[str] = []
-        for depth, node in enumerate(path_nodes):
-            name = getattr(node, "nm", None) or "Untitled"
-            prefix = "#" * (depth + 1)
-            lines.append(f"{prefix} {name}")
+        
+        if format_mode == "f2":
+            # FULL / VERBOSE MODE (F2-style)
+            # Render name, then UUID, then blank line for every node
+            for depth, node in enumerate(path_nodes):
+                name = getattr(node, "nm", None) or "Untitled"
+                node_id = getattr(node, "id", None) or ""
+                prefix = "#" * (depth + 1)
+                lines.append(f"{prefix} {name}")
+                lines.append(f"`{node_id}`")
+                lines.append("")
+            
+            # Ending block
+            lines.append("--> Use Leaf UUID:")
+            lines.append(f"`{target}`")
+            
+        else:
+            # COMPACT MODE (F3-style / Default)
+            for depth, node in enumerate(path_nodes):
+                name = getattr(node, "nm", None) or "Untitled"
+                prefix = "#" * (depth + 1)
+                lines.append(f"{prefix} {name}")
 
-        lines.append("")
-        lines.append(f"→ `{target}`")
+            lines.append("")
+            lines.append(f"→ `{target}`")
 
         markdown = "\n".join(lines)
 
@@ -184,7 +206,8 @@ async def websocket_handler(websocket):
                 # Handle UUID path resolution requests (UUID Navigator)
                 if action == 'resolve_uuid_path':
                     target_uuid = data.get('target_uuid') or data.get('uuid')
-                    await _resolve_uuid_path_and_respond(target_uuid, websocket)
+                    format_mode = data.get('format', 'f3')  # Default to compact f3 mode
+                    await _resolve_uuid_path_and_respond(target_uuid, websocket, format_mode)
                     continue
 
                 # Explicit cache refresh request from GLIMPSE client.
