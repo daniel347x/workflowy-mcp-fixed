@@ -1861,7 +1861,9 @@ if __name__ == "__main__":
 
     # 5. Log startup confirmation
     logging.critical("☢️ NUCLEAR LOGGING ACTIVE: DEBUG LEVEL ☢️")
-    print("Standard Output Redirection Test")
+    # Force output to stderr using logger.error (which usually bypasses filters)
+    logging.error("STDERR TEST: This should appear in console (via logging.error)")
+    print("Standard Output Redirection Test", file=sys.stderr)
 
     # Run the server
     mcp.run(transport="stdio")
