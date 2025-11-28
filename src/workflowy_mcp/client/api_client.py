@@ -2434,10 +2434,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
             # Log summary if retries occurred
             if stats["retries"] > 0:
-                logger.warning(
+                log_event(
                     f"⚠️ Bulk write completed with {stats['retries']} retries "
                     f"({stats['rate_limit_hits']} rate limit hits). "
-                    f"Consider reducing import speed."
+                    f"Consider reducing import speed.",
+                    "ETCH"
                 )
             
             self._log_to_file(f"ETCH Complete: {stats['nodes_created']} nodes created", "etch")
@@ -2474,7 +2475,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
         except Exception as e:
             error_msg = f"Bulk write failed: {str(e)}"
-            logger.error(error_msg)
+            log_event(error_msg, "ETCH")
             stats["errors"].append(error_msg)
             
             result = {
@@ -2562,7 +2563,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         export_root_id = payload.get('export_root_id')
         nodes_to_create = payload.get('nodes')
-        logger.info(f"Detected export package with export_root_id={export_root_id}")
+        log_event(f"Detected export package with export_root_id={export_root_id}", "WEAVE")
         
         # Validate header fields
         if not export_root_id or not isinstance(nodes_to_create, list):
@@ -2589,9 +2590,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             f"{prev.get('last_run_started_at')}. JEWEL/ETHER sync may be inconsistent; "
                             "crash-resume semantics are not guaranteed."
                         )
-                        logger.warning(journal_warning)
+                        log_event(journal_warning, "WEAVE")
             except Exception as e:  # noqa: BLE001
-                logger.error(f"Failed to read existing weave journal {weave_journal_path}: {e}")
+                log_event(f"Failed to read existing weave journal {weave_journal_path}: {e}", "WEAVE")
                 journal_warning = None
 
             from datetime import datetime
@@ -2606,7 +2607,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 with open(weave_journal_path, 'w', encoding='utf-8') as jf:
                     json.dump(weave_journal, jf, indent=2)
             except Exception as e:  # noqa: BLE001
-                logger.error(f"Failed to write weave journal {weave_journal_path}: {e}")
+                log_event(f"Failed to write weave journal {weave_journal_path}: {e}", "WEAVE")
                 weave_journal_path = None
                 weave_journal = None
 
@@ -2627,16 +2628,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     with open(weave_journal_path, 'w', encoding='utf-8') as jf2:
                         json.dump(weave_journal, jf2, indent=2)
                 except Exception as e2:  # noqa: BLE001
-                    logger.error(
+                    log_event(
                         f"Failed to append per-node entry to weave journal {weave_journal_path}: "
-                        f"{type(e2).__name__}: {e2}"
+                        f"{type(e2).__name__}: {e2}",
+                        "WEAVE"
                     )
         
         # Use export_root_id as default if parent_id not provided
         target_backup_file = None
         if parent_id is None:
             parent_id = export_root_id
-            logger.info(f"Using export_root_id as parent_id: {parent_id}")
+            log_event(f"Using export_root_id as parent_id: {parent_id}", "WEAVE")
         else:
             # parent_id was explicitly provided - check if it's different from export_root_id
             if export_root_id and parent_id != export_root_id:
@@ -2644,13 +2646,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 from datetime import datetime
                 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
                 target_backup_file = json_file.replace('.json', f'.target_backup_{timestamp}.json')
-                logger.warning(f"Parent override detected! export_root_id={export_root_id}, provided parent_id={parent_id}")
-                logger.info(f"Auto-backing up target to: {target_backup_file}")
+                log_event(f"Parent override detected! export_root_id={export_root_id}, provided parent_id={parent_id}", "WEAVE")
+                log_event(f"Auto-backing up target to: {target_backup_file}", "WEAVE")
                 try:
                     backup_result = await self.bulk_export_to_file(parent_id, target_backup_file)
-                    logger.info(f"Target backup complete: {backup_result.get('node_count', 0)} nodes")
+                    log_event(f"Target backup complete: {backup_result.get('node_count', 0)} nodes", "WEAVE")
                 except Exception as e:
-                    logger.error(f"Target backup failed: {e}")
+                    log_event(f"Target backup failed: {e}", "WEAVE")
                     # Continue anyway - backup failure shouldn't block import
         
         # 🔥 VALIDATE & AUTO-ESCAPE NAME AND NOTE FIELDS 🔥
@@ -2727,9 +2729,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         # Log warnings if any escaping occurred
         if warnings:
-            logger.info(f"✅ Auto-escaped angle brackets in {len(warnings)} note(s)")
+            log_event(f"✅ Auto-escaped angle brackets in {len(warnings)} note(s)", "WEAVE")
             for warning in warnings:
-                logger.info(f"  - {warning}")
+                log_event(f"  - {warning}", "WEAVE")
         
         # ============ MOVE-AWARE RECONCILIATION ============
         
