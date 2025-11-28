@@ -36,6 +36,29 @@ def log_event(message: str, component: str = "CLIENT") -> None:
     # 🗡️ prefix makes it easy to grep/spot in the console
     print(f"[{timestamp}] 🗡️ [{component}] {message}", file=sys.stderr, flush=True)
 
+def _log_to_file_helper(message: str, log_type: str = "reconcile") -> None:
+    """Log message to a specific debug file (best-effort).
+
+    Args:
+        message: The message to log
+        log_type: "reconcile" -> reconcile_debug.log
+                    "etch"      -> etch_debug.log
+    """
+    try:
+        from datetime import datetime
+        
+        filename = "reconcile_debug.log"
+        if log_type == "etch":
+            filename = "etch_debug.log"
+        
+        log_path = fr"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\{filename}"
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        
+        with open(log_path, "a", encoding="utf-8") as dbg:
+            dbg.write(f"[{ts}] {message}\n")
+    except Exception:
+        # Never let logging failures affect API behavior
+        pass
 
 class WorkFlowyClient:
     """Async client for WorkFlowy API operations."""
@@ -59,6 +82,10 @@ class WorkFlowyClient:
         # Console Visibility ONLY - keep reconcile_debug.log clean for weaves
         log_event(message, "CLIENT_DEBUG")
     
+    def _log_to_file(self, message: str, log_type: str = "reconcile") -> None:
+        """Log message to a specific debug file (best-effort)."""
+        _log_to_file_helper(message, log_type)
+
     @staticmethod
     def _validate_note_field(note: str | None, skip_newline_check: bool = False) -> tuple[str | None, str | None]:
         """Validate and auto-escape note field for Workflowy compatibility.
@@ -2794,6 +2821,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 dry_run=dry_run,
                 log_weave_entry=log_weave_entry_fn,
                 log_debug_msg=lambda m: log_event(m, "RECONCILE"),
+                log_to_file_msg=lambda m: _log_to_file_helper(m, "reconcile"),
             )
             
             # If dry_run, return the plan
