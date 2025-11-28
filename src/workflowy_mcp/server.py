@@ -102,7 +102,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         hops = 0
 
         # DEBUG: Log start of resolution
-        logger.info(f"Resolving path for target_uuid: {target}")
+        print(f"Resolving path for target_uuid: {target}", file=sys.stderr, flush=True)
 
         while current_id and current_id not in visited and hops < max_hops:
             visited.add(current_id)
@@ -110,7 +110,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
             
             # DEBUG: Log each node found
             parent_id = getattr(node, "parentId", None)
-            logger.info(f"Found node: {node.id} (name: {getattr(node, 'nm', 'Untitled')}), parent: {parent_id}")
+            print(f"Found node: {node.id} (name: {getattr(node, 'nm', 'Untitled')}), parent: {parent_id}", file=sys.stderr, flush=True)
             
             path_nodes.append(node)
             current_id = parent_id
@@ -119,7 +119,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         path_nodes.reverse()
         
         # DEBUG: Log final path length
-        logger.info(f"Resolved path length: {len(path_nodes)}")
+        print(f"Resolved path length: {len(path_nodes)}", file=sys.stderr, flush=True)
 
         if not path_nodes:
             await websocket.send(json.dumps({
@@ -175,7 +175,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         }))
 
     except Exception as e:  # noqa: BLE001
-        logger.error(f"UUID path resolution error for {target_uuid}: {e}")
+        print(f"UUID path resolution error for {target_uuid}: {e}", file=sys.stderr, flush=True)
         await websocket.send(json.dumps({
             "action": "uuid_path_result",
             "success": False,
@@ -196,7 +196,7 @@ async def websocket_handler(websocket):
     """
     global _ws_connection, _ws_message_queue
     
-    logger.info(f"WebSocket client connected from {websocket.remote_address}")
+    print(f"WebSocket client connected from {websocket.remote_address}", file=sys.stderr, flush=True)
     _ws_connection = websocket
     _ws_message_queue = asyncio.Queue()  # Fresh queue for this connection
     
@@ -206,12 +206,12 @@ async def websocket_handler(websocket):
             try:
                 data = json.loads(message)
                 action = data.get('action')
-                logger.info(f"WebSocket message received: {action}")
+                print(f"WebSocket message received: {action}", file=sys.stderr, flush=True)
                 
                 # Handle ping to keep connection alive
                 if action == 'ping':
                     await websocket.send(json.dumps({"action": "pong"}))
-                    logger.info("Sent pong response")
+                    print("Sent pong response", file=sys.stderr, flush=True)
                     continue
 
                 # Handle UUID path resolution requests (UUID Navigator)
@@ -230,15 +230,9 @@ async def websocket_handler(websocket):
                             "action": "refresh_nodes_export_cache_result",
                             **result,
                         }))
-                        logger.info(
-                            "Refreshed /nodes-export cache via WebSocket request: %s nodes",
-                            result.get("node_count"),
-                        )
+                        print(f"Refreshed /nodes-export cache via WebSocket request: {result.get('node_count')} nodes", file=sys.stderr, flush=True)
                     except Exception as e:
-                        logger.error(
-                            "Failed to refresh /nodes-export cache from WebSocket request: %s",
-                            e,
-                        )
+                        print(f"Failed to refresh /nodes-export cache from WebSocket request: {e}", file=sys.stderr, flush=True)
                         try:
                             await websocket.send(json.dumps({
                                 "action": "refresh_nodes_export_cache_result",
@@ -259,36 +253,30 @@ async def websocket_handler(websocket):
                     try:
                         client = get_client()
                         client._mark_nodes_export_dirty(node_ids)
-                        logger.info(
-                            "Marked mutated node_ids as dirty in /nodes-export cache: %s",
-                            node_ids,
-                        )
+                        print(f"Marked mutated node_ids as dirty in /nodes-export cache: {node_ids}", file=sys.stderr, flush=True)
                     except Exception as e:
-                        logger.error(
-                            "Failed to mark /nodes-export cache dirty from WebSocket notification: %s",
-                            e,
-                        )
+                        print(f"Failed to mark /nodes-export cache dirty from WebSocket notification: {e}", file=sys.stderr, flush=True)
                     continue
                 
                 # Put all other messages in queue for workflowy_glimpse() to consume
                 await _ws_message_queue.put(data)
-                logger.info(f"Message queued for processing: {action}")
+                print(f"Message queued for processing: {action}", file=sys.stderr, flush=True)
                 
             except json.JSONDecodeError as e:
-                logger.error(f"Invalid JSON from WebSocket: {e}")
+                print(f"Invalid JSON from WebSocket: {e}", file=sys.stderr, flush=True)
             except Exception as e:
-                logger.error(f"WebSocket message error: {e}")
+                print(f"WebSocket message error: {e}", file=sys.stderr, flush=True)
         
         # If loop exits naturally, connection was closed by client
-        logger.info("WebSocket client disconnected (connection closed by client)")
+        print("WebSocket client disconnected (connection closed by client)", file=sys.stderr, flush=True)
                 
     except Exception as e:
-        logger.info(f"WebSocket connection closed with error: {e}")
+        print(f"WebSocket connection closed with error: {e}", file=sys.stderr, flush=True)
     finally:
         if _ws_connection == websocket:
             _ws_connection = None
             _ws_message_queue = None
-        logger.info("WebSocket client cleaned up")
+        print("WebSocket client cleaned up", file=sys.stderr, flush=True)
 
 
 async def start_websocket_server():
@@ -296,22 +284,22 @@ async def start_websocket_server():
     try:
         import websockets
     except ImportError:
-        logger.warning("websockets library not installed. WebSocket cache unavailable.")
-        logger.warning("Install with: pip install websockets")
+        print("websockets library not installed. WebSocket cache unavailable.", file=sys.stderr, flush=True)
+        print("Install with: pip install websockets", file=sys.stderr, flush=True)
         return
     
-    logger.info("Starting WebSocket server on ws://localhost:8765")
+    print("Starting WebSocket server on ws://localhost:8765", file=sys.stderr, flush=True)
     
     try:
         async with websockets.serve(websocket_handler, "localhost", 8765) as server:
-            logger.info("✅ WebSocket server listening on port 8765")
-            logger.info("WebSocket server will accept connections indefinitely...")
+            print("✅ WebSocket server listening on port 8765", file=sys.stderr, flush=True)
+            print("WebSocket server will accept connections indefinitely...", file=sys.stderr, flush=True)
             
             # Keep server running forever
             await asyncio.Event().wait()
     except Exception as e:
-        logger.error(f"WebSocket server failed to start: {e}")
-        logger.error("GLIMPSE will fall back to API fetching")
+        print(f"WebSocket server failed to start: {e}", file=sys.stderr, flush=True)
+        print("GLIMPSE will fall back to API fetching", file=sys.stderr, flush=True)
 
 
 @asynccontextmanager
@@ -320,7 +308,7 @@ async def lifespan(_app: FastMCP):  # type: ignore[no-untyped-def]
     global _client, _rate_limiter, _ws_server_task
 
     # Setup
-    logger.info("Starting WorkFlowy MCP server")
+    print("Starting WorkFlowy MCP server", file=sys.stderr, flush=True)
 
     # Load configuration
     config = ServerConfig()  # type: ignore[call-arg]
@@ -336,16 +324,16 @@ async def lifespan(_app: FastMCP):  # type: ignore[no-untyped-def]
     # Initialize client
     _client = WorkFlowyClient(api_config)
 
-    logger.info(f"WorkFlowy client initialized with base URL: {api_config.base_url}")
+    print(f"WorkFlowy client initialized with base URL: {api_config.base_url}", file=sys.stderr, flush=True)
     
     # Start WebSocket server in background task
     _ws_server_task = asyncio.create_task(start_websocket_server())
-    logger.info("WebSocket server task created")
+    print("WebSocket server task created", file=sys.stderr, flush=True)
 
     yield
 
     # Cleanup
-    logger.info("Shutting down WorkFlowy MCP server")
+    print("Shutting down WorkFlowy MCP server", file=sys.stderr, flush=True)
     
     # Cancel WebSocket server
     if _ws_server_task:
@@ -354,7 +342,7 @@ async def lifespan(_app: FastMCP):  # type: ignore[no-untyped-def]
             await _ws_server_task
         except asyncio.CancelledError:
             pass
-        logger.info("WebSocket server stopped")
+        print("WebSocket server stopped", file=sys.stderr, flush=True)
     
     if _client:
         await _client.close()
