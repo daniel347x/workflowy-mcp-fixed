@@ -66,19 +66,17 @@ def get_ws_connection():
 async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket) -> None:
     """Resolve full ancestor path for target_uuid and send result back to extension.
 
-    Primary strategy:
-      - Use /nodes-export via export_nodes(DAGGER_ROOT_ID) to get the full AI Dagger
-        subtree as a flat list.
-      - Reconstruct the path from DAGGER_ROOT_ID down to target_uuid using
-        parent_id/parentId fields.
+    Implementation note (v2):
+    - We NO LONGER use export_nodes(DAGGER_ROOT_ID) or any /nodes-export based
+      subtree filtering here, because that approach was O(N^2) on large
+      subtrees and could stall the event loop for minutes.
+    - Instead we ALWAYS walk the parentId chain via get_node(), which is
+      O(depth) in the tree and completely decoupled from the /nodes-export
+      cache.
 
-    Fallback strategy:
-      - If target_uuid is not under the Dagger root (or export fails), fall back
-        to walking parentId via get_node() up to the account root.
-
-    Both strategies format markdown identically to F3 behavior (names at each
-    level, leaf UUID only) so the UUID Navigator widget always shows a complete
-    path, even when the node is not currently visible in the DOM.
+    This matches F3 behavior: we render a markdown outline from the account
+    root (or Dagger root, which is your top-level node) down to target_uuid,
+    with the leaf UUID shown only at the bottom.
     """
     client = get_client()
     target = (target_uuid or "").strip()
@@ -92,81 +90,19 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket) -> 
         }))
         return
 
-    # First try: reconstruct path from Dagger subtree via /nodes-export
-    path_from_dagger: list[dict[str, Any]] | None = None
     try:
-        export_data = await client.export_nodes(DAGGER_ROOT_ID)
-        flat_nodes = export_data.get("nodes", []) or []
-        nodes_by_id: dict[str, dict[str, Any]] = {}
-        for node in flat_nodes:
-            node_id = node.get("id")
-            if node_id:
-                nodes_by_id[node_id] = node
-
-        if target in nodes_by_id:
-            tmp_path: list[dict[str, Any]] = []
-            visited_ids: set[str] = set()
-            current_id = target
-
-            while current_id and current_id in nodes_by_id and current_id not in visited_ids:
-                visited_ids.add(current_id)
-                node = nodes_by_id[current_id]
-                tmp_path.append(node)
-                parent_id = node.get("parent_id") or node.get("parentId")
-                if not parent_id:
-                    break
-                current_id = parent_id
-
-            tmp_path.reverse()
-            path_from_dagger = tmp_path if tmp_path else None
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"UUID path DAGGER export failed for {target_uuid}: {e}")
-        path_from_dagger = None
-
-    def _name_from_flat(node_dict: dict[str, Any]) -> str:
-        return (node_dict.get("name")
-                or node_dict.get("nm")
-                or "Untitled")
-
-    # If we found the node under Dagger, use that path
-    if path_from_dagger:
-        lines: list[str] = []
-        for depth, node_dict in enumerate(path_from_dagger):
-            prefix = "#" * (depth + 1)
-            lines.append(f"{prefix} {_name_from_flat(node_dict)}")
-
-        lines.append("")
-        lines.append(f"→ `{target}`")
-
-        markdown = "\n".join(lines)
-
-        await websocket.send(json.dumps({
-            "action": "uuid_path_result",
-            "success": True,
-            "target_uuid": target_uuid,
-            "markdown": markdown,
-            "path": [
-                {
-                    "id": node_dict.get("id"),
-                    "name": _name_from_flat(node_dict),
-                    "parent_id": node_dict.get("parent_id") or node_dict.get("parentId"),
-                }
-                for node_dict in path_from_dagger
-            ],
-        }))
-        return
-
-    # Fallback: Walk parentId chain via get_node (account-root path)
-    try:
-        path_nodes = []
+        path_nodes: list[WorkFlowyNode] = []
         visited: set[str] = set()
-        current_id = target
+        current_id: str | None = target
+        max_hops = 512  # hard safety cap to avoid pathological loops
+        hops = 0
 
-        while current_id and current_id not in visited:
+        while current_id and current_id not in visited and hops < max_hops:
             visited.add(current_id)
             node = await client.get_node(current_id)
             path_nodes.append(node)
             current_id = getattr(node, "parentId", None)
+            hops += 1
 
         path_nodes.reverse()
 
@@ -249,6 +185,35 @@ async def websocket_handler(websocket):
                 if action == 'resolve_uuid_path':
                     target_uuid = data.get('target_uuid') or data.get('uuid')
                     await _resolve_uuid_path_and_respond(target_uuid, websocket)
+                    continue
+
+                # Explicit cache refresh request from GLIMPSE client.
+                if action == 'refresh_nodes_export_cache':
+                    try:
+                        client = get_client()
+                        result = await client.refresh_nodes_export_cache()
+                        await websocket.send(json.dumps({
+                            "action": "refresh_nodes_export_cache_result",
+                            **result,
+                        }))
+                        logger.info(
+                            "Refreshed /nodes-export cache via WebSocket request: %s nodes",
+                            result.get("node_count"),
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Failed to refresh /nodes-export cache from WebSocket request: %s",
+                            e,
+                        )
+                        try:
+                            await websocket.send(json.dumps({
+                                "action": "refresh_nodes_export_cache_result",
+                                "success": False,
+                                "error": str(e),
+                            }))
+                        except Exception:
+                            # Best-effort only; don't crash handler
+                            pass
                     continue
 
                 # Optional: mutation notifications from Workflowy desktop
