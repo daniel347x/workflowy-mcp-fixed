@@ -2793,6 +2793,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 import_policy=import_policy,
                 dry_run=dry_run,
                 log_weave_entry=log_weave_entry_fn,
+                log_debug_msg=lambda m: log_event(m, "RECONCILE"),
             )
             
             # If dry_run, return the plan
