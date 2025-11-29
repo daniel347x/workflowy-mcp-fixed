@@ -116,17 +116,10 @@ def _log(message: str, component: str = "SERVER") -> None:
 async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, format_mode: str = "f3") -> None:
     """Resolve full ancestor path for target_uuid and send result back to extension.
 
-    Implementation note (v2):
-    - We NO LONGER use export_nodes(DAGGER_ROOT_ID) or any /nodes-export based
-      subtree filtering here, because that approach was O(N^2) on large
-      subtrees and could stall the event loop for minutes.
-    - Instead we ALWAYS walk the parentId chain via get_node(), which is
-      O(depth) in the tree and completely decoupled from the /nodes-export
-      cache.
-
-    This matches F3 behavior: we render a markdown outline from the account
-    root (or Dagger root, which is your top-level node) down to target_uuid,
-    with the leaf UUID shown only at the bottom.
+    Implementation note (v3):
+    - Uses /nodes-export cache to build parent map (all nodes in one call)
+    - Walks parent_id chain from leaf to root using cached data
+    - O(1) API call + O(depth) traversal = fast and reliable
     
     format_mode:
       - "f3" (default): Compact mode. One line per node.
@@ -145,24 +138,45 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         return
 
     try:
-        path_nodes: list[WorkFlowyNode] = []
+        # Fetch full account export (uses cache if available)
+        export_data = await client.export_nodes(node_id=None, use_cache=True)
+        all_nodes = export_data.get("nodes", []) or []
+        
+        # Build node lookup by ID
+        nodes_by_id = {n.get("id"): n for n in all_nodes if n.get("id")}
+        
+        # DEBUG: Log cache stats
+        log_event(f"Resolving path for target_uuid: {target} (cache: {len(nodes_by_id)} nodes)", "UUID_RES")
+        
+        if target not in nodes_by_id:
+            await websocket.send(json.dumps({
+                "action": "uuid_path_result",
+                "success": False,
+                "target_uuid": target_uuid,
+                "error": f"Node {target} not found in export cache",
+            }))
+            return
+        
+        # Walk parent chain from target to root
+        path_nodes = []
         visited: set[str] = set()
         current_id: str | None = target
-        max_hops = 512  # hard safety cap to avoid pathological loops
+        max_hops = 512
         hops = 0
-
-        # DEBUG: Log start of resolution
-        log_event(f"Resolving path for target_uuid: {target}", "UUID_RES")
 
         while current_id and current_id not in visited and hops < max_hops:
             visited.add(current_id)
-            node = await client.get_node(current_id)
+            node_dict = nodes_by_id.get(current_id)
+            
+            if not node_dict:
+                break
             
             # DEBUG: Log each node found
-            parent_id = getattr(node, "parent_id", None)
-            log_event(f"Found node: {node.id} (name: {getattr(node, 'nm', 'Untitled')}), parent: {parent_id}", "UUID_RES")
+            parent_id = node_dict.get("parent_id") or node_dict.get("parentId")
+            node_name = node_dict.get("nm") or node_dict.get("name") or "Untitled"
+            log_event(f"Found node: {current_id} (name: {node_name}), parent: {parent_id}", "UUID_RES")
             
-            path_nodes.append(node)
+            path_nodes.append(node_dict)
             current_id = parent_id
             hops += 1
 
@@ -185,9 +199,9 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         if format_mode == "f2":
             # FULL / VERBOSE MODE (F2-style)
             # Render name, then UUID, then blank line for every node
-            for depth, node in enumerate(path_nodes):
-                name = getattr(node, "nm", None) or "Untitled"
-                node_id = getattr(node, "id", None) or ""
+            for depth, node_dict in enumerate(path_nodes):
+                name = node_dict.get("nm") or node_dict.get("name") or "Untitled"
+                node_id = node_dict.get("id") or ""
                 prefix = "#" * (depth + 1)
                 lines.append(f"{prefix} {name}")
                 lines.append(f"`{node_id}`")
@@ -199,8 +213,8 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
             
         else:
             # COMPACT MODE (F3-style / Default)
-            for depth, node in enumerate(path_nodes):
-                name = getattr(node, "nm", None) or "Untitled"
+            for depth, node_dict in enumerate(path_nodes):
+                name = node_dict.get("nm") or node_dict.get("name") or "Untitled"
                 prefix = "#" * (depth + 1)
                 lines.append(f"{prefix} {name}")
 
@@ -216,11 +230,11 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
             "markdown": markdown,
             "path": [
                 {
-                    "id": node.id,
-                    "name": getattr(node, "nm", None) or "Untitled",
-                    "parent_id": getattr(node, "parent_id", None),
+                    "id": node_dict.get("id"),
+                    "name": node_dict.get("nm") or node_dict.get("name") or "Untitled",
+                    "parent_id": node_dict.get("parent_id") or node_dict.get("parentId"),
                 }
-                for node in path_nodes
+                for node_dict in path_nodes
             ],
         }))
 
