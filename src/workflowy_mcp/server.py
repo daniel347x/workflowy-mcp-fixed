@@ -241,6 +241,9 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
 
         lines: list[str] = []
         
+        # Determine which nodes are leaves vs ancestors for bullet selection
+        leaf_index = len(path_nodes) - 1
+        
         if format_mode == "f2":
             # FULL / VERBOSE MODE (F2-style)
             # Render name, then UUID, then blank line for every node
@@ -249,7 +252,9 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
                 name = node_dict.get("_decoded_name") or "Untitled"
                 node_id = node_dict.get("id") or ""
                 prefix = "#" * (depth + 1)
-                lines.append(f"{prefix} {name}")
+                # Bullet: ⦿ for ancestors, • for leaf
+                bullet = "•" if depth == leaf_index else "⦿"
+                lines.append(f"{prefix} {bullet} {name}")
                 lines.append(f"`{node_id}`")
                 lines.append("")
             
@@ -263,7 +268,9 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
                 # Use decoded name (HTML entities already unescaped)
                 name = node_dict.get("_decoded_name") or "Untitled"
                 prefix = "#" * (depth + 1)
-                lines.append(f"{prefix} {name}")
+                # Bullet: ⦿ for ancestors, • for leaf
+                bullet = "•" if depth == leaf_index else "⦿"
+                lines.append(f"{prefix} {bullet} {name}")
 
             lines.append("")
             lines.append(f"→ `{target}`")
