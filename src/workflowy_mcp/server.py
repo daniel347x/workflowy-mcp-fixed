@@ -320,8 +320,16 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
                 if not node_dict:
                     break
                 
+                # Decode name and skip "Untitled" nodes (Workflowy mirror detritus)
+                raw_name = node_dict.get("nm") or node_dict.get("name") or "Untitled"
+                decoded_name = html.unescape(raw_name)
+                
+                if decoded_name.strip() != "Untitled":
+                    # Store decoded name for later use
+                    node_dict["_decoded_name"] = decoded_name
+                    mirror_path_nodes.append(node_dict)
+                
                 parent_id = node_dict.get("parent_id") or node_dict.get("parentId")
-                mirror_path_nodes.append(node_dict)
                 current_id = parent_id
                 hops_mirror += 1
             
