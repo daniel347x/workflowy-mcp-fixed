@@ -159,7 +159,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
             node = await client.get_node(current_id)
             
             # DEBUG: Log each node found
-            parent_id = getattr(node, "parentId", None)
+            parent_id = getattr(node, "parent_id", None)
             log_event(f"Found node: {node.id} (name: {getattr(node, 'nm', 'Untitled')}), parent: {parent_id}", "UUID_RES")
             
             path_nodes.append(node)
@@ -218,7 +218,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
                 {
                     "id": node.id,
                     "name": getattr(node, "nm", None) or "Untitled",
-                    "parent_id": getattr(node, "parentId", None),
+                    "parent_id": getattr(node, "parent_id", None),
                 }
                 for node in path_nodes
             ],
