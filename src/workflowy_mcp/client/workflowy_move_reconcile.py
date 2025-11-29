@@ -104,7 +104,7 @@ async def reconcile_tree(
             debug_log.write(f"[{timestamp}] {msg}\n")
             debug_log.flush()
         
-        # 2. Callback (Console Visibility)
+        # 2. Optional external debug callback (e.g., api_client _log_debug)
         if log_debug_msg:
             log_debug_msg(msg)
 

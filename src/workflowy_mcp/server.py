@@ -29,7 +29,7 @@ from .models import (
     WorkFlowyNode,
 )
 
-logger = logging.getLogger(__name__)
+logger = _ClientLogger("SERVER")
 
 # Global client instance
 _client: WorkFlowyClient | None = None
@@ -68,6 +68,49 @@ def log_event(message: str, component: str = "SERVER") -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     # 🗡️ prefix makes it easy to grep/spot in the console
     print(f"[{timestamp}] 🗡️ [{component}] {message}", file=sys.stderr, flush=True)
+
+
+def _log(message: str, component: str = "SERVER") -> None:
+    """Unified log wrapper used throughout this server.
+
+    Ensures all logging uses the DAGGER+DATETIME+TAG prefix and plain
+    print(..., file=sys.stderr), which reliably surfaces in the MCP
+    connector console (FastMCP tends to swallow standard logging output).
+    """
+    log_event(message, component)
+
+
+class _ClientLogger:
+    """Lightweight logger that delegates to _log / log_event.
+
+    Used in place of logging.getLogger(...) so existing logger.info /
+    logger.warning / logger.error calls feed into the DAGGER logger
+    instead of Python's logging module.
+    """
+
+    def __init__(self, component: str = "SERVER") -> None:
+        self._component = component
+
+    def _msg(self, msg: object) -> str:
+        try:
+            return str(msg)
+        except Exception:
+            return repr(msg)
+
+    def info(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(self._msg(msg), self._component)
+
+    def warning(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(f"WARNING: {self._msg(msg)}", self._component)
+
+    def error(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(f"ERROR: {self._msg(msg)}", self._component)
+
+    def debug(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(f"DEBUG: {self._msg(msg)}", self._component)
+
+    def exception(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(f"EXCEPTION: {self._msg(msg)}", self._component)
 
 
 async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, format_mode: str = "f3") -> None:
@@ -423,10 +466,6 @@ async def _start_background_job(
     description="Get status/result for long-running MCP jobs (ETCH, NEXUS, etc.).",
 )
 async def mcp_job_status(job_id: str | None = None) -> dict:
-    # DEBUG: Force visibility check
-    import sys
-    print("TEST: STDERR PRINT from mcp_job_status", file=sys.stderr, flush=True)
-    
     # Return status for one job (if job_id given) or all jobs.
     if job_id is None:
         jobs = []
@@ -1697,7 +1736,7 @@ async def nexus_weave(
                     "max_sync_nodes": max_sync_nodes,
                 }
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"nexus_weave: failed to inspect JSON for node count: {e}")
+            log_event(f"nexus_weave: failed to inspect JSON for node count: {e}", "NEXUS")
 
     try:
         result = await client.bulk_import_from_file(json_file, parent_id, dry_run, import_policy)
@@ -1858,10 +1897,10 @@ if __name__ == "__main__":
             
     sys.stdout = StderrRedirector()
 
-    # 5. Log startup confirmation
-    logging.critical("☢️ NUCLEAR LOGGING ACTIVE: DEBUG LEVEL ☢️")
-    # Force output to stderr using logger.error (which usually bypasses filters)
-    logging.error("STDERR TEST: This should appear in console (via logging.error)")
+    # 5. Log startup confirmation (via DAGGER logger + root logger)
+    log_event("☢️ NUCLEAR LOGGING ACTIVE: DEBUG LEVEL ☢️", "SERVER")
+    local_logger = _ClientLogger("SERVER")
+    local_logger.error("STDERR TEST: This should appear in console (via logger.error)")
     print("Standard Output Redirection Test", file=sys.stderr)
 
     # Run the server

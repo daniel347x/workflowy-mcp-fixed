@@ -36,6 +36,53 @@ def log_event(message: str, component: str = "CLIENT") -> None:
     # 🗡️ prefix makes it easy to grep/spot in the console
     print(f"[{timestamp}] 🗡️ [{component}] {message}", file=sys.stderr, flush=True)
 
+
+def _log(message: str, component: str = "CLIENT") -> None:
+    """Unified log wrapper used throughout this client.
+
+    This ensures ALL logging goes through the same DAGGER+DATETIME+TAG
+    prefix and uses plain print(..., file=sys.stderr), which reliably
+    surfaces in the MCP connector console (unlike the standard
+    logging module, which FastMCP eats).
+    """
+    log_event(message, component)
+
+
+class _ClientLogger:
+    """Lightweight logger that delegates to _log / log_event.
+
+    This replaces logger.info/logger.warning/logger.error in this file
+    without relying on Python's logging module (which is swallowed by
+    FastMCP). Methods accept arbitrary *args/**kwargs for compatibility
+    but only the first message argument is used.
+    """
+
+    def __init__(self, component: str = "CLIENT") -> None:
+        self._component = component
+
+    def _msg(self, msg: object) -> str:
+        try:
+            return str(msg)
+        except Exception:
+            return repr(msg)
+
+    def info(self, msg: object, *args: object, **kwargs: object) -> None:  # noqa: D401
+        """Info-level log (no explicit level tag; message already descriptive)."""
+        _log(self._msg(msg), self._component)
+
+    def warning(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(f"WARNING: {self._msg(msg)}", self._component)
+
+    def error(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(f"ERROR: {self._msg(msg)}", self._component)
+
+    def debug(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(f"DEBUG: {self._msg(msg)}", self._component)
+
+    def exception(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(f"EXCEPTION: {self._msg(msg)}", self._component)
+
+
 def _log_to_file_helper(message: str, log_type: str = "reconcile") -> None:
     """Log message to a specific debug file (best-effort).
 
@@ -316,9 +363,8 @@ class WorkFlowyClient:
             max_retries: Maximum retry attempts (default 10)
         """
         import asyncio
-        import logging
 
-        logger = logging.getLogger(__name__)
+        logger = _ClientLogger()
 
         # Check for single-node override token (skip if internal call)
         if not _internal_call:
@@ -423,7 +469,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             except NetworkError as e:
                 retry_count += 1
-                logger.warning(
+                _log(
                     f"Network error on create_node: {e}. Retry {retry_count}/{max_retries}"
                 )
                 if retry_count < max_retries:
@@ -454,9 +500,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             max_retries: Maximum retry attempts (default 5)
         """
         import asyncio
-        import logging
-        
-        logger = logging.getLogger(__name__)
+
+        logger = _ClientLogger()
         
         # Validate and escape name field if being updated
         if request.name is not None:
@@ -563,9 +608,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             max_retries: Maximum retry attempts (default 5)
         """
         import asyncio
-        import logging
-        
-        logger = logging.getLogger(__name__)
+
+        logger = _ClientLogger()
         retry_count = 0
         base_delay = 1.0
         
@@ -629,9 +673,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             max_retries: Maximum retry attempts (default 5)
         """
         import asyncio
-        import logging
-        
-        logger = logging.getLogger(__name__)
+
+        logger = _ClientLogger()
         retry_count = 0
         base_delay = 1.0
         
@@ -707,9 +750,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             max_retries: Maximum retry attempts (default 5)
         """
         import asyncio
-        import logging
-        
-        logger = logging.getLogger(__name__)
+
+        logger = _ClientLogger()
         retry_count = 0
         base_delay = 1.0
         
@@ -790,9 +832,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
     async def complete_node(self, node_id: str, max_retries: int = 10) -> WorkFlowyNode:
         """Mark a node as completed with exponential backoff retry."""
         import asyncio
-        import logging
 
-        logger = logging.getLogger(__name__)
+        logger = _ClientLogger()
         retry_count = 0
         base_delay = 1.0
 
@@ -851,9 +892,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
     async def uncomplete_node(self, node_id: str, max_retries: int = 10) -> WorkFlowyNode:
         """Mark a node as not completed with exponential backoff retry."""
         import asyncio
-        import logging
 
-        logger = logging.getLogger(__name__)
+        logger = _ClientLogger()
         retry_count = 0
         base_delay = 1.0
 
@@ -928,9 +968,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             True if move was successful
         """
         import asyncio
-        import logging
-        
-        logger = logging.getLogger(__name__)
+
+        logger = _ClientLogger()
         retry_count = 0
         base_delay = 1.0
         
@@ -1018,10 +1057,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
           mutating operations (or the "*" sentinel is present).
         """
         import asyncio
-        import logging
         from datetime import datetime
 
-        logger = logging.getLogger(__name__)
+        logger = _ClientLogger()
 
         async def fetch_and_cache() -> dict[str, Any]:
             """Call /nodes-export with retries and update the cache."""
@@ -1805,9 +1843,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         """
         import asyncio
         import json as json_module
-        import logging
-        
-        logger = logging.getLogger(__name__)
+
+        logger = _ClientLogger()
         
         # ===== TRY WEBSOCKET FIRST (if connected and queue available) =====
         if _ws_connection and _ws_queue:
@@ -1913,7 +1950,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             Same format as workflowy_glimpse with _source="api"
         """
         import logging
-        logger = logging.getLogger(__name__)
+        logger = _ClientLogger()
         
         # EFFICIENT TRAVERSAL: Use list_nodes BFS instead of fetching entire account
         total_nodes_fetched = 0
@@ -2109,10 +2146,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             }
         """
         import asyncio
-        import logging
         import json
-        
-        logger = logging.getLogger(__name__)
+
+        logger = _ClientLogger()
         
         # 🔧 AUTO-FIX: Detect if nodes is stringified JSON instead of list
         stringify_strategy_used = None
@@ -2530,9 +2566,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             }
         """
         import asyncio
-        import logging
-        
-        logger = logging.getLogger(__name__)
+
+        logger = _ClientLogger()
 
         # Read JSON file
         try:
@@ -2768,6 +2803,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 layoutMode=(data.get('data') or {}).get('layoutMode'),  # Handle data=None gracefully
                 position='bottom'
             )
+            # Reconciliation-scope file logging (WEAVE only; normal client usage untouched)
+            self._log_to_file(
+                f"WEAVE CREATE: name={data.get('name')} parent={parent_uuid}",
+                "reconcile",
+            )
             node = await self.create_node(request, _internal_call=True)
             stats["api_calls"] += 1
             stats["nodes_created"] += 1
@@ -2780,24 +2820,44 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 note=data.get('note'),
                 layoutMode=(data.get('data') or {}).get('layoutMode')  # Handle data=None gracefully
             )
+            # Reconciliation-scope file logging
+            self._log_to_file(
+                f"WEAVE UPDATE: id={node_uuid} name={data.get('name')}",
+                "reconcile",
+            )
             await self.update_node(node_uuid, request)
             stats["api_calls"] += 1
             stats["nodes_updated"] += 1
         
         async def delete_node_wrapper(node_uuid: str) -> None:
             """Wrapper for delete_node."""
+            # Reconciliation-scope file logging
+            self._log_to_file(
+                f"WEAVE DELETE: id={node_uuid}",
+                "reconcile",
+            )
             await self.delete_node(node_uuid)
             stats["api_calls"] += 1
             stats["nodes_deleted"] += 1
         
         async def move_node_wrapper(node_uuid: str, new_parent_uuid: str, position: str = "top") -> None:
             """Wrapper for move_node."""
+            # Reconciliation-scope file logging
+            self._log_to_file(
+                f"WEAVE MOVE: id={node_uuid} parent={new_parent_uuid} position={position}",
+                "reconcile",
+            )
             await self.move_node(node_uuid, new_parent_uuid, position)
             stats["api_calls"] += 1
             stats["nodes_moved"] += 1
         
         async def export_nodes_wrapper(node_uuid: str) -> dict:
             """Wrapper for export_nodes - single bulk API call."""
+            # Reconciliation-scope file logging
+            self._log_to_file(
+                f"WEAVE EXPORT: root={node_uuid}",
+                "reconcile",
+            )
             raw_data = await self.export_nodes(node_uuid)
             stats["api_calls"] += 1
             return raw_data
@@ -2822,7 +2882,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 import_policy=import_policy,
                 dry_run=dry_run,
                 log_weave_entry=log_weave_entry_fn,
-                log_debug_msg=lambda m: log_event(m, "RECONCILE"),
                 log_to_file_msg=lambda m: _log_to_file_helper(m, "reconcile"),
             )
             
@@ -3216,7 +3275,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         """
         import logging
 
-        logger = logging.getLogger(__name__)
+        logger = _ClientLogger()
 
         run_dir = self._get_nexus_dir(nexus_tag)
         coarse_path = os.path.join(run_dir, "coarse_terrain.json")
@@ -4225,7 +4284,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         import uuid
         from datetime import datetime
 
-        logger = logging.getLogger(__name__)
+        logger = _ClientLogger()
 
         # Determine exploration mode from session_hint.
         # DEFAULT: dfs_full_walk (strict full leaf walk, DO OR DIE).
@@ -4399,7 +4458,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         import json as json_module
         from datetime import datetime
 
-        logger = logging.getLogger(__name__)
+        logger = _ClientLogger()
 
         sessions_dir = self._get_explore_sessions_dir()
         session_path = os.path.join(sessions_dir, f"{session_id}.json")
@@ -5266,7 +5325,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         import json as json_module
         import copy
 
-        logger = logging.getLogger(__name__)
+        logger = _ClientLogger()
 
         sessions_dir = self._get_explore_sessions_dir()
         session_path = os.path.join(sessions_dir, f"{session_id}.json")
