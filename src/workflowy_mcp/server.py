@@ -145,6 +145,33 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         # Build node lookup by ID
         nodes_by_id = {n.get("id"): n for n in all_nodes if n.get("id")}
         
+        # Check if target node's ancestor chain intersects dirty set
+        # If so, refresh cache before proceeding (lazy refresh on demand)
+        dirty_ids = client._nodes_export_dirty_ids
+        if dirty_ids and ("*" in dirty_ids or target in dirty_ids):
+            # Quick check: is target itself dirty or global dirty flag set?
+            needs_refresh = True
+        elif dirty_ids:
+            # Walk ancestor chain from target to see if any ancestor is dirty
+            needs_refresh = False
+            current = target
+            visited_check: set[str] = set()
+            while current and current not in visited_check:
+                visited_check.add(current)
+                if current in dirty_ids:
+                    needs_refresh = True
+                    break
+                node_dict = nodes_by_id.get(current)
+                if not node_dict:
+                    break
+                current = node_dict.get("parent_id") or node_dict.get("parentId")
+            
+            if needs_refresh:
+                log_event(f"Path from {target} intersects dirty IDs; refreshing cache", "UUID_RES")
+                export_data = await client.export_nodes(node_id=None, use_cache=False, force_refresh=True)
+                all_nodes = export_data.get("nodes", []) or []
+                nodes_by_id = {n.get("id"): n for n in all_nodes if n.get("id")}
+        
         # DEBUG: Log cache stats
         log_event(f"Resolving path for target_uuid: {target} (cache: {len(nodes_by_id)} nodes)", "UUID_RES")
         
@@ -348,6 +375,9 @@ async def websocket_handler(websocket):
                             + ", ".join(named_entries),
                             "WS_HANDLER",
                         )
+                        # NOTE: Cache refresh is LAZY - only triggered when UUID path is
+                        # requested AND the path intersects a dirty ID. This prevents rate
+                        # limiting from eager refreshes.
                     except Exception as e:
                         log_event(
                             f"Failed to mark /nodes-export cache dirty from WebSocket notification: {e}",
