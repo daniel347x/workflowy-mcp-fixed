@@ -99,7 +99,7 @@ def _log_to_file_helper(message: str, log_type: str = "reconcile") -> None:
             filename = "etch_debug.log"
         
         log_path = fr"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\{filename}"
-        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         
         with open(log_path, "a", encoding="utf-8") as dbg:
             dbg.write(f"[{ts}] {message}\n")

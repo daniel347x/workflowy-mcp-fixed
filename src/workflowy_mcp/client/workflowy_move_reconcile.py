@@ -96,7 +96,7 @@ async def reconcile_tree(
     weave_start_time = datetime.now()
 
     def log(msg):
-        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]  # HH:MM:SS.mmm
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # YYYY-MM-DD HH:MM:SS.mmm
         # 1. File Persistence (via callback now, or fallback to local debug_log)
         if log_to_file_msg:
             log_to_file_msg(msg)
