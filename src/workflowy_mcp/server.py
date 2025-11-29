@@ -259,7 +259,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
                 lines.append("")
             
             # Ending block
-            lines.append("--> Use Leaf UUID:")
+            lines.append("→ Use Leaf UUID:")
             lines.append(f"`{target}`")
             
         else:
