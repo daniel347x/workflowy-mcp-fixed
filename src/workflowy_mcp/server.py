@@ -120,11 +120,13 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
     - Uses /nodes-export cache to build parent map (all nodes in one call)
     - Walks parent_id chain from leaf to root using cached data
     - O(1) API call + O(depth) traversal = fast and reliable
+    - Decodes HTML entities (&lt; &gt; &amp;) in node names for display
     
     format_mode:
       - "f3" (default): Compact mode. One line per node.
       - "f2": Full/Verbose mode. Node name, then UUID on next line, then blank line.
     """
+    import html
     client = get_client()
     target = (target_uuid or "").strip()
 
@@ -212,9 +214,12 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
             
             # DEBUG: Log each node found
             parent_id = node_dict.get("parent_id") or node_dict.get("parentId")
-            node_name = node_dict.get("nm") or node_dict.get("name") or "Untitled"
+            raw_name = node_dict.get("nm") or node_dict.get("name") or "Untitled"
+            node_name = html.unescape(raw_name)  # Decode &lt; &gt; &amp; etc.
             log_event(f"Found node: {current_id} (name: {node_name}), parent: {parent_id}", "UUID_RES")
             
+            # Store decoded name in dict for later use
+            node_dict["_decoded_name"] = node_name
             path_nodes.append(node_dict)
             current_id = parent_id
             hops += 1
@@ -240,7 +245,8 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
             # FULL / VERBOSE MODE (F2-style)
             # Render name, then UUID, then blank line for every node
             for depth, node_dict in enumerate(path_nodes):
-                name = node_dict.get("nm") or node_dict.get("name") or "Untitled"
+                # Use decoded name (HTML entities already unescaped)
+                name = node_dict.get("_decoded_name") or "Untitled"
                 node_id = node_dict.get("id") or ""
                 prefix = "#" * (depth + 1)
                 lines.append(f"{prefix} {name}")
@@ -254,7 +260,8 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         else:
             # COMPACT MODE (F3-style / Default)
             for depth, node_dict in enumerate(path_nodes):
-                name = node_dict.get("nm") or node_dict.get("name") or "Untitled"
+                # Use decoded name (HTML entities already unescaped)
+                name = node_dict.get("_decoded_name") or "Untitled"
                 prefix = "#" * (depth + 1)
                 lines.append(f"{prefix} {name}")
 
@@ -271,7 +278,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
             "path": [
                 {
                     "id": node_dict.get("id"),
-                    "name": node_dict.get("nm") or node_dict.get("name") or "Untitled",
+                    "name": node_dict.get("_decoded_name") or "Untitled",
                     "parent_id": node_dict.get("parent_id") or node_dict.get("parentId"),
                 }
                 for node_dict in path_nodes
