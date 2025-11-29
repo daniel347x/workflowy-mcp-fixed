@@ -1484,35 +1484,33 @@ def nexus_transform_jewel(
 
 
 @mcp.tool(
-    name="nexus_weave_enchanted",
+    name="nexus_weave_enchanted_async",
     description=(
-        "WEAVE the ENCHANTED TERRAIN (T2) back into the living Workflowy ETHER, "
-        "completing the PHANTOM GEMSTONE NEXUS. Can run as a DRY RUN to simulate "
-        "which parts of the ETHER would be transmuted before actually weaving."
+        "Start an async NEXUS ENCHANTED WEAVE job (WEAVE T2 back into Workflowy ETHER) "
+        "and return a job_id for status polling and cancellation."
     ),
 )
-async def nexus_weave_enchanted(
+async def nexus_weave_enchanted_async(
     nexus_tag: str,
     dry_run: bool = False,
 ) -> dict:
-    """WEAVE ENCHANTED TERRAIN back into the ETHER.
+    """Start ENCHANTED TERRAIN weave as a background job and return a job_id.
 
-    Take the ENCHANTED TERRAIN (T2) you have crafted in JSON form and WEAVE it
-    back into the living Workflowy ETHER. In dry_run mode, simulate the
-    transmutation without touching the ETHER; otherwise, perform the weave with
-    reconcile safeguards.
+    This wraps WorkFlowyClient.nexus_weave_enchanted in the same job framework
+    used by nexus_weave_async so long-running WEAVEs can be monitored and
+    cancelled via mcp_job_status / mcp_cancel_job.
     """
     client = get_client()
 
-    # Rate limiting is managed within the client for reconcile operations.
-    try:
-        result = await client.nexus_weave_enchanted(nexus_tag=nexus_tag, dry_run=dry_run)
-        return result
-    except Exception as e:  # noqa: BLE001
-        return {
-            "success": False,
-            "errors": [f"WEAVE failed: {type(e).__name__}: {e}"],
-        }
+    async def run_weave(job_id: str) -> dict:  # job_id reserved for future logging
+        return await client.nexus_weave_enchanted(nexus_tag=nexus_tag, dry_run=dry_run)
+
+    payload = {
+        "nexus_tag": nexus_tag,
+        "dry_run": dry_run,
+    }
+
+    return await _start_background_job("nexus_weave_enchanted", payload, run_weave)
 
 
 @mcp.tool(

@@ -3700,7 +3700,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         try:
             glimpse_result = await self.workflowy_glimpse_full(
                 node_id=workflowy_root_id,
-                use_efficient_traversal=True,
+                use_efficient_traversal=False,
                 depth=None,  # Always fetch full depth
                 size_limit=max_nodes,
             )
