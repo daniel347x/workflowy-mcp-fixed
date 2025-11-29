@@ -297,15 +297,48 @@ async def websocket_handler(websocket):
                 # Optional: mutation notifications from Workflowy desktop
                 # (e.g., extension sends notify_node_mutated when a node changes).
                 if action == 'notify_node_mutated':
+                    # Preferred payload (v3.9.2+): "nodes" = [{"id": "...", "name": "..."}, ...]
+                    # Legacy payloads: "node_ids" (list[str]) or "node_id" (str).
+                    nodes_payload = data.get('nodes') or []
                     node_ids = data.get('node_ids') or data.get('node_id') or []
                     if isinstance(node_ids, str):
                         node_ids = [node_ids]
+
+                    named_entries: list[str] = []
+
+                    # If structured nodes are present, trust them and derive both
+                    # IDs and names from that payload for better logging.
+                    if isinstance(nodes_payload, list) and nodes_payload:
+                        node_ids = []
+                        for entry in nodes_payload:
+                            if not isinstance(entry, dict):
+                                continue
+                            nid = entry.get('id') or entry.get('uuid')
+                            name = entry.get('name')
+                            if not nid:
+                                continue
+                            node_ids.append(nid)
+                            if name is not None:
+                                named_entries.append(f"{nid} ({name!r})")
+                            else:
+                                named_entries.append(str(nid))
+                    else:
+                        # Fallback: no structured nodes payload; log bare IDs only.
+                        named_entries = [str(nid) for nid in node_ids]
+
                     try:
                         client = get_client()
                         client._mark_nodes_export_dirty(node_ids)
-                        log_event(f"Marked mutated node_ids as dirty in /nodes-export cache: {node_ids}", "WS_HANDLER")
+                        log_event(
+                            "Marked mutated nodes as dirty in /nodes-export cache: "
+                            + ", ".join(named_entries),
+                            "WS_HANDLER",
+                        )
                     except Exception as e:
-                        log_event(f"Failed to mark /nodes-export cache dirty from WebSocket notification: {e}", "WS_HANDLER")
+                        log_event(
+                            f"Failed to mark /nodes-export cache dirty from WebSocket notification: {e}",
+                            "WS_HANDLER",
+                        )
                     continue
                 
                 # Put all other messages in queue for workflowy_glimpse() to consume
