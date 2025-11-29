@@ -276,6 +276,14 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
             lines.append(f"→ `{target}`")
 
         markdown = "\n".join(lines)
+        
+        # DEBUG: Log the actual markdown being sent (first 3 lines + last 2 lines)
+        markdown_lines = markdown.split('\n')
+        if len(markdown_lines) <= 10:
+            log_event(f"Markdown output:\n{markdown}", "UUID_RES")
+        else:
+            preview = '\n'.join(markdown_lines[:3] + ['...'] + markdown_lines[-2:])
+            log_event(f"Markdown output (preview):\n{preview}", "UUID_RES")
 
         await websocket.send(json.dumps({
             "action": "uuid_path_result",
