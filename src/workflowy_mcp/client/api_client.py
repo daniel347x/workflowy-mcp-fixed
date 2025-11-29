@@ -107,6 +107,45 @@ def _log_to_file_helper(message: str, log_type: str = "reconcile") -> None:
         # Never let logging failures affect API behavior
         pass
 
+
+def _log_glimpse_to_file(operation_type: str, node_id: str, result: dict[str, Any]) -> None:
+    """Log GLIMPSE operations to persistent markdown files (best-effort).
+    
+    Args:
+        operation_type: "glimpse" or "glimpse_full"
+        node_id: Root node UUID that was glimpsed
+        result: The result dict returned by glimpse operation
+    """
+    try:
+        from datetime import datetime
+        import json as json_module
+        
+        base_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\uuid_and_glimpse_explorer"
+        filename = f"{operation_type}.md"
+        log_path = os.path.join(base_dir, filename)
+        
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"## {timestamp}\n\n")
+            f.write(f"**Node ID:** `{node_id}`\n")
+            f.write(f"**Root Name:** {result.get('root', {}).get('name', 'Unknown')}\n")
+            f.write(f"**Node Count:** {result.get('node_count', 0)}\n")
+            f.write(f"**Depth:** {result.get('depth', 0)}\n")
+            f.write(f"**Source:** {result.get('_source', 'unknown')}\n\n")
+            
+            # Write truncated JSON preview (first 50 lines of pretty-printed result)
+            json_preview = json_module.dumps(result, indent=2, ensure_ascii=False)
+            preview_lines = json_preview.split('\n')[:50]
+            if len(preview_lines) < len(json_preview.split('\n')):
+                preview_lines.append("... (truncated)")
+            f.write("```json\n")
+            f.write('\n'.join(preview_lines))
+            f.write("\n```\n\n---\n\n")
+    except Exception:
+        # Never let logging failures affect API behavior
+        pass
+
 class WorkFlowyClient:
     """Async client for WorkFlowy API operations."""
 
@@ -1875,6 +1914,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     # Add source indicator
                     response['_source'] = 'websocket'
                     logger.info("✅ GLIMPSE via WebSocket successful")
+                    
+                    # Log to persistent file
+                    _log_glimpse_to_file("glimpse", node_id, response)
+                    
                     return response
                 else:
                     logger.warning("  WebSocket response invalid")
@@ -2069,7 +2112,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # Calculate max depth
             max_depth = self._calculate_max_depth(children)
             
-            return {
+            result = {
                 "success": True,
                 "root": root_metadata,
                 "children": children,
@@ -2077,6 +2120,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "depth": max_depth,
                 "_source": "api"  # Indicate data came from API (not WebSocket)
             }
+            
+            # Log to persistent file
+            _log_glimpse_to_file("glimpse_full", node_id, result)
+            
+            return result
             
         except Exception as e:
             raise NetworkError(f"GLIMPSE FULL failed: {str(e)}") from e
@@ -3569,6 +3617,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # mode="coarse_terrain_only": only coarse_terrain.json written
         # User will call nexus_ignite_shards later to create phantom_gem.json
+        
+        # Log to persistent file (use glimpse_result which has the tree data)
+        _log_glimpse_to_file("glimpse", workflowy_root_id, glimpse_result)
 
         return result
 
@@ -3757,6 +3808,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # mode="coarse_terrain_only": only coarse_terrain.json written
         # User will call nexus_ignite_shards later to create phantom_gem.json
+        
+        # Log to persistent file (use glimpse_result which has the tree data)
+        _log_glimpse_to_file("glimpse_full", workflowy_root_id, glimpse_result)
 
         return result
 

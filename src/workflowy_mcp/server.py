@@ -279,6 +279,20 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         
         # DEBUG: Log the complete markdown being sent (acts as historical log)
         log_event(f"Markdown output:\n{markdown}", "UUID_RES")
+        
+        # Also append to persistent UUID Explorer log file
+        try:
+            from datetime import datetime
+            log_path = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\uuid_and_glimpse_explorer\uuid_explorer.md"
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"## {timestamp}\n\n")
+                f.write(f"**Target UUID:** `{target}`\n\n")
+                f.write(markdown)
+                f.write("\n\n---\n\n")
+        except Exception as log_err:
+            # Never let logging failures affect UUID resolution
+            log_event(f"Failed to write UUID Explorer log: {log_err}", "UUID_RES")
 
         await websocket.send(json.dumps({
             "action": "uuid_path_result",
