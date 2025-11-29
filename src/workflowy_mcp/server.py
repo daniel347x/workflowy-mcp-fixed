@@ -175,14 +175,26 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         # DEBUG: Log cache stats
         log_event(f"Resolving path for target_uuid: {target} (cache: {len(nodes_by_id)} nodes)", "UUID_RES")
         
+        # If node not found in cache, try refreshing once before giving up
         if target not in nodes_by_id:
-            await websocket.send(json.dumps({
-                "action": "uuid_path_result",
-                "success": False,
-                "target_uuid": target_uuid,
-                "error": f"Node {target} not found in export cache",
-            }))
-            return
+            log_event(f"Node {target} not found in cache; attempting refresh", "UUID_RES")
+            try:
+                export_data = await client.export_nodes(node_id=None, use_cache=False, force_refresh=True)
+                all_nodes = export_data.get("nodes", []) or []
+                nodes_by_id = {n.get("id"): n for n in all_nodes if n.get("id")}
+                log_event(f"Cache refreshed: {len(nodes_by_id)} nodes", "UUID_RES")
+            except Exception as refresh_err:
+                log_event(f"Cache refresh failed: {refresh_err}", "UUID_RES")
+            
+            # Check again after refresh
+            if target not in nodes_by_id:
+                await websocket.send(json.dumps({
+                    "action": "uuid_path_result",
+                    "success": False,
+                    "target_uuid": target_uuid,
+                    "error": f"Node {target} not found (tried cache + refresh)",
+                }))
+                return
         
         # Walk parent chain from target to root
         path_nodes = []
@@ -213,11 +225,12 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         log_event(f"Resolved path length: {len(path_nodes)}", "UUID_RES")
 
         if not path_nodes:
+            log_event(f"Path resolution returned empty for {target_uuid}", "UUID_RES")
             await websocket.send(json.dumps({
                 "action": "uuid_path_result",
                 "success": False,
                 "target_uuid": target_uuid,
-                "error": f"Node {target_uuid} not found in API",
+                "error": f"Could not build path for node {target_uuid} (empty path after traversal)",
             }))
             return
 
