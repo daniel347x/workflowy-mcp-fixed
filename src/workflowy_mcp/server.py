@@ -29,6 +29,39 @@ from .models import (
     WorkFlowyNode,
 )
 
+class _ClientLogger:
+    """Lightweight logger that delegates to _log / log_event.
+
+    Used in place of logging.getLogger(...) so existing logger.info /
+    logger.warning / logger.error calls feed into the DAGGER logger
+    instead of Python's logging module.
+    """
+
+    def __init__(self, component: str = "SERVER") -> None:
+        self._component = component
+
+    def _msg(self, msg: object) -> str:
+        try:
+            return str(msg)
+        except Exception:
+            return repr(msg)
+
+    def info(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(self._msg(msg), self._component)
+
+    def warning(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(f"WARNING: {self._msg(msg)}", self._component)
+
+    def error(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(f"ERROR: {self._msg(msg)}", self._component)
+
+    def debug(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(f"DEBUG: {self._msg(msg)}", self._component)
+
+    def exception(self, msg: object, *args: object, **kwargs: object) -> None:
+        _log(f"EXCEPTION: {self._msg(msg)}", self._component)
+
+
 logger = _ClientLogger("SERVER")
 
 # Global client instance
@@ -78,39 +111,6 @@ def _log(message: str, component: str = "SERVER") -> None:
     connector console (FastMCP tends to swallow standard logging output).
     """
     log_event(message, component)
-
-
-class _ClientLogger:
-    """Lightweight logger that delegates to _log / log_event.
-
-    Used in place of logging.getLogger(...) so existing logger.info /
-    logger.warning / logger.error calls feed into the DAGGER logger
-    instead of Python's logging module.
-    """
-
-    def __init__(self, component: str = "SERVER") -> None:
-        self._component = component
-
-    def _msg(self, msg: object) -> str:
-        try:
-            return str(msg)
-        except Exception:
-            return repr(msg)
-
-    def info(self, msg: object, *args: object, **kwargs: object) -> None:
-        _log(self._msg(msg), self._component)
-
-    def warning(self, msg: object, *args: object, **kwargs: object) -> None:
-        _log(f"WARNING: {self._msg(msg)}", self._component)
-
-    def error(self, msg: object, *args: object, **kwargs: object) -> None:
-        _log(f"ERROR: {self._msg(msg)}", self._component)
-
-    def debug(self, msg: object, *args: object, **kwargs: object) -> None:
-        _log(f"DEBUG: {self._msg(msg)}", self._component)
-
-    def exception(self, msg: object, *args: object, **kwargs: object) -> None:
-        _log(f"EXCEPTION: {self._msg(msg)}", self._component)
 
 
 async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, format_mode: str = "f3") -> None:
