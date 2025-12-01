@@ -4090,7 +4090,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         env['WORKFLOWY_API_KEY'] = self.config.api_key.get_secret_value()
         
         # Pass nexus_runs base directory (so worker doesn't have to calculate it)
-        nexus_runs_base = os.path.join(self._get_nexus_base_dir(), "nexus_runs")
+        # Hardcoded to match _get_nexus_dir() base location
+        nexus_runs_base = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs"
         env['NEXUS_RUNS_BASE'] = nexus_runs_base
         
         # Open log file for stdout/stderr capture
