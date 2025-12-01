@@ -901,10 +901,36 @@ async def reconcile_tree(
             cur = parent_map.get(cur)
         return False
 
+    def parent_all_children_known(
+        tid: str,
+        parent_map: Dict[str, Optional[str]],
+        source_nodes_by_id: Dict[Optional[str], Node],
+    ) -> bool:
+        # A target node is only eligible for automatic deletion when:
+        # - It has a parent present in the source JSON, and
+        # - That parent is marked with children_status == 'complete'.
+        #
+        # This confines DELETE to subtrees whose immediate children set we know
+        # is complete (full SCRY or fully-expanded GLIMPSE parents).
+        p = parent_map.get(tid)
+        if p is None:
+            # Never auto-delete the reconciliation root or nodes without a parent.
+            return False
+
+        parent_node = source_nodes_by_id.get(p)
+        if not parent_node:
+            # Parent branch was never present in the source JSON (outside GLIMPSE).
+            return False
+
+        status = parent_node.get('children_status', 'complete')
+        # For full SCRY exports, children_status may be absent; treat that as complete.
+        return status == 'complete'
+
     raw_delete_candidates = ids_in_target - ids_in_source
     to_delete_before_protection = {
         tid for tid in raw_delete_candidates
-        if not is_hidden_descendant(tid, truncated_parents, Parent_T2)
+        if parent_all_children_known(tid, Parent_T2, Map_S)
+        and not is_hidden_descendant(tid, truncated_parents, Parent_T2)
     }
     
     # NEW: Protect direct children of root if root has hidden children
