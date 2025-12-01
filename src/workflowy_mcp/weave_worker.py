@@ -5,14 +5,23 @@ NEXUS WEAVE Worker - Detached background process for WEAVE operations.
 This runs independently of the MCP server and survives MCP restarts.
 Progress is tracked via .weave_journal.json and .weave.pid files.
 
+Supports two modes:
+  1. ENCHANTED mode (PHANTOM GEMSTONE NEXUS): Uses nexus_tag to find enchanted_terrain.json
+  2. DIRECT mode (SCRY & WEAVE): Uses explicit json_file path
+
 Usage:
-    python weave_worker.py <nexus_tag> <dry_run>
+    # ENCHANTED mode
+    python weave_worker.py --mode enchanted --nexus-tag <tag> --dry-run <true|false>
+    
+    # DIRECT mode  
+    python weave_worker.py --mode direct --json-file <path> [--parent-id <uuid>] [--import-policy strict] --dry-run <true|false>
 
 Files created/updated:
-    nexus_runs/<tag>/.weave.pid                           # Worker PID
-    nexus_runs/<tag>/enchanted_terrain.weave_journal.json # Progress log
+    .weave.pid                 # Worker PID (location depends on mode)
+    <file>.weave_journal.json  # Progress log (created by bulk_import_from_file)
 """
 
+import argparse
 import asyncio
 import json
 import os
@@ -29,17 +38,22 @@ def log_worker(message: str, component: str = "WEAVE_WORKER") -> None:
 
 async def main():
     """Main worker entry point."""
-    if len(sys.argv) < 3:
-        print(json.dumps({
-            "success": False,
-            "error": "Usage: python weave_worker.py <nexus_tag> <dry_run>"
-        }))
-        sys.exit(1)
     
-    nexus_tag = sys.argv[1]
-    dry_run = sys.argv[2].lower() in ('true', '1', 'yes')
+    parser = argparse.ArgumentParser(description='NEXUS WEAVE detached worker')
+    parser.add_argument('--mode', required=True, choices=['enchanted', 'direct'],
+                       help='ENCHANTED (nexus_tag-based) or DIRECT (json_file-based)')
+    parser.add_argument('--nexus-tag', help='NEXUS tag (for enchanted mode)')
+    parser.add_argument('--json-file', help='JSON file path (for direct mode)')
+    parser.add_argument('--parent-id', help='Parent UUID (for direct mode, optional)')
+    parser.add_argument('--dry-run', default='false', help='Dry run flag (true/false)')
+    parser.add_argument('--import-policy', default='strict', help='Import policy (for direct mode)')
     
-    log_worker(f"Starting WEAVE worker for nexus_tag={nexus_tag}, dry_run={dry_run}")
+    args = parser.parse_args()
+    
+    mode = args.mode
+    dry_run = args.dry_run.lower() in ('true', '1', 'yes')
+    
+    log_worker(f"Starting WEAVE worker in {mode.upper()} mode, dry_run={dry_run}")
     
     # Determine paths
     script_dir = Path(__file__).parent.resolve()
@@ -72,16 +86,41 @@ async def main():
     
     client = WorkFlowyClient(config)
     
-    # Determine nexus run directory
-    nexus_runs_dir = project_root / "temp" / "nexus_runs"
-    run_dir = nexus_runs_dir / nexus_tag
+    # Determine PID file location and validate inputs based on mode
+    pid_file = None
     
-    if not run_dir.exists():
-        log_worker(f"ERROR: NEXUS run directory not found: {run_dir}")
-        sys.exit(1)
+    if mode == 'enchanted':
+        if not args.nexus_tag:
+            log_worker("ERROR: --nexus-tag required for enchanted mode")
+            sys.exit(1)
+        
+        nexus_tag = args.nexus_tag
+        run_dir = project_root / "temp" / "nexus_runs" / nexus_tag
+        
+        if not run_dir.exists():
+            log_worker(f"ERROR: NEXUS run directory not found: {run_dir}")
+            sys.exit(1)
+        
+        pid_file = run_dir / ".weave.pid"
+        log_worker(f"ENCHANTED mode: nexus_tag={nexus_tag}")
+        
+    else:  # direct mode
+        if not args.json_file:
+            log_worker("ERROR: --json-file required for direct mode")
+            sys.exit(1)
+        
+        json_file = args.json_file
+        json_path = Path(json_file)
+        
+        if not json_path.exists():
+            log_worker(f"ERROR: JSON file not found: {json_file}")
+            sys.exit(1)
+        
+        # PID file goes in same directory as JSON file
+        pid_file = json_path.parent / ".weave.pid"
+        log_worker(f"DIRECT mode: json_file={json_file}, parent_id={args.parent_id}")
     
     # Write PID file
-    pid_file = run_dir / ".weave.pid"
     try:
         with open(pid_file, 'w') as f:
             f.write(str(os.getpid()))
@@ -90,17 +129,29 @@ async def main():
         log_worker(f"Failed to write PID file: {e}")
         # Continue anyway - not critical
     
-    # Call the actual weave method
+    # Call the appropriate weave method
     try:
-        log_worker("Calling client.nexus_weave_enchanted...")
-        result = await client.nexus_weave_enchanted(nexus_tag=nexus_tag, dry_run=dry_run)
+        if mode == 'enchanted':
+            log_worker(f"Calling nexus_weave_enchanted for tag={nexus_tag}...")
+            result = await client.nexus_weave_enchanted(nexus_tag=nexus_tag, dry_run=dry_run)
+        else:  # direct mode
+            log_worker(f"Calling bulk_import_from_file for {json_file}...")
+            result = await client.bulk_import_from_file(
+                json_file=json_file,
+                parent_id=args.parent_id,
+                dry_run=dry_run,
+                import_policy=args.import_policy
+            )
         
-        log_worker(f"WEAVE completed successfully: {result.get('nodes_created', 0)} created, "
-                  f"{result.get('nodes_updated', 0)} updated, {result.get('nodes_deleted', 0)} deleted")
+        log_worker(f"WEAVE completed successfully in {mode.upper()} mode: "
+                  f"{result.get('nodes_created', 0)} created, "
+                  f"{result.get('nodes_updated', 0)} updated, "
+                  f"{result.get('nodes_deleted', 0)} deleted, "
+                  f"{result.get('nodes_moved', 0)} moved")
         
         # Clean up PID file on success
         try:
-            if pid_file.exists():
+            if pid_file and pid_file.exists():
                 pid_file.unlink()
             log_worker("PID file cleaned up")
         except Exception:

@@ -202,11 +202,12 @@ def scan_active_weaves(nexus_runs_base: str) -> list[dict[str, Any]]:
             if is_pid_running(pid):
                 # Process is alive
                 job_info = {
-                    "job_id": f"weave-{tag_dir.name}",
+                    "job_id": f"weave-enchanted-{tag_dir.name}",
                     "nexus_tag": tag_dir.name,
                     "pid": pid,
                     "status": "running",
                     "detached": True,
+                    "mode": "enchanted",
                     "journal": str(journal_file) if journal_file.exists() else None
                 }
                 
@@ -4019,48 +4020,73 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "roots": phantom_roots,
         }
 
-    def nexus_weave_enchanted_detached(self, nexus_tag: str, dry_run: bool = False) -> dict[str, Any]:
+    def _launch_detached_weave(
+        self,
+        mode: str,
+        nexus_tag: str | None = None,
+        json_file: str | None = None,
+        parent_id: str | None = None,
+        dry_run: bool = False,
+        import_policy: str = "strict"
+    ) -> dict[str, Any]:
         """Launch NEXUS WEAVE as a detached background process (survives MCP restart).
         
-        The worker process writes:
-        - .weave.pid - Process ID for monitoring
-        - enchanted_terrain.weave_journal.json - Progress log
+        Supports two modes:
+        - ENCHANTED: Uses nexus_tag to find enchanted_terrain.json
+        - DIRECT: Uses explicit json_file path
         
-        Args:
-            nexus_tag: NEXUS tag identifying the run
-            dry_run: If True, preview operations without executing
-            
         Returns:
-            {"success": True, "job_id": "weave-<tag>", "pid": 12345, "detached": True}
+            {"success": True, "job_id": "weave-<id>", "pid": 12345, "detached": True}
         """
         import subprocess
         
-        run_dir = self._get_nexus_dir(nexus_tag)
-        enchanted_path = os.path.join(run_dir, "enchanted_terrain.json")
+        # Validate inputs based on mode
+        if mode == 'enchanted':
+            if not nexus_tag:
+                raise ValueError("nexus_tag required for enchanted mode")
+            run_dir = self._get_nexus_dir(nexus_tag)
+            enchanted_path = os.path.join(run_dir, "enchanted_terrain.json")
+            if not os.path.exists(enchanted_path):
+                raise NetworkError(
+                    "enchanted_terrain.json not found. "
+                    "Call nexus_anchor_jewels(...) before weave."
+                )
+            job_id = f"weave-enchanted-{nexus_tag}"
+        else:  # direct mode
+            if not json_file:
+                raise ValueError("json_file required for direct mode")
+            if not os.path.exists(json_file):
+                raise NetworkError(f"JSON file not found: {json_file}")
+            job_id = f"weave-direct-{Path(json_file).stem}"
         
-        if not os.path.exists(enchanted_path):
-            raise NetworkError(
-                "enchanted_terrain.json not found for nexus_tag. "
-                "Call nexus_anchor_jewels(...) before nexus_weave_enchanted."
-            )
-        
-        # Determine worker script path (sibling to api_client.py in package)
+        # Determine worker script path
         worker_script = os.path.join(os.path.dirname(__file__), "..", "weave_worker.py")
         worker_script = os.path.abspath(worker_script)
         
         if not os.path.exists(worker_script):
             raise NetworkError(f"weave_worker.py not found at {worker_script}")
         
+        # Build command line arguments
+        cmd = [sys.executable, worker_script, '--mode', mode, '--dry-run', str(dry_run).lower()]
+        
+        if mode == 'enchanted':
+            cmd.extend(['--nexus-tag', nexus_tag])
+        else:  # direct
+            cmd.extend(['--json-file', json_file])
+            if parent_id:
+                cmd.extend(['--parent-id', parent_id])
+            cmd.extend(['--import-policy', import_policy])
+        
         # Prepare environment (pass session_id to worker)
         env = os.environ.copy()
         env['WORKFLOWY_SESSION_ID'] = self.config.session_id
         
         # Launch detached process
-        log_event(f"Launching detached WEAVE worker for {nexus_tag}", "DETACHED")
+        log_event(f"Launching detached WEAVE worker ({mode} mode)", "DETACHED")
         
         try:
             process = subprocess.Popen(
-                [sys.executable, worker_script, nexus_tag, str(dry_run).lower()],
+                cmd,
                 env=env,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0,
                 start_new_session=True if sys.platform != 'win32' else False,
@@ -4070,27 +4096,38 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             )
             
             pid = process.pid
-            log_event(f"Detached worker launched: PID={pid}", "DETACHED")
-            
-            # Write PID file for monitoring
-            pid_file = os.path.join(run_dir, ".weave.pid")
-            try:
-                with open(pid_file, 'w') as f:
-                    f.write(str(pid))
-            except Exception as e:
-                log_event(f"Warning: Failed to write PID file: {e}", "DETACHED")
+            log_event(f"Detached worker launched: PID={pid}, mode={mode}", "DETACHED")
             
             return {
                 "success": True,
-                "job_id": f"weave-{nexus_tag}",
+                "job_id": job_id,
                 "pid": pid,
                 "detached": True,
-                "nexus_tag": nexus_tag,
+                "mode": mode,
                 "note": "Worker process detached - survives MCP restart. Check .weave_journal.json for progress."
             }
             
         except Exception as e:
             raise NetworkError(f"Failed to launch detached WEAVE worker: {e}") from e
+    
+    def nexus_weave_enchanted_detached(self, nexus_tag: str, dry_run: bool = False) -> dict[str, Any]:
+        """Launch ENCHANTED TERRAIN WEAVE as detached process."""
+        return self._launch_detached_weave(
+            mode='enchanted',
+            nexus_tag=nexus_tag,
+            dry_run=dry_run
+        )
+    
+    def nexus_weave_detached(self, json_file: str, parent_id: str | None = None, 
+                            dry_run: bool = False, import_policy: str = 'strict') -> dict[str, Any]:
+        """Launch DIRECT WEAVE as detached process."""
+        return self._launch_detached_weave(
+            mode='direct',
+            json_file=json_file,
+            parent_id=parent_id,
+            dry_run=dry_run,
+            import_policy=import_policy
+        )
 
     async def nexus_weave_enchanted(self, nexus_tag: str, dry_run: bool = False) -> dict[str, Any]:
         """WEAVE ENCHANTED TERRAIN → ETHER (Workflowy).

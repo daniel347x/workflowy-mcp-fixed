@@ -716,20 +716,20 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
         return {"success": True, **view}
     
     # Check if this is a detached WEAVE job
-    if job_id.startswith("weave-"):
-        nexus_tag = job_id[6:]  # Strip "weave-" prefix
-        
-        # Scan for this specific tag
+    if job_id.startswith("weave-enchanted-") or job_id.startswith("weave-direct-"):
+        # Scan for detached processes
         detached_jobs = scan_active_weaves(nexus_runs_base)
         for job in detached_jobs:
             if job.get("job_id") == job_id:
                 return {"success": True, **job}
         
-        # Not found - might be completed or never started
+        # Not found in nexus_runs - might be direct mode with PID elsewhere
+        # For now, return helpful error
         return {
             "success": False,
-            "error": f"Job {job_id} not found in memory or as detached process. "
-                     "It may have completed (check .weave_journal.json) or been killed."
+            "error": f"Job {job_id} not found in memory or nexus_runs/. "
+                     "It may have completed (check .weave_journal.json), been killed, or is a direct-mode job. "
+                     "Call mcp_job_status() with no arguments to list all detached jobs."
         }
     
     return {"success": False, "error": f"Unknown job_id: {job_id}"}
@@ -2003,20 +2003,22 @@ async def nexus_weave_async(
     dry_run: bool = False,
     import_policy: str = "strict",
 ) -> dict:
-    """Start NEXUS weave as a background job and return a job_id."""
+    """Start NEXUS weave as a detached background process.
+    
+    Launches weave_worker.py in DIRECT mode as a separate process that survives MCP restart.
+    Progress tracked via .weave.pid and .weave_journal.json files.
+    
+    Use mcp_job_status() to monitor progress (scans directory for active PIDs).
+    """
     client = get_client()
-
-    async def run_weave(job_id: str) -> dict:  # job_id reserved for future logging
-        return await client.bulk_import_from_file(json_file, parent_id, dry_run, import_policy)
-
-    payload = {
-        "json_file": json_file,
-        "parent_id": parent_id,
-        "dry_run": dry_run,
-        "import_policy": import_policy,
-    }
-
-    return await _start_background_job("nexus_weave", payload, run_weave)
+    
+    # Use detached launcher (survives MCP restart)
+    return client.nexus_weave_detached(
+        json_file=json_file,
+        parent_id=parent_id,
+        dry_run=dry_run,
+        import_policy=import_policy
+    )
 
 
 # Tool: List Nexus Keystones
