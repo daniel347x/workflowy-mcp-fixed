@@ -4085,9 +4085,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             json_path = Path(json_file)
             log_file = str(json_path.parent / ".weave.log")
         
-        # Prepare environment (pass API key to worker)
+        # Prepare environment (pass API key and nexus_runs path to worker)
         env = os.environ.copy()
         env['WORKFLOWY_API_KEY'] = self.config.api_key.get_secret_value()
+        
+        # Pass nexus_runs base directory (so worker doesn't have to calculate it)
+        nexus_runs_base = os.path.join(self._get_nexus_base_dir(), "nexus_runs")
+        env['NEXUS_RUNS_BASE'] = nexus_runs_base
         
         # Open log file for stdout/stderr capture
         log_handle = open(log_file, 'w', encoding='utf-8')

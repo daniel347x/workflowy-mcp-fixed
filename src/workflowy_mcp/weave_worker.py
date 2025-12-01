@@ -72,12 +72,13 @@ async def main():
         log_worker(traceback.format_exc())
         sys.exit(1)
     
-    # Determine project root for finding nexus_runs
-    # When deployed: C:\Temp\workflowy-mcp-vladzima\src\workflowy_mcp\weave_worker.py
-    # Project root: C:\Temp\workflowy-mcp-vladzima\
-    # When in Obsidian source: E:\...\TODO\MCP_Servers\workflowy_mcp\weave_worker.py  
-    # Project root: E:\...\TODO\
-    project_root = src_dir.parent if src_dir.name == 'src' else src_dir.parent.parent.parent
+    # Get nexus_runs base directory from environment (passed by launcher)
+    # This avoids path calculation issues when worker is deployed vs source location
+    nexus_runs_base = os.environ.get('NEXUS_RUNS_BASE')
+    if not nexus_runs_base:
+        log_worker("ERROR: NEXUS_RUNS_BASE not set in environment")
+        log_worker("Launcher must pass the nexus_runs directory path via environment")
+        sys.exit(1)
     
     # Initialize client (read config from environment or defaults)
     api_key = os.environ.get('WORKFLOWY_API_KEY')
@@ -105,7 +106,7 @@ async def main():
             sys.exit(1)
         
         nexus_tag = args.nexus_tag
-        run_dir = project_root / "temp" / "nexus_runs" / nexus_tag
+        run_dir = Path(nexus_runs_base) / nexus_tag
         
         if not run_dir.exists():
             log_worker(f"ERROR: NEXUS run directory not found: {run_dir}")
