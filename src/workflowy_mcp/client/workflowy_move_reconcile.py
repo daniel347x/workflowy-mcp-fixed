@@ -804,6 +804,29 @@ async def reconcile_tree(
                     'data': src.get('data'),
                     'completed': bool(src.get('completed', False)),
                 }
+
+                # DEBUG: Log precise src vs tgt differences driving this UPDATE
+                try:
+                    log(f"      [DEBUG] UPDATE diff for {nid}:")
+                    log(
+                        f"         src.name={src.get('name')!r} | "
+                        f"tgt.name={tgt.get('name')!r}"
+                    )
+                    log(
+                        f"         src.note={repr(src.get('note'))} | "
+                        f"tgt.note={repr(tgt.get('note'))}"
+                    )
+                    log(
+                        f"         src.data={repr(src.get('data'))} | "
+                        f"tgt.data={repr(tgt.get('data'))}"
+                    )
+                    log(
+                        f"         src.completed={src.get('completed', False)} | "
+                        f"tgt.completed={tgt.get('completed', False)}"
+                    )
+                except Exception as e:
+                    log(f"      [DEBUG] Failed to log UPDATE diff for {nid}: {type(e).__name__}: {e}")
+
                 if dry_run:
                     log(f"      [DRY-RUN] Would UPDATE {nid} -> {payload}")
                 else:
