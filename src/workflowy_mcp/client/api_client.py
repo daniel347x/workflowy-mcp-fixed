@@ -3782,12 +3782,38 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             children = ws_glimpse.get("children", [])
             self._mark_all_nodes_as_potentially_truncated(children)
 
+        # Check if ROOT ITSELF has hidden children (CRITICAL for top-level safety)
+        root_has_hidden = False
+        root_children_status = "complete"
+        
+        if api_glimpse and api_glimpse.get("success"):
+            # Compare root's direct children count between WebSocket and API
+            ws_root_children_count = len(ws_glimpse.get("children", []) or [])
+            api_root_children_count = len(api_glimpse.get("children", []) or [])
+            
+            if api_root_children_count > ws_root_children_count:
+                root_has_hidden = True
+                root_children_status = "truncated_by_expansion"
+                logger.warning(
+                    f"⚠️ ROOT NODE has hidden children! "
+                    f"WebSocket={ws_root_children_count} top-level nodes, "
+                    f"API={api_root_children_count} top-level nodes. "
+                    f"WEAVE will SKIP deleting hidden children at root level."
+                )
+        else:
+            # API fetch failed - assume root has hidden children (conservative)
+            root_has_hidden = True
+            root_children_status = "truncated_by_expansion"
+            logger.warning("⚠️ API fetch failed - assuming ROOT has hidden children (SAFE/conservative)")
+        
         # Mirror bulk_export_to_file structure: metadata wrapper + children only
         # Root info goes in metadata, NOT in nodes array (prevents root duplication)
         terrain_data = {
             "export_root_id": workflowy_root_id,
             "export_root_name": ws_glimpse["root"]["name"],
             "export_timestamp": None,  # GLIMPSE doesn't have timestamp
+            "export_root_has_hidden_children": root_has_hidden,  # NEW: Root safety flag
+            "export_root_children_status": root_children_status,  # NEW: Root children status
             "nodes": children,  # Children with merged WebSocket+API safety flags
         }
 

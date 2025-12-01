@@ -274,9 +274,17 @@ async def reconcile_tree(
         file_root = source_json.get('export_root_id') or source_json.get('root_id') or source_json.get('parent_id')
         source_nodes = source_json.get('nodes', [])
         jewel_file = source_json.get('jewel_file')
+        
+        # NEW: Extract root-level hidden children flags from metadata
+        root_has_hidden_children = source_json.get('export_root_has_hidden_children', False)
+        root_children_status = source_json.get('export_root_children_status', 'complete')
+        
         log(f"Detected source document with export_root_id={file_root} jewel_file={jewel_file}")
+        log(f"   Root hidden children: {root_has_hidden_children}, status: {root_children_status}")
     else:
         source_nodes = source_json
+        root_has_hidden_children = False
+        root_children_status = 'complete'
         log("Detected bare source node list (no jewel_file metadata)")
 
     # Infer intended parent if not explicitly provided in file
@@ -898,6 +906,19 @@ async def reconcile_tree(
         tid for tid in raw_delete_candidates
         if not is_hidden_descendant(tid, truncated_parents, Parent_T2)
     }
+    
+    # NEW: Protect direct children of root if root has hidden children
+    # This prevents catastrophic deletion when Dan GLIMPSEs the root with collapsed branches
+    if root_has_hidden_children:
+        root_direct_children_in_target = {tid for tid in to_delete_before_protection if Parent_T2.get(tid) == parent_uuid}
+        if root_direct_children_in_target:
+            log(
+                f"   🛡️ ROOT-LEVEL PROTECTION: Root has hidden children (status={root_children_status}). "
+                f"Protecting {len(root_direct_children_in_target)} direct children of root from deletion."
+            )
+            log(f"   Protected root-level nodes: {root_direct_children_in_target}")
+            to_delete_before_protection = to_delete_before_protection - root_direct_children_in_target
+    
     # Guardrail: protect all parents referenced in source (containers)
     to_delete = to_delete_before_protection - parent_refs
 
