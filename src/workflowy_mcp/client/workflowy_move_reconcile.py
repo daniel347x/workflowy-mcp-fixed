@@ -838,6 +838,7 @@ async def reconcile_tree(
                 }
 
                 # DEBUG: Log precise src vs tgt differences driving this UPDATE
+                # (data is no longer compared, so we don't log it)
                 try:
                     log(f"      [DEBUG] UPDATE diff for {nid}:")
                     log(
@@ -847,10 +848,6 @@ async def reconcile_tree(
                     log(
                         f"         src.note={repr(src.get('note'))} | "
                         f"tgt.note={repr(tgt.get('note'))}"
-                    )
-                    log(
-                        f"         src.data={repr(src.get('data'))} | "
-                        f"tgt.data={repr(tgt.get('data'))}"
                     )
                     log(
                         f"         src.completed={src.get('completed', False)} | "
