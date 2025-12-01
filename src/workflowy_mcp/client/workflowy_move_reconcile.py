@@ -431,30 +431,40 @@ async def reconcile_tree(
                 roots.add(d)
         return roots
 
-    def normalize_angle_brackets(s: str | None) -> str | None:
-        """Normalize angle brackets exactly as _validate_name_field/_validate_note_field do.
+    def normalize_html_entities(s: str | None) -> str | None:
+        """Normalize HTML entities exactly as _validate_name_field/_validate_note_field do.
         
         This ensures comparison uses the SAME normalization that update_node will apply,
-        preventing spurious updates when ETHER has escaped brackets but source doesn't.
+        preventing spurious updates when ETHER has escaped entities but source doesn't.
+        
+        Escapes (in order):
+        1. & → &amp; (must be first to avoid double-escaping)
+        2. < → &lt;
+        3. > → &gt;
         """
         if s is None:
             return None
-        if '<' in s or '>' in s:
-            return s.replace('<', '&lt;').replace('>', '&gt;')
+        # Order matters: & first (so we don't double-escape &lt; → &amp;lt;)
+        if '&' in s:
+            s = s.replace('&', '&amp;')
+        if '<' in s:
+            s = s.replace('<', '&lt;')
+        if '>' in s:
+            s = s.replace('>', '&gt;')
         return s
 
     def node_data_equal(src: Optional[Node], tgt: Optional[Node]) -> bool:
         if src is None or tgt is None:
             return False
 
-        # Normalize names via same angle-bracket escaping used in _validate_name_field
-        src_name = normalize_angle_brackets(src.get('name'))
-        tgt_name = normalize_angle_brackets(tgt.get('name'))
+        # Normalize names via same HTML entity escaping used in _validate_name_field
+        src_name = normalize_html_entities(src.get('name'))
+        tgt_name = normalize_html_entities(tgt.get('name'))
         same_name = (src_name or '') == (tgt_name or '')
 
-        # Normalize notes via same angle-bracket escaping used in _validate_note_field
-        src_note = normalize_angle_brackets(src.get('note'))
-        tgt_note = normalize_angle_brackets(tgt.get('note'))
+        # Normalize notes via same HTML entity escaping used in _validate_note_field
+        src_note = normalize_html_entities(src.get('note'))
+        tgt_note = normalize_html_entities(tgt.get('note'))
         same_note = (src_note or None) == (tgt_note or None)
 
         same_completed = bool(src.get('completed', False)) == bool(tgt.get('completed', False))

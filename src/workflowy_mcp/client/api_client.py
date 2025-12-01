@@ -272,7 +272,10 @@ class WorkFlowyClient:
         """Validate and auto-escape note field for Workflowy compatibility.
         
         Handles:
-        1. Angle brackets (auto-escape to HTML entities - Workflowy renderer bug workaround)
+        1. HTML special characters (auto-escape to HTML entities)
+           - & → &amp;
+           - < → &lt;
+           - > → &gt;
         
         REMOVED: Literal backslash-n validation (moved to MCP connector level)
         
@@ -294,28 +297,34 @@ class WorkFlowyClient:
             # Strip token and return as-is
             return (note, None)  # Caller strips token before API call
         
-        # CHECK 1: Auto-escape angle brackets (Workflowy renderer bug workaround)
-        # Web interface auto-escapes < to &lt; and > to &gt;
-        # API doesn't - we must do it manually
+        # AUTO-ESCAPE HTML SPECIAL CHARACTERS
+        # Workflowy /nodes-export returns HTML-escaped text; we must send the same.
+        # Order matters: & first (so we don't double-escape &lt; → &amp;lt;)
         escaped_note = note
-        angle_bracket_escaped = False
+        entities_escaped = False
         
-        if '<' in note or '>' in note:
-            escaped_note = note.replace('<', '&lt;').replace('>', '&gt;')
-            angle_bracket_escaped = True
+        if '&' in note:
+            escaped_note = escaped_note.replace('&', '&amp;')
+            entities_escaped = True
+        if '<' in escaped_note:
+            escaped_note = escaped_note.replace('<', '&lt;')
+            entities_escaped = True
+        if '>' in escaped_note:
+            escaped_note = escaped_note.replace('>', '&gt;')
+            entities_escaped = True
         
         # Return processed note with optional warning
-        if angle_bracket_escaped:
-            warning_msg = """✅ AUTO-ESCAPED: Angle brackets converted to HTML entities
+        if entities_escaped:
+            warning_msg = """✅ AUTO-ESCAPED: HTML special characters converted to entities
 
-🐛 WORKFLOWY RENDERER BUG: The API doesn't auto-escape < and > like the web interface does.
-   Angle brackets cause notes to display as completely blank.
+🐛 WORKFLOWY BEHAVIOR: The API requires HTML entity escaping for special characters.
 
 ⚙️ AUTO-FIX APPLIED:
-   Your < characters were converted to &lt;
-   Your > characters were converted to &gt;
+   & → &amp;
+   < → &lt;
+   > → &gt;
    
-   This matches how Workflowy's web interface handles angle brackets.
+   This matches how Workflowy stores and returns text.
    Your note will display correctly.
 
 📖 Bug documentation: SATCHEL VYRTHEX in Deployment Documentation Validation ARC
@@ -329,7 +338,10 @@ class WorkFlowyClient:
         """Validate and auto-escape name field for Workflowy compatibility.
         
         Handles:
-        1. Angle brackets (auto-escape to HTML entities - Workflowy renderer bug workaround)
+        1. HTML special characters (auto-escape to HTML entities)
+           - & → &amp;
+           - < → &lt;
+           - > → &gt;
         
         Args:
             name: Node name to validate/escape
@@ -342,17 +354,25 @@ class WorkFlowyClient:
         if name is None:
             return (None, None)
         
-        # Auto-escape angle brackets (Workflowy renderer bug workaround)
+        # AUTO-ESCAPE HTML SPECIAL CHARACTERS
+        # Workflowy /nodes-export returns HTML-escaped text; we must send the same.
+        # Order matters: & first (so we don't double-escape &lt; → &amp;lt;)
         escaped_name = name
-        angle_bracket_escaped = False
+        entities_escaped = False
         
-        if '<' in name or '>' in name:
-            escaped_name = name.replace('<', '&lt;').replace('>', '&gt;')
-            angle_bracket_escaped = True
+        if '&' in name:
+            escaped_name = escaped_name.replace('&', '&amp;')
+            entities_escaped = True
+        if '<' in escaped_name:
+            escaped_name = escaped_name.replace('<', '&lt;')
+            entities_escaped = True
+        if '>' in escaped_name:
+            escaped_name = escaped_name.replace('>', '&gt;')
+            entities_escaped = True
         
         # Return processed name with optional warning
-        if angle_bracket_escaped:
-            warning_msg = "✅ AUTO-ESCAPED: Angle brackets in node name converted to HTML entities"
+        if entities_escaped:
+            warning_msg = "✅ AUTO-ESCAPED: HTML special characters in node name converted to entities (& < >)"
             return (escaped_name, warning_msg)
         
         return (escaped_name, None)
