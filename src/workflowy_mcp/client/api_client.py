@@ -4077,12 +4077,23 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 cmd.extend(['--parent-id', parent_id])
             cmd.extend(['--import-policy', import_policy])
         
+        # Determine log file location (same directory as journal/PID file)
+        if mode == 'enchanted':
+            run_dir = self._get_nexus_dir(nexus_tag)
+            log_file = os.path.join(run_dir, ".weave.log")
+        else:  # direct
+            json_path = Path(json_file)
+            log_file = str(json_path.parent / ".weave.log")
+        
         # Prepare environment (pass API key to worker)
         env = os.environ.copy()
         env['WORKFLOWY_API_KEY'] = self.config.api_key.get_secret_value()
         
+        # Open log file for stdout/stderr capture
+        log_handle = open(log_file, 'w', encoding='utf-8')
+        
         # Launch detached process
-        log_event(f"Launching detached WEAVE worker ({mode} mode)", "DETACHED")
+        log_event(f"Launching detached WEAVE worker ({mode} mode), logs: {log_file}", "DETACHED")
         
         try:
             process = subprocess.Popen(
@@ -4091,12 +4102,15 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0,
                 start_new_session=True if sys.platform != 'win32' else False,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stdout=log_handle,
+                stderr=subprocess.STDOUT  # Redirect stderr to same file as stdout
             )
             
             pid = process.pid
-            log_event(f"Detached worker launched: PID={pid}, mode={mode}", "DETACHED")
+            log_event(f"Detached worker launched: PID={pid}, mode={mode}, log={log_file}", "DETACHED")
+            
+            # Note: log_handle will be closed by the parent process eventually,
+            # but the child process inherits the file descriptor and keeps writing
             
             return {
                 "success": True,
@@ -4104,7 +4118,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "pid": pid,
                 "detached": True,
                 "mode": mode,
-                "note": "Worker process detached - survives MCP restart. Check .weave_journal.json for progress."
+                "log_file": log_file,
+                "note": f"Worker process detached - survives MCP restart. Logs: {log_file}"
             }
             
         except Exception as e:

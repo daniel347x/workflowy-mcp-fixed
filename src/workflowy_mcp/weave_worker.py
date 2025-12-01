@@ -57,19 +57,27 @@ async def main():
     
     # Determine paths
     script_dir = Path(__file__).parent.resolve()
-    project_root = script_dir.parent.parent.parent  # Up to TODO root
     
-    # Add project root to path so we can import from MCP server
-    sys.path.insert(0, str(project_root))
-    sys.path.insert(0, str(script_dir.parent))  # workflowy_mcp package
+    # Worker is in src/workflowy_mcp/, so add src/ to path for package imports
+    src_dir = script_dir.parent
+    sys.path.insert(0, str(src_dir))
     
     # Import the client
     try:
-        from client.api_client import WorkFlowyClient
+        from workflowy_mcp.client.api_client import WorkFlowyClient
         log_worker("Successfully imported WorkFlowyClient")
     except Exception as e:
         log_worker(f"Failed to import WorkFlowyClient: {e}")
+        import traceback
+        log_worker(traceback.format_exc())
         sys.exit(1)
+    
+    # Determine project root for finding nexus_runs
+    # When deployed: C:\Temp\workflowy-mcp-vladzima\src\workflowy_mcp\weave_worker.py
+    # Project root: C:\Temp\workflowy-mcp-vladzima\
+    # When in Obsidian source: E:\...\TODO\MCP_Servers\workflowy_mcp\weave_worker.py  
+    # Project root: E:\...\TODO\
+    project_root = src_dir.parent if src_dir.name == 'src' else src_dir.parent.parent.parent
     
     # Initialize client (read config from environment or defaults)
     api_key = os.environ.get('WORKFLOWY_API_KEY')
@@ -78,7 +86,7 @@ async def main():
         sys.exit(1)
     
     # Create client config
-    from models import APIConfiguration
+    from workflowy_mcp.models import APIConfiguration
     from pydantic import SecretStr
     
     config = APIConfiguration(
