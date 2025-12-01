@@ -72,16 +72,18 @@ async def main():
         sys.exit(1)
     
     # Initialize client (read config from environment or defaults)
-    session_id = os.environ.get('WORKFLOWY_SESSION_ID')
-    if not session_id:
-        log_worker("ERROR: WORKFLOWY_SESSION_ID not set in environment")
+    api_key = os.environ.get('WORKFLOWY_API_KEY')
+    if not api_key:
+        log_worker("ERROR: WORKFLOWY_API_KEY not set in environment")
         sys.exit(1)
     
     # Create client config
     from models import APIConfiguration
+    from pydantic import SecretStr
+    
     config = APIConfiguration(
-        session_id=session_id,
-        timeout=900.0  # 15 minutes for individual API calls
+        api_key=SecretStr(api_key),
+        timeout=900  # 15 minutes for individual API calls
     )
     
     client = WorkFlowyClient(config)

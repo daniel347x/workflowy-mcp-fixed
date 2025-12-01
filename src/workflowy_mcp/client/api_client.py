@@ -4077,9 +4077,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 cmd.extend(['--parent-id', parent_id])
             cmd.extend(['--import-policy', import_policy])
         
-        # Prepare environment (pass session_id to worker)
+        # Prepare environment (pass API key to worker)
         env = os.environ.copy()
-        env['WORKFLOWY_SESSION_ID'] = self.config.session_id
+        env['WORKFLOWY_API_KEY'] = self.config.api_key.get_secret_value()
         
         # Launch detached process
         log_event(f"Launching detached WEAVE worker ({mode} mode)", "DETACHED")
