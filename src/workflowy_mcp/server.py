@@ -678,7 +678,7 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
     - In-memory asyncio jobs (_jobs registry)
     - Detached WEAVE processes (via .weave.pid files in nexus_runs/)
     """
-    from client.api_client import scan_active_weaves
+    from .client.api_client import scan_active_weaves
     import os
     
     # Determine nexus_runs directory
