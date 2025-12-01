@@ -245,9 +245,10 @@ def transform_jewel(
           - attrs or data (optional, mapped to node['data'])
           - jewel_id (optional; if omitted, auto-generated)
           - children (optional list of nested specs)
+          - parent_id (optional, ignored - will be set during insertion)
         """
         if "name" not in spec:
-            raise ValueError("CREATE_NODE requires 'name'")
+            raise ValueError("CREATE_NODE spec requires 'name' field in node object")
 
         node: JsonDict = {"name": spec["name"]}
 
@@ -586,14 +587,21 @@ def transform_jewel(
                     parent_children = _ensure_children_list(parent_node)
                     target_parent_jid = parent_jid
 
-                # Build node spec for subtree (remove op-specific keys)
-                spec = {k: v for k, v in op.items() if k not in {
-                    "op",
-                    "operation",
-                    "parent_jewel_id",
-                    "position",
-                    "relative_to_jewel_id",
-                }}
+                # Build node spec for subtree
+                # Two formats supported:
+                # 1. Compact: node fields at operation level (name, note, children, etc.)
+                # 2. Wrapped: node fields inside "node" key
+                if "node" in op:
+                    spec = op["node"]
+                else:
+                    # Remove op-specific keys to get node spec
+                    spec = {k: v for k, v in op.items() if k not in {
+                        "op",
+                        "operation",
+                        "parent_jewel_id",
+                        "position",
+                        "relative_to_jewel_id",
+                    }}
 
                 new_node = _build_subtree_from_spec(spec)
 
