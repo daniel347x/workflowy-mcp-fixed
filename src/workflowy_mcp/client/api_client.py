@@ -146,6 +146,100 @@ def _log_glimpse_to_file(operation_type: str, node_id: str, result: dict[str, An
         # Never let logging failures affect API behavior
         pass
 
+def is_pid_running(pid: int) -> bool:
+    """Check if a process ID is currently running.
+    
+    Args:
+        pid: Process ID to check
+        
+    Returns:
+        True if process exists and is running
+    """
+    try:
+        import psutil
+        return psutil.pid_exists(pid)
+    except ImportError:
+        # Fallback without psutil (Windows only)
+        import subprocess
+        result = subprocess.run(
+            ['tasklist', '/FI', f'PID eq {pid}', '/NH'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        return str(pid) in result.stdout
+    except Exception:
+        return False
+
+
+def scan_active_weaves(nexus_runs_base: str) -> list[dict[str, Any]]:
+    """Scan nexus_runs directory for active detached WEAVE processes.
+    
+    Returns list of active jobs with nexus_tag, PID, and journal path.
+    """
+    from pathlib import Path
+    
+    nexus_runs_dir = Path(nexus_runs_base)
+    if not nexus_runs_dir.exists():
+        return []
+    
+    active = []
+    
+    for tag_dir in nexus_runs_dir.iterdir():
+        if not tag_dir.is_dir():
+            continue
+        
+        pid_file = tag_dir / ".weave.pid"
+        journal_file = tag_dir / "enchanted_terrain.weave_journal.json"
+        
+        if not pid_file.exists():
+            continue
+        
+        try:
+            with open(pid_file, 'r') as f:
+                pid = int(f.read().strip())
+            
+            if is_pid_running(pid):
+                # Process is alive
+                job_info = {
+                    "job_id": f"weave-{tag_dir.name}",
+                    "nexus_tag": tag_dir.name,
+                    "pid": pid,
+                    "status": "running",
+                    "detached": True,
+                    "journal": str(journal_file) if journal_file.exists() else None
+                }
+                
+                # Read journal for progress if available
+                if journal_file.exists():
+                    try:
+                        with open(journal_file, 'r') as jf:
+                            journal = json.load(jf)
+                        job_info["entries_completed"] = len(journal.get("entries", []))
+                        job_info["started_at"] = journal.get("last_run_started_at")
+                        if journal.get("last_run_completed"):
+                            job_info["status"] = "completed"
+                        if journal.get("last_run_error"):
+                            job_info["status"] = "failed"
+                            job_info["error"] = journal.get("last_run_error")
+                    except Exception:
+                        pass
+                
+                active.append(job_info)
+            else:
+                # Stale PID file - clean it up
+                try:
+                    pid_file.unlink()
+                    log_event(f"Cleaned up stale PID file for {tag_dir.name}", "CLEANUP")
+                except Exception:
+                    pass
+        except Exception as e:
+            log_event(f"Error scanning {tag_dir.name}: {e}", "SCAN")
+            continue
+    
+    return active
+
+
 class WorkFlowyClient:
     """Async client for WorkFlowy API operations."""
 
@@ -3924,6 +4018,79 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "shimmering_terrain": shimmering_path,
             "roots": phantom_roots,
         }
+
+    def nexus_weave_enchanted_detached(self, nexus_tag: str, dry_run: bool = False) -> dict[str, Any]:
+        """Launch NEXUS WEAVE as a detached background process (survives MCP restart).
+        
+        The worker process writes:
+        - .weave.pid - Process ID for monitoring
+        - enchanted_terrain.weave_journal.json - Progress log
+        
+        Args:
+            nexus_tag: NEXUS tag identifying the run
+            dry_run: If True, preview operations without executing
+            
+        Returns:
+            {"success": True, "job_id": "weave-<tag>", "pid": 12345, "detached": True}
+        """
+        import subprocess
+        
+        run_dir = self._get_nexus_dir(nexus_tag)
+        enchanted_path = os.path.join(run_dir, "enchanted_terrain.json")
+        
+        if not os.path.exists(enchanted_path):
+            raise NetworkError(
+                "enchanted_terrain.json not found for nexus_tag. "
+                "Call nexus_anchor_jewels(...) before nexus_weave_enchanted."
+            )
+        
+        # Determine worker script path (sibling to api_client.py in package)
+        worker_script = os.path.join(os.path.dirname(__file__), "..", "weave_worker.py")
+        worker_script = os.path.abspath(worker_script)
+        
+        if not os.path.exists(worker_script):
+            raise NetworkError(f"weave_worker.py not found at {worker_script}")
+        
+        # Prepare environment (pass session_id to worker)
+        env = os.environ.copy()
+        env['WORKFLOWY_SESSION_ID'] = self.config.session_id
+        
+        # Launch detached process
+        log_event(f"Launching detached WEAVE worker for {nexus_tag}", "DETACHED")
+        
+        try:
+            process = subprocess.Popen(
+                [sys.executable, worker_script, nexus_tag, str(dry_run).lower()],
+                env=env,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0,
+                start_new_session=True if sys.platform != 'win32' else False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            
+            pid = process.pid
+            log_event(f"Detached worker launched: PID={pid}", "DETACHED")
+            
+            # Write PID file for monitoring
+            pid_file = os.path.join(run_dir, ".weave.pid")
+            try:
+                with open(pid_file, 'w') as f:
+                    f.write(str(pid))
+            except Exception as e:
+                log_event(f"Warning: Failed to write PID file: {e}", "DETACHED")
+            
+            return {
+                "success": True,
+                "job_id": f"weave-{nexus_tag}",
+                "pid": pid,
+                "detached": True,
+                "nexus_tag": nexus_tag,
+                "note": "Worker process detached - survives MCP restart. Check .weave_journal.json for progress."
+            }
+            
+        except Exception as e:
+            raise NetworkError(f"Failed to launch detached WEAVE worker: {e}") from e
 
     async def nexus_weave_enchanted(self, nexus_tag: str, dry_run: bool = False) -> dict[str, Any]:
         """WEAVE ENCHANTED TERRAIN → ETHER (Workflowy).

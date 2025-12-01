@@ -672,26 +672,67 @@ async def _start_background_job(
     description="Get status/result for long-running MCP jobs (ETCH, NEXUS, etc.).",
 )
 async def mcp_job_status(job_id: str | None = None) -> dict:
-    # Return status for one job (if job_id given) or all jobs.
+    """Get status for background jobs (in-memory + detached processes).
+    
+    Scans both:
+    - In-memory asyncio jobs (_jobs registry)
+    - Detached WEAVE processes (via .weave.pid files in nexus_runs/)
+    """
+    from client.api_client import scan_active_weaves
+    import os
+    
+    # Determine nexus_runs directory
+    # TODO: make this configurable or derive from client
+    nexus_runs_base = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs"
+    
+    # Return status for one job (if job_id given) or all jobs
     if job_id is None:
-        jobs = []
+        # List ALL jobs (in-memory + detached)
+        in_memory_jobs = []
         for job in _jobs.values():
-            jobs.append({
+            in_memory_jobs.append({
                 "job_id": job.get("job_id"),
                 "kind": job.get("kind"),
                 "status": job.get("status"),
                 "started_at": job.get("started_at"),
                 "finished_at": job.get("finished_at"),
+                "detached": False
             })
-        return {"success": True, "jobs": jobs}
+        
+        detached_jobs = scan_active_weaves(nexus_runs_base)
+        
+        return {
+            "success": True,
+            "in_memory_jobs": in_memory_jobs,
+            "detached_jobs": detached_jobs,
+            "total": len(in_memory_jobs) + len(detached_jobs)
+        }
 
+    # Check in-memory first
     job = _jobs.get(job_id)
-    if not job:
-        return {"success": False, "error": f"Unknown job_id: {job_id}"}
-
-    # Do not expose internal task handle
-    view = {k: v for k, v in job.items() if k not in ("payload", "_task")}
-    return {"success": True, **view}
+    if job:
+        # Do not expose internal task handle
+        view = {k: v for k, v in job.items() if k not in ("payload", "_task")}
+        return {"success": True, **view}
+    
+    # Check if this is a detached WEAVE job
+    if job_id.startswith("weave-"):
+        nexus_tag = job_id[6:]  # Strip "weave-" prefix
+        
+        # Scan for this specific tag
+        detached_jobs = scan_active_weaves(nexus_runs_base)
+        for job in detached_jobs:
+            if job.get("job_id") == job_id:
+                return {"success": True, **job}
+        
+        # Not found - might be completed or never started
+        return {
+            "success": False,
+            "error": f"Job {job_id} not found in memory or as detached process. "
+                     "It may have completed (check .weave_journal.json) or been killed."
+        }
+    
+    return {"success": False, "error": f"Unknown job_id: {job_id}"}
 
 
 @mcp.tool(
@@ -1494,23 +1535,17 @@ async def nexus_weave_enchanted_async(
     nexus_tag: str,
     dry_run: bool = False,
 ) -> dict:
-    """Start ENCHANTED TERRAIN weave as a background job and return a job_id.
+    """Start ENCHANTED TERRAIN weave as a detached background process.
 
-    This wraps WorkFlowyClient.nexus_weave_enchanted in the same job framework
-    used by nexus_weave_async so long-running WEAVEs can be monitored and
-    cancelled via mcp_job_status / mcp_cancel_job.
+    Launches weave_worker.py as a separate process that survives MCP restart.
+    Progress tracked via .weave.pid and .weave_journal.json files.
+    
+    Use mcp_job_status() to monitor progress (scans directory for active PIDs).
     """
     client = get_client()
-
-    async def run_weave(job_id: str) -> dict:  # job_id reserved for future logging
-        return await client.nexus_weave_enchanted(nexus_tag=nexus_tag, dry_run=dry_run)
-
-    payload = {
-        "nexus_tag": nexus_tag,
-        "dry_run": dry_run,
-    }
-
-    return await _start_background_job("nexus_weave_enchanted", payload, run_weave)
+    
+    # Use detached launcher (survives MCP restart)
+    return client.nexus_weave_enchanted_detached(nexus_tag=nexus_tag, dry_run=dry_run)
 
 
 @mcp.tool(
