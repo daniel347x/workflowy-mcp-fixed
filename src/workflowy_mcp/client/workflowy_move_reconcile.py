@@ -431,15 +431,37 @@ async def reconcile_tree(
                 roots.add(d)
         return roots
 
+    def normalize_angle_brackets(s: str | None) -> str | None:
+        """Normalize angle brackets exactly as _validate_name_field/_validate_note_field do.
+        
+        This ensures comparison uses the SAME normalization that update_node will apply,
+        preventing spurious updates when ETHER has escaped brackets but source doesn't.
+        """
+        if s is None:
+            return None
+        if '<' in s or '>' in s:
+            return s.replace('<', '&lt;').replace('>', '&gt;')
+        return s
+
     def node_data_equal(src: Optional[Node], tgt: Optional[Node]) -> bool:
         if src is None or tgt is None:
             return False
-        return (
-            src.get('name') == tgt.get('name') and
-            (src.get('note') or None) == (tgt.get('note') or None) and
-            (src.get('data') or {}) == (tgt.get('data') or {}) and
-            bool(src.get('completed', False)) == bool(tgt.get('completed', False))
-        )
+
+        # Normalize names via same angle-bracket escaping used in _validate_name_field
+        src_name = normalize_angle_brackets(src.get('name'))
+        tgt_name = normalize_angle_brackets(tgt.get('name'))
+        same_name = (src_name or '') == (tgt_name or '')
+
+        # Normalize notes via same angle-bracket escaping used in _validate_note_field
+        src_note = normalize_angle_brackets(src.get('note'))
+        tgt_note = normalize_angle_brackets(tgt.get('note'))
+        same_note = (src_note or None) == (tgt_note or None)
+
+        same_completed = bool(src.get('completed', False)) == bool(tgt.get('completed', False))
+
+        # Ignore data entirely for equality (layoutMode is invisible to user, not required)
+        # If we later use data for other purposes, we can strip layoutMode and compare residual.
+        return same_name and same_note and same_completed
 
     # ------------- phase 0: build maps -------------
     log(f"\n[PHASE 0] Building maps for parent {parent_uuid}")
