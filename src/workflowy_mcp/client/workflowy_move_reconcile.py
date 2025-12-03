@@ -479,12 +479,24 @@ async def reconcile_tree(
         # Normalize names via same HTML entity escaping used in _validate_name_field
         src_name = normalize_html_entities(src.get('name'))
         tgt_name = normalize_html_entities(tgt.get('name'))
-        same_name = (src_name or '') == (tgt_name or '')
+
+        # Trim leading/trailing whitespace so harmless spaces do not trigger updates
+        def _strip_or_empty(s: str | None) -> str:
+            return (s or "").strip()
+
+        same_name = _strip_or_empty(src_name) == _strip_or_empty(tgt_name)
 
         # Normalize notes via same HTML entity escaping used in _validate_note_field
         src_note = normalize_html_entities(src.get('note'))
         tgt_note = normalize_html_entities(tgt.get('note'))
-        same_note = (src_note or None) == (tgt_note or None)
+
+        def _strip_or_none(s: str | None) -> Optional[str]:
+            if s is None:
+                return None
+            stripped = s.strip()
+            return stripped if stripped != "" else None
+
+        same_note = _strip_or_none(src_note) == _strip_or_none(tgt_note)
 
         same_completed = bool(src.get('completed', False)) == bool(tgt.get('completed', False))
 
@@ -502,7 +514,8 @@ async def reconcile_tree(
     log(f"   Source UUIDs: {list(Map_S.keys())}")
     log(f"   Source UUIDs that are NOT None: {[k for k in Map_S.keys() if k is not None]}")
     log(f"   UUIDs in BOTH: {set(Map_T.keys()) & set(k for k in Map_S.keys() if k is not None)}")
-    log(f"   UUIDs ONLY in Target: {set(Map_T.keys()) - set(k for k in Map_S.keys() if k is not None)}")
+    uuids_only_in_target = set(Map_T.keys()) - set(k for k in Map_S.keys() if k is not None)
+    log(f"   UUIDs ONLY in Target: {len(uuids_only_in_target)} (list suppressed)")
     log(f"   UUIDs ONLY in Source: {set(k for k in Map_S.keys() if k is not None) - set(Map_T.keys())}")
 
     # Collect parent_refs to protect during deletion (all parent_id that appear in source)
@@ -806,46 +819,54 @@ async def reconcile_tree(
 
     # ------------- phase 3: REORDER siblings per parent -------------
     log(f"\n[PHASE 3] REORDER siblings")
-    reorder_count = 0
-    for p, desired in Order_S.items():
-        if p is None:
-            continue
-        desired_ids = [x for x in desired if x is not None]
-        if not desired_ids:
-            continue
+
+    # Optimization: if there were no creates and no moves in this run,
+    # then sibling order is already correct relative to the source JSON.
+    # In that case we can safely skip the REORDER phase entirely to avoid
+    # unnecessary move_node API calls.
+    if create_count == 0 and move_count == 0:
+        log("   REORDER phase skipped: no creates or moves; sibling order assumed correct")
+    else:
+        reorder_count = 0
+        for p, desired in Order_S.items():
+            if p is None:
+                continue
+            desired_ids = [x for x in desired if x is not None]
+            if not desired_ids:
+                continue
 
         # If this parent has truncated children in the source JSON, we treat its
         # existing children as an opaque blob: we can still move/delete the parent
         # as a whole, and we can append new children, but we do NOT try to
         # selectively reorder potentially-hidden originals.
-        if p in truncated_parents:
-            log(f"   Parent {p}: children_status != 'complete' in source; skipping REORDER to avoid touching hidden children")
-            continue
+            if p in truncated_parents:
+                log(f"   Parent {p}: children_status != 'complete' in source; skipping REORDER to avoid touching hidden children")
+                continue
 
         # Compare current order vs desired order. If they already match, skip
         # emitting no-op move operations that would just burn rate limit.
-        current_children = Children_T.get(p, [])
-        current_ids = [cid for cid in current_children if cid in desired_ids]
-        if current_ids == desired_ids:
-            log(f"   Parent {p}: children already in desired order; skipping REORDER")
-            continue
+            current_children = Children_T.get(p, [])
+            current_ids = [cid for cid in current_children if cid in desired_ids]
+            if current_ids == desired_ids:
+                log(f"   Parent {p}: children already in desired order; skipping REORDER")
+                continue
 
-        log(f"   Parent {p}: Reordering {len(desired_ids)} children")
-        log(f"      Desired order (reversed for TOP positioning): {list(reversed(desired_ids))}")
-        for idx, cid in enumerate(reversed(desired_ids)):
-            reorder_count += 1
-            if dry_run:
-                log(f"      [DRY-RUN] Would REORDER: move {cid} to TOP of parent {p}")
-            else:
-                try:
-                    log(f"      >>> REORDER: Moving {cid} to TOP of parent {p}")
-                    await move_node(cid, p, position="top")
-                    log(f"      >>> REORDER SUCCESS for {cid}")
-                except Exception as e:
-                    log(f"      >>> REORDER FAILED for {cid}: {type(e).__name__}: {str(e)}")
-                    raise
-            planned_reorders.append({'id': cid, 'parent': p, 'position': 'top', 'sequence_index': idx})
-    log(f"   REORDER phase complete - processed {len(Order_S)} parents, {reorder_count} reorder moves")
+            log(f"   Parent {p}: Reordering {len(desired_ids)} children")
+            log(f"      Desired order (reversed for TOP positioning): {list(reversed(desired_ids))}")
+            for idx, cid in enumerate(reversed(desired_ids)):
+                reorder_count += 1
+                if dry_run:
+                    log(f"      [DRY-RUN] Would REORDER: move {cid} to TOP of parent {p}")
+                else:
+                    try:
+                        log(f"      >>> REORDER: Moving {cid} to TOP of parent {p}")
+                        await move_node(cid, p, position="top")
+                        log(f"      >>> REORDER SUCCESS for {cid}")
+                    except Exception as e:
+                        log(f"      >>> REORDER FAILED for {cid}: {type(e).__name__}: {str(e)}")
+                        raise
+                planned_reorders.append({'id': cid, 'parent': p, 'position': 'top', 'sequence_index': idx})
+        log(f"   REORDER phase complete - processed {len(Order_S)} parents, {reorder_count} reorder moves")
 
     # ------------- phase 4: UPDATE content -------------
     log(f"\n[PHASE 4] UPDATE content")
@@ -964,7 +985,7 @@ async def reconcile_tree(
     # Guardrail: never consider the reconciliation root for deletion
     if parent_uuid in ids_in_target:
         ids_in_target.discard(parent_uuid)
-    log(f"   Target IDs (after reconciliation, excluding root): {ids_in_target}")
+    log(f"   Target IDs (after reconciliation, excluding root): {len(ids_in_target)} IDs (list suppressed)")
 
     # Raw delete candidates: nodes present in target snapshot but absent from
     # the source JSON. For parents whose children were not fully loaded in the
