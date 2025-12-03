@@ -1560,7 +1560,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "export_root_id": node_id,
                 "export_root_name": root_node_info.get('name') if root_node_info else 'Unknown',
                 "export_timestamp": hierarchical_tree[0].get('modifiedAt') if hierarchical_tree else None,
-                "export_root_has_hidden_children": root_has_hidden_children,
                 "export_root_children_status": root_children_status,
                 "original_ids_seen": original_ids_seen,
                 "nodes": hierarchical_tree
@@ -1726,8 +1725,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         This operates on the EDITABLE JSON used by NEXUS scrolls. It computes
         per-node:
 
-        - immediate_child_count: number of direct children in the FULL tree
-        - total_descendant_count: total descendants (excluding the node itself)
+        - immediate_child_count__human_readable_only: number of direct children
+          in the FULL tree for this SCRY/GLIMPSE
+        - total_descendant_count__human_readable_only: total descendants
+          (excluding the node itself) in the FULL tree for this SCRY/GLIMPSE
         - children_status:
             - "complete"                => children list is fully loaded/editable
             - "truncated_by_depth"      => depth limit applied at this level
@@ -1736,7 +1737,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         For nodes whose children_status != "complete", the reconciliation
         algorithm treats the children as an opaque subtree: it will not perform
         per-child deletes/reorders, but parent moves/deletes and new children
-        remain safe.
+        remain safe. The *_human_readable_only fields are provided purely for
+        human inspection and debugging.
 
         Args:
             nodes: List of nodes at this level (full children still attached)
@@ -1771,8 +1773,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             immediate_count = len(children)
             total_desc_for_node = child_desc_total + immediate_count
 
-            node['immediate_child_count'] = immediate_count
-            node['total_descendant_count'] = total_desc_for_node
+            node['immediate_child_count__human_readable_only'] = immediate_count
+            node['total_descendant_count__human_readable_only'] = total_desc_for_node
 
             # Decide whether this node's children should be truncated in the
             # EDITABLE JSON view.
@@ -2149,7 +2151,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "Mode 2 (Agent hunts): Bypass WebSocket - use glimpseFull()"
         )
     
-    async def workflowy_scry(self, node_id: str, use_efficient_traversal: bool = False, depth: int | None = None, size_limit: int = 1000) -> dict[str, Any]:
+    async def workflowy_scry(
+        self,
+        node_id: str,
+        use_efficient_traversal: bool = False,
+        depth: int | None = None,
+        size_limit: int = 1000,
+        output_file: str | None = None,
+    ) -> dict[str, Any]:
         """Load entire node tree via API (bypass WebSocket).
         
         Mode 2 (Agent hunts) - Full API fetch regardless of WebSocket availability.
@@ -2164,12 +2173,44 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             use_efficient_traversal: Use BFS traversal (default False)
             depth: Maximum depth to traverse (1=direct children only, 2=two levels, None=full tree)
             size_limit: Maximum number of nodes to return (raises error if exceeded)
+            output_file: Optional absolute path; if provided, write a TERRAIN-style
+                export package (same format as nexus_scry / bulk_export_to_file)
+                instead of returning the in-memory tree. In this mode the
+                response is a small summary pointing at the JSON/Markdown files.
             
         Returns:
-            Same format as workflowy_glimpse with _source="api"
+            Same format as workflowy_glimpse with _source="api" when output_file is None,
+            or a compact summary when output_file is provided.
         """
         import logging
         logger = _ClientLogger()
+
+        # If caller requested TERRAIN-style file output, delegate to bulk_export_to_file
+        # to ensure we exactly match the NEXUS SCRY / TERRAIN format, including
+        # export_root_* metadata and original_ids_seen ledger.
+        if output_file is not None:
+            result = await self.bulk_export_to_file(
+                node_id=node_id,
+                output_file=output_file,
+                include_metadata=True,
+                use_efficient_traversal=use_efficient_traversal,
+                max_depth=depth,
+                child_count_limit=None,
+                max_nodes=size_limit,
+            )
+            return {
+                "success": bool(result.get("success", True)),
+                "mode": "file",
+                "terrain_file": output_file,
+                "markdown_file": result.get("markdown_file"),
+                "keystone_backup_path": result.get("keystone_backup_path"),
+                "node_count": result.get("node_count"),
+                "depth": result.get("depth"),
+                "total_nodes_fetched": result.get("total_nodes_fetched"),
+                "api_calls_made": result.get("api_calls_made"),
+                "efficient_traversal": result.get("efficient_traversal"),
+                "_source": "api",
+            }
         
         # EFFICIENT TRAVERSAL: Use list_nodes BFS instead of fetching entire account
         total_nodes_fetched = 0
@@ -4113,12 +4154,60 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         # Mirror bulk_export_to_file structure: metadata wrapper + children only
         # Root info goes in metadata, NOT in nodes array (prevents root duplication)
+        #
+        # Build original_ids_seen ledger for this NEXUS tag. For GLIMPSE, we
+        # prefer the full API view when available (complete subtree under
+        # workflowy_root_id), falling back to the WebSocket subtree when API
+        # is unavailable. This keeps the semantics aligned with SCRY: the
+        # ledger records all Workflowy node IDs known at the time of export,
+        # not just those currently materialized in the editable nodes array.
+        original_ids_seen = set()
+        try:
+            if api_glimpse and api_glimpse.get("success"):
+                api_root = api_glimpse.get("root") or {}
+                api_children = api_glimpse.get("children") or []
+                root_id_for_ledger = api_root.get("id") or workflowy_root_id
+                if root_id_for_ledger:
+                    original_ids_seen.add(str(root_id_for_ledger))
+
+                def _collect_ids_api(nodes):
+                    for n in nodes or []:
+                        if not isinstance(n, dict):
+                            continue
+                        nid = n.get("id")
+                        if nid:
+                            original_ids_seen.add(str(nid))
+                        _collect_ids_api(n.get("children") or [])
+
+                _collect_ids_api(api_children)
+            else:
+                ws_root = ws_glimpse.get("root") or {}
+                ws_children = ws_glimpse.get("children") or []
+                root_id_for_ledger = ws_root.get("id") or workflowy_root_id
+                if root_id_for_ledger:
+                    original_ids_seen.add(str(root_id_for_ledger))
+
+                def _collect_ids_ws(nodes):
+                    for n in nodes or []:
+                        if not isinstance(n, dict):
+                            continue
+                        nid = n.get("id")
+                        if nid:
+                            original_ids_seen.add(str(nid))
+                        _collect_ids_ws(n.get("children") or [])
+
+                _collect_ids_ws(ws_children)
+        except Exception:
+            # Ledger is advisory metadata; never fail GLIMPSE if it cannot
+            # be computed for any reason.
+            original_ids_seen = set()
+
         terrain_data = {
             "export_root_id": workflowy_root_id,
             "export_root_name": ws_glimpse["root"]["name"],
             "export_timestamp": None,  # GLIMPSE doesn't have timestamp
-            "export_root_has_hidden_children": root_has_hidden,  # NEW: Root safety flag
-            "export_root_children_status": root_children_status,  # NEW: Root children status
+            "export_root_children_status": root_children_status,  # Root children status
+            "original_ids_seen": sorted(original_ids_seen),
             "nodes": children,  # Children with merged WebSocket+API safety flags
         }
 
@@ -6153,7 +6242,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             new_node = {k: v for k, v in node.items() if k != "children"}
             role = role_by_node_id.get(nid)
             if role:
-                new_node["gem_role"] = role
                 # Preserve explicit shell semantics for subtree-selected shells so
                 # that downstream WEAVE can treat children as opaque even after
                 # JEWELSTORM adds new children under this parent.

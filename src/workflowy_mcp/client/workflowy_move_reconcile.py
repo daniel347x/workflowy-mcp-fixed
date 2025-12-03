@@ -283,26 +283,25 @@ async def reconcile_tree(
         file_root = source_json.get('export_root_id') or source_json.get('root_id') or source_json.get('parent_id')
         source_nodes = source_json.get('nodes', [])
         jewel_file = source_json.get('jewel_file')
-        
-        # NEW: Extract root-level hidden children flags from metadata
-        root_has_hidden_children = source_json.get('export_root_has_hidden_children', False)
-        root_children_status = source_json.get('export_root_children_status', 'complete')
 
-        # NEW: Optional Option B deletion ledger - IDs that were present in the
+        # Root-level children_status metadata (analogous to node.children_status).
+        # When non-'complete', the reconciliation root is treated as truncated.
+        root_children_status = source_json.get('export_root_children_status')
+
+        # Optional Option B deletion ledger - IDs that were present in the
         # original source JSON before edits. This lets us distinguish
         # "visible-then-removed" from "never loaded" under truncated parents.
         original_ids_seen = set(source_json.get('original_ids_seen', []))
         option_b_enabled = len(original_ids_seen) > 0
-        
+
         log(f"Detected source document with export_root_id={file_root} jewel_file={jewel_file}")
-        log(f"   Root hidden children: {root_has_hidden_children}, status: {root_children_status}")
+        log(f"   Root children_status: {root_children_status!r}")
         if option_b_enabled:
             log(f"   Option B deletion ledger: {len(original_ids_seen)} originally-seen node IDs")
         else:
             log("   No original_ids_seen ledger; using conservative Option A deletion semantics")
     else:
         source_nodes = source_json
-        root_has_hidden_children = False
         root_children_status = 'complete'
         log("Detected bare source node list (no jewel_file metadata)")
 
@@ -536,28 +535,17 @@ async def reconcile_tree(
 
     # Detect parents whose children are not fully loaded in the source JSON.
     #
-    # Primary signal is children_status != 'complete', but we also infer
-    # truncation from a mismatch between immediate_child_count and the
-    # length of the children array. This makes the detection robust even if
-    # children_status is dropped during JSON editing, as long as counts
-    # were annotated by SCRY.
+    # Truncation semantics are carried explicitly by children_status and by
+    # subtree shell markers; we no longer infer truncation from numeric counts
     truncated_parents: set[str] = set()
     for nid, node in Map_S.items():
         if nid is None:
             continue
 
         status = node.get('children_status')
-        immediate = node.get('immediate_child_count')
         children = node.get('children') or []
 
-        # Implied truncation: counts say there are more children than the
-        # editable JSON currently exposes.
-        implied_truncation = (
-            isinstance(immediate, int) and
-            immediate > len(children)
-        )
-
-        if (status is not None and status != 'complete') or implied_truncation:
+        if status is not None and status != 'complete':
             truncated_parents.add(nid)
             continue
 
@@ -565,21 +553,15 @@ async def reconcile_tree(
         # node whose children are intentionally opaque (even after JEWELSTORM
         # adds new children under this parent). Its children must never be
         # compared for deletes/reorders, so we always treat it as a truncated
-        # parent regardless of counts/status/child list.
+        # parent regardless of status/child list.
         if node.get('subtree_mode') == 'shell':
             truncated_parents.add(nid)
             continue
 
-        # Backwards-compatible shell detection: older gems may not carry
-        # subtree_mode but still have gem_role='subtree_selected' with no
-        # editable children. Treat those as opaque parents as well.
-        if node.get('gem_role') == 'subtree_selected' and not children:
-            truncated_parents.add(nid)
-
-    # Treat the reconciliation root as truncated when root_has_hidden_children
-    # so its direct children obey the same Option B semantics as other
-    # truncated parents, without moving the root into the nodes[] array.
-    if root_has_hidden_children:
+    # Treat the reconciliation root as truncated when its export_root_children_status
+    # is non-'complete', so its direct children obey the same Option B semantics
+    # as other truncated parents, without moving the root into the nodes[] array.
+    if root_children_status is not None and root_children_status != 'complete':
         truncated_parents.add(parent_uuid)
 
     if truncated_parents:

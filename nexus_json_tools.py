@@ -818,9 +818,13 @@ def find_node_and_parent(data: JsonDict, target_id: str) -> Tuple[Optional[JsonD
 
 
 def recalc_counts_for_node(node: JsonDict) -> int:
-    """Recalculate immediate_child_count / total_descendant_count recursively.
+    """Recalculate child/descendant counts for TERRAIN files (human-focused).
 
-    Returns this node's total_descendant_count.
+    Writes *_human_readable_only counters alongside children_status. These
+    counts are intended for human inspection and debugging, not for core
+    WEAVE semantics.
+
+    Returns this node's total_descendant_count__human_readable_only.
     """
     children = node.get("children") or []
     if not isinstance(children, list):
@@ -833,8 +837,8 @@ def recalc_counts_for_node(node: JsonDict) -> int:
         child_total = recalc_counts_for_node(child)
         total_desc += 1 + child_total
 
-    node["immediate_child_count"] = immediate
-    node["total_descendant_count"] = total_desc
+    node["immediate_child_count__human_readable_only"] = immediate
+    node["total_descendant_count__human_readable_only"] = total_desc
     node["children_status"] = "complete"
     return total_desc
 
@@ -1176,6 +1180,13 @@ def _recalc_counts_preserving_truncation(
     original_status: Dict[str, Optional[str]],
     original_truncated: Dict[str, bool],
 ) -> None:
+    """Recalculate *_human_readable_only counts while preserving truncation.
+
+    This helper is used after destructive operations (e.g. 3-way shard fuse) to
+    refresh the human-facing counters while keeping children_status aligned with
+    the original TERRAIN semantics. No functional behavior depends on the
+    *_human_readable_only fields; they are for inspection only.
+    """
     if not affected_ids:
         return
 
@@ -1187,8 +1198,8 @@ def _recalc_counts_preserving_truncation(
                 total += 1 + helper(child)
         nid = node.get("id")
         if nid and nid in affected_ids:
-            node["immediate_child_count"] = len(children)
-            node["total_descendant_count"] = total
+            node["immediate_child_count__human_readable_only"] = len(children)
+            node["total_descendant_count__human_readable_only"] = total
             if original_truncated.get(nid, False):
                 prev = original_status.get(nid)
                 if prev and prev != "complete":
@@ -1289,13 +1300,11 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
         if not nid:
             continue
         status = node.get("children_status")
-        children = node.get("children") or []
-        immediate = node.get("immediate_child_count")
-        implied_trunc = isinstance(immediate, int) and immediate > len(children)
+        # Truncation semantics belong to the TERRAIN layer and are encoded via
+        # children_status. We no longer infer truncation from count fields; the
+        # *_human_readable_only counters are purely informational.
         original_status[nid] = status
-        original_truncated[nid] = (
-            (status is not None and status != "complete") or implied_trunc
-        )
+        original_truncated[nid] = bool(status and status != "complete")
 
     affected_ids: Set[str] = set()
 
