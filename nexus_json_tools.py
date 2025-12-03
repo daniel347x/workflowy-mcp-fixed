@@ -729,15 +729,15 @@ def transform_jewel(
         # Attach modified roots back to original structure
         if isinstance(data, dict) and isinstance(data.get("nodes"), list):
             data["nodes"] = roots
-            # Recalculate counts/status in a best-effort way for readability.
-            # This sets children_status="complete"; territorial truncation logic
-            # remains the responsibility of the NEXUS/TERRAIN layer.
+            # Recalculate counts for readability in the JEWEL working_gem,
+            # but DO NOT touch children_status here. Truncation semantics belong
+            # to the NEXUS/TERRAIN layer (shimmering/enchanted terrain).
             wrapper = {"nodes": roots}
-            recalc_all_counts(wrapper)
+            recalc_all_counts_gem(wrapper)
         elif isinstance(data, list):
             data = roots  # type: ignore[assignment]
             wrapper = {"nodes": roots}
-            recalc_all_counts(wrapper)
+            recalc_all_counts_gem(wrapper)
 
         save_json(jewel_file, data)  # type: ignore[arg-type]
 
@@ -845,6 +845,44 @@ def recalc_all_counts(data: JsonDict) -> None:
         return
     for node in nodes:
         recalc_counts_for_node(node)
+
+
+def recalc_counts_for_node_gem(node: JsonDict) -> int:
+    """Recalculate counts for JEWEL working_gem files without changing children_status.
+
+    This keeps truncation semantics (children_status) intact for GEM/JEWEL trees,
+    while still giving humans up-to-date counts inside the working_gem.
+    """
+    children = node.get("children") or []
+    if not isinstance(children, list):
+        children = []
+        node["children"] = children
+
+    immediate = len(children)
+    total_desc = 0
+    for child in children:
+        if isinstance(child, dict):
+            child_total = recalc_counts_for_node_gem(child)
+            total_desc += 1 + child_total
+
+    node["immediate_child_count__human_readable_only"] = immediate
+    node["total_descendant_count__human_readable_only"] = total_desc
+    return total_desc
+
+
+def recalc_all_counts_gem(data: JsonDict) -> None:
+    """Best-effort count recalculation for JEWEL working_gem files.
+
+    Unlike recalc_all_counts, this helper does NOT modify children_status, so
+    GEM files can continue to carry TERRAIN-derived truncation state
+    (truncated_by_depth / truncated_by_count) untouched.
+    """
+    nodes = data.get("nodes") or []
+    if not isinstance(nodes, list):
+        return
+    for node in nodes:
+        if isinstance(node, dict):
+            recalc_counts_for_node_gem(node)
 
 
 def cmd_rename_node(args: argparse.Namespace) -> None:
