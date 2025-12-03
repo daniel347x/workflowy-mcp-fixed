@@ -51,9 +51,29 @@ import copy
 import json
 import os
 import sys
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Set
 
 JsonDict = Dict[str, Any]
+
+
+def log_jewel(message: str) -> None:
+    """Log JEWELSTORM operations to a persistent logfile (best-effort).
+
+    This mirrors the DATETIME+prefix style used by the NEXUS WEAVE
+    reconcile_debug.log, but writes to jewelstorm_debug.log so JEWELSTORM
+    activity can be inspected independently of WEAVE.
+    """
+    try:
+        log_path = (
+            r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\jewelstorm_debug.log"
+        )
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {message}\n")
+    except Exception:
+        # Logging must never affect CLI behavior
+        pass
 
 
 def transform_jewel(
@@ -1172,6 +1192,11 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
         and S1, not inferred from absence in a shallow shard alone.
     """
 
+    log_jewel(
+        f"fuse-shard-3way: target={args.target_scry}, "
+        f"witness={args.witness_shard}, morphed={args.morphed_shard}"
+    )
+
     territory = load_json(args.target_scry)
     witness = load_json(args.witness_shard)
     morphed = load_json(args.morphed_shard)
@@ -1186,6 +1211,39 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
     s0_by_id, s0_parent, s0_children_ids = _index_shard_roots(witness_roots)
     s1_by_id, s1_parent, s1_children_ids = _index_shard_roots(morphed_roots)
     t_by_id, t_parent, t_children_lists = _index_territory(territory)
+
+    # --- Invariant checks: enforce correct NEXUS pipeline before fusing ---
+    ids_T1: Set[str] = set(t_by_id.keys())
+    ids_S0: Set[str] = set(s0_by_id.keys())
+    ids_S1: Set[str] = set(s1_by_id.keys())
+
+    # (A) GEM must be fully embedded into TERRAIN: every GEM id should be
+    # present in shimmering_terrain.json. If not, it likely means IGNITE SHARDS
+    # was run after ATTACH GEMS (or ATTACH GEMS was skipped entirely).
+    missing_in_T1 = ids_S0 - ids_T1
+    if missing_in_T1:
+        msg = (
+            "nexus_anchor_jewels / fuse-shard-3way invariant violation: "
+            "phantom_gem (S0) contains Workflowy ids that are not present in "
+            "shimmering_terrain (T1). This usually means you ran IGNITE SHARDS "
+            "after ATTACH GEMS or never called ATTACH GEMS for this tag."
+        )
+        log_jewel(msg + f" Offending ids (sample): {sorted(list(missing_in_T1))[:5]}")
+        die(msg)
+
+    # (B) JEWEL must not introduce new Workflowy ids that were never in the GEM.
+    # New JEWEL nodes should be id-less; WEAVE will create real ids in ETHER.
+    extra_S1_vs_S0 = ids_S1 - ids_S0
+    if extra_S1_vs_S0:
+        msg = (
+            "nexus_anchor_jewels / fuse-shard-3way invariant violation: "
+            "phantom_jewel (S1) contains Workflowy ids that do not appear in "
+            "phantom_gem (S0). JEWELSTORM must not introduce new Workflowy ids; "
+            "only id-less nodes are allowed as new children. Did you run a new "
+            "SCRY/IGNITE or copy ids from another tree after capturing the GEM?"
+        )
+        log_jewel(msg + f" Offending ids (sample): {sorted(list(extra_S1_vs_S0))[:5]}")
+        die(msg)
 
     original_status: Dict[str, Optional[str]] = {}
     original_truncated: Dict[str, bool] = {}
@@ -1226,27 +1284,32 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
         ids_s0 = set(_collect_subtree_ids(root_id, s0_children_ids)) if root_id in s0_by_id else set()
         ids_s1 = set(_collect_subtree_ids(root_id, s1_children_ids)) if root_id in s1_by_id else set()
 
-        # --- DELETE: nodes present in S0 but not in S1 ---
+        # Partition ids for this shard root
         delete_ids = list(ids_s0 - ids_s1)
-        delete_roots = _compute_delete_roots(delete_ids, s0_parent)
-        for nid in delete_roots:
-            t_node = t_by_id.get(nid)
-            if t_node is None:
+        new_ids = ids_s1 - ids_s0
+        common_ids = ids_s0 & ids_s1
+
+        # Compute S1 depths for this shard root so that, if S1 ever introduces
+        # new nodes *with* real Workflowy ids, we create parents before
+        # children. In the canonical JEWELSTORM flow, new nodes are id-less and
+        # handled separately below; this depth map is a forward-compatible
+        # safeguard.
+        depth_s1: Dict[str, int] = {}
+        stack: List[Tuple[str, int]] = [(root_id, 0)] if root_id in ids_s1 else []
+        while stack:
+            cur_id, d = stack.pop()
+            if cur_id in depth_s1:
                 continue
-            parent_id = t_parent.get(nid)
-            if parent_id is None:
-                siblings = territory.get("nodes") or []
-            else:
-                siblings = t_children_lists.get(parent_id) or []
-            siblings[:] = [n for n in siblings if not (isinstance(n, dict) and n.get("id") == nid)]
-            _remove_subtree_from_indexes(t_node, t_by_id, t_parent, t_children_lists)
-            if parent_id:
-                affected_ids.add(parent_id)
-            deletes += 1
+            depth_s1[cur_id] = d
+            for cid in s1_children_ids.get(cur_id, []):
+                if cid in ids_s1:
+                    stack.append((cid, d + 1))
 
         # --- CREATE: nodes present in S1 but not in S0 (id-based) ---
-        new_ids = ids_s1 - ids_s0
-        for nid in new_ids:
+        # Process in top-down order so that any new parent ids are created
+        # before their new children.
+        ordered_new_ids = sorted(new_ids, key=lambda nid: depth_s1.get(nid, 0))
+        for nid in ordered_new_ids:
             s1_node = s1_by_id.get(nid)
             if s1_node is None:
                 continue
@@ -1315,7 +1378,6 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
                 creates += 1
 
         # --- MOVE: nodes in both S0 and S1 whose parent changed ---
-        common_ids = ids_s0 & ids_s1
         for nid in common_ids:
             s1_p = s1_parent.get(nid)
             t_p = t_parent.get(nid)
@@ -1355,6 +1417,23 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
             t_parent[nid] = s1_p
             affected_ids.update(filter(None, [nid, t_p, s1_p]))
             moves += 1
+
+        # --- DELETE: nodes present in S0 but not in S1 (after moves) ---
+        delete_roots = _compute_delete_roots(delete_ids, s0_parent)
+        for nid in delete_roots:
+            t_node = t_by_id.get(nid)
+            if t_node is None:
+                continue
+            parent_id = t_parent.get(nid)
+            if parent_id is None:
+                siblings = territory.get("nodes") or []
+            else:
+                siblings = t_children_lists.get(parent_id) or []
+            siblings[:] = [n for n in siblings if not (isinstance(n, dict) and n.get("id") == nid)]
+            _remove_subtree_from_indexes(t_node, t_by_id, t_parent, t_children_lists)
+            if parent_id:
+                affected_ids.add(parent_id)
+            deletes += 1
 
         # --- REORDER: align order of visible children with S1, keep hidden + id-less children ---
         parents_to_consider = {s1_parent[nid] for nid in ids_s1} | {root_id}
@@ -1428,10 +1507,12 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
     _recalc_counts_preserving_truncation(territory, affected_ids, original_status, original_truncated)
 
     save_json(args.target_scry, territory)
-    print(
+    summary_msg = (
         "[nexus_json_tools] 3-way fuse complete: "
         f"updates={updates}, creates={creates}, deletes={deletes}, moves={moves}, reorders={reorders}."
     )
+    print(summary_msg)
+    log_jewel(summary_msg)
 
 
 def cmd_delete_node(args: argparse.Namespace) -> None:

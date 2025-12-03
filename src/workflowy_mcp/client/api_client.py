@@ -97,6 +97,10 @@ def _log_to_file_helper(message: str, log_type: str = "reconcile") -> None:
         filename = "reconcile_debug.log"
         if log_type == "etch":
             filename = "etch_debug.log"
+        elif log_type == "nexus":
+            filename = "nexus_debug.log"
+        elif log_type in ("jewel", "jewelstorm"):
+            filename = "jewelstorm_debug.log"
         
         log_path = fr"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\{filename}"
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -1375,6 +1379,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         use_efficient_traversal: bool = False,
         max_depth: int | None = None,
         child_count_limit: int | None = None,
+        max_nodes: int | None = None,
     ) -> dict[str, Any]:
         """Export node tree to hierarchical JSON file AND Markdown file.
         
@@ -1388,6 +1393,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 per parent. If a parent has more children than this limit, its children
                 are treated as an opaque subtree in the editable JSON while counts are
                 still computed from the full tree.
+            max_nodes: Optional maximum total node count. If the SCRY would
+                export more than this number of nodes, the operation aborts with
+                a clear error (no JSON written). This mirrors the safety guard
+                used by workflowy_scry(size_limit).
             
         Returns:
             {"success": True, "file_path": "...", "markdown_file": "...", "node_count": N, "depth": M}
@@ -1438,6 +1447,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             api_calls_made = 1  # Single export_nodes call (but fetches ALL nodes!)
         
         try:
+            # Global safety: prevent accidental massive SCRY exports.
+            if max_nodes is not None and total_nodes_fetched > max_nodes:
+                raise NetworkError(
+                    f"SCRY tree size ({total_nodes_fetched} nodes) exceeds limit ({max_nodes} nodes).\n\n"
+                    "Options:\n"
+                    f"1. Increase max_nodes parameter (if your use case truly requires more than {max_nodes} nodes)\n"
+                    "2. Use max_depth or child_count_limit to truncate the SCRY\n"
+                    "3. Use nexus_scry (tag-based) + nexus_ignite_shards for coarse terrain + targeted shards\n\n"
+                    "This safety prevents accidental 50MB+ SCRY exports."
+                )
             
             if not flat_nodes:
                 return {
@@ -1453,6 +1472,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
             # Preserve root node info and build complete path to Dagger root
             root_node_info = None
+            root_immediate_child_count: int | None = None
             if hierarchical_tree and len(hierarchical_tree) == 1:
                 root_node = hierarchical_tree[0]
                 
@@ -1478,8 +1498,43 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     'full_path_uuids': path_uuids,
                     'full_path_names': path_names
                 }
+                # Capture the FULL immediate child count of the root *before*
+                # any truncation is applied to the editable JSON.
+                root_immediate_child_count = len(root_node.get('children') or [])
                 # Extract only children (skip root for round-trip editing)
                 hierarchical_tree = root_node.get('children', [])
+            else:
+                # SCRY exports should always have a single logical root under the
+                # requested node_id. Multiple roots indicate inconsistent parent_id
+                # relationships in the flat export or a malformed JSON edit.
+                raise NetworkError(
+                    "SCRY export produced multiple root nodes under the requested node_id. "
+                    "This indicates inconsistent parent_id relationships in the source "
+                    "JSON or a bug in the export pipeline. Re-scry the Workflowy node, "
+                    "and if the problem persists, inspect the raw /nodes-export data."
+                )
+            
+            # Decide root-level truncation semantics for immediate children.
+            # By default, SCRY exports include the full immediate child set of
+            # the root. If child_count_limit is provided and the root has more
+            # children than this limit, we treat the root as an opaque parent:
+            # nodes[] is emptied and metadata flags record that the root has
+            # hidden children, so DELETE logic never treats missing root
+            # children as implicit deletions.
+            root_has_hidden_children = False
+            root_children_status = "complete"
+            
+            if (
+                child_count_limit is not None
+                and root_immediate_child_count is not None
+                and root_immediate_child_count > child_count_limit
+            ):
+                root_has_hidden_children = True
+                root_children_status = "truncated_by_count"
+                # Root is an opaque parent at this SCRY granularity: do not show
+                # any immediate children in nodes[]. Counts remain available via
+                # root_immediate_child_count and deeper SCRYs or GLIMPses.
+                hierarchical_tree = []
             
             # Annotate counts and children_status, and optionally truncate children
             # for large/deep trees in the EDITABLE JSON. The reconciliation algorithm
@@ -1497,11 +1552,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # Calculate overall tree depth after optional truncation (for reporting)
             tree_depth = self._calculate_max_depth(hierarchical_tree)
             
+            # Compute ledger of all node IDs seen in this SCRY (before truncation)
+            original_ids_seen = sorted({n.get('id') for n in flat_nodes if n.get('id')})
+            
             # Wrap with metadata for safe round-trip editing
             export_package = {
                 "export_root_id": node_id,
                 "export_root_name": root_node_info.get('name') if root_node_info else 'Unknown',
                 "export_timestamp": hierarchical_tree[0].get('modifiedAt') if hierarchical_tree else None,
+                "export_root_has_hidden_children": root_has_hidden_children,
+                "export_root_children_status": root_children_status,
+                "original_ids_seen": original_ids_seen,
                 "nodes": hierarchical_tree
             }
             
@@ -2041,7 +2102,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         "Options:\n"
                         "1. Verify Workflowy desktop app is open and connected\n"
                         "2. Check extension console for errors\n"
-                        "3. Use workflowy_glimpse_full() to fetch complete tree via API\n\n"
+                        "3. Use workflowy_scry() to fetch complete tree via API\n\n"
                         "Note: workflowy_glimpse() requires WebSocket connection to extract \n"
                         "only expanded nodes. Use glimpseFull for Mode 2 (hunting) operations."
                     )
@@ -2057,7 +2118,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "Options:\n"
                     "1. Verify Workflowy desktop app is open\n"
                     "2. Check extension console for errors\n"
-                    "3. Use workflowy_glimpse_full() to fetch complete tree via API\n\n"
+                    "3. Use workflowy_scry() to fetch complete tree via API\n\n"
                     "Note: workflowy_glimpse() is WebSocket-only (Mode 1: Dan shows you).\n"
                     "Use glimpseFull for Mode 2 (Agent hunts) operations."
                 )
@@ -2070,7 +2131,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "1. Verify Workflowy desktop app is open and extension loaded\n"
                     "2. Check Workflowy console (F12) for extension errors\n"
                     "3. Restart Workflowy desktop app\n"
-                    "4. Use workflowy_glimpse_full() to fetch complete tree via API\n\n"
+                    "4. Use workflowy_scry() to fetch complete tree via API\n\n"
                     "Note: workflowy_glimpse() requires active WebSocket connection.\n"
                     "Use glimpseFull when WebSocket unavailable."
                 ) from e
@@ -2083,12 +2144,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "1. Ensure Workflowy desktop app is running\n"
             "2. Verify extension is loaded and connected (check console)\n"
             "3. Restart MCP connector to initialize WebSocket server\n"
-            "4. Use workflowy_glimpse_full() to fetch complete tree via API\n\n"
+            "4. Use workflowy_scry() to fetch complete tree via API\n\n"
             "Mode 1 (Dan shows you): Requires WebSocket - use glimpse()\n"
             "Mode 2 (Agent hunts): Bypass WebSocket - use glimpseFull()"
         )
     
-    async def workflowy_glimpse_full(self, node_id: str, use_efficient_traversal: bool = False, depth: int | None = None, size_limit: int = 1000) -> dict[str, Any]:
+    async def workflowy_scry(self, node_id: str, use_efficient_traversal: bool = False, depth: int | None = None, size_limit: int = 1000) -> dict[str, Any]:
         """Load entire node tree via API (bypass WebSocket).
         
         Mode 2 (Agent hunts) - Full API fetch regardless of WebSocket availability.
@@ -2179,7 +2240,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             # LOGGING: inspect root candidates from hierarchy for debugging
             try:
-                self._log_debug(f"workflowy_glimpse_full: node_id={node_id} use_efficient_traversal={use_efficient_traversal} flat_nodes={len(flat_nodes)} roots={len(hierarchical_tree)}")
+                self._log_debug(f"workflowy_scry: node_id={node_id} use_efficient_traversal={use_efficient_traversal} flat_nodes={len(flat_nodes)} roots={len(hierarchical_tree)}")
                 for idx, root_candidate in enumerate(hierarchical_tree[:10]):
                     self._log_debug(f"  root_candidate[{idx}]: id={root_candidate.get('id')} name={root_candidate.get('name')} parent_id={root_candidate.get('parent_id')} children={len(root_candidate.get('children') or [])}")
             except Exception:
@@ -2193,7 +2254,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # Strategy 1: Single root found
             if hierarchical_tree and len(hierarchical_tree) == 1:
                 root_node = hierarchical_tree[0]
-                self._log_debug(f"workflowy_glimpse_full: using single-root path id={root_node.get('id')} name={root_node.get('name')}")
+                self._log_debug(f"workflowy_scry: using single-root path id={root_node.get('id')} name={root_node.get('name')}")
                 root_metadata = {
                     "id": root_node.get('id'),
                     "name": root_node.get('name'),
@@ -2207,7 +2268,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 target_root = next((r for r in hierarchical_tree if r.get("id") == node_id), None)
                 
                 if target_root:
-                    self._log_debug(f"workflowy_glimpse_full: multiple roots ({len(hierarchical_tree)}), but found target root id={target_root.get('id')} name={target_root.get('name')}. Using it.")
+                    self._log_debug(f"workflowy_scry: multiple roots ({len(hierarchical_tree)}), but found target root id={target_root.get('id')} name={target_root.get('name')}. Using it.")
                     root_metadata = {
                         "id": target_root.get('id'),
                         "name": target_root.get('name'),
@@ -2217,7 +2278,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     children = target_root.get('children', [])
                 else:
                     # Fallback: Return all roots as children (artificial root behavior)
-                    self._log_debug(f"workflowy_glimpse_full: multiple roots ({len(hierarchical_tree)}) and target {node_id} NOT found in top level; returning list directly")
+                    self._log_debug(f"workflowy_scry: multiple roots ({len(hierarchical_tree)}) and target {node_id} NOT found in top level; returning list directly")
                     children = hierarchical_tree
             
             # Apply depth limiting if requested
@@ -3363,19 +3424,25 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         os.makedirs(run_dir, exist_ok=True)
         return run_dir
 
-    async def nexus_summon(
+    async def nexus_scry(
         self,
         nexus_tag: str,
         workflowy_root_id: str,
         max_depth: int,
         child_limit: int,
+        reset_if_exists: bool = False,
+        max_nodes: int | None = None,
     ) -> dict[str, Any]:
-        """SCRY → coarse_terrain.json for a new CORINTHIAN NEXUS.
+        """Tag-scoped SCRY → coarse_terrain.json for a CORINTHIAN NEXUS.
 
         This is the initiating stage of the PHANTOM GEMSTONE pipeline. It:
         - Exports a hierarchical SCRY of the Workflowy subtree rooted at
-          ``workflowy_root_id`` using bulk_export_to_file, with the given
-          ``max_depth`` and ``child_limit`` parameters.
+          ``workflowy_root_id`` using ``bulk_export_to_file``, with the given
+          ``max_depth`` and ``child_limit`` parameters controlling vertical and
+          horizontal truncation.
+        - Optionally enforces a global node cap via ``max_nodes``; if the SCRY
+          would export more than this many nodes, the operation aborts with a
+          clear error (no JSON written).
         - Writes the result to ``coarse_terrain.json`` under the directory for
           ``nexus_tag``.
 
@@ -3384,14 +3451,41 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         - nexus_anchor_gems   (ANCHOR GEMS → shimmering_terrain)
         - nexus_anchor_jewels (ANCHOR JEWELS → enchanted_terrain)
         - nexus_weave_enchanted (WEAVE → Workflowy)
+
+        Unlike ``nexus_glimpse(mode="full")``, which may legitimately produce
+        T0 = S0 = T1 in a single step (because Dan's UI expansion already
+        encodes the GEM/SHIMMERING decision), ``nexus_scry`` is explicitly
+        **T0-only**: it produces only ``coarse_terrain.json``. S0 and T1 are
+        introduced later via ``nexus_ignite_shards`` and ``nexus_anchor_gems``.
         """
-        run_dir = self._get_nexus_dir(nexus_tag)
+        import shutil
+
+        # Resolve run directory for this NEXUS tag without implicitly resetting
+        # existing state. We treat the presence of an existing directory as
+        # "state already exists" for this tag and require explicit
+        # reset_if_exists=True to overwrite it.
+        base_dir = (
+            r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_runs"
+        )
+        run_dir = os.path.join(base_dir, nexus_tag)
+
+        if os.path.exists(run_dir):
+            if not reset_if_exists:
+                raise NetworkError(
+                    "NEXUS state already exists for tag "
+                    f"'{nexus_tag}'. Use reset_if_exists=True to overwrite."
+                )
+            # Fresh start for this tag: remove any prior TERRAIN/GEM/JEWEL files.
+            shutil.rmtree(run_dir, ignore_errors=True)
+
+        os.makedirs(run_dir, exist_ok=True)
         coarse_path = os.path.join(run_dir, "coarse_terrain.json")
 
         # Use the existing bulk_export_to_file helper to perform the SCRY.
         # We deliberately use use_efficient_traversal=False so that
         # max_depth/child_limit semantics are handled by the NEXUS export
-        # pipeline (annotate_child_counts_and_truncate).
+        # pipeline (annotate_child_counts_and_truncate), and we pass max_nodes
+        # through to enforce a hard upper bound on SCRY size when desired.
         result = await self.bulk_export_to_file(
             node_id=workflowy_root_id,
             output_file=coarse_path,
@@ -3399,6 +3493,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             use_efficient_traversal=False,
             max_depth=max_depth,
             child_count_limit=child_limit,
+            max_nodes=max_nodes,
         )
 
         # Optionally, record a tiny manifest stub for this NEXUS run. We keep
@@ -3412,6 +3507,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "workflowy_root_id": workflowy_root_id,
                 "max_depth": max_depth,
                 "child_limit": child_limit,
+                "max_nodes": max_nodes,
                 "stage": "coarse_terrain",
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
             }
@@ -3471,7 +3567,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         if not os.path.exists(coarse_path):
             raise NetworkError(
                 "coarse_terrain.json not found for nexus_tag. "
-                "Call nexus_summon(...) before nexus_ignite_shards(...)."
+                "Call nexus_scry(...) before nexus_ignite_shards(...)."
             )
 
         if not root_ids:
@@ -3502,24 +3598,53 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         if not (isinstance(coarse_data, dict) and "nodes" in coarse_data):
             raise NetworkError(
                 "coarse_terrain.json must be an export package with 'nodes' key. "
-                "Re-summon the NEXUS via nexus_summon(...) if this is not the case."
+                "Re-scry the NEXUS via nexus_scry(...) if this is not the case."
             )
 
         terrain_nodes: list[dict[str, Any]] = coarse_data.get("nodes", [])
 
-        # Build parent map from hierarchical nodes (id -> parent_id).
+        # Initialize original_ids_seen ledger from coarse TERRAIN if present,
+        # otherwise derive it from the current coarse nodes (fallback for
+        # pre-ledger files). This ledger will be extended with any new node
+        # IDs discovered by deep SCRYs for shard roots.
+        original_ids_seen: set[str] = set()
+        if isinstance(coarse_data.get("original_ids_seen"), list):
+            original_ids_seen.update(
+                str(nid) for nid in coarse_data.get("original_ids_seen", []) if nid
+            )
+        else:
+            def _collect_ids_from_nodes(nodes: list[dict[str, Any]]) -> None:
+                for node in nodes or []:
+                    if not isinstance(node, dict):
+                        continue
+                    nid = node.get("id")
+                    if nid:
+                        original_ids_seen.add(str(nid))
+                    _collect_ids_from_nodes(node.get("children") or [])
+
+            _collect_ids_from_nodes(terrain_nodes)
+            # Also include the coarse export root itself if present
+            if export_root_id:
+                original_ids_seen.add(str(export_root_id))
+
+        # Build parent and node maps from hierarchical nodes (id -> parent_id).
         parent_by_id: dict[str, str | None] = {}
+        node_by_id: dict[str, dict[str, Any]] = {}
 
         def _index_parents(nodes: list[dict[str, Any]], parent_id: str | None) -> None:
             for node in nodes:
                 nid = node.get("id")
                 if nid:
                     parent_by_id[nid] = parent_id
+                    node_by_id[nid] = node
                     children = node.get("children") or []
                     if children:
                         _index_parents(children, nid)
 
-        _index_parents(terrain_nodes, None)
+        # Treat the coarse_terrain export_root_id as the synthetic parent of all
+        # top-level nodes so that any pair of roots at least shares this ancestor.
+        export_root_id = coarse_data.get("export_root_id")
+        _index_parents(terrain_nodes, export_root_id)
 
         # Normalize roots: dedupe while preserving order.
         unique_root_ids: list[str] = []
@@ -3534,7 +3659,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             raise NetworkError(
                 "nexus_ignite_shards: one or more roots are not present in coarse_terrain.json "
                 f"for nexus_tag={nexus_tag}: {missing}. "
-                "Choose roots from the current coarse SCRY (nexus_summon)."
+                "Choose roots from the current coarse SCRY (nexus_scry)."
             )
 
         # Enforce disjointness: walk ancestor chain for each root and ensure we
@@ -3550,9 +3675,62 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     )
                 parent = parent_by_id.get(parent)
 
-        gem_nodes: list[dict[str, Any]] = []
+        # Compute the nearest common ancestor (LCA) of all shard roots within
+        # the coarse_terrain tree. This is metadata only for now (export_root
+        # for the PHANTOM GEM); we leave the existing 'nodes' forest shape
+        # unchanged for compatibility with downstream tools.
+        def _ancestor_chain(nid: str) -> list[str]:
+            chain: list[str] = []
+            cur = nid
+            while cur is not None:
+                chain.append(cur)
+                cur = parent_by_id.get(cur)
+            return chain
+
+        ancestor_lists: list[list[str]] = []
+        for rid in unique_root_ids:
+            ancestor_lists.append(_ancestor_chain(rid))
+
+        # Start from the first root's ancestor chain and intersect with others
+        common_ancestors: set[str] = set(ancestor_lists[0])
+        for chain in ancestor_lists[1:]:
+            common_ancestors &= set(chain)
+
+        if not common_ancestors:
+            raise NetworkError(
+                "nexus_ignite_shards: could not find a common ancestor for shard roots "
+                f"{sorted(list(roots_set))} within coarse_terrain. Ensure all shards come "
+                "from the same SCRY (nexus_scry) subtree."
+            )
+
+        # Nearest common ancestor = first ancestor of the first root that is in
+        # the intersection set (closest to the leaves).
+        lca_id = next(a for a in ancestor_lists[0] if a in common_ancestors)
+
+        # Resolve a human-readable name for the LCA if possible.
+        if lca_id == export_root_id:
+            lca_name = coarse_data.get("export_root_name", "Root")
+        else:
+            lca_node = node_by_id.get(lca_id) or {}
+            lca_name = lca_node.get("name", "Root")
+
+        deep_subtrees: dict[str, dict[str, Any]] = {}
         roots_resolved: list[str] = []
         total_nodes_fetched = 0
+
+        def _collect_ids_from_subtree(node: dict[str, Any]) -> None:
+            """Accumulate all Workflowy node IDs reachable from this subtree.
+
+            Used to extend original_ids_seen with any nodes revealed only by
+            deep SCRY at shard roots (beyond what coarse TERRAIN saw).
+            """
+            if not isinstance(node, dict):
+                return
+            nid = node.get("id")
+            if nid:
+                original_ids_seen.add(str(nid))
+            for child in node.get("children") or []:
+                _collect_ids_from_subtree(child)
 
         per_root_limits = per_root_limits or {}
 
@@ -3603,14 +3781,121 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 current_depth=1,
             )
 
-            gem_nodes.append(root_subtree)
+            deep_subtrees[root_id] = root_subtree
             roots_resolved.append(root_id)
 
-        phantom_payload = {
-            "nexus_tag": nexus_tag,
-            "roots": roots_resolved,
-            "nodes": gem_nodes,
-        }
+            # Extend ledger with all IDs from this deep subtree
+            _collect_ids_from_subtree(root_subtree)
+
+        if not roots_resolved:
+            phantom_payload = {
+                "nexus_tag": nexus_tag,
+                "roots": [],
+                "export_root_id": export_root_id,
+                "export_root_name": coarse_data.get("export_root_name", "Root"),
+                "original_ids_seen": sorted(original_ids_seen),
+                "nodes": [],
+            }
+        else:
+            # Build GEM skeleton from coarse TERRAIN root down to each shard root.
+            skeleton_nodes_by_id: dict[str, dict[str, Any]] = {}
+            top_level_ids: list[str] = []
+            top_level_nodes: list[dict[str, Any]] = []
+
+            def ensure_skeleton_node(node_id: str) -> dict[str, Any]:
+                source = node_by_id.get(node_id)
+                if not source:
+                    raise NetworkError(
+                        f"nexus_ignite_shards: node {node_id} not found in coarse_terrain.json"
+                    )
+                if node_id in skeleton_nodes_by_id:
+                    return skeleton_nodes_by_id[node_id]
+                skeleton = {k: v for k, v in source.items() if k != "children"}
+                skeleton["children"] = []
+                skeleton_nodes_by_id[node_id] = skeleton
+                return skeleton
+
+            for root_id in roots_resolved:
+                # Walk from shard root up to the coarse TERRAIN root, then back down
+                path: list[str] = []
+                cur = root_id
+                while cur is not None and cur != export_root_id:
+                    path.append(cur)
+                    cur = parent_by_id.get(cur)
+                if cur != export_root_id:
+                    raise NetworkError(
+                        "nexus_ignite_shards: root "
+                        f"{root_id} does not descend from coarse export_root_id {export_root_id}"
+                    )
+                path.reverse()
+
+                parent_id = export_root_id
+                for nid in path:
+                    node_skel = ensure_skeleton_node(nid)
+                    if parent_id == export_root_id:
+                        if nid not in top_level_ids:
+                            top_level_ids.append(nid)
+                            top_level_nodes.append(node_skel)
+                    else:
+                        parent_skel = skeleton_nodes_by_id[parent_id]
+                        children_list = parent_skel.get("children") or []
+                        if not any(
+                            isinstance(c, dict) and c.get("id") == nid
+                            for c in children_list
+                        ):
+                            children_list.append(node_skel)
+                            parent_skel["children"] = children_list
+                    parent_id = nid
+
+            # Replace skeleton nodes at each shard root with the deep SCRY subtrees
+            for root_id, root_subtree in deep_subtrees.items():
+                parent_id = parent_by_id.get(root_id)
+                if parent_id is None or parent_id == export_root_id:
+                    for idx, nid in enumerate(top_level_ids):
+                        if nid == root_id:
+                            top_level_nodes[idx] = root_subtree
+                            break
+                else:
+                    parent_skel = skeleton_nodes_by_id.get(parent_id)
+                    if not parent_skel:
+                        raise NetworkError(
+                            f"nexus_ignite_shards: parent {parent_id} of shard {root_id} missing in skeleton"
+                        )
+                    children_list = parent_skel.get("children") or []
+                    replaced = False
+                    for idx, child in enumerate(children_list):
+                        if isinstance(child, dict) and child.get("id") == root_id:
+                            children_list[idx] = root_subtree
+                            replaced = True
+                            break
+                    if not replaced:
+                        children_list.append(root_subtree)
+                    parent_skel["children"] = children_list
+                skeleton_nodes_by_id[root_id] = root_subtree
+
+            phantom_payload = {
+                "nexus_tag": nexus_tag,
+                "roots": roots_resolved,
+                "export_root_id": export_root_id,
+                "export_root_name": coarse_data.get("export_root_name", "Root"),
+                "original_ids_seen": sorted(original_ids_seen),
+                "nodes": top_level_nodes,
+            }
+
+        # Best-effort: update coarse_terrain.json with the expanded ledger so
+        # downstream consumers (e.g. anchor_gems) can see all originally-seen
+        # IDs without recomputing.
+        try:
+            coarse_data["original_ids_seen"] = sorted(original_ids_seen)
+            with open(coarse_path, "w", encoding="utf-8") as f:
+                json.dump(coarse_data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            logger.warning("nexus_ignite_shards: failed to update coarse_terrain original_ids_seen ledger")
+
+        _log_to_file_helper(
+            f"nexus_ignite_shards[{nexus_tag}]: roots={roots_resolved}, export_root_id={export_root_id}, node_count={total_nodes_fetched}",
+            "nexus",
+        )
 
         try:
             with open(phantom_path, "w", encoding="utf-8") as f:
@@ -3637,7 +3922,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
     ) -> dict[str, Any]:
         """GLIMPSE → TERRAIN + PHANTOM GEM (zero API calls).
 
-        Ultimate usability: instead of nexus_summon + nexus_ignite_shards (both via API),
+        Ultimate usability: instead of nexus_scry + nexus_ignite_shards (both via API),
         GLIMPSE what you've expanded in Workflowy → both TERRAIN and PHANTOM GEM created
         from that single local WebSocket extraction.
 
@@ -3713,7 +3998,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         logger.info(f"📡 NEXUS GLIMPSE Step 2: API fetch for complete tree structure...")
         try:
             # Use high size_limit to avoid artificial truncation - we need the FULL tree
-            api_glimpse = await self.workflowy_glimpse_full(
+            api_glimpse = await self.workflowy_scry(
                 node_id=workflowy_root_id,
                 use_efficient_traversal=False,
                 depth=None,  # Full depth
@@ -3881,196 +4166,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         return result
 
-    async def nexus_glimpse_full(
-        self,
-        nexus_tag: str,
-        workflowy_root_id: str,
-        reset_if_exists: bool = False,
-        mode: str = "full",
-        max_depth: int | None = None,
-        child_limit: int | None = None,
-        max_nodes: int = 200000,
-    ) -> dict[str, Any]:
-        """GLIMPSE FULL → TERRAIN + PHANTOM GEM (API-based, ignores UI expansion).
-
-        API-based cousin of nexus_glimpse. Fetches the complete subtree via Workflowy API,
-        regardless of what's expanded in the UI. Unlike nexus_summon, this REQUIRES a
-        full-depth tree with no truncation.
-
-        Use when:
-        • Tree is too large for Dan to manually expand
-        • You want the complete subtree for understanding/context
-        • Agent-driven workflows where Dan isn't interacting with Workflowy
-
-        Args:
-            nexus_tag: Human-readable tag for this NEXUS run.
-            workflowy_root_id: Root node UUID to fetch.
-            reset_if_exists: If True, overwrite existing NEXUS state for this tag.
-            mode: Output mode control:
-                "full" (default) - Write T0 + S0 + T1 (all identical). Skip directly to QUILLSTORM.
-                "coarse_terrain_only" - Write only T0. Use for hybrid workflow: GLIMPSE for map,
-                                        then nexus_ignite_shards on specific roots later.
-            max_depth: Optional depth limit (errors if tree exceeds this).
-            child_limit: Optional child count limit per node (errors if any node exceeds this).
-            max_nodes: Maximum total node count (default 200000). Errors if tree is larger.
-
-        Returns:
-            mode="full":
-                {"success": True, "nexus_tag": str, "coarse_terrain": path, "phantom_gem": path,
-                 "shimmering_terrain": path, "node_count": int, "depth": int, "_source": "api"}
-            mode="coarse_terrain_only":
-                {"success": True, "nexus_tag": str, "coarse_terrain": path,
-                 "node_count": int, "depth": int, "_source": "api"}
-
-        Raises:
-            NetworkError: If tree would be truncated (exceeds max_depth, child_limit, or max_nodes)
-        """
-        import shutil
-
-        # Validate mode parameter
-        if mode not in ("full", "coarse_terrain_only"):
-            raise NetworkError(
-                f"Invalid mode '{mode}'. Must be 'full' or 'coarse_terrain_only'."
-            )
-
-        run_dir = self._get_nexus_dir(nexus_tag)
-        coarse_path = os.path.join(run_dir, "coarse_terrain.json")
-        phantom_gem_path = os.path.join(run_dir, "phantom_gem.json")
-        shimmering_path = os.path.join(run_dir, "shimmering_terrain.json")
-
-        if os.path.exists(run_dir):
-            if not reset_if_exists:
-                raise NetworkError(
-                    f"NEXUS state already exists for tag '{nexus_tag}'. "
-                    "Use reset_if_exists=True to overwrite."
-                )
-            try:
-                shutil.rmtree(run_dir)
-            except Exception as e:
-                raise NetworkError(f"Failed to reset NEXUS state for tag '{nexus_tag}': {e}") from e
-
-        try:
-            os.makedirs(run_dir, exist_ok=True)
-        except Exception as e:
-            raise NetworkError(f"Failed to create NEXUS directory for tag '{nexus_tag}': {e}") from e
-
-        # Fetch full tree via API
-        try:
-            glimpse_result = await self.workflowy_glimpse_full(
-                node_id=workflowy_root_id,
-                use_efficient_traversal=False,
-                depth=None,  # Always fetch full depth
-                size_limit=max_nodes,
-            )
-        except Exception as e:
-            raise NetworkError(f"GLIMPSE FULL failed for root {workflowy_root_id}: {e}") from e
-
-        if not glimpse_result.get("success"):
-            raise NetworkError(
-                f"GLIMPSE FULL returned failure for root {workflowy_root_id}: "
-                f"{glimpse_result.get('error', 'unknown error')}"
-            )
-
-        # Extract metadata and children
-        root_meta = glimpse_result.get("root") or {
-            "id": workflowy_root_id,
-            "name": "Root",
-            "note": None,
-        }
-        children = glimpse_result.get("children", []) or []
-        node_count = glimpse_result.get("node_count", len(children) + 1)
-        tree_depth = glimpse_result.get("depth", 0)
-
-        # HARD REQUIREMENT: No truncation allowed for nexus_glimpse_full
-        # Check if limits would have caused truncation
-        if max_depth is not None and tree_depth > max_depth:
-            raise NetworkError(
-                f"nexus_glimpse_full requires full-depth tree. "
-                f"Tree depth ({tree_depth}) exceeds max_depth ({max_depth}). "
-                f"Either increase max_depth or use nexus_summon for truncated trees."
-            )
-
-        if child_limit is not None:
-            # Check if any node in the tree exceeds child_limit
-            def check_child_limit(nodes: list[dict[str, Any]]) -> tuple[bool, str, int]:
-                for node in nodes:
-                    node_children = node.get("children", []) or []
-                    if len(node_children) > child_limit:
-                        return True, node.get("name", "Unnamed"), len(node_children)
-                    exceeded, name, count = check_child_limit(node_children)
-                    if exceeded:
-                        return exceeded, name, count
-                return False, "", 0
-
-            exceeded, node_name, actual_count = check_child_limit(children)
-            if exceeded:
-                raise NetworkError(
-                    f"nexus_glimpse_full requires full-depth tree. "
-                    f"Node '{node_name}' has {actual_count} children, exceeding child_limit ({child_limit}). "
-                    f"Either increase child_limit or use nexus_summon for truncated trees."
-                )
-
-        # Build terrain data structure
-        terrain_data = {
-            "export_root_id": workflowy_root_id,
-            "export_root_name": root_meta.get("name", "Root"),
-            "export_timestamp": None,
-            "nodes": children,
-        }
-
-        # Annotate children_status as 'complete' (API fetch is always complete)
-        def annotate_complete(nodes: list[dict[str, Any]]) -> None:
-            for node in nodes:
-                node["children_status"] = "complete"
-                node["has_hidden_children"] = False
-                grandchildren = node.get("children", []) or []
-                if grandchildren:
-                    annotate_complete(grandchildren)
-
-        annotate_complete(children)
-
-        # Always write coarse_terrain.json
-        try:
-            with open(coarse_path, "w", encoding="utf-8") as f:
-                json.dump(terrain_data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            raise NetworkError(f"Failed to write coarse_terrain.json: {e}") from e
-
-        result = {
-            "success": True,
-            "nexus_tag": nexus_tag,
-            "coarse_terrain": coarse_path,
-            "node_count": node_count,
-            "depth": tree_depth,
-            "_source": "api",
-            "mode": mode,
-        }
-
-        if mode == "full":
-            # GLIMPSE FULL path: T0 = S0 = T1 (all identical)
-            # Write phantom_gem.json and shimmering_terrain.json
-            try:
-                with open(phantom_gem_path, "w", encoding="utf-8") as f:
-                    json.dump(terrain_data, f, ensure_ascii=False, indent=2)
-            except Exception as e:
-                raise NetworkError(f"Failed to write phantom_gem.json: {e}") from e
-
-            try:
-                with open(shimmering_path, "w", encoding="utf-8") as f:
-                    json.dump(terrain_data, f, ensure_ascii=False, indent=2)
-            except Exception as e:
-                raise NetworkError(f"Failed to write shimmering_terrain.json: {e}") from e
-
-            result["phantom_gem"] = phantom_gem_path
-            result["shimmering_terrain"] = shimmering_path
-
-        # mode="coarse_terrain_only": only coarse_terrain.json written
-        # User will call nexus_ignite_shards later to create phantom_gem.json
-        
-        # Log to persistent file (use glimpse_result which has the tree data)
-        _log_glimpse_to_file("glimpse_full", workflowy_root_id, glimpse_result)
-
-        return result
 
     async def nexus_anchor_gems(self, nexus_tag: str) -> dict[str, Any]:
         """ANCHOR GEMS → shimmering_terrain.json.
@@ -4096,7 +4191,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         if not os.path.exists(coarse_path):
             raise NetworkError(
                 "coarse_terrain.json not found for nexus_tag. "
-                "Call nexus_summon(...) before nexus_anchor_gems(...)."
+                "Call nexus_scry(...) before nexus_anchor_gems(...)."
             )
 
         if not os.path.exists(phantom_path):
@@ -4137,19 +4232,28 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "roots": [],
             }
 
-        # Build a lookup from phantom root id → subtree
+        # Build a lookup from phantom node id → subtree over the entire GEM tree
         subtree_by_id: dict[str, dict[str, Any]] = {}
-        for subtree in phantom_nodes:
-            rid = subtree.get("id")
-            if rid:
-                subtree_by_id[rid] = subtree
+
+        def _index_phantom_subtrees(nodes: list[dict[str, Any]]) -> None:
+            for node in nodes or []:
+                if not isinstance(node, dict):
+                    continue
+                nid = node.get("id")
+                if nid:
+                    subtree_by_id[nid] = node
+                children = node.get("children") or []
+                if children:
+                    _index_phantom_subtrees(children)
+
+        _index_phantom_subtrees(phantom_nodes)
 
         # Coarse terrain is an export package with metadata and "nodes" array.
         # We only modify the editable "nodes" list, leaving header untouched.
         if not (isinstance(coarse_data, dict) and "nodes" in coarse_data):
             raise NetworkError(
                 "coarse_terrain.json must be an export package with 'nodes' key. "
-                "Re-summon the NEXUS via nexus_summon(...) if this is not the case."
+                "Re-scry the NEXUS via nexus_scry(...) if this is not the case."
             )
 
         terrain_nodes: list[dict[str, Any]] = coarse_data.get("nodes", [])
@@ -4167,6 +4271,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         replace_subtree_in_list(children)
 
         replace_subtree_in_list(terrain_nodes)
+
+        # Merge original_ids_seen ledgers from TERRAIN and GEM (if present).
+        original_ids_seen: set[str] = set(coarse_data.get("original_ids_seen", []) or [])
+        original_ids_seen.update(phantom_data.get("original_ids_seen", []) or [])
+        if original_ids_seen:
+            coarse_data["original_ids_seen"] = sorted({str(nid) for nid in original_ids_seen})
 
         # Write shimmering terrain out; header from coarse_terrain is preserved.
         coarse_data["nodes"] = terrain_nodes
@@ -4716,7 +4826,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
     ) -> dict[str, Any]:
         """Initialize an exploration session over a Workflowy subtree.
 
-        v1 implementation uses workflowy_glimpse_full regardless of source_mode
+        v1 implementation uses workflowy_scry regardless of source_mode
         (summon/glimpse_full/existing are treated identically for now). The
         GLIMPSE result is cached in a JSON session file along with handle and
         state metadata, and an initial frontier is returned.
@@ -4737,7 +4847,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 exploration_mode = "dfs_guided"
 
         # Fetch subtree once via GLIMPSE FULL (Agent hunts mode)
-        glimpse = await self.workflowy_glimpse_full(
+        glimpse = await self.workflowy_scry(
             node_id=root_id,
             use_efficient_traversal=True,
             depth=None,
@@ -5818,6 +5928,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         index_tree(root_node, None)
 
+        # Build original_ids_seen ledger from the cached exploration tree: all
+        # node IDs reachable under the exploration root (before any pruning).
+        original_ids_seen: set[str] = set(node_by_id.keys())
+
         # Collect finalized entries with selection types
         finalized_entries: list[tuple[str, str, str | None, int | None]] = []
         for handle, st in state.items():
@@ -6001,6 +6115,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # Stable ordering: preserve original traversal order as much as possible
         # by walking the cached tree and selecting needed roots in that order.
+        # NOTE: ordered_root_ids now serves as a semantic summary of which
+        # branches became top-level foci in the minimal covering tree; the
+        # actual GEM tree is rooted at the exploration root.
         ordered_root_ids: list[str] = []
 
         def collect_roots_in_order(node: dict[str, Any]) -> None:
@@ -6012,7 +6129,22 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         collect_roots_in_order(root_node)
 
-        # Helper: recursively copy only needed nodes under a given root id
+        # Ensure the minimal covering set is connected to the exploration root
+        # by closing needed_ids upward along ancestor chains. This guarantees
+        # that the final GEM is a single tree slice under the exploration root,
+        # matching the terrain-style shape used by IGNITE SHARDS.
+        root_explore_id = root_node.get("id")
+        if root_explore_id:
+            needed_ids.add(root_explore_id)
+        for nid in list(needed_ids):
+            cur = parent_by_id.get(nid)
+            while cur is not None:
+                if cur in needed_ids:
+                    break
+                needed_ids.add(cur)
+                cur = parent_by_id.get(cur)
+
+        # Helper: recursively copy only needed nodes under the exploration root
         def copy_pruned_subtree(node: dict[str, Any]) -> dict[str, Any] | None:
             nid = node.get("id")
             if nid not in needed_ids:
@@ -6035,14 +6167,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             new_node["children"] = new_children
             return new_node
 
-        gem_nodes: list[dict[str, Any]] = []
-        for root_id in ordered_root_ids:
-            original = node_by_id.get(root_id)
-            if not original:
-                continue
-            pruned = copy_pruned_subtree(original)
-            if pruned is not None:
-                gem_nodes.append(pruned)
+        pruned_root = copy_pruned_subtree(root_node)
+        if pruned_root is None:
+            raise NetworkError(
+                "nexus_finalize_exploration: root node was pruned; "
+                "no nodes available to build phantom_gem."
+            )
+
+        # For GEM, we follow the same convention as SCRY / IGNITE SHARDS:
+        # export_root_id identifies the logical root, and 'nodes' holds its
+        # immediate children (not the root node itself).
+        gem_nodes: list[dict[str, Any]] = pruned_root.get("children", [])
 
         run_dir = self._get_nexus_dir(nexus_tag)
         phantom_path = os.path.join(run_dir, "phantom_gem.json")
@@ -6069,6 +6204,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         phantom_payload = {
             "nexus_tag": nexus_tag,
             "roots": ordered_root_ids,
+            "export_root_id": root_explore_id,
+            "export_root_name": root_node.get("name", "Root"),
+            "original_ids_seen": sorted(original_ids_seen),
             "nodes": gem_nodes,
             "scratchpad": scratchpad_text,
             "hints": hints_export,
@@ -6099,6 +6237,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "export_root_id": export_root_id,
                     "export_root_name": export_root_name,
                     "export_timestamp": export_timestamp,
+                    "original_ids_seen": sorted(original_ids_seen),
                     "nodes": root_children,
                 }
                 with open(coarse_path, "w", encoding="utf-8") as f:

@@ -157,6 +157,8 @@ async def reconcile_tree(
                 'intended_parent': intended_parent,
                 'max_delete_threshold': max_delete_threshold,
                 'force': force,
+                'option_b_enabled': option_b_enabled,
+                'original_ids_seen_count': len(original_ids_seen),
             },
             'counts': {
                 'creates': len(planned_creates),
@@ -270,6 +272,13 @@ async def reconcile_tree(
     file_root: Optional[str] = None
     jewel_file: Optional[str] = None
 
+    # Option B deletion metadata: track node IDs that were present in the
+    # "original" source JSON before edits. This enables a visible-then-removed
+    # distinction under truncated parents. When not provided, we fall back to
+    # the conservative Option A behavior.
+    original_ids_seen = set()
+    option_b_enabled = False
+
     if isinstance(source_json, dict):
         file_root = source_json.get('export_root_id') or source_json.get('root_id') or source_json.get('parent_id')
         source_nodes = source_json.get('nodes', [])
@@ -278,9 +287,19 @@ async def reconcile_tree(
         # NEW: Extract root-level hidden children flags from metadata
         root_has_hidden_children = source_json.get('export_root_has_hidden_children', False)
         root_children_status = source_json.get('export_root_children_status', 'complete')
+
+        # NEW: Optional Option B deletion ledger - IDs that were present in the
+        # original source JSON before edits. This lets us distinguish
+        # "visible-then-removed" from "never loaded" under truncated parents.
+        original_ids_seen = set(source_json.get('original_ids_seen', []))
+        option_b_enabled = len(original_ids_seen) > 0
         
         log(f"Detected source document with export_root_id={file_root} jewel_file={jewel_file}")
         log(f"   Root hidden children: {root_has_hidden_children}, status: {root_children_status}")
+        if option_b_enabled:
+            log(f"   Option B deletion ledger: {len(original_ids_seen)} originally-seen node IDs")
+        else:
+            log("   No original_ids_seen ledger; using conservative Option A deletion semantics")
     else:
         source_nodes = source_json
         root_has_hidden_children = False
@@ -543,6 +562,12 @@ async def reconcile_tree(
         # editable children. Treat those as opaque parents as well.
         if node.get('gem_role') == 'subtree_selected' and not children:
             truncated_parents.add(nid)
+
+    # Treat the reconciliation root as truncated when root_has_hidden_children
+    # so its direct children obey the same Option B semantics as other
+    # truncated parents, without moving the root into the nodes[] array.
+    if root_has_hidden_children:
+        truncated_parents.add(parent_uuid)
 
     if truncated_parents:
         log(f"   Truncated parents (children not fully loaded in source OR opaque shells): {truncated_parents}")
@@ -979,23 +1004,43 @@ async def reconcile_tree(
         return status == 'complete'
 
     raw_delete_candidates = ids_in_target - ids_in_source
-    to_delete_before_protection = {
-        tid for tid in raw_delete_candidates
-        if parent_all_children_known(tid, Parent_T2, Map_S)
-        and not is_hidden_descendant(tid, truncated_parents, Parent_T2)
-    }
-    
-    # NEW: Protect direct children of root if root has hidden children
-    # This prevents catastrophic deletion when Dan GLIMPSEs the root with collapsed branches
-    if root_has_hidden_children:
-        root_direct_children_in_target = {tid for tid in to_delete_before_protection if Parent_T2.get(tid) == parent_uuid}
-        if root_direct_children_in_target:
-            log(
-                f"   🛡️ ROOT-LEVEL PROTECTION: Root has hidden children (status={root_children_status}). "
-                f"Protecting {len(root_direct_children_in_target)} direct children of root from deletion."
-            )
-            log(f"   Protected root-level nodes: {root_direct_children_in_target}")
-            to_delete_before_protection = to_delete_before_protection - root_direct_children_in_target
+
+    def can_delete_candidate(tid: str) -> bool:
+        """Decide whether a candidate ID is eligible for automatic deletion.
+
+        Option A (default, conservative):
+          - parent_all_children_known == True
+          - and not is_hidden_descendant (no truncated ancestors)
+
+        Option B (enabled when original_ids_seen is non-empty):
+          - allow deletion of nodes that were present in the *original* source JSON
+            and later removed, even when their parent is truncated, while still
+            protecting nodes that were never loaded at all.
+        """
+        base_parent_known = parent_all_children_known(tid, Parent_T2, Map_S)
+        hidden = is_hidden_descendant(tid, truncated_parents, Parent_T2)
+        was_seen = tid in original_ids_seen
+
+        if not option_b_enabled:
+            return base_parent_known and not hidden
+
+        # If this node lives under a truncated parent and was NEVER seen in the
+        # original source JSON, we must not treat its absence as a delete – it
+        # may simply be a hidden child we never loaded.
+        hidden_protected = hidden and (not was_seen)
+
+        # For nodes that *were* originally seen, we treat removal from the JSON
+        # as an explicit delete, even if their parent is truncated. This is the
+        # "visible-then-removed" case.
+        parent_known_or_seen = base_parent_known or was_seen
+
+        if hidden_protected:
+            return False
+        if not parent_known_or_seen:
+            return False
+        return True
+
+    to_delete_before_protection = {tid for tid in raw_delete_candidates if can_delete_candidate(tid)}
     
     # Guardrail: protect all parents referenced in source (containers)
     to_delete = to_delete_before_protection - parent_refs
@@ -1058,8 +1103,8 @@ async def reconcile_tree(
     # Final JEWEL/ETHER sync guidance:
     #
     # - If all created nodes have completed the create+fetch+jewel_update
-    #   triad, the weave is safely resumable: re-running nexus_weave or
-    #   nexus_weave_async against the same JSON will be incremental and
+    #   triad, the weave is safely resumable: re-running
+    #   nexus_weave_enchanted_async against the same JSON will be incremental and
     #   UUID-aware.
     # - If ANY created node failed to update the JEWEL with its UUID, the
     #   run is NOT safely resumable; re-running may recreate or misalign
@@ -1072,7 +1117,7 @@ async def reconcile_tree(
     log("\n[GUIDANCE]")
     if all_safe:
         log("   JEWEL/ETHER sync is COMPLETE for all created nodes (create+fetch+jewel_update).")
-        log("   It is safe to re-run the SAME nexus_weave or nexus_weave_async call against this JSON.")
+        log("   It is safe to re-run the SAME nexus_weave_enchanted_async call against this JSON.")
         log("   The reconciliation algorithm is UUID-aware and will:")
         log("     • Reuse UUIDs from the JEWEL for existing nodes")
         log("     • Skip nodes that were already created in previous runs")

@@ -79,7 +79,7 @@ _job_counter: int = 0
 _job_lock: asyncio.Lock = asyncio.Lock()
 
 # AI Dagger root (top-level for MCP workflows)
-DAGGER_ROOT_ID = "9ebad31a-2994-4d6f-be50-3499f8c53144"
+DAGGER_ROOT_ID = "b49affa1-3930-95e3-b2fe-ad9b881285e2"
 
 
 def get_client() -> WorkFlowyClient:
@@ -1232,35 +1232,6 @@ async def nexus_glimpse(
         _ws_queue=ws_queue,
     )
 
-@mcp.tool(
-    name="nexus_glimpse_full",
-    description=(
-        "GLIMPSE FULL → TERRAIN + PHANTOM GEM (API-based, ignores UI expansion). "
-        "API cousin of nexus_glimpse that fetches the complete subtree via Workflowy API. "
-        "Unlike nexus_summon, this REQUIRES a full-depth tree (errors if truncation needed). "
-        "Use for agent-driven workflows or when tree is too large to manually expand."
-    ),
-)
-async def nexus_glimpse_full(
-    nexus_tag: str,
-    workflowy_root_id: str,
-    reset_if_exists: bool = False,
-    mode: str = "full",
-    max_depth: int | None = None,
-    child_limit: int | None = None,
-    max_nodes: int = 200000,
-) -> dict[str, Any]:
-    """API-based GLIMPSE FULL (complete subtree, no truncation)."""
-    client = get_client()
-    return await client.nexus_glimpse_full(
-        nexus_tag=nexus_tag,
-        workflowy_root_id=workflowy_root_id,
-        reset_if_exists=reset_if_exists,
-        mode=mode,
-        max_depth=max_depth,
-        child_limit=child_limit,
-        max_nodes=max_nodes,
-    )
 
 # Tool: Export Nodes
 @mcp.tool(name="workflowy_export_node", description="Export a WorkFlowy node with all its children")
@@ -1323,26 +1294,36 @@ async def workflowy_refresh_nodes_export_cache() -> dict:
 
 # PHANTOM GEMSTONE NEXUS – High-level MCP tools
 @mcp.tool(
-    name="nexus_summon",
+    name="nexus_scry",
     description=(
         "INITIATE a CORINTHIAN NEXUS on the ETHER: perform a COARSE SCRY of Workflowy "
         "under a root to reveal a limited TERRAIN (a new geography named by your "
         "NEXUS TAG). Choose max_depth and child_limit carefully—keep them minimal. "
+        "Optionally set max_nodes to guard against accidental 1M-node SCRYs. "
         "Later, you will IGNITE the ETHER more deeply on selected SHARDS."
     ),
 )
-async def nexus_summon(
+async def nexus_scry(
     nexus_tag: str,
     workflowy_root_id: str,
     max_depth: int,
     child_limit: int,
     reset_if_exists: bool = False,
+    max_nodes: int | None = None,
 ) -> dict:
-    """SCRY the ETHER under a root to create a coarse TERRAIN bound to a NEXUS TAG.
+    """Tag-scoped SCRY the ETHER under a root to create a coarse TERRAIN bound to a NEXUS TAG.
 
     This reveals a limited TERRAIN—a new geography named by your NEXUS TAG.
-    Keep the SCRY shallow: choose max_depth and child_limit carefully.
-    Later you will IGNITE the ETHER more deeply on selected SHARDS.
+    Keep the SCRY shallow: choose max_depth and child_limit carefully. Use
+    max_nodes (when non-None) as a hard upper bound on SCRY size; if the tree
+    would exceed this many nodes, the SCRY aborts with a clear error instead of
+    exporting a massive JSON bundle.
+
+    Unlike ``nexus_glimpse(mode="full")``, which may legitimately produce
+    T0 = S0 = T1 in one step (because Dan’s UI expansion already encodes the
+    GEM/SHIMMERING decision), this tag-scoped SCRY is explicitly **T0-only**:
+    it writes only ``coarse_terrain.json``. S0 and T1 are introduced later via
+    ``nexus_ignite_shards`` and ``nexus_anchor_gems``.
     """
     client = get_client()
 
@@ -1350,12 +1331,13 @@ async def nexus_summon(
         await _rate_limiter.acquire()
 
     try:
-        result = await client.nexus_summon(
+        result = await client.nexus_scry(
             nexus_tag=nexus_tag,
             workflowy_root_id=workflowy_root_id,
             max_depth=max_depth,
             child_limit=child_limit,
             reset_if_exists=reset_if_exists,
+            max_nodes=max_nodes,
         )
         if _rate_limiter:
             _rate_limiter.on_success()
@@ -1680,56 +1662,6 @@ async def nexus_finalize_exploration(
         raise
 
 
-# Tool: Bulk Export to JSON File
-@mcp.tool(
-    name="nexus_scry",
-    description="Export a Workflowy node and its entire subtree to a JSON file, creating a Keystone backup."
-)
-async def nexus_scry(
-    node_id: str,
-    output_file: str,
-    include_metadata: bool = True,
-    max_depth: int | None = None,
-    child_count_limit: int | None = None,
-) -> dict:
-    """Export a node tree to a hierarchical JSON file.
-
-    Args:
-        node_id: The UUID of the root node to export from.
-        output_file: The absolute path where the JSON output file should be written.
-        include_metadata: Whether to include metadata fields like created_at and modified_at (default True).
-        max_depth: Optional depth limit for the EDITABLE JSON/Markdown view (None = full depth).
-        child_count_limit: Optional maximum immediate child count to fully materialize per
-            parent in the EDITABLE JSON. Parents whose immediate child count exceeds this
-            limit are treated as opaque subtrees in the editable JSON while accurate
-            counts are still computed from the full tree.
-
-    Returns:
-        A dictionary with success status, file path, node count, and tree depth.
-    """
-    client = get_client()
-
-    if _rate_limiter:
-        await _rate_limiter.acquire()
-
-    try:
-        result = await client.bulk_export_to_file(
-            node_id=node_id,
-            output_file=output_file,
-            include_metadata=include_metadata,
-            use_efficient_traversal=False,
-            max_depth=max_depth,
-            child_count_limit=child_count_limit,
-        )
-        if _rate_limiter:
-            _rate_limiter.on_success()
-        return result
-    except Exception as e:
-        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
-            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
-        raise
-
-
 # Tool: Generate Markdown from JSON
 @mcp.tool(
     name="generate_markdown_from_json",
@@ -1793,7 +1725,7 @@ async def glimpse(
 
 # Tool: GLIMPSE FULL (Force API Fetch)
 @mcp.tool(
-    name="workflowy_glimpse_full",
+    name="workflowy_scry",
     description="Load entire node tree via API (bypass WebSocket). Use when Key Files doesn't have parent UUID for ETCH, or when Dan wants complete tree regardless of expansion state."
 )
 async def glimpse_full(
@@ -1825,7 +1757,7 @@ async def glimpse_full(
     
     try:
         # Call glimpse_full on client (bypasses WebSocket by design)
-        result = await client.workflowy_glimpse_full(node_id, depth=depth, size_limit=size_limit)
+        result = await client.workflowy_scry(node_id, depth=depth, size_limit=size_limit)
         if _rate_limiter:
             _rate_limiter.on_success()
         return result
@@ -1904,121 +1836,6 @@ async def etch_async(
     }
 
     return await _start_background_job("etch", payload, run_etch)
-
-
-# Tool: Weave (Bulk Import from JSON File)
-@mcp.tool(
-    name="nexus_weave",
-    description="Create/update a Workflowy node tree from a hierarchical JSON file."
-)
-async def nexus_weave(
-    json_file: str,
-    parent_id: str | None = None,
-    dry_run: bool = False,
-    import_policy: str = 'strict',
-    max_sync_nodes: int = 100,
-) -> dict:
-    """Create a tree of nodes from a JSON structure.
-
-    Args:
-        json_file: The absolute path to the JSON file containing the node structure.
-        parent_id: The UUID of the parent node under which to create the new nodes.
-
-    Returns:
-        A dictionary with success status, nodes created, API call stats, and any errors.
-    """
-    client = get_client()
-
-    # Rate limiter is handled within the bulk_import_from_file method
-    # due to the recursive nature of the operation.
-
-    # SAFETY CHECK: Large JSON trees must use nexus_weave_async by default.
-    if max_sync_nodes and max_sync_nodes > 0 and not dry_run:
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            if isinstance(data, dict) and 'nodes' in data:
-                root_nodes = data['nodes']
-            elif isinstance(data, list):
-                root_nodes = data
-            else:
-                root_nodes = []
-
-            def _count_nodes(nodes: list[dict]) -> int:
-                total = 0
-                stack = list(nodes)
-                while stack:
-                    n = stack.pop()
-                    total += 1
-                    stack.extend(n.get('children') or [])
-                return total
-
-            node_count = _count_nodes(root_nodes)
-            if node_count > max_sync_nodes:
-                return {
-                    "success": False,
-                    "nodes_created": 0,
-                    "root_node_ids": [],
-                    "api_calls": 0,
-                    "retries": 0,
-                    "rate_limit_hits": 0,
-                    "errors": [
-                        (
-                            "nexus_weave (sync) aborted: JSON contains "
-                            f"{node_count} nodes, exceeding max_sync_nodes={max_sync_nodes}. "
-                            "Use nexus_weave_async for large trees, or explicitly increase "
-                            "max_sync_nodes if you understand the risks."
-                        )
-                    ],
-                    "node_count": node_count,
-                    "max_sync_nodes": max_sync_nodes,
-                }
-        except Exception as e:  # noqa: BLE001
-            log_event(f"nexus_weave: failed to inspect JSON for node count: {e}", "NEXUS")
-
-    try:
-        result = await client.bulk_import_from_file(json_file, parent_id, dry_run, import_policy)
-        return result
-    except Exception as e:
-        # Top-level exception capture
-        return {
-            "success": False,
-            "nodes_created": 0,
-            "root_node_ids": [],
-            "api_calls": 0,
-            "retries": 0,
-            "rate_limit_hits": 0,
-            "errors": [f"An unexpected error occurred: {str(e)}"]
-        }
-
-
-@mcp.tool(
-    name="nexus_weave_async",
-    description="Start an async NEXUS weave (bulk import from JSON) and return a job_id for status polling.",
-)
-async def nexus_weave_async(
-    json_file: str,
-    parent_id: str | None = None,
-    dry_run: bool = False,
-    import_policy: str = "strict",
-) -> dict:
-    """Start NEXUS weave as a detached background process.
-    
-    Launches weave_worker.py in DIRECT mode as a separate process that survives MCP restart.
-    Progress tracked via .weave.pid and .weave_journal.json files.
-    
-    Use mcp_job_status() to monitor progress (scans directory for active PIDs).
-    """
-    client = get_client()
-    
-    # Use detached launcher (survives MCP restart)
-    return client.nexus_weave_detached(
-        json_file=json_file,
-        parent_id=parent_id,
-        dry_run=dry_run,
-        import_policy=import_policy
-    )
 
 
 # Tool: List Nexus Keystones
