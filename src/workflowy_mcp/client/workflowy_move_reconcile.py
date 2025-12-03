@@ -508,7 +508,7 @@ async def reconcile_tree(
     log(f"\n[PHASE 0] Building maps for parent {parent_uuid}")
     Map_T, Parent_T, Children_T = await snapshot_target(parent_uuid, use_efficient_traversal=False, export_func=export_nodes)
     log(f"   Target snapshot: {len(Map_T)} nodes found in Workflowy (excluding root)")
-    log(f"   Target UUIDs: {list(Map_T.keys())}")
+    log(f"   Target UUIDs: {len(Map_T)} (list suppressed)")
     Map_S, Parent_S, Order_S = desired_maps(source_nodes, parent_uuid)
     log(f"   Source JSON: {len(Map_S)} nodes expected")
     log(f"   Source UUIDs: {list(Map_S.keys())}")
