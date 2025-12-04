@@ -5350,7 +5350,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         walks = walks or []
 
         # --- 1) Load session JSON ---
-        sessions_dir = self._get_exploration_sessions_dir()
+        sessions_dir = self._get_explore_sessions_dir()
         session_path = os.path.join(sessions_dir, f"{session_id}.json")
         if not os.path.exists(session_path):
             raise NetworkError(f"Exploration session '{session_id}' not found.")
