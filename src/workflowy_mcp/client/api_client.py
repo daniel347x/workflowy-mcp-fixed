@@ -37,6 +37,11 @@ from .nexus_helper import (
 
 from datetime import datetime
 
+# Rate limit protection: delay between API operations (seconds)
+# Workflowy's rate limits are generous but undefined. Conservative 1.0s works reliably.
+# Experimental: 0.25s may work if API can handle it (test cautiously).
+API_RATE_LIMIT_DELAY = 0.25  # Reduced from 1.0s - EXPERIMENTAL
+
 def log_event(message: str, component: str = "CLIENT") -> None:
     """Log an event to stderr with timestamp and consistent formatting."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -616,8 +621,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         base_delay = 1.0
 
         while retry_count < max_retries:
-            # Force 1s delay at START of each iteration (rate limit protection)
-            await asyncio.sleep(1.0)
+            # Force delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(API_RATE_LIMIT_DELAY)
 
             try:
                 response = await self.client.post("/nodes/", json=request.model_dump(exclude_none=True))
@@ -721,8 +726,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         base_delay = 1.0
         
         while retry_count < max_retries:
-            # Force 1s delay at START of each iteration (rate limit protection)
-            await asyncio.sleep(1.0)
+            # Force delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(API_RATE_LIMIT_DELAY)
             
             try:
                 response = await self.client.post(
@@ -801,8 +806,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         base_delay = 1.0
         
         while retry_count < max_retries:
-            # Force 1s delay at START of each iteration (rate limit protection)
-            await asyncio.sleep(1.0)
+            # Force delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(API_RATE_LIMIT_DELAY)
             
             try:
                 response = await self.client.get(f"/nodes/{node_id}")
@@ -866,8 +871,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         base_delay = 1.0
         
         while retry_count < max_retries:
-            # Force 1s delay at START of each iteration (rate limit protection)
-            await asyncio.sleep(1.0)
+            # Force delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(API_RATE_LIMIT_DELAY)
             
             try:
                 # exclude_none=True ensures parent_id is omitted entirely for root nodes
@@ -943,8 +948,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         base_delay = 1.0
         
         while retry_count < max_retries:
-            # Force 1s delay at START of each iteration (rate limit protection)
-            await asyncio.sleep(1.0)
+            # Force delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(API_RATE_LIMIT_DELAY)
             
             try:
                 response = await self.client.delete(f"/nodes/{node_id}")
@@ -1025,8 +1030,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         base_delay = 1.0
 
         while retry_count < max_retries:
-            # Force 1s delay at START of each iteration (rate limit protection)
-            await asyncio.sleep(1.0)
+            # Force delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(API_RATE_LIMIT_DELAY)
 
             try:
                 response = await self.client.post(f"/nodes/{node_id}/complete")
@@ -1085,8 +1090,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         base_delay = 1.0
 
         while retry_count < max_retries:
-            # Force 1s delay at START of each iteration (rate limit protection)
-            await asyncio.sleep(1.0)
+            # Force delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(API_RATE_LIMIT_DELAY)
 
             try:
                 response = await self.client.post(f"/nodes/{node_id}/uncomplete")
@@ -1161,8 +1166,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         base_delay = 1.0
         
         while retry_count < max_retries:
-            # Force 1s delay at START of each iteration (rate limit protection)
-            await asyncio.sleep(1.0)
+            # Force delay at START of each iteration (rate limit protection)
+            await asyncio.sleep(API_RATE_LIMIT_DELAY)
             
             try:
                 payload = {"position": position}
@@ -1254,8 +1259,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             base_delay = 1.0
 
             while retry_count < max_retries:
-                # Force 1s delay at START of each iteration (rate limit protection)
-                await asyncio.sleep(1.0)
+                # Force delay at START of each iteration (rate limit protection)
+                await asyncio.sleep(API_RATE_LIMIT_DELAY)
 
                 try:
                     # API exports all nodes as flat list (no parameters supported)
@@ -2815,8 +2820,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             base_delay = 1.0
             
             while retry_count < max_retries:
-                # Force 1s delay at START of each iteration (rate limit protection)
-                await asyncio.sleep(1.0)
+                # Force delay at START of each iteration (rate limit protection)
+                await asyncio.sleep(API_RATE_LIMIT_DELAY)
                 
                 try:
                     stats["api_calls"] += 1
