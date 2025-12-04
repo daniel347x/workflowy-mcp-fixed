@@ -5289,6 +5289,270 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             },
         }
 
+    async def nexus_explore_step_v2(
+        self,
+        session_id: str,
+        decisions: list[dict[str, Any]] | None = None,
+        walks: list[dict[str, Any]] | None = None,
+        max_parallel_walks: int = 4,
+        global_frontier_limit: int = 80,
+        include_history_summary: bool = True,
+    ) -> dict[str, Any]:
+        """v2 Exploration step: separate DECISIONS from WALKs and allow multiple
+        independent rays (origins) in a single call.
+
+        Request:
+            decisions: list of { handle, action, ... } – accept/reject/finalize/etc
+            walks: list of { origin, max_steps } – ray roots and per-ray depth
+            max_parallel_walks: hard cap on how many origins we actually walk
+            global_frontier_limit: total frontier entries to emit across all rays
+
+        Response:
+            {
+              "session_id": ...,
+              "walks": [
+                {
+                  "origin": "H_10",
+                  "requested_max_steps": 2,
+                  "complete": false,
+                  "frontier": [
+                    {
+                      "handle": "H_10_1",
+                      "parent_handle": "H_10",
+                      "steps_from_origin": 1,
+                      "depth_in_tree": 4,
+                      "status": "candidate",
+                      "name_preview": "...",
+                      "child_count": 3,
+                      "children_hint": [...],
+                    },
+                    ...
+                  ],
+                },
+                ...
+              ],
+              "skipped_walks": [
+                {
+                  "origin": "H_12",
+                  "reason": "overlap_with_shallower_origin",
+                  "conflicting_origin": "H_11",
+                }
+              ],
+              "decisions_applied": [...],
+              "scratchpad": "...",
+              "history_summary": {...}  # optional
+            }
+        """
+        import json as json_module
+        from datetime import datetime
+
+        decisions = decisions or []
+        walks = walks or []
+
+        # --- 1) Load session JSON ---
+        sessions_dir = self._get_exploration_sessions_dir()
+        session_path = os.path.join(sessions_dir, f"{session_id}.json")
+        if not os.path.exists(session_path):
+            raise NetworkError(f"Exploration session '{session_id}' not found.")
+
+        with open(session_path, "r", encoding="utf-8") as f:
+            session = json_module.load(f)
+
+        handles = session.get("handles", {}) or {}
+        state = session.get("state", {}) or {}
+        root_node = session.get("root_node") or {}
+        editable_mode = bool(session.get("editable", False))
+
+        # --- 2) Apply DECISIONS using existing semantics (thin wrapper) ---
+        if decisions:
+            _ = await self.nexus_explore_step(
+                session_id=session_id,
+                actions=decisions,
+                frontier_size=0,
+                max_depth_per_frontier=1,
+                include_history_summary=False,
+            )
+            with open(session_path, "r", encoding="utf-8") as f:
+                session = json_module.load(f)
+            handles = session.get("handles", {}) or {}
+            state = session.get("state", {}) or {}
+            root_node = session.get("root_node") or {}
+            editable_mode = bool(session.get("editable", False))
+
+        # --- 3) Normalize and filter WALK requests ---
+        norm_walks: list[dict[str, Any]] = []
+        for w in walks:
+            origin = w.get("origin")
+            if origin not in handles:
+                raise NetworkError(f"Unknown origin handle in walks: '{origin}'")
+            max_steps = w.get("max_steps", 1)
+            try:
+                max_steps_int = int(max_steps)
+            except (TypeError, ValueError):
+                max_steps_int = 1
+            if max_steps_int <= 0:
+                max_steps_int = 1
+            norm_walks.append(
+                {
+                    "origin": origin,
+                    "max_steps": max_steps_int,
+                    "depth": handles.get(origin, {}).get("depth", 0),
+                    "skipped": False,
+                    "reason": None,
+                    "conflicting_origin": None,
+                }
+            )
+
+        def is_ancestor(ancestor: str, descendant: str) -> bool:
+            cur = handles.get(descendant, {}).get("parent")
+            seen = set()
+            while cur and cur not in seen:
+                if cur == ancestor:
+                    return True
+                seen.add(cur)
+                cur = handles.get(cur, {}).get("parent")
+            return False
+
+        norm_walks.sort(key=lambda w: w["depth"])
+        selected: list[dict[str, Any]] = []
+        for w in norm_walks:
+            if len(selected) >= max_parallel_walks:
+                w["skipped"] = True
+                w["reason"] = "max_parallel_walks_exceeded"
+                continue
+            overlap = False
+            for s in selected:
+                if is_ancestor(s["origin"], w["origin"]) or is_ancestor(w["origin"], s["origin"]):
+                    w["skipped"] = True
+                    w["reason"] = "overlap_with_shallower_origin"
+                    w["conflicting_origin"] = s["origin"]
+                    overlap = True
+                    break
+            if not overlap:
+                selected.append(w)
+
+        remaining_budget = max(global_frontier_limit, 0)
+        walk_results: list[dict[str, Any]] = []
+
+        from collections import deque
+
+        def walk_ray(origin: str, max_steps: int, max_nodes: int) -> dict[str, Any]:
+            queue = deque([(origin, 0)])
+            seen: set[str] = set()
+            nodes_out: list[dict[str, Any]] = []
+
+            while queue and len(nodes_out) < max_nodes:
+                h, steps = queue.popleft()
+                if h in seen:
+                    continue
+                seen.add(h)
+
+                meta = handles.get(h, {}) or {}
+                st = state.get(h, {"status": "unseen"})
+                child_handles = meta.get("children", []) or []
+                is_leaf = not child_handles
+
+                children_hint: list[str] = []
+                for ch in child_handles[:10]:
+                    ch_meta = handles.get(ch, {}) or {}
+                    nm = ch_meta.get("name")
+                    if nm:
+                        children_hint.append(nm)
+
+                nodes_out.append(
+                    {
+                        "handle": h,
+                        "parent_handle": meta.get("parent"),
+                        "steps_from_origin": steps,
+                        "depth_in_tree": meta.get("depth", 0),
+                        "status": st.get("status", "candidate"),
+                        "name_preview": meta.get("name", "Untitled"),
+                        "child_count": len(child_handles),
+                        "children_hint": children_hint,
+                        "is_leaf": is_leaf,
+                    }
+                )
+
+                if steps < max_steps:
+                    for ch in child_handles:
+                        queue.append((ch, steps + 1))
+
+            return {
+                "origin": origin,
+                "requested_max_steps": max_steps,
+                "complete": False,
+                "nodes": nodes_out,
+            }
+
+        for w in selected:
+            if w.get("skipped"):
+                continue
+            if remaining_budget <= 0:
+                break
+            origin = w["origin"]
+            max_steps = w["max_steps"]
+
+            ray = walk_ray(origin, max_steps, remaining_budget)
+            node_count = len(ray["nodes"])
+            remaining_budget -= node_count
+
+            frontier = []
+            for n in ray["nodes"]:
+                frontier.append(
+                    {
+                        "handle": n["handle"],
+                        "parent_handle": n["parent_handle"],
+                        "steps_from_origin": n["steps_from_origin"],
+                        "depth_in_tree": n["depth_in_tree"],
+                        "status": n["status"],
+                        "name_preview": n["name_preview"],
+                        "child_count": n["child_count"],
+                        "children_hint": n["children_hint"],
+                        "is_leaf": n["is_leaf"],
+                    }
+                )
+
+            walk_results.append(
+                {
+                    "origin": ray["origin"],
+                    "requested_max_steps": ray["requested_max_steps"],
+                    "complete": ray["complete"],
+                    "frontier": frontier,
+                }
+            )
+
+        session["handles"] = handles
+        session["state"] = state
+        session["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        with open(session_path, "w", encoding="utf-8") as f:
+            json_module.dump(session, f, indent=2, ensure_ascii=False)
+
+        history_summary = None
+        if include_history_summary:
+            history_summary = {
+                "open": [h for h, st in state.items() if st.get("status") == "open"],
+                "finalized": [h for h, st in state.items() if st.get("status") == "finalized"],
+                "closed": [h for h, st in state.items() if st.get("status") == "closed"],
+            }
+
+        return {
+            "success": True,
+            "session_id": session_id,
+            "walks": walk_results,
+            "skipped_walks": [
+                {
+                    "origin": w["origin"],
+                    "reason": w["reason"],
+                    "conflicting_origin": w.get("conflicting_origin"),
+                }
+                for w in norm_walks
+                if w.get("skipped")
+            ],
+            "decisions_applied": decisions,
+            "scratchpad": session.get("scratchpad", ""),
+            "history_summary": history_summary,
+        }
+
     async def nexus_explore_step(
         self,
         session_id: str,

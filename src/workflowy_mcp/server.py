@@ -1577,37 +1577,44 @@ async def nexus_start_exploration(
 @mcp.tool(
     name="nexus_explore_step",
     description=(
-        "Apply exploration actions to an exploration session and return the next frontier "
-        "of handles. Supported actions include: open/close/finalize/reopen; "
-        "accept_leaf/reject_leaf; accept_subtree/reject_subtree (optional guardian_token "
-        "for strict dfs_full_walk overrides); backtrack/reopen_branch; add_hint "
-        "(per-handle); set_scratchpad/append_scratchpad (session-global registry); "
-        "peek_descendants; replace_leaf_node_with_appended_scratch_note; and, when "
-        "the session was started with editable=True, update_note_and_flag_for_acceptance/" 
-        "update_tag_and_flag_for_acceptance to mutate the cached tree while marking nodes "
-        "for inclusion in the phantom gem."
+        "Apply exploration decisions and multi-ray walks to an exploration session "
+        "and return the next frontiers. Use 'decisions' for accept/reject/finalize/etc "
+        "and 'walks' for multi-origin ray expansion."
     ),
 )
 async def nexus_explore_step(
     session_id: str,
-    actions: list[dict[str, Any]] | None = None,
-    frontier_size: int = 5,
-    max_depth_per_frontier: int = 1,
+    decisions: list[dict[str, Any]] | None = None,
+    walks: list[dict[str, Any]] | None = None,
+    max_parallel_walks: int = 4,
+    global_frontier_limit: int = 80,
     include_history_summary: bool = True,
 ) -> dict:
-    """Apply exploration actions and return the next frontier.
+    """v2 Exploration API: separate DECISIONS from WALKs and support multi-ray steps.
 
-    actions[i]["action"] may be one of:
-      - "open", "close", "finalize", "reopen"
-      - "accept_leaf", "reject_leaf"
-      - "accept_subtree", "reject_subtree" (with optional "guardian_token")
-      - "backtrack", "reopen_branch"
-      - "add_hint" (attach free-text hints to a handle)
-      - "set_scratchpad", "append_scratchpad" (maintain session-global REGISTRY text)
-      - "peek_descendants"
-      - "replace_leaf_node_with_appended_scratch_note"
-      - "update_note_and_flag_for_acceptance" (editable sessions only)
-      - "update_tag_and_flag_for_acceptance" (editable sessions only)
+    Request:
+      - decisions: [{ "handle": "H_1", "action": "accept_leaf", ... }, ...]
+      - walks:     [{ "origin": "H_10", "max_steps": 2 }, ...]
+      - max_parallel_walks: cap on how many rays are walked in this call
+      - global_frontier_limit: total nodes across all rays
+
+    Response:
+      {
+        "session_id": ...,
+        "walks": [
+          {
+            "origin": "H_10",
+            "requested_max_steps": 2,
+            "complete": false,
+            "frontier": [...]
+          },
+          ...
+        ],
+        "skipped_walks": [...],
+        "decisions_applied": [...],
+        "scratchpad": "...",
+        "history_summary": {...}
+      }
     """
     client = get_client()
 
@@ -1615,11 +1622,12 @@ async def nexus_explore_step(
         await _rate_limiter.acquire()
 
     try:
-        result = await client.nexus_explore_step(
+        result = await client.nexus_explore_step_v2(
             session_id=session_id,
-            actions=actions,
-            frontier_size=frontier_size,
-            max_depth_per_frontier=max_depth_per_frontier,
+            decisions=decisions,
+            walks=walks,
+            max_parallel_walks=max_parallel_walks,
+            global_frontier_limit=global_frontier_limit,
             include_history_summary=include_history_summary,
         )
         if _rate_limiter:
