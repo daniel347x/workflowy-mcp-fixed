@@ -72,6 +72,7 @@ async def reconcile_tree(
     log_weave_entry: Optional[Callable[[Dict[str, Any]], None]] = None,
     log_debug_msg: Optional[Callable[[str], None]] = None,
     log_to_file_msg: Optional[Callable[[str], None]] = None,
+    debug_log_path: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Reconcile the Workflowy subtree under parent_uuid to match source_json.
@@ -89,18 +90,25 @@ async def reconcile_tree(
     Returns: when dry_run=True, a structured plan dict with planned operations and counts; otherwise None.
     """
     
-    # Open debug log file
-    debug_log = open(r'E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log', 'w', encoding='utf-8')
+    # Open debug log file (tag-specific if provided, otherwise global fallback)
+    # UPDATED: Only used when log_to_file_msg callback is NOT provided (legacy mode)
+    debug_log = None
+    if not log_to_file_msg:
+        if debug_log_path:
+            debug_log = open(debug_log_path, 'w', encoding='utf-8')
+        else:
+            # Fallback to global log (legacy behavior for direct calls)
+            debug_log = open(r'E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log', 'w', encoding='utf-8')
 
     # Record start time of this WEAVE for rate-limit aware phases (e.g., DELETE)
     weave_start_time = datetime.now()
 
     def log(msg):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # YYYY-MM-DD HH:MM:SS.mmm
-        # 1. File Persistence (via callback now, or fallback to local debug_log)
+        # 1. File Persistence (via callback PREFERRED, or fallback to local debug_log)
         if log_to_file_msg:
-            log_to_file_msg(msg)
-        else:
+            log_to_file_msg(msg)  # Callback handles tag-specific path
+        elif debug_log:
             debug_log.write(f"[{timestamp}] {msg}\n")
             debug_log.flush()
         

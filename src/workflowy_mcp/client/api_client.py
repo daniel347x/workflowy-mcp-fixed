@@ -90,13 +90,19 @@ class _ClientLogger:
         _log(f"EXCEPTION: {self._msg(msg)}", self._component)
 
 
+# Module-level variable to track current WEAVE context for tag-specific logging
+_current_weave_context = {"json_file": None}
+
 def _log_to_file_helper(message: str, log_type: str = "reconcile") -> None:
-    """Log message to a specific debug file (best-effort).
+    """Log message to a tag-specific debug file (best-effort).
 
     Args:
         message: The message to log
         log_type: "reconcile" -> reconcile_debug.log
                     "etch"      -> etch_debug.log
+    
+    If _current_weave_context["json_file"] is set, logs go to the same directory
+    as the JSON file (tag-specific). Otherwise, falls back to global temp/.
     """
     try:
         from datetime import datetime
@@ -109,7 +115,15 @@ def _log_to_file_helper(message: str, log_type: str = "reconcile") -> None:
         elif log_type in ("jewel", "jewelstorm"):
             filename = "jewelstorm_debug.log"
         
-        log_path = fr"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\{filename}"
+        # Determine log directory (tag-specific if in WEAVE context)
+        json_file = _current_weave_context.get("json_file")
+        if json_file and os.path.exists(json_file):
+            # Tag-specific: put debug log in same directory as JSON
+            log_path = os.path.join(os.path.dirname(json_file), filename)
+        else:
+            # Global fallback
+            log_path = fr"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\{filename}"
+        
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         
         with open(log_path, "a", encoding="utf-8") as dbg:
@@ -450,12 +464,14 @@ class WorkFlowyClient:
             raise NetworkError("Invalid response format from API") from err
 
     def _log_to_file(self, message: str, log_type: str = "reconcile") -> None:
-        """Log message to a specific debug file (best-effort).
+        """Log message to a tag-specific debug file (best-effort).
 
         Args:
             message: The message to log
             log_type: "reconcile" -> reconcile_debug.log
                       "etch"      -> etch_debug.log
+        
+        Uses _current_weave_context to determine tag-specific path.
         """
         try:
             from datetime import datetime
@@ -464,7 +480,13 @@ class WorkFlowyClient:
             if log_type == "etch":
                 filename = "etch_debug.log"
             
-            log_path = fr"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\{filename}"
+            # Use tag-specific path (same logic as _log_to_file_helper)
+            json_file = _current_weave_context.get("json_file")
+            if json_file and os.path.exists(json_file):
+                log_path = os.path.join(os.path.dirname(json_file), filename)
+            else:
+                log_path = fr"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\{filename}"
+            
             ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
             
             with open(log_path, "a", encoding="utf-8") as dbg:
@@ -2987,6 +3009,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         logger = _ClientLogger()
 
+        # Set WEAVE context for tag-specific debug logging
+        _current_weave_context["json_file"] = json_file
+        
         # Read JSON file
         try:
             with open(json_file, 'r', encoding='utf-8') as f:
@@ -3386,6 +3411,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 except Exception as e:  # noqa: BLE001
                     logger.error(f"Failed to update weave journal {weave_journal_path}: {e}")
             
+            # Clear WEAVE context before returning success
+            _current_weave_context["json_file"] = None
+            
             result = {
                 "success": len(stats["errors"]) == 0,
                 "nodes_created": stats["nodes_created"],
@@ -3431,7 +3459,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # log file clearly shows the failure cause at the end of the run.
             try:
                 from datetime import datetime
-                log_path = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\reconcile_debug.log"
+                # Use tag-specific path (same logic as _log_to_file_helper)
+                json_file_ctx = _current_weave_context.get("json_file")
+                if json_file_ctx and os.path.exists(json_file_ctx):
+                    log_path = os.path.join(os.path.dirname(json_file_ctx), "reconcile_debug.log")
+                else:
+                    log_path = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\reconcile_debug.log"
                 ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                 with open(log_path, "a", encoding="utf-8") as dbg:
                     dbg.write(f"[{ts}] ERROR: {error_msg}\n")
@@ -3451,6 +3484,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             except Exception:
                 # Journal updates must never break error reporting
                 pass
+            
+            # Clear WEAVE context before returning
+            _current_weave_context["json_file"] = None
             
             return {
                 "success": False,
