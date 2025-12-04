@@ -1634,15 +1634,16 @@ async def nexus_explore_step(
 @mcp.tool(
     name="nexus_finalize_exploration",
     description=(
-        "Finalize an exploration session into phantom_gem.json (+ optional "
-        "coarse_terrain.json) for use with NEXUS JEWELSTORM and WEAVE."
+        "Finalize an exploration session into coarse_terrain.json (always) plus "
+        "optional phantom_gem.json + shimmering_terrain.json for use with NEXUS "
+        "JEWELSTORM and WEAVE."
     ),
 )
 async def nexus_finalize_exploration(
     session_id: str,
-    include_terrain: bool = True,
+    mode: Literal["terrain_only", "full"] = "full",
 ) -> dict:
-    """Finalize an exploration session into PHANTOM GEM (+ optional TERRAIN)."""
+    """Finalize an exploration session into coarse TERRAIN and optional GEM/SHIMMERING."""
     client = get_client()
 
     if _rate_limiter:
@@ -1651,7 +1652,7 @@ async def nexus_finalize_exploration(
     try:
         result = await client.nexus_finalize_exploration(
             session_id=session_id,
-            include_terrain=include_terrain,
+            mode=mode,
         )
         if _rate_limiter:
             _rate_limiter.on_success()

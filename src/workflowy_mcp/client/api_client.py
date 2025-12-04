@@ -2618,25 +2618,161 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     # Strategy 3: Triple-backslash quote replacement (CASE 2 style)
                     try:
                         # Raw string to avoid escape interpretation
-                        fixed = nodes.replace(r'\\\"', '"')
+                        fixed = nodes.replace(r'\\"', '"')
                         nodes = json.loads(fixed)
                         stringify_strategy_used = "Strategy 3: Triple-backslash replacement (CASE 2 style)"
                         logger.info(f"✅ {stringify_strategy_used}")
-                    except json.JSONDecodeError as e:
-                        return {
-                            "success": False,
-                            "nodes_created": 0,
-                            "root_node_ids": [],
-                            "api_calls": 0,
-                            "retries": 0,
-                            "rate_limit_hits": 0,
-                            "errors": [
-                                f"Parameter 'nodes' is a string but could not parse with any strategy.",
-                                f"Tried: (1) direct parse, (2) unicode_escape decode, (3) triple-backslash replacement",
-                                f"Final error: {str(e)}",
-                                f"Hint: Use actual list structure, not stringified JSON"
-                            ]
-                        }
+                    except json.JSONDecodeError:
+                        
+                        # Strategy 4: Strip ASCII control characters (except preserved \n and \t)
+                        try:
+                            import re
+                            # Remove ASCII control chars except \n (0x0A) and \t (0x09)
+                            # This catches unescaped control characters that break JSON parsing
+                            cleaned = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', nodes)
+                            nodes = json.loads(cleaned)
+                            stringify_strategy_used = "Strategy 4: Strip control characters"
+                            logger.info(f"✅ {stringify_strategy_used}")
+                        except json.JSONDecodeError:
+                            
+                            # Strategy 5: Aggressive escape normalization
+                            try:
+                                # Fix common escape issues: normalize literal \n, \t, \r sequences
+                                # But avoid double-escaping already-escaped ones
+                                fixed = nodes
+                                fixed = fixed.replace('\\n', '\\\\n')  # Escape newlines
+                                fixed = fixed.replace('\\t', '\\\\t')  # Escape tabs
+                                fixed = fixed.replace('\\r', '\\\\r')  # Escape carriage returns
+                                # Undo double-escaping if we over-escaped
+                                fixed = fixed.replace('\\\\\\\\n', '\\\\n')
+                                fixed = fixed.replace('\\\\\\\\t', '\\\\t')
+                                fixed = fixed.replace('\\\\\\\\r', '\\\\r')
+                                nodes = json.loads(fixed)
+                                stringify_strategy_used = "Strategy 5: Aggressive escape normalization"
+                                logger.info(f"✅ {stringify_strategy_used}")
+                            except json.JSONDecodeError:
+                                
+                                # Strategy 6: Character-by-character escape builder (nuclear option)
+                                try:
+                                    result = []
+                                    in_string = False
+                                    escape_next = False
+                                    i = 0
+                                    while i < len(nodes):
+                                        char = nodes[i]
+                                        
+                                        if escape_next:
+                                            result.append(char)
+                                            escape_next = False
+                                            i += 1
+                                            continue
+                                        
+                                        if char == '\\':
+                                            escape_next = True
+                                            result.append(char)
+                                            i += 1
+                                            continue
+                                        
+                                        if char == '"' and (i == 0 or nodes[i-1] != '\\'):
+                                            in_string = not in_string
+                                            result.append(char)
+                                            i += 1
+                                            continue
+                                        
+                                        # Control character inside string - properly escape it
+                                        if in_string and ord(char) < 32:
+                                            # Convert control char to escaped form
+                                            if char == '\n':
+                                                result.append('\\\\n')
+                                            elif char == '\t':
+                                                result.append('\\\\t')
+                                            elif char == '\r':
+                                                result.append('\\\\r')
+                                            else:
+                                                # Other control chars: use unicode escape
+                                                result.append(f'\\\\u{ord(char):04x}')
+                                        else:
+                                            result.append(char)
+                                        
+                                        i += 1
+                                    
+                                    rebuilt = ''.join(result)
+                                    nodes = json.loads(rebuilt)
+                                    stringify_strategy_used = "Strategy 6: Character-by-character escape builder (nuclear)"
+                                    logger.info(f"✅ {stringify_strategy_used}")
+                                except json.JSONDecodeError:
+                                    
+                                    # Strategy 7: AST literal_eval fallback (last resort)
+                                    try:
+                                        import ast
+                                        # ast.literal_eval can sometimes parse things json.loads can't
+                                        nodes = ast.literal_eval(nodes)
+                                        # Verify it's actually a list
+                                        if not isinstance(nodes, list):
+                                            raise ValueError("AST parse succeeded but result is not a list")
+                                        stringify_strategy_used = "Strategy 7: AST literal_eval fallback"
+                                        logger.info(f"✅ {stringify_strategy_used}")
+                                    except (ValueError, SyntaxError) as e:
+                                        # All strategies exhausted - return comprehensive error
+                                        return {
+                                            "success": False,
+                                            "nodes_created": 0,
+                                            "root_node_ids": [],
+                                            "api_calls": 0,
+                                            "retries": 0,
+                                            "rate_limit_hits": 0,
+                                            "errors": [
+                                                f"Parameter 'nodes' is a string but could not parse with any strategy.",
+                                                f"Tried 7 parsing strategies:",
+                                                f"  (1) Direct JSON parse",
+                                                f"  (2) Unicode escape decode",
+                                                f"  (3) Triple-backslash replacement",
+                                                f"  (4) Strip control characters",
+                                                f"  (5) Aggressive escape normalization",
+                                                f"  (6) Character-by-character escape builder",
+                                                f"  (7) AST literal_eval fallback",
+                                                f"Final error: {str(e)}",
+                                                f"Hint: Use actual list structure, not stringified JSON"
+                                            ]
+                                        }
+        
+        # 🔥 FINAL VALIDATION: Ensure parsed result is valid JSON
+        # This catches any corruption that survived the parsing gauntlet
+        if not isinstance(nodes, list):
+            return {
+                "success": False,
+                "nodes_created": 0,
+                "root_node_ids": [],
+                "api_calls": 0,
+                "retries": 0,
+                "rate_limit_hits": 0,
+                "errors": [
+                    f"Parsing succeeded but result is not a list (got {type(nodes).__name__}).",
+                    f"Strategy used: {stringify_strategy_used}",
+                    f"Hint: Ensure your JSON represents a list of node objects"
+                ]
+            }
+        
+        # Verify the parsed JSON can be re-serialized (catches structural corruption)
+        try:
+            _ = json.dumps(nodes)
+            if stringify_strategy_used:
+                logger.info(f"✅ Final validation: Parsed JSON is valid and re-serializable")
+        except (TypeError, ValueError) as e:
+            return {
+                "success": False,
+                "nodes_created": 0,
+                "root_node_ids": [],
+                "api_calls": 0,
+                "retries": 0,
+                "rate_limit_hits": 0,
+                "errors": [
+                    f"Parsing succeeded but result cannot be re-serialized as JSON.",
+                    f"Strategy used: {stringify_strategy_used}",
+                    f"Re-serialization error: {str(e)}",
+                    f"Hint: The parsed structure contains non-JSON-serializable objects"
+                ]
+            }
         
         # 🔥🔥🔥 VALIDATION CHECKPOINT - NOTE FIELDS ONLY 🔥🔥🔥
         # 
@@ -3605,15 +3741,44 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
     
     def _get_nexus_dir(self, nexus_tag: str) -> str:
-        """Resolve base directory for a CORINTHIAN NEXUS run and ensure it exists.
+        """Resolve base directory for a CORINTHIAN NEXUS run (pure getter).
 
-        This keeps all intermediate JSON under a single tree per nexus_tag, e.g.:
-        E:\\...\\TODO\\temp\\nexus_runs\\<nexus_tag>\\coarse_terrain.json
+        Looks under temp\\nexus_runs for either:
+        - <nexus_tag>
+        - <TIMESTAMP>__<nexus_tag>
+
+        Picks the lexicographically last match (latest run). Does NOT create
+        any directories; callers that initialize state (nexus_scry, nexus_glimpse,
+        Cartographer) are responsible for creating new run dirs.
         """
-        base_dir = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_runs"
-        run_dir = os.path.join(base_dir, nexus_tag)
-        os.makedirs(run_dir, exist_ok=True)
-        return run_dir
+        from pathlib import Path
+
+        base_dir = Path(
+            r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_runs"
+        )
+        if not base_dir.exists():
+            raise NetworkError(
+                "No NEXUS runs directory exists yet under temp\\nexus_runs; "
+                "run nexus_scry(...), nexus_glimpse(...), or Cartographer first for this tag."
+            )
+
+        candidates: list[Path] = []
+        suffix = f"__{nexus_tag}"
+        for child in base_dir.iterdir():
+            if not child.is_dir():
+                continue
+            name = child.name
+            if name == nexus_tag or name.endswith(suffix):
+                candidates.append(child)
+
+        if not candidates:
+            raise NetworkError(
+                f"No NEXUS run directory found for tag '{nexus_tag}'. "
+                "Run nexus_scry(...), nexus_glimpse(...), or Cartographer first."
+            )
+
+        chosen = sorted(candidates, key=lambda p: p.name)[-1]
+        return str(chosen)
 
     async def nexus_scry(
         self,
@@ -3650,27 +3815,32 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         introduced later via ``nexus_ignite_shards`` and ``nexus_anchor_gems``.
         """
         import shutil
+        from pathlib import Path
+        from datetime import datetime
 
-        # Resolve run directory for this NEXUS tag without implicitly resetting
-        # existing state. We treat the presence of an existing directory as
-        # "state already exists" for this tag and require explicit
-        # reset_if_exists=True to overwrite it.
-        base_dir = (
+        # Resolve base directory for this NEXUS tag. NEXUS runs are organized as
+        # timestamped subdirectories under temp\\nexus_runs, e.g.:
+        #   <YYYY-MM-DD_HH-MM-SS>__<nexus_tag>
+        base_dir = Path(
             r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_runs"
         )
-        run_dir = os.path.join(base_dir, nexus_tag)
+        base_dir.mkdir(parents=True, exist_ok=True)
 
-        if os.path.exists(run_dir):
-            if not reset_if_exists:
-                raise NetworkError(
-                    "NEXUS state already exists for tag "
-                    f"'{nexus_tag}'. Use reset_if_exists=True to overwrite."
-                )
-            # Fresh start for this tag: remove any prior TERRAIN/GEM/JEWEL files.
-            shutil.rmtree(run_dir, ignore_errors=True)
+        # Optional cleanup: if reset_if_exists=True, remove any existing runs
+        # for this tag before creating a fresh timestamped directory.
+        if reset_if_exists:
+            suffix = f"__{nexus_tag}"
+            for child in base_dir.iterdir():
+                if not child.is_dir():
+                    continue
+                name = child.name
+                if name == nexus_tag or name.endswith(suffix):
+                    shutil.rmtree(child, ignore_errors=True)
 
-        os.makedirs(run_dir, exist_ok=True)
-        coarse_path = os.path.join(run_dir, "coarse_terrain.json")
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        run_dir = base_dir / f"{timestamp}__{nexus_tag}"
+        run_dir.mkdir(parents=True, exist_ok=False)
+        coarse_path = run_dir / "coarse_terrain.json"
 
         # Use the existing bulk_export_to_file helper to perform the SCRY.
         # We deliberately use use_efficient_traversal=False so that
@@ -3679,7 +3849,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # through to enforce a hard upper bound on SCRY size when desired.
         result = await self.bulk_export_to_file(
             node_id=workflowy_root_id,
-            output_file=coarse_path,
+            output_file=str(coarse_path),
             include_metadata=True,
             use_efficient_traversal=False,
             max_depth=max_depth,
@@ -3689,7 +3859,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # Optionally, record a tiny manifest stub for this NEXUS run. We keep
         # it minimal here; richer tracking can be layered on later.
-        manifest_path = os.path.join(run_dir, "nexus_manifest.json")
+        manifest_path = run_dir / "nexus_manifest.json"
         try:
             from datetime import datetime
 
@@ -3711,7 +3881,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         return {
             "success": bool(result.get("success", True)),
             "nexus_tag": nexus_tag,
-            "coarse_terrain": coarse_path,
+            "coarse_terrain": str(coarse_path),
             "node_count": result.get("node_count"),
             "depth": result.get("depth"),
         }
@@ -4142,6 +4312,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                  "node_count": int, "depth": int, "_source": "glimpse"}
         """
         import shutil
+        from pathlib import Path
+        from datetime import datetime
 
         # Validate mode parameter
         if mode not in ("full", "coarse_terrain_only"):
@@ -4149,26 +4321,43 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 f"Invalid mode '{mode}'. Must be 'full' or 'coarse_terrain_only'."
             )
 
-        run_dir = self._get_nexus_dir(nexus_tag)
-        coarse_path = os.path.join(run_dir, "coarse_terrain.json")
-        phantom_gem_path = os.path.join(run_dir, "phantom_gem.json")
-        shimmering_path = os.path.join(run_dir, "shimmering_terrain.json")
+        base_dir = Path(
+            r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_runs"
+        )
+        base_dir.mkdir(parents=True, exist_ok=True)
 
-        if os.path.exists(run_dir):
-            if not reset_if_exists:
-                raise NetworkError(
-                    f"NEXUS state already exists for tag '{nexus_tag}'. "
-                    "Use reset_if_exists=True to overwrite."
-                )
+        # Determine run_dir: reuse latest existing run for this tag when present,
+        # otherwise create a new timestamped directory. When reset_if_exists=True,
+        # always create a fresh timestamped directory (and optionally clean out
+        # older runs for this tag).
+        existing_dir: Path | None = None
+        if not reset_if_exists:
             try:
-                shutil.rmtree(run_dir)
-            except Exception as e:
-                raise NetworkError(f"Failed to reset NEXUS state for tag '{nexus_tag}': {e}") from e
+                existing = self._get_nexus_dir(nexus_tag)
+                existing_dir = Path(existing)
+            except NetworkError:
+                existing_dir = None
 
-        try:
-            os.makedirs(run_dir, exist_ok=True)
-        except Exception as e:
-            raise NetworkError(f"Failed to create NEXUS directory for tag '{nexus_tag}': {e}") from e
+        if reset_if_exists:
+            suffix = f"__{nexus_tag}"
+            for child in base_dir.iterdir():
+                if not child.is_dir():
+                    continue
+                name = child.name
+                if name == nexus_tag or name.endswith(suffix):
+                    shutil.rmtree(child, ignore_errors=True)
+            existing_dir = None
+
+        if existing_dir is not None:
+            run_dir = existing_dir
+        else:
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            run_dir = base_dir / f"{timestamp}__{nexus_tag}"
+            run_dir.mkdir(parents=True, exist_ok=False)
+
+        coarse_path = run_dir / "coarse_terrain.json"
+        phantom_gem_path = run_dir / "phantom_gem.json"
+        shimmering_path = run_dir / "shimmering_terrain.json"
 
         logger = _ClientLogger()
         
@@ -4243,7 +4432,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         result = {
             "success": True,
             "nexus_tag": nexus_tag,
-            "coarse_terrain": coarse_path,
+            "coarse_terrain": str(coarse_path),
             "node_count": ws_glimpse.get("node_count", 0),
             "depth": ws_glimpse.get("depth", 0),
             "_source": "glimpse_merged",  # Indicate WebSocket+API merge was performed
@@ -4266,8 +4455,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             except Exception as e:
                 raise NetworkError(f"Failed to write shimmering_terrain.json: {e}") from e
 
-            result["phantom_gem"] = phantom_gem_path
-            result["shimmering_terrain"] = shimmering_path
+            result["phantom_gem"] = str(phantom_gem_path)
+            result["shimmering_terrain"] = str(shimmering_path)
 
         # mode="coarse_terrain_only": only coarse_terrain.json written
         # User will call nexus_ignite_shards later to create phantom_gem.json
@@ -5122,6 +5311,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         logger = _ClientLogger()
 
+        # Interpret mode with backward compatibility to include_terrain.
+        if mode is None:
+            mode = "full" if include_terrain else "coarse_terrain_only"
+        if mode not in ("full", "coarse_terrain_only"):
+            raise NetworkError(
+                f"Invalid mode '{mode}'. Must be 'full' or 'coarse_terrain_only'."
+            )
+
         sessions_dir = self._get_explore_sessions_dir()
         session_path = os.path.join(sessions_dir, f"{session_id}.json")
 
@@ -5962,8 +6159,26 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         self,
         session_id: str,
         include_terrain: bool = True,
+        mode: str | None = None,
     ) -> dict[str, Any]:
-        """Finalize an exploration session into phantom_gem.json (+ optional terrain).
+        """Finalize an exploration session into NEXUS artifacts (coarse terrain + GEM).
+
+        New API (aligned with nexus_glimpse):
+
+        - ALWAYS ensures a NEXUS run directory for this nexus_tag and writes/returns
+          a coarse_terrain.json path.
+        - mode="full" (default when include_terrain=True):
+            * writes phantom_gem.json (GEM S0) under the run dir
+            * calls nexus_anchor_gems(...) to produce shimmering_terrain.json (T1)
+            * returns paths for coarse_terrain, phantom_gem, shimmering_terrain
+        - mode="coarse_terrain_only" (default when include_terrain=False):
+            * still writes phantom_gem.json for JEWELSTORM use
+            * does NOT anchor gems; shimmering_terrain.json is not created here
+            * returns only the coarse_terrain path
+
+        The legacy include_terrain parameter is mapped to mode when mode is None:
+        include_terrain=True  -> mode="full"
+        include_terrain=False -> mode="coarse_terrain_only"
 
         v2 implementation (leaf-first aware):
         - Reads the session JSON (tree, handles, state)
@@ -5980,8 +6195,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
           phantom_gem roots and nodes.
         - Writes phantom_gem.json under the NEXUS run directory for nexus_tag
           with the standard payload: {nexus_tag, roots, nodes}
-        - If include_terrain=True and no coarse_terrain.json exists yet, writes
-          a minimal TERRAIN using the cached root tree.
+        - Always ensures coarse_terrain.json exists (minimal TERRAIN) for this tag.
         """
         import logging
         import json as json_module
@@ -6322,15 +6536,37 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "hints": hints_export,
         }
 
+        # NEXUS run directory initialization for this exploration-derived tag.
+        # If a run dir already exists for this tag (from nexus_scry/nexus_glimpse/
+        # Cartographer), reuse the latest one. Otherwise, create a new timestamped
+        # directory under temp\\nexus_runs.
+        from pathlib import Path
+        from datetime import datetime
+
+        base_dir = Path(
+            r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_runs"
+        )
+        base_dir.mkdir(parents=True, exist_ok=True)
+
         try:
-            os.makedirs(run_dir, exist_ok=True)
+            existing = self._get_nexus_dir(nexus_tag)
+            run_dir = Path(existing)
+        except NetworkError:
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            run_dir = base_dir / f"{timestamp}__{nexus_tag}"
+            run_dir.mkdir(parents=True, exist_ok=False)
+
+        phantom_path = run_dir / "phantom_gem.json"
+        coarse_path = run_dir / "coarse_terrain.json"
+
+        try:
             with open(phantom_path, "w", encoding="utf-8") as f:
                 json_module.dump(phantom_payload, f, indent=2, ensure_ascii=False)
         except Exception as e:
             raise NetworkError(f"Failed to write phantom_gem.json: {e}") from e
 
-        # Optionally create a minimal coarse_terrain.json if one does not exist
-        if include_terrain and not os.path.exists(coarse_path):
+        # ALWAYS ensure minimal coarse_terrain.json exists for this tag.
+        if not coarse_path.exists():
             try:
                 export_root_id = session.get("root_id")
                 export_root_name = session.get("root_name") or root_node.get("name", "Root")
@@ -6357,12 +6593,26 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     f"Failed to write coarse_terrain.json during finalize_exploration: {e}"
                 )
 
-        return {
+        result: dict[str, Any] = {
             "success": True,
             "session_id": session_id,
             "nexus_tag": nexus_tag,
-            "phantom_gem": phantom_path,
-            "coarse_terrain": coarse_path if os.path.exists(coarse_path) else None,
+            "coarse_terrain": str(coarse_path) if coarse_path.exists() else None,
             "finalized_branch_count": len(ordered_root_ids),
             "node_count": len(gem_nodes),
+            "mode": mode,
         }
+
+        if mode == "full":
+            # We already wrote phantom_gem.json for this tag; expose its path and
+            # also anchor gems into shimmering_terrain.json for convenience.
+            result["phantom_gem"] = str(phantom_path)
+            try:
+                anchor_result = await self.nexus_anchor_gems(nexus_tag)
+                result["shimmering_terrain"] = anchor_result.get("shimmering_terrain")
+            except Exception as e:
+                raise NetworkError(
+                    f"nexus_finalize_exploration: nexus_anchor_gems failed: {e}"
+                ) from e
+
+        return result
