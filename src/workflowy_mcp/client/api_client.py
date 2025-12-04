@@ -1427,7 +1427,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 request = NodeListRequest(parentId=parent)
                 children, count = await self.list_nodes(request)
                 api_calls_made += 1  # Track each list_nodes API call
-                total_nodes_fetched += count  # Use the count from list_nodes
+                total_nodes_fetched += count  # Nodes fetched for this subtree
                 
                 for child in children:
                     child_dict = child.model_dump()
@@ -1449,20 +1449,29 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # OLD METHOD: Fetch entire account (100K+ nodes for Dan!)
             raw_data = await self.export_nodes(node_id)
             flat_nodes = raw_data.get("nodes", [])
-            # Extract the ACTUAL count from API (before filtering)
+            # total_nodes_fetched reflects how many nodes /nodes-export returned
+            # for this account; the subtree guard below operates on the
+            # post-filter count (len(flat_nodes)).
             total_nodes_fetched = raw_data.get("_total_fetched_from_api", len(flat_nodes))
             api_calls_made = 1  # Single export_nodes call (but fetches ALL nodes!)
         
         try:
-            # Global safety: prevent accidental massive SCRY exports.
-            if max_nodes is not None and total_nodes_fetched > max_nodes:
+            # Compute ACTUAL subtree size (post-filter-to-root) for the safety
+            # guard. This is the only value we compare against max_nodes.
+            subtree_node_count = len(flat_nodes)
+            
+            # Global safety: prevent accidental massive SCRY exports based on the
+            # subtree size, not the total account size fetched from /nodes-export.
+            if max_nodes is not None and subtree_node_count > max_nodes:
                 raise NetworkError(
-                    f"SCRY tree size ({total_nodes_fetched} nodes) exceeds limit ({max_nodes} nodes).\n\n"
+                    "SCRY subtree size "
+                    f"({subtree_node_count} nodes) exceeds limit ({max_nodes} nodes).\n\n"
                     "Options:\n"
                     f"1. Increase max_nodes parameter (if your use case truly requires more than {max_nodes} nodes)\n"
                     "2. Use max_depth or child_count_limit to truncate the SCRY\n"
                     "3. Use nexus_scry (tag-based) + nexus_ignite_shards for coarse terrain + targeted shards\n\n"
-                    "This safety prevents accidental 50MB+ SCRY exports."
+                    f"(Underlying /nodes-export fetched {total_nodes_fetched} node(s) from the account; "
+                    "the guard now compares against the post-filter subtree only.)"
                 )
             
             if not flat_nodes:
@@ -4910,7 +4919,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # Fetch subtree once via GLIMPSE FULL (Agent hunts mode)
         glimpse = await self.workflowy_scry(
             node_id=root_id,
-            use_efficient_traversal=True,
+            use_efficient_traversal=False,
             depth=None,
             size_limit=max_nodes,
         )
