@@ -28,6 +28,13 @@ from ..models import (
     WorkFlowyNode,
 )
 
+from .nexus_helper import (
+    mark_all_nodes_as_potentially_truncated,
+    merge_glimpses_for_terrain,
+    build_original_ids_seen_from_glimpses,
+    build_terrain_export_from_glimpse,
+)
+
 from datetime import datetime
 
 def log_event(message: str, component: str = "CLIENT") -> None:
@@ -2033,7 +2040,118 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
         return '\n'.join(markdown_lines)
     
-    async def workflowy_glimpse(self, node_id: str, use_efficient_traversal: bool = False, _ws_connection=None, _ws_queue=None) -> dict[str, Any]:
+    async def _write_glimpse_as_terrain(
+        self,
+        node_id: str,
+        ws_glimpse: dict[str, Any],
+        output_file: str,
+    ) -> dict[str, Any]:
+        """Write WebSocket GLIMPSE as a TERRAIN export file.
+        
+        This helper uses the same shared logic as nexus_glimpse to produce a
+        TERRAIN file from a WebSocket GLIMPSE result:
+        
+        1. Fetch API GLIMPSE FULL for complete child count validation
+        2. Merge WebSocket + API via shared helpers (has_hidden_children, children_status)
+        3. Build original_ids_seen ledger
+        4. Construct TERRAIN wrapper
+        5. Write JSON and Markdown files
+        
+        Args:
+            node_id: Root node UUID being glimpsed
+            ws_glimpse: WebSocket GLIMPSE result dict
+            output_file: Absolute path where TERRAIN JSON should be written
+            
+        Returns:
+            Compact summary with file paths and stats
+        """
+        logger = _ClientLogger()
+        
+        # STEP 1: Get API GLIMPSE FULL for complete tree structure
+        logger.info(f"📡 GLIMPSE TERRAIN Step 1: API fetch for complete tree structure...")
+        try:
+            # Use high size_limit to avoid artificial truncation - we need FULL tree
+            api_glimpse = await self.workflowy_scry(
+                node_id=node_id,
+                use_efficient_traversal=False,
+                depth=None,  # Full depth
+                size_limit=50000  # High limit - we need complete structure
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ API fetch failed: {e} - falling back to WebSocket-only (UNSAFE for WEAVE!)")
+            api_glimpse = None
+        
+        # STEP 2: MERGE - Use shared helpers for TERRAIN export logic
+        logger.info(
+            "🔀 GLIMPSE TERRAIN Step 2: Merging WebSocket + API results via shared helpers..."
+        )
+        
+        # Use shared helper to annotate has_hidden_children / children_status
+        children, root_children_status, api_merge_performed = merge_glimpses_for_terrain(
+            workflowy_root_id=node_id,
+            ws_glimpse=ws_glimpse,
+            api_glimpse=api_glimpse,
+        )
+        
+        # Build original_ids_seen ledger
+        original_ids_seen = build_original_ids_seen_from_glimpses(
+            workflowy_root_id=node_id,
+            ws_glimpse=ws_glimpse,
+            api_glimpse=api_glimpse,
+        )
+        
+        # Construct TERRAIN wrapper
+        terrain_data = build_terrain_export_from_glimpse(
+            workflowy_root_id=node_id,
+            ws_glimpse=ws_glimpse,
+            children=children,
+            root_children_status=root_children_status,
+            original_ids_seen=original_ids_seen,
+        )
+        
+        # STEP 3: Write TERRAIN JSON file
+        try:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(terrain_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            raise NetworkError(f"Failed to write TERRAIN JSON: {e}") from e
+        
+        # STEP 4: Generate and write Markdown file
+        markdown_file = output_file.replace('.json', '.md')
+        try:
+            # Extract root info for Markdown header
+            ws_root = ws_glimpse.get("root") or {}
+            root_node_info = {
+                'id': node_id,
+                'name': ws_root.get('name', 'Root'),
+                'parent_id': ws_root.get('parent_id'),
+                'full_path_uuids': [node_id],
+                'full_path_names': [ws_root.get('name', 'Root')]
+            }
+            
+            markdown_content = self._generate_markdown(
+                children,
+                level=1,
+                root_node_info=root_node_info
+            )
+            
+            with open(markdown_file, 'w', encoding='utf-8') as f:
+                f.write(markdown_content)
+        except Exception as e:
+            raise NetworkError(f"Failed to write TERRAIN Markdown: {e}") from e
+        
+        return {
+            "success": True,
+            "mode": "file",
+            "terrain_file": output_file,
+            "markdown_file": markdown_file,
+            "node_count": ws_glimpse.get("node_count", 0),
+            "depth": ws_glimpse.get("depth", 0),
+            "_source": "glimpse_merged",
+            "_api_merge_performed": api_merge_performed,
+        }
+    
+    async def workflowy_glimpse(self, node_id: str, use_efficient_traversal: bool = False, output_file: str | None = None, _ws_connection=None, _ws_queue=None) -> dict[str, Any]:
         """Load entire node tree into context (no file intermediary).
         
         GLIMPSE command - direct context loading for agent analysis.
@@ -2043,17 +2161,35 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         Args:
             node_id: Root node UUID to read from
+            output_file: Optional absolute path; if provided, write a TERRAIN-style
+                export package (same format as nexus_glimpse / bulk_export_to_file)
+                using the shared nexus_helper functions. WebSocket GLIMPSE + API SCRY
+                merged for has_hidden_children / children_status annotations.
             _ws_connection: WebSocket connection from server.py (internal parameter)
+            _ws_queue: WebSocket message queue from server.py (internal parameter)
             
         Returns:
-            {
-                "success": True,
-                "root": {"id": "...", "name": "...", "note": "..."},  # Root node metadata
-                "children": [...],  # Children only (for round-trip editing)
-                "node_count": N,
-                "depth": M,
-                "_source": "websocket" | "api"  # How data was obtained
-            }
+            When output_file is None (default):
+                {
+                    "success": True,
+                    "root": {"id": "...", "name": "...", "note": "..."},
+                    "children": [...],
+                    "node_count": N,
+                    "depth": M,
+                    "_source": "websocket" | "api"
+                }
+            
+            When output_file is provided:
+                {
+                    "success": True,
+                    "mode": "file",
+                    "terrain_file": output_file,
+                    "markdown_file": "...",
+                    "node_count": N,
+                    "depth": M,
+                    "_source": "glimpse_merged",
+                    "_api_merge_performed": bool
+                }
             
         Note: root metadata lets you read the node's prompt/content.
               children array is for round-trip editing (prevents root duplication).
@@ -2095,6 +2231,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     
                     # Log to persistent file
                     _log_glimpse_to_file("glimpse", node_id, response)
+                    
+                    # IF output_file requested: write TERRAIN using shared helpers
+                    if output_file is not None:
+                        return await self._write_glimpse_as_terrain(
+                            node_id=node_id,
+                            ws_glimpse=response,
+                            output_file=output_file,
+                        )
                     
                     return response
                 else:
@@ -3409,50 +3553,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         except Exception as e:  # noqa: BLE001
             raise NetworkError(f"transform_jewel failed: {e}") from e
 
-    def _annotate_glimpse_children_status(self, nodes: list[dict[str, Any]]) -> None:
-        """Annotate children_status for GLIMPSE-extracted nodes (recursive).
-        
-        Sets children_status based on has_hidden_children metadata from WebSocket:
-        - has_hidden_children=True → 'truncated_by_expansion' (SAFE: don't delete hidden)
-        - has_hidden_children=False → 'complete' (SAFE: can reconcile children)
-        
-        This prevents accidental deletion of collapsed branches during NEXUS WEAVE.
-        
-        DEPRECATED: This method is replaced by the WebSocket+API merge logic in nexus_glimpse.
-        Kept for backwards compatibility with old code paths.
-        """
-        for node in nodes:
-            has_hidden = node.get('has_hidden_children', False)
-            
-            if has_hidden:
-                node['children_status'] = 'truncated_by_expansion'
-            else:
-                node['children_status'] = 'complete'
-            
-            # Recursively annotate grandchildren
-            grandchildren = node.get('children', [])
-            if grandchildren:
-                self._annotate_glimpse_children_status(grandchildren)
-    
-    def _mark_all_nodes_as_potentially_truncated(self, nodes: list[dict[str, Any]]) -> None:
-        """Mark ALL nodes as potentially having hidden children (UNSAFE fallback).
-        
-        Used when API fetch fails and we can't verify true child counts.
-        This makes WEAVE operations CONSERVATIVE - they won't delete anything
-        that might be a collapsed branch.
-        
-        Args:
-            nodes: Node tree to mark (modified in-place)
-        """
-        for node in nodes:
-            # Conservative: assume hidden children exist
-            node["has_hidden_children"] = True
-            node["children_status"] = "truncated_by_expansion"
-            
-            # Recursively mark grandchildren
-            grandchildren = node.get("children", []) or []
-            if grandchildren:
-                self._mark_all_nodes_as_potentially_truncated(grandchildren)
     
     def _get_nexus_dir(self, nexus_tag: str) -> str:
         """Resolve base directory for a CORINTHIAN NEXUS run and ensure it exists.
@@ -4049,167 +4149,39 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             logger.warning(f"⚠️ API fetch failed: {e} - falling back to WebSocket-only (UNSAFE for WEAVE!)")
             # Fallback: use WebSocket-only result but mark ALL nodes as potentially having hidden children
             children = ws_glimpse.get("children", [])
-            self._mark_all_nodes_as_potentially_truncated(children)
+            mark_all_nodes_as_potentially_truncated(children)
             api_glimpse = None
         
-        # STEP 3: MERGE - Cross-reference to detect hidden children
-        logger.info(f"🔀 NEXUS GLIMPSE Step 3: Merging WebSocket + API results to detect hidden children...")
-        
-        if api_glimpse and api_glimpse.get("success"):
-            # Build lookup: WebSocket node ID → API node (for comparing child counts)
-            api_children = api_glimpse.get("children", [])
-            api_nodes_by_id: dict[str, dict[str, Any]] = {}
-            
-            def index_api_nodes(nodes: list[dict[str, Any]]) -> None:
-                """Build flat lookup of all API nodes by ID."""
-                for node in nodes:
-                    nid = node.get("id")
-                    if nid:
-                        api_nodes_by_id[nid] = node
-                    grandchildren = node.get("children", []) or []
-                    if grandchildren:
-                        index_api_nodes(grandchildren)
-            
-            index_api_nodes(api_children)
-            logger.info(f"   API returned {len(api_nodes_by_id)} total nodes for comparison")
-            
-            # Merge: For each WebSocket node, check if API shows more children
-            ws_children = ws_glimpse.get("children", [])
-            nodes_with_hidden = 0
-            
-            def merge_hidden_children_flags(ws_nodes: list[dict[str, Any]]) -> None:
-                """Recursively annotate has_hidden_children based on API comparison."""
-                nonlocal nodes_with_hidden
-                
-                for ws_node in ws_nodes:
-                    nid = ws_node.get("id")
-                    if not nid:
-                        # New node (no UUID) - can't have hidden children
-                        ws_node["has_hidden_children"] = False
-                        ws_node["children_status"] = "complete"
-                        continue
-                    
-                    # Find corresponding API node
-                    api_node = api_nodes_by_id.get(nid)
-                    
-                    if not api_node:
-                        # Node not in API result - treat as complete (edge case)
-                        ws_node["has_hidden_children"] = False
-                        ws_node["children_status"] = "complete"
-                        continue
-                    
-                    # Compare child counts
-                    ws_children_count = len(ws_node.get("children", []) or [])
-                    api_children_count = len(api_node.get("children", []) or [])
-                    
-                    if api_children_count > ws_children_count:
-                        # API shows more children - WebSocket has hidden/collapsed children!
-                        ws_node["has_hidden_children"] = True
-                        ws_node["children_status"] = "truncated_by_expansion"
-                        nodes_with_hidden += 1
-                        logger.info(f"   ⚠️ Node '{ws_node.get('name')}' ({nid[:8]}...): WebSocket={ws_children_count} children, API={api_children_count} children → HIDDEN CHILDREN DETECTED")
-                    else:
-                        # Counts match - children are fully visible
-                        ws_node["has_hidden_children"] = False
-                        ws_node["children_status"] = "complete"
-                    
-                    # Recursively merge grandchildren
-                    ws_grandchildren = ws_node.get("children", []) or []
-                    if ws_grandchildren:
-                        merge_hidden_children_flags(ws_grandchildren)
-            
-            merge_hidden_children_flags(ws_children)
-            logger.info(f"   ✅ Merge complete: {nodes_with_hidden} nodes have hidden children (SAFE for WEAVE)")
-            
-            children = ws_children  # Use merged WebSocket result with safety flags
-        else:
-            # API fetch failed - use WebSocket-only but mark as UNSAFE
-            logger.warning("⚠️ Using WebSocket-only result - ALL nodes marked as potentially truncated (UNSAFE for WEAVE unless manually verified)")
-            children = ws_glimpse.get("children", [])
-            self._mark_all_nodes_as_potentially_truncated(children)
+        # STEP 3: MERGE - Use shared helpers for TERRAIN export logic
+        logger.info(
+            "🔀 NEXUS GLIMPSE Step 3: Merging WebSocket + API results via shared helpers..."
+        )
 
-        # Check if ROOT ITSELF has hidden children (CRITICAL for top-level safety)
-        root_has_hidden = False
-        root_children_status = "complete"
-        
-        if api_glimpse and api_glimpse.get("success"):
-            # Compare root's direct children count between WebSocket and API
-            ws_root_children_count = len(ws_glimpse.get("children", []) or [])
-            api_root_children_count = len(api_glimpse.get("children", []) or [])
-            
-            if api_root_children_count > ws_root_children_count:
-                root_has_hidden = True
-                root_children_status = "truncated_by_expansion"
-                logger.warning(
-                    f"⚠️ ROOT NODE has hidden children! "
-                    f"WebSocket={ws_root_children_count} top-level nodes, "
-                    f"API={api_root_children_count} top-level nodes. "
-                    f"WEAVE will SKIP deleting hidden children at root level."
-                )
-        else:
-            # API fetch failed - assume root has hidden children (conservative)
-            root_has_hidden = True
-            root_children_status = "truncated_by_expansion"
-            logger.warning("⚠️ API fetch failed - assuming ROOT has hidden children (SAFE/conservative)")
-        
-        # Mirror bulk_export_to_file structure: metadata wrapper + children only
-        # Root info goes in metadata, NOT in nodes array (prevents root duplication)
-        #
-        # Build original_ids_seen ledger for this NEXUS tag. For GLIMPSE, we
-        # prefer the full API view when available (complete subtree under
-        # workflowy_root_id), falling back to the WebSocket subtree when API
-        # is unavailable. This keeps the semantics aligned with SCRY: the
-        # ledger records all Workflowy node IDs known at the time of export,
-        # not just those currently materialized in the editable nodes array.
-        original_ids_seen = set()
-        try:
-            if api_glimpse and api_glimpse.get("success"):
-                api_root = api_glimpse.get("root") or {}
-                api_children = api_glimpse.get("children") or []
-                root_id_for_ledger = api_root.get("id") or workflowy_root_id
-                if root_id_for_ledger:
-                    original_ids_seen.add(str(root_id_for_ledger))
+        # Use shared helper to annotate has_hidden_children / children_status
+        # on the WebSocket subtree and derive the root_children_status.
+        children, root_children_status, api_merge_performed = merge_glimpses_for_terrain(
+            workflowy_root_id=workflowy_root_id,
+            ws_glimpse=ws_glimpse,
+            api_glimpse=api_glimpse,
+        )
 
-                def _collect_ids_api(nodes):
-                    for n in nodes or []:
-                        if not isinstance(n, dict):
-                            continue
-                        nid = n.get("id")
-                        if nid:
-                            original_ids_seen.add(str(nid))
-                        _collect_ids_api(n.get("children") or [])
+        # Build original_ids_seen ledger for this NEXUS tag. Prefer the full
+        # API view when available (complete subtree under workflowy_root_id),
+        # falling back to the WebSocket subtree when API is unavailable.
+        original_ids_seen = build_original_ids_seen_from_glimpses(
+            workflowy_root_id=workflowy_root_id,
+            ws_glimpse=ws_glimpse,
+            api_glimpse=api_glimpse,
+        )
 
-                _collect_ids_api(api_children)
-            else:
-                ws_root = ws_glimpse.get("root") or {}
-                ws_children = ws_glimpse.get("children") or []
-                root_id_for_ledger = ws_root.get("id") or workflowy_root_id
-                if root_id_for_ledger:
-                    original_ids_seen.add(str(root_id_for_ledger))
-
-                def _collect_ids_ws(nodes):
-                    for n in nodes or []:
-                        if not isinstance(n, dict):
-                            continue
-                        nid = n.get("id")
-                        if nid:
-                            original_ids_seen.add(str(nid))
-                        _collect_ids_ws(n.get("children") or [])
-
-                _collect_ids_ws(ws_children)
-        except Exception:
-            # Ledger is advisory metadata; never fail GLIMPSE if it cannot
-            # be computed for any reason.
-            original_ids_seen = set()
-
-        terrain_data = {
-            "export_root_id": workflowy_root_id,
-            "export_root_name": ws_glimpse["root"]["name"],
-            "export_timestamp": None,  # GLIMPSE doesn't have timestamp
-            "export_root_children_status": root_children_status,  # Root children status
-            "original_ids_seen": sorted(original_ids_seen),
-            "nodes": children,  # Children with merged WebSocket+API safety flags
-        }
+        # Construct TERRAIN wrapper in the standard NEXUS format.
+        terrain_data = build_terrain_export_from_glimpse(
+            workflowy_root_id=workflowy_root_id,
+            ws_glimpse=ws_glimpse,
+            children=children,
+            root_children_status=root_children_status,
+            original_ids_seen=original_ids_seen,
+        )
 
         # Always write coarse_terrain.json
         try:
@@ -4225,7 +4197,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "node_count": ws_glimpse.get("node_count", 0),
             "depth": ws_glimpse.get("depth", 0),
             "_source": "glimpse_merged",  # Indicate WebSocket+API merge was performed
-            "_api_merge_performed": api_glimpse is not None,
+            "_api_merge_performed": api_merge_performed,
             "mode": mode,
         }
 

@@ -1687,10 +1687,11 @@ def generate_markdown(
 # Tool: GLIMPSE (Read Node Trees)
 @mcp.tool(
     name="workflowy_glimpse",
-    description="Load entire node tree into context (no file intermediary). GLIMPSE command for direct context loading."
+    description="Load entire node tree into context (no file intermediary). GLIMPSE command for direct context loading. Optional output_file writes TERRAIN export (WebSocket+API merge with full NEXUS semantics)."
 )
 async def glimpse(
     node_id: str,
+    output_file: str | None = None,
 ) -> dict:
     """Load entire node tree into agent context.
     
@@ -1701,9 +1702,14 @@ async def glimpse(
     
     Args:
         node_id: Root node UUID to read from
+        output_file: Optional absolute path; if provided, write a TERRAIN-style
+            export package using shared nexus_helper functions (WebSocket GLIMPSE +
+            API SCRY merged for has_hidden_children / children_status annotations,
+            original_ids_seen ledger, full NEXUS TERRAIN format)
         
     Returns:
-        Dictionary with root metadata, children tree, node count, depth, and source indicator
+        When output_file is None: Dictionary with root metadata, children tree, node count, depth, source
+        When output_file is provided: Compact summary with terrain_file, markdown_file, stats
     """
     client = get_client()
     ws_conn, ws_queue = get_ws_connection()  # Check if extension is connected
@@ -1712,8 +1718,8 @@ async def glimpse(
         await _rate_limiter.acquire()
     
     try:
-        # Pass WebSocket connection AND queue to client method
-        result = await client.workflowy_glimpse(node_id, _ws_connection=ws_conn, _ws_queue=ws_queue)
+        # Pass WebSocket connection, queue, AND output_file to client method
+        result = await client.workflowy_glimpse(node_id, output_file=output_file, _ws_connection=ws_conn, _ws_queue=ws_queue)
         if _rate_limiter:
             _rate_limiter.on_success()
         return result
@@ -1732,6 +1738,7 @@ async def glimpse_full(
     node_id: str,
     depth: int | None = None,
     size_limit: int = 1000,
+    output_file: str | None = None,
 ) -> dict:
     """Load entire node tree via full API fetch (bypass WebSocket).
     
@@ -1757,13 +1764,18 @@ async def glimpse_full(
     
     try:
         # Call glimpse_full on client (bypasses WebSocket by design)
-        result = await client.workflowy_scry(node_id, depth=depth, size_limit=size_limit)
+        result = await client.workflowy_scry(
+            node_id,
+            depth=depth,
+            size_limit=size_limit,
+            output_file=output_file,
+        )
         if _rate_limiter:
             _rate_limiter.on_success()
         return result
     except Exception as e:
         if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
-            _rate_limiter.on_rate_lock(getattr(e, "retry_after", None))
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
         raise
 
 
