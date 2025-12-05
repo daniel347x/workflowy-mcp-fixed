@@ -5402,8 +5402,41 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         import logging
         import uuid
         from datetime import datetime
+        import os
+        import glob
 
         logger = _ClientLogger()
+
+        # VALIDATION: Disallow reuse of existing nexus_tag to prevent stale TERRAIN contamination
+        base_dir = Path(self.config.temp_dir) / "nexus_runs"
+        sessions_dir = Path(self.config.temp_dir) / "nexus_explore_sessions"
+        
+        # Check nexus_runs for any directory ending with __<nexus_tag>
+        if base_dir.exists():
+            pattern = str(base_dir / f"*__{nexus_tag}")
+            existing_runs = glob.glob(pattern)
+            if existing_runs:
+                raise NetworkError(
+                    f"nexus_tag '{nexus_tag}' already exists.\n\n"
+                    f"Existing NEXUS run found in:\n  {existing_runs[0]}\n\n"
+                    "This prevents stale TERRAIN reuse. Choose a unique tag or:\n"
+                    f"  1. Delete existing run: remove temp/nexus_runs/*__{nexus_tag}\n"
+                    f"  2. Resume existing session: nexus_resume_exploration(nexus_tag='{nexus_tag}')\n"
+                    f"  3. Use different tag: nexus_start_exploration(nexus_tag='{nexus_tag}-v2', ...)"
+                )
+        
+        # Check nexus_explore_sessions for any file matching pattern *__<nexus_tag>-*.json
+        if sessions_dir.exists():
+            pattern = str(sessions_dir / f"*__{nexus_tag}-*.json")
+            existing_sessions = glob.glob(pattern)
+            if existing_sessions:
+                raise NetworkError(
+                    f"nexus_tag '{nexus_tag}' already has exploration sessions.\n\n"
+                    f"Existing session found:\n  {existing_sessions[0]}\n\n"
+                    "This prevents tag collision. Choose a unique tag or:\n"
+                    f"  1. Resume existing session: nexus_resume_exploration(nexus_tag='{nexus_tag}')\n"
+                    f"  2. Use different tag: nexus_start_exploration(nexus_tag='{nexus_tag}-v2', ...)"
+                )
 
         # Determine exploration mode from session_hint.
         # DEFAULT: dfs_full_walk (strict full leaf walk, DO OR DIE).
