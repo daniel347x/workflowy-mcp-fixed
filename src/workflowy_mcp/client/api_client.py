@@ -1703,7 +1703,18 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             else:
                 # No parent or parent not in set = root node
                 root_nodes.append(node)
-        
+
+        # Pass 3: Sort each sibling group by Workflowy 'priority' field so that
+        # DFS and all traversals see siblings in the same order as Workflowy UI.
+        def _sort_children_by_priority(nodes_list: list[dict[str, Any]]) -> None:
+            for n in nodes_list:
+                children = n.get('children') or []
+                if children:
+                    children.sort(key=lambda c: c.get('priority', 0))
+                    _sort_children_by_priority(children)
+
+        _sort_children_by_priority(root_nodes)
+
         return root_nodes
     
     def _calculate_max_depth(self, nodes: list[dict[str, Any]], current_depth: int = 1) -> int:
@@ -5628,6 +5639,24 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # already been applied above via _nexus_explore_step_internal.
         exploration_mode = session.get("exploration_mode", "manual")
         if exploration_mode in {"dfs_guided", "dfs_full_walk"}:
+            # In strict DFS modes, we must APPLY DECISIONS before computing the
+            # next leaf-chunk frontier. Delegate decision semantics to the v1
+            # helper, then reload the updated session state.
+            if decisions:
+                _ = await self._nexus_explore_step_internal(
+                    session_id=session_id,
+                    actions=decisions,
+                    frontier_size=0,
+                    max_depth_per_frontier=1,
+                    include_history_summary=False,
+                )
+                with open(session_path, "r", encoding="utf-8") as f:
+                    session = json_module.load(f)
+                handles = session.get("handles", {}) or {}
+                state = session.get("state", {}) or {}
+                root_node = session.get("root_node") or {}
+                editable_mode = bool(session.get("editable", False))
+
             # Compute strict DFS frontier (leaf chunks in canonical DFS order).
             frontier = self._compute_exploration_frontier(
                 session,
