@@ -6336,6 +6336,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "reserve_branch_for_children": "engulf_shell_in_gemstorm",
             "engulf_showing_descendants": "engulf_frontier_descendants_in_gemstorm",
             "spare_showing_descendants": "spare_frontier_descendants_from_storm",
+            "engulf_all_remaining_showing": "engulf_frontier_descendants_in_gemstorm",
+            "spare_all_remaining_showing": "spare_frontier_descendants_from_storm",
         }
         
         for action in actions:
@@ -6345,11 +6347,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         # Sort actions for correct execution order:
         # 1. ENGULF actions first, then SPARE actions, then OTHER
-        # 2. Within each category, LEAFMOST first (deepest handles first)
+        # 2. Frontier bulk actions (engulf/spare all showing) run near the end
+        # 3. Global "spare_all_remaining" runs last
+        # 4. Within each category, LEAFMOST first (deeper handles first)
         def action_sort_key(action: dict[str, Any]) -> tuple[int, int]:
             """Sort key: (category_priority, depth_priority).
             
-            Category: ENGULF (0) before SPARE (1) before OTHER (2)
+            Category: ENGULF (0) before SPARE (1) before OTHER (2),
+            then frontier bulk (3), then global spare_all_remaining (4).
             Depth: Leafmost first (negative depth, so deeper = lower number = earlier)
             """
             act = action.get("action", "")
@@ -6360,8 +6365,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 category = 0  # ENGULF first
             elif act in {"spare_leaf_from_storm", "spare_subtree_from_storm"}:
                 category = 1  # SPARE second
+            elif act in {"engulf_frontier_descendants_in_gemstorm", "spare_frontier_descendants_from_storm"}:
+                category = 3  # Frontier bulk near the end
+            elif act == "spare_all_remaining":
+                category = 4  # Global spare_all_remaining last
             else:
-                category = 2  # Other actions last (open, close, etc.)
+                category = 2  # Other actions in the middle (open, close, hints, etc.)
             
             # Depth priority: count dots in handle (A.B.C.D has 3 dots = depth 4)
             # Negate so deeper handles sort first
@@ -7534,6 +7543,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     break
                 needed_ids.add(cur)
                 cur = parent_by_id.get(cur)
+
+        # Carve out explicitly spared nodes from GEM membership: explicitly spared
+        # nodes do not appear in phantom_gem.json even when an ancestor was
+        # engulfed as a full subtree.
+        if explicitly_spared_ids:
+            needed_ids -= explicitly_spared_ids
 
         if not needed_ids:
             raise NetworkError(
