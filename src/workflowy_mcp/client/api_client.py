@@ -5409,8 +5409,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         logger = _ClientLogger()
 
         # VALIDATION: Disallow reuse of existing nexus_tag to prevent stale TERRAIN contamination
-        base_dir = Path(self.config.temp_dir) / "nexus_runs"
-        sessions_dir = Path(self.config.temp_dir) / "nexus_explore_sessions"
+        base_dir = Path(
+            r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs"
+        )
+        sessions_dir = Path(
+            r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_explore_sessions"
+        )
         
         # Check nexus_runs for any directory ending with __<nexus_tag>
         if base_dir.exists():
