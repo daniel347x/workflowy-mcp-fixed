@@ -5046,20 +5046,33 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
     ) -> list[dict[str, Any]]:
         """Compute the next frontier for an exploration session.
 
-        This is a simple handle-based frontier computation:
-        - Candidate parents are handles with status in {open}.
-        - For each candidate parent, we surface its direct children (one level
-          down) that are not closed or finalized, in original Workflowy order.
-        - We stop once frontier_size entries have been collected.
+        STRICT DFS MODES (dfs_guided / dfs_full_walk)
+        ---------------------------------------------
+        Reinterprets "multiple frontiers" as **leaf chunks**:
 
-        max_depth_per_frontier is reserved for future use (e.g. allowing
-        multi-level expansions in a single step). For v1 we always surface
-        only direct children of the candidate parents.
+        - Precompute a DFS order over all handles (R, A, A.1, A.1.1, ...).
+        - At each step in strict modes, find the *first* sibling leaf group in
+          DFS order, then accumulate additional sibling leaf groups until a
+          leaf-count budget is reached.
+        - The frontier for this step is exactly those undecided leaves. The
+          agent is expected to make explicit accept/reject decisions on each
+          leaf in the frontier in the next call.
+        - Once all leaves under a branch are decided, ancestor behavior is
+          handled by decision logic (not this function):
+            * ancestors with accepted leaves are auto-included structurally
+            * ancestors with only rejected leaves become candidates for
+              branch-level accept_subtree/reject_subtree decisions
 
-        Leaf-first guidance (v2 enhancement): frontier entries now include
-        "is_leaf" and a short "guidance" string to steer agents toward
-        making decisions at leaves (accept_leaf / reject_leaf) rather than
-        prematurely rejecting whole branches.
+        NON-STRICT / LEGACY MODES
+        -------------------------
+        For exploration_mode values other than {dfs_guided, dfs_full_walk}, we
+        retain the previous round-robin "open parent" behavior: any handle with
+        status=open contributes its children as frontier entries, in strips,
+        until frontier_size entries are collected.
+
+        Note: max_depth_per_frontier is ignored in strict DFS modes; the leaf
+        chunking algorithm walks depth-first using the cached tree and the
+        exploration state, not a depth cap.
         """
         handles = session.get("handles", {}) or {}
         state = session.get("state", {}) or {}
@@ -5079,36 +5092,20 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         exploration_mode = session.get("exploration_mode", "manual")
 
-        # DFS-GUIDED / DFS-FULL-WALK MODES: Present exactly one undecided handle
-        # in a canonical depth-first order. This gently nudges agents (and in
-        # strict mode, mechanically forces them) to advance through the tree one
-        # node at a time, making explicit decisions, instead of skipping large
-        # unexplored branches.
+        # ========= STRICT DFS / DFS-GUIDED MODES: LEAF-CHUNK FRONTIER =========
         if exploration_mode in {"dfs_guided", "dfs_full_walk"}:
 
-            def _is_covered_or_decided(h: str) -> bool:
-                """Return True if this handle is already accounted for in DFS.
+            def _is_covered_by_subtree(h: str) -> bool:
+                """True if some ancestor has a subtree selection covering this handle.
 
-                A handle is accounted for if:
-                - Its own status is finalized/closed, OR
-                - It is an *opened* branch (status == "open" and has children),
-                  in which case DFS should descend to its children rather than
-                  revisiting the branch handle itself, OR
-                - It is under an ancestor whose selection_type == "subtree" and
-                  that ancestor is finalized/closed.
+                A handle is considered covered if any ancestor handle has:
+                  - status in {finalized, closed} and
+                  - selection_type == "subtree".
+
+                In that case, we treat this handle as already accounted for in
+                the minimal covering tree and do not surface it in the DFS
+                frontier.
                 """
-                st = state.get(h, {"status": "unseen"})
-                status = st.get("status")
-
-                # Explicitly decided handles are always covered
-                if status in {"finalized", "closed"}:
-                    return True
-
-                # In dfs_guided mode, once a branch has been opened we skip the
-                # branch handle itself and walk its children instead.
-                if status == "open" and (handles.get(h, {}) or {}).get("children"):
-                    return True
-
                 parent_handle = handles.get(h, {}).get("parent")
                 while parent_handle:
                     anc_state = state.get(parent_handle, {})
@@ -5120,10 +5117,21 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     parent_handle = handles.get(parent_handle, {}).get("parent")
                 return False
 
+            def _is_decided(h: str) -> bool:
+                """True if this handle is finalized/closed or covered by a subtree."""
+                st = state.get(h, {"status": "unseen"})
+                status = st.get("status")
+                if status in {"finalized", "closed"}:
+                    return True
+                if _is_covered_by_subtree(h):
+                    return True
+                return False
+
+            # Build a canonical DFS order over all handles (excluding synthetic R
+            # as a frontier entry).
             dfs_order: list[str] = []
 
             def _visit(handle: str) -> None:
-                # Skip synthetic root handle as a frontier entry
                 if handle != "R":
                     dfs_order.append(handle)
                 for ch in handles.get(handle, {}).get("children", []) or []:
@@ -5131,65 +5139,134 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             _visit("R")
 
-            next_handle: str | None = None
+            # Collect undecided leaves in DFS order
+            undecided_leaves: list[str] = []
             for h in dfs_order:
-                if not _is_covered_or_decided(h):
-                    next_handle = h
-                    break
+                if _is_decided(h):
+                    continue
+                child_handles = handles.get(h, {}).get("children", []) or []
+                if not child_handles:
+                    undecided_leaves.append(h)
 
-            if next_handle is None:
-                # Everything is decided or covered; no further frontier.
+            if frontier_size <= 0 or not undecided_leaves:
                 return frontier
 
-            meta = handles.get(next_handle, {}) or {}
-            grandchild_handles = meta.get("children", []) or []
+            # Leaf budget per step: show ~frontier_size leaves, allowing a small
+            # leeway so that sibling groups are not arbitrarily split.
+            leaf_target = max(1, frontier_size)
+            leaf_leeway = max(1, min(leaf_target, 10))  # simple guardrail
 
-            # Build children_hint for context when the node has children.
-            children_hint: list[str] = []
-            MAX_CHILDREN_HINT = 10
-            if grandchild_handles:
-                for ch in grandchild_handles[:MAX_CHILDREN_HINT]:
-                    ch_meta = handles.get(ch, {}) or {}
-                    ch_name = ch_meta.get("name")
-                    if ch_name:
-                        children_hint.append(ch_name)
+            selected: list[str] = []
+            selected_set: set[str] = set()
+            total_selected = 0
+            idx = 0
 
-            is_leaf = len(grandchild_handles) == 0
-            if is_leaf:
-                guidance = (
-                    "Leaf node. Prefer making decisions here: use "
-                    "'accept_leaf' or 'reject_leaf'. Rejecting an entire branch "
-                    "is appropriate only when you are sure all of its contents "
-                    "are irrelevant."
+            while idx < len(undecided_leaves) and total_selected < leaf_target + leaf_leeway:
+                leaf = undecided_leaves[idx]
+                idx += 1
+                if leaf in selected_set:
+                    continue
+
+                parent_handle = handles.get(leaf, {}).get("parent")
+                sibling_group: list[str] = []
+
+                if parent_handle:
+                    # All undecided leaf siblings under the same parent
+                    for ch in handles.get(parent_handle, {}).get("children", []) or []:
+                        if ch in selected_set:
+                            continue
+                        if _is_decided(ch):
+                            continue
+                        ch_children = handles.get(ch, {}).get("children", []) or []
+                        if not ch_children:
+                            sibling_group.append(ch)
+                else:
+                    # Root-level leaf (no parent in handle graph)
+                    sibling_group.append(leaf)
+
+                if not sibling_group:
+                    continue
+
+                # If we've already satisfied the target and this sibling group
+                # would push us well beyond target+leeway, stop accumulating.
+                if (
+                    total_selected >= leaf_target
+                    and total_selected + len(sibling_group) > leaf_target + leaf_leeway
+                ):
+                    break
+
+                for ch in sibling_group:
+                    if ch in selected_set:
+                        continue
+                    selected_set.add(ch)
+                    selected.append(ch)
+                    total_selected += 1
+
+            if not selected:
+                # No undecided leaves suitable for this step (all covered or
+                # already decided by subtree selections). Branch-level frontiers
+                # are handled by decision logic rather than this function.
+                return frontier
+
+            def _build_path_string(handle: str) -> str:
+                """Return a human-readable path: Name (UUID8...) -> ... -> Leaf (UUID8...)."""
+                path_ids: list[str] = []
+                path_names: list[str] = []
+                cur = handle
+                seen: set[str] = set()
+                while cur and cur not in seen:
+                    seen.add(cur)
+                    meta = handles.get(cur, {}) or {}
+                    nid = meta.get("id") or ""
+                    name = meta.get("name", "Untitled")
+                    path_ids.append(nid)
+                    path_names.append(name)
+                    cur = meta.get("parent")
+                path_ids.reverse()
+                path_names.reverse()
+                truncated_ids = [f"{nid[:8]}..." if nid else "" for nid in path_ids]
+                return " > ".join(
+                    f"{nm} ({tid})" if tid else nm
+                    for nm, tid in zip(path_names, truncated_ids)
                 )
-            else:
-                guidance = (
-                    "Branch node. dfs-guided mode will walk you through its "
-                    "descendants; use 'accept_subtree' or 'reject_subtree' only "
-                    "when you intentionally want to include or exclude this "
-                    "whole branch without inspecting each leaf."
-                )
-            local_hints = meta.get("hints") or []
-            hints_from_ancestors = _collect_hints_from_ancestors(next_handle)
 
-            frontier.append(
-                {
-                    "handle": next_handle,
-                    "path": next_handle,
-                    "parent_handle": meta.get("parent"),
-                    "name_preview": meta.get("name", ""),
-                    "child_count": len(grandchild_handles),
-                    "children_hint": children_hint,
-                    "depth": meta.get("depth", 0),
-                    "status": state.get(next_handle, {}).get("status", "candidate"),
-                    "is_leaf": is_leaf,
-                    "guidance": guidance,
-                    "hints": local_hints,
-                    "hints_from_ancestors": hints_from_ancestors,
-                }
-            )
+            MAX_CHILDREN_HINT = 0  # strict leaf frontier: children_hint not needed
+
+            for h in selected:
+                meta = handles.get(h, {}) or {}
+                st = state.get(h, {"status": "unseen"})
+                child_handles = meta.get("children", []) or []
+                is_leaf = not child_handles
+
+                children_hint: list[str] = []
+                local_hints = meta.get("hints") or []
+                hints_from_ancestors = _collect_hints_from_ancestors(h)
+                guidance = (
+                    "Leaf node. STRICT DFS step: decide explicitly with 'accept_leaf' "
+                    "or 'reject_leaf'. Branch-level 'accept_subtree' / 'reject_subtree' "
+                    "is reserved for later when all descendants are decided."
+                )
+
+                frontier.append(
+                    {
+                        "handle": h,
+                        "path": _build_path_string(h),
+                        "parent_handle": meta.get("parent"),
+                        "name_preview": meta.get("name", ""),
+                        "child_count": len(child_handles),
+                        "children_hint": children_hint,
+                        "depth": meta.get("depth", 0),
+                        "status": st.get("status", "candidate"),
+                        "is_leaf": is_leaf,
+                        "guidance": guidance,
+                        "hints": local_hints,
+                        "hints_from_ancestors": hints_from_ancestors,
+                    }
+                )
 
             return frontier
+
+        # ========= NON-STRICT / LEGACY MODES: ROUND-ROBIN OPEN PARENTS =========
 
         # Candidate parents: any handle that is currently open.
         # Candidate handles themselves are frontier entries, not parents, until
@@ -5537,6 +5614,47 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         state = session.get("state", {}) or {}
         root_node = session.get("root_node") or {}
         editable_mode = bool(session.get("editable", False))
+
+        # If this session is running in a strict DFS mode, we ignore WALK
+        # requests entirely and surface a single leaf-chunk frontier via the
+        # shared _compute_exploration_frontier helper. DECISIONS (if any) have
+        # already been applied above via _nexus_explore_step_internal.
+        exploration_mode = session.get("exploration_mode", "manual")
+        if exploration_mode in {"dfs_guided", "dfs_full_walk"}:
+            # Compute strict DFS frontier (leaf chunks in canonical DFS order).
+            frontier = self._compute_exploration_frontier(
+                session,
+                frontier_size=global_frontier_limit,
+                max_depth_per_frontier=1,
+            )
+
+            # Update session timestamp and persist.
+            from datetime import datetime as _dt
+            session["updated_at"] = _dt.utcnow().isoformat() + "Z"
+            with open(session_path, "w", encoding="utf-8") as f:
+                json_module.dump(session, f, indent=2, ensure_ascii=False)
+
+            # Build history summary if requested.
+            history_summary = None
+            if include_history_summary:
+                history_summary = {
+                    "open": [h for h, st in state.items() if st.get("status") == "open"],
+                    "finalized": [h for h, st in state.items() if st.get("status") == "finalized"],
+                    "closed": [h for h, st in state.items() if st.get("status") == "closed"],
+                }
+
+            return {
+                "success": True,
+                "session_id": session_id,
+                "nexus_tag": session.get("nexus_tag"),
+                "status": "in_progress",
+                "walks": [],  # Strict DFS: no per-ray walks; see top-level frontier.
+                "skipped_walks": [],
+                "decisions_applied": decisions,
+                "scratchpad": session.get("scratchpad", ""),
+                "history_summary": history_summary,
+                "frontier": frontier,
+            }
 
         # --- 2) Apply DECISIONS using existing semantics (thin wrapper) ---
         if decisions:
@@ -6241,16 +6359,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     )
 
                 # STRICT DFS FULL-WALK MODE:
-                # In dfs_full_walk, branch-level accept is forbidden while any
-                # descendant remains undecided, unless a guardian override
-                # token is provided for this handle.
-                if exploration_mode == "dfs_full_walk" and has_undecided:
-                    guardian_token = action.get("guardian_token")
-                    overrides = _load_guardian_overrides()
-                    expected = overrides.get(handle)
-                    if not (guardian_token and expected and guardian_token == expected):
-                        # No matching guardian override → force the agent to walk
-                        # the remaining leaves.
+                # In dfs_full_walk, accept_subtree is ONLY allowed when all
+                # descendants are rejected (no undecided, no accepted leaves).
+                if exploration_mode == "dfs_full_walk":
+                    if has_undecided or accepted_leaves > 0:
                         session["handles"] = handles
                         session["state"] = state
                         current_frontier = self._compute_exploration_frontier(
@@ -6269,7 +6381,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         base_msg = (
                             f"Strict DFS mode is active for this exploration session; "
                             f"cannot accept_subtree on branch '{handle}' while any descendants "
-                            "remain undecided.\n\n"
+                            "remain undecided or any leaves have already been accepted.\n\n"
                             "Walk the branch in depth-first order and make leaf-level decisions "
                             "with 'accept_leaf' / 'reject_leaf'."
                         )
@@ -6279,8 +6391,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                                 "Decide there before attempting any branch-level accept/reject."
                             )
                         raise NetworkError(base_msg)
-                    # If guardian override matches, fall through to the normal
-                    # (non-strict) semantics below.
+                    # If we get here in dfs_full_walk, all descendants are decided
+                    # and rejected; the existing non-strict logic below will treat
+                    # this as a branch-only shell (children opaque).
 
                 # Mixed case: some descendants decided, some not → force DFS
                 # further down rather than allowing a coarse branch decision.
@@ -6361,44 +6474,39 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     )
 
                 # STRICT DFS FULL-WALK MODE:
-                # In dfs_full_walk, branch-level reject is forbidden while any
-                # descendant remains undecided, unless a guardian override
-                # token is provided for this handle.
+                # In dfs_full_walk, reject_subtree is ONLY allowed when all
+                # descendants are decided (no undecided). Accepted leaves are
+                # handled by the generic check below (we never allow a branch-
+                # wide reject that silently overrides accepted leaves).
                 if exploration_mode == "dfs_full_walk" and has_undecided:
-                    guardian_token = action.get("guardian_token")
-                    overrides = _load_guardian_overrides()
-                    expected = overrides.get(handle)
-                    if not (guardian_token and expected and guardian_token == expected):
-                        session["handles"] = handles
-                        session["state"] = state
-                        current_frontier = self._compute_exploration_frontier(
-                            session,
-                            frontier_size=1,
-                            max_depth_per_frontier=max_depth_per_frontier,
+                    session["handles"] = handles
+                    session["state"] = state
+                    current_frontier = self._compute_exploration_frontier(
+                        session,
+                        frontier_size=1,
+                        max_depth_per_frontier=max_depth_per_frontier,
+                    )
+                    next_handle = (
+                        current_frontier[0]["handle"] if current_frontier else None
+                    )
+                    next_name = (
+                        (handles.get(next_handle) or {}).get("name", "Untitled")
+                        if next_handle
+                        else None
+                    )
+                    base_msg = (
+                        f"Strict DFS mode is active for this exploration session; "
+                        f"cannot reject_subtree on branch '{handle}' while any descendants "
+                        "remain undecided.\n\n"
+                        "Walk the branch in depth-first order and make leaf-level decisions "
+                        "with 'accept_leaf' / 'reject_leaf'."
+                    )
+                    if next_handle:
+                        base_msg += (
+                            f"\n\nNext DFS node is '{next_handle}' ({next_name!r}). "
+                            "Decide there before attempting any branch-level accept/reject."
                         )
-                        next_handle = (
-                            current_frontier[0]["handle"] if current_frontier else None
-                        )
-                        next_name = (
-                            (handles.get(next_handle) or {}).get("name", "Untitled")
-                            if next_handle
-                            else None
-                        )
-                        base_msg = (
-                            f"Strict DFS mode is active for this exploration session; "
-                            f"cannot reject_subtree on branch '{handle}' while any descendants "
-                            "remain undecided.\n\n"
-                            "Walk the branch in depth-first order and make leaf-level decisions "
-                            "with 'accept_leaf' / 'reject_leaf'."
-                        )
-                        if next_handle:
-                            base_msg += (
-                                f"\n\nNext DFS node is '{next_handle}' ({next_name!r}). "
-                                "Decide there before attempting any branch-level accept/reject."
-                            )
-                        raise NetworkError(base_msg)
-                    # If guardian override matches, fall through to the normal
-                    # (non-strict) semantics below.
+                    raise NetworkError(base_msg)
 
                 if has_decided and has_undecided:
                     session["handles"] = handles
