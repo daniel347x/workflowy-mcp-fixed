@@ -6397,6 +6397,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             max_depth_per_frontier=max_depth_per_frontier,
         )
         
+        # Snapshot of state before this step for re-decision guards
+        prev_state: dict[str, dict[str, Any]] = {
+            h: state.get(h, {}).copy() for h in state.keys()
+        }
+        
         peek_results: list[dict[str, Any]] = []
         for action in actions:
             act = action.get("action")
@@ -6688,9 +6693,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # Leaf-first enhancements
             elif act == "engulf_leaf_in_gemstorm":
                 # Prevent re-deciding already-decided nodes (unless covered by ancestor shell)
-                if entry.get("status") in {"finalized", "closed"}:
+                prev = prev_state.get(handle, {})
+                if prev.get("status") in {"finalized", "closed"}:
                     raise NetworkError(
-                        f"Cannot re-decide handle '{handle}' (already {entry.get('status')}). "
+                        f"Cannot re-decide handle '{handle}' (already {prev.get('status')}). "
                         f"Use 'reopen_branch' to re-open this node for exploration first."
                     )
                 entry["status"] = "finalized"
@@ -6699,9 +6705,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 _auto_complete_ancestors_from_leaf(handle)
             elif act == "spare_leaf_from_storm":
                 # Prevent re-deciding already-decided nodes
-                if entry.get("status") in {"finalized", "closed"}:
+                prev = prev_state.get(handle, {})
+                if prev.get("status") in {"finalized", "closed"}:
                     raise NetworkError(
-                        f"Cannot re-decide handle '{handle}' (already {entry.get('status')}). "
+                        f"Cannot re-decide handle '{handle}' (already {prev.get('status')}). "
                         f"Use 'reopen_branch' to re-open this node for exploration first."
                     )
                 entry["status"] = "closed"
@@ -6710,9 +6717,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 _auto_complete_ancestors_from_leaf(handle)
             elif act == "engulf_shell_in_gemstorm":
                 # Prevent re-deciding already-decided nodes
-                if entry.get("status") in {"finalized", "closed"}:
+                prev = prev_state.get(handle, {})
+                if prev.get("status") in {"finalized", "closed"}:
                     raise NetworkError(
-                        f"Cannot re-decide handle '{handle}' (already {entry.get('status')}). "
+                        f"Cannot re-decide handle '{handle}' (already {prev.get('status')}). "
                         f"Use 'reopen_branch' to re-open this node for exploration first."
                     )
                 
@@ -6860,9 +6868,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             elif act == "spare_subtree_from_storm":
                 # Prevent re-deciding already-decided nodes
-                if entry.get("status") in {"finalized", "closed"}:
+                prev = prev_state.get(handle, {})
+                if prev.get("status") in {"finalized", "closed"}:
                     raise NetworkError(
-                        f"Cannot re-decide handle '{handle}' (already {entry.get('status')}). "
+                        f"Cannot re-decide handle '{handle}' (already {prev.get('status')}). "
                         f"Use 'reopen_branch' to re-open this node for exploration first."
                     )
                 
