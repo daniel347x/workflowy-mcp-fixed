@@ -106,11 +106,26 @@ async def main():
             sys.exit(1)
         
         nexus_tag = args.nexus_tag
-        run_dir = Path(nexus_runs_base) / nexus_tag
         
-        if not run_dir.exists():
-            log_worker(f"ERROR: NEXUS run directory not found: {run_dir}")
+        # Search for timestamped directory (same logic as api_client._get_nexus_dir)
+        base_dir = Path(nexus_runs_base)
+        candidates = []
+        suffix = f"__{nexus_tag}"
+        for child in base_dir.iterdir():
+            if not child.is_dir():
+                continue
+            name = child.name
+            if name == nexus_tag or name.endswith(suffix):
+                candidates.append(child)
+        
+        if not candidates:
+            log_worker(f"ERROR: NEXUS run directory not found for tag '{nexus_tag}'")
+            log_worker(f"Searched in: {base_dir}")
             sys.exit(1)
+        
+        # Pick lexicographically last (latest timestamped directory)
+        run_dir = sorted(candidates, key=lambda p: p.name)[-1]
+        log_worker(f"Resolved nexus_tag '{nexus_tag}' to: {run_dir.name}")
         
         pid_file = run_dir / ".weave.pid"
         log_worker(f"ENCHANTED mode: nexus_tag={nexus_tag}")
