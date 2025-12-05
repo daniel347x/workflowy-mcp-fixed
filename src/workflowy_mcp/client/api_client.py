@@ -5157,13 +5157,30 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 return False
 
             def _is_decided(h: str) -> bool:
-                """True if this handle is finalized/closed or covered by a subtree."""
+                """True if this handle should be excluded from frontier.
+                
+                In dfs_guided (non-strict) mode:
+                - Only explicitly decided nodes (finalized/closed) are excluded
+                - Descendants under shells/subtrees STILL APPEAR in frontier
+                - This enables frontier-based bulk actions and explicit control
+                
+                In dfs_full_walk (strict) mode:
+                - Covered-by-subtree nodes are also excluded (strict discipline)
+                """
                 st = state.get(h, {"status": "unseen"})
                 status = st.get("status")
                 if status in {"finalized", "closed"}:
                     return True
+                
+                # NON-STRICT MODE: Do NOT hide descendants under subtree ancestors
+                # (enables frontier bulk actions and explicit individual decisions)
+                if exploration_mode == "dfs_guided":
+                    return False
+                
+                # STRICT MODE: Respect subtree coverage (original discipline)
                 if _is_covered_by_subtree(h):
                     return True
+                
                 return False
 
             # Build a canonical DFS order over all handles (excluding synthetic R
@@ -6317,6 +6334,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # ACTION ALIAS MAPPER: Translate human-friendly aliases to machine actions
         ACTION_ALIASES = {
             "reserve_branch_for_children": "engulf_shell_in_gemstorm",
+            "engulf_showing_descendants": "engulf_frontier_descendants_in_gemstorm",
+            "spare_showing_descendants": "spare_frontier_descendants_from_storm",
         }
         
         for action in actions:
@@ -6351,6 +6370,15 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             return (category, depth)
         
         actions.sort(key=action_sort_key)
+        
+        # Compute current frontier ONCE before action loop (needed for frontier-based bulk actions)
+        session["handles"] = handles
+        session["state"] = state
+        current_step_frontier = self._compute_exploration_frontier(
+            session,
+            frontier_size=frontier_size,
+            max_depth_per_frontier=max_depth_per_frontier,
+        )
         
         peek_results: list[dict[str, Any]] = []
         for action in actions:
@@ -6407,6 +6435,103 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             handle = action.get("handle")
             max_depth = action.get("max_depth")
+
+            # FRONTIER-BASED BULK ACTIONS (non-strict mode only)
+            if act in {"engulf_frontier_descendants_in_gemstorm", "spare_frontier_descendants_from_storm"}:
+                if exploration_mode != "dfs_guided":
+                    raise NetworkError(
+                        f"Action '{act}' is only available in non-strict mode (dfs_guided).\n\n"
+                        "In strict DFS mode, you must explicitly decide each leaf individually."
+                    )
+                
+                if handle not in handles:
+                    raise NetworkError(f"Unknown handle in bulk action: '{handle}'")
+                
+                # Helper: check if frontier_handle descends from branch_handle
+                def _is_descendant_of(frontier_handle: str, branch_handle: str) -> bool:
+                    """True if frontier_handle is a descendant of branch_handle."""
+                    cur = frontier_handle
+                    seen: set[str] = set()
+                    while cur and cur not in seen:
+                        if cur == branch_handle:
+                            return True
+                        seen.add(cur)
+                        cur = handles.get(cur, {}).get("parent")
+                    return False
+                
+                # Filter frontier to descendants of this branch
+                matching_frontier_entries = [
+                    entry for entry in current_step_frontier
+                    if _is_descendant_of(entry["handle"], handle)
+                ]
+                
+                if not matching_frontier_entries:
+                    logger.info(
+                        f"Bulk action on '{handle}': no matching frontier entries found "
+                        f"(frontier may be empty or descendants not visible this step)"
+                    )
+                    continue
+                
+                # Apply bulk decision to all matching frontier entries
+                if act == "engulf_frontier_descendants_in_gemstorm":
+                    engulfed_count = 0
+                    skipped_already_decided = 0
+                    skipped_branches = 0
+                    
+                    for entry in matching_frontier_entries:
+                        fh = entry["handle"]
+                        f_entry = state.get(fh, {"status": "unseen"})
+                        
+                        # Skip if already decided (silent - bulk operations are forgiving)
+                        if f_entry.get("status") in {"finalized", "closed"}:
+                            skipped_already_decided += 1
+                            continue
+                        
+                        # Only engulf leaves (branches need explicit reserve_branch_for_children)
+                        if not entry["is_leaf"]:
+                            skipped_branches += 1
+                            continue
+                        
+                        # Engulf this leaf
+                        f_entry = state.setdefault(fh, {"status": "unseen", "max_depth": None, "selection_type": None})
+                        f_entry["status"] = "finalized"
+                        f_entry["selection_type"] = "leaf"
+                        f_entry["max_depth"] = max_depth
+                        _auto_complete_ancestors_from_leaf(fh)
+                        engulfed_count += 1
+                    
+                    logger.info(
+                        f"engulf_frontier_descendants: {engulfed_count} leaves engulfed, "
+                        f"{skipped_already_decided} already decided, {skipped_branches} branches skipped"
+                    )
+                
+                elif act == "spare_frontier_descendants_from_storm":
+                    spared_count = 0
+                    skipped_already_decided = 0
+                    
+                    for entry in matching_frontier_entries:
+                        fh = entry["handle"]
+                        f_entry = state.get(fh, {"status": "unseen"})
+                        
+                        # Skip if already decided (silent - bulk operations are forgiving)
+                        if f_entry.get("status") in {"finalized", "closed"}:
+                            skipped_already_decided += 1
+                            continue
+                        
+                        # Spare this node (leaf or branch)
+                        f_entry = state.setdefault(fh, {"status": "unseen", "max_depth": None, "selection_type": None})
+                        f_entry["status"] = "closed"
+                        f_entry["selection_type"] = None
+                        f_entry["max_depth"] = None
+                        _auto_complete_ancestors_from_leaf(fh)
+                        spared_count += 1
+                    
+                    logger.info(
+                        f"spare_frontier_descendants: {spared_count} nodes spared, "
+                        f"{skipped_already_decided} already decided"
+                    )
+                
+                continue  # Bulk action processed, move to next action
 
             if handle not in handles:
                 raise NetworkError(f"Unknown handle in actions: '{handle}'")
@@ -6545,16 +6670,35 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             # Leaf-first enhancements
             elif act == "engulf_leaf_in_gemstorm":
+                # Prevent re-deciding already-decided nodes (unless covered by ancestor shell)
+                if entry.get("status") in {"finalized", "closed"}:
+                    raise NetworkError(
+                        f"Cannot re-decide handle '{handle}' (already {entry.get('status')}). "
+                        f"Use 'reopen_branch' to re-open this node for exploration first."
+                    )
                 entry["status"] = "finalized"
                 entry["selection_type"] = "leaf"
                 entry["max_depth"] = max_depth
                 _auto_complete_ancestors_from_leaf(handle)
             elif act == "spare_leaf_from_storm":
+                # Prevent re-deciding already-decided nodes
+                if entry.get("status") in {"finalized", "closed"}:
+                    raise NetworkError(
+                        f"Cannot re-decide handle '{handle}' (already {entry.get('status')}). "
+                        f"Use 'reopen_branch' to re-open this node for exploration first."
+                    )
                 entry["status"] = "closed"
                 entry["selection_type"] = None
                 entry["max_depth"] = None
                 _auto_complete_ancestors_from_leaf(handle)
             elif act == "engulf_shell_in_gemstorm":
+                # Prevent re-deciding already-decided nodes
+                if entry.get("status") in {"finalized", "closed"}:
+                    raise NetworkError(
+                        f"Cannot re-decide handle '{handle}' (already {entry.get('status')}). "
+                        f"Use 'reopen_branch' to re-open this node for exploration first."
+                    )
+                
                 summary = _summarize_descendants(handle)
                 desc_count = summary["descendant_count"]
                 has_decided = summary["has_decided"]
@@ -6698,6 +6842,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 _auto_complete_ancestors_from_decision(handle)
 
             elif act == "spare_subtree_from_storm":
+                # Prevent re-deciding already-decided nodes
+                if entry.get("status") in {"finalized", "closed"}:
+                    raise NetworkError(
+                        f"Cannot re-decide handle '{handle}' (already {entry.get('status')}). "
+                        f"Use 'reopen_branch' to re-open this node for exploration first."
+                    )
+                
                 summary = _summarize_descendants(handle)
                 desc_count = summary["descendant_count"]
                 has_decided = summary["has_decided"]
