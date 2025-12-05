@@ -4864,6 +4864,179 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         os.makedirs(base_dir, exist_ok=True)
         return base_dir
 
+    def nexus_list_exploration_sessions(
+        self,
+        nexus_tag: str | None = None,
+    ) -> dict[str, Any]:
+        """List all exploration sessions (optionally filter by nexus_tag).
+        
+        Returns:
+            {
+              "success": true,
+              "sessions": [
+                {
+                  "session_id": "...",
+                  "nexus_tag": "...",
+                  "created_at": "...",
+                  "updated_at": "...",
+                  "steps": 5,
+                  "exploration_mode": "dfs_guided",
+                  "editable": false
+                },
+                ...
+              ]
+            }
+        """
+        import json as json_module
+        from pathlib import Path
+        
+        sessions_dir = self._get_explore_sessions_dir()
+        sessions_path = Path(sessions_dir)
+        
+        results = []
+        for session_file in sessions_path.glob("*.json"):
+            try:
+                with open(session_file, "r", encoding="utf-8") as f:
+                    session = json_module.load(f)
+                
+                tag = session.get("nexus_tag")
+                
+                # Filter by tag if requested
+                if nexus_tag and tag != nexus_tag:
+                    continue
+                
+                results.append({
+                    "session_id": session.get("session_id"),
+                    "nexus_tag": tag,
+                    "created_at": session.get("created_at"),
+                    "updated_at": session.get("updated_at"),
+                    "steps": session.get("steps", 0),
+                    "exploration_mode": session.get("exploration_mode"),
+                    "editable": session.get("editable", False),
+                })
+            except Exception:
+                # Skip corrupted session files
+                continue
+        
+        # Sort by created_at (most recent first)
+        results.sort(key=lambda s: s.get("created_at", ""), reverse=True)
+        
+        return {
+            "success": True,
+            "sessions": results,
+            "total": len(results),
+        }
+
+    async def nexus_resume_exploration(
+        self,
+        session_id: str | None = None,
+        nexus_tag: str | None = None,
+        frontier_size: int = 25,
+        include_history_summary: bool = True,
+    ) -> dict[str, Any]:
+        """Resume an exploration session after MCP restart or in new conversation.
+        
+        Loads session from disk and returns current frontier (exactly as if you
+        had just called nexus_explore_step with no actions).
+        
+        Args:
+            session_id: Session ID to resume (takes precedence if both provided)
+            nexus_tag: Alternative - find latest session for this tag
+            frontier_size: How many frontier entries to return
+            include_history_summary: Include status summary
+            
+        Returns:
+            Same format as nexus_explore_step_v2 (but with empty walks since no
+            walk requests were made - just current state view)
+        """
+        import json as json_module
+        from pathlib import Path
+        
+        sessions_dir = self._get_explore_sessions_dir()
+        
+        # Resolve to specific session_id
+        if session_id:
+            session_path = os.path.join(sessions_dir, f"{session_id}.json")
+            if not os.path.exists(session_path):
+                raise NetworkError(f"Session '{session_id}' not found")
+        elif nexus_tag:
+            # Find latest session for this tag
+            tag_sessions = []
+            for f in Path(sessions_dir).glob(f"{nexus_tag}-*.json"):
+                tag_sessions.append(f)
+            if not tag_sessions:
+                raise NetworkError(f"No sessions found for nexus_tag '{nexus_tag}'")
+            # Sort by name (includes timestamp in session_id)
+            latest = sorted(tag_sessions)[-1]
+            session_path = str(latest)
+            session_id = latest.stem  # Extract session_id from filename
+        else:
+            raise NetworkError("Must provide either session_id or nexus_tag")
+        
+        # Load session
+        with open(session_path, "r", encoding="utf-8") as f:
+            session = json_module.load(f)
+        
+        # Check if already finalized
+        tag = session.get("nexus_tag")
+        if tag:
+            try:
+                run_dir = self._get_nexus_dir(tag)
+                phantom_path = os.path.join(run_dir, "phantom_gem.json")
+                if os.path.exists(phantom_path):
+                    # Session already finalized
+                    return {
+                        "success": True,
+                        "session_id": session_id,
+                        "status": "completed",
+                        "message": f"Session already finalized - phantom_gem.json exists for tag '{tag}'",
+                        "phantom_gem": phantom_path,
+                    }
+            except NetworkError:
+                # No NEXUS dir yet - session still in progress
+                pass
+        
+        # Compute current frontier using existing helper
+        frontier = self._compute_exploration_frontier(
+            session,
+            frontier_size=frontier_size,
+            max_depth_per_frontier=1,
+        )
+        
+        # Build history summary if requested
+        handles = session.get("handles", {}) or {}
+        state = session.get("state", {}) or {}
+        
+        history_summary = None
+        if include_history_summary:
+            history_summary = {
+                "open": [h for h, st in state.items() if st.get("status") == "open"],
+                "finalized": [h for h, st in state.items() if st.get("status") == "finalized"],
+                "closed": [h for h, st in state.items() if st.get("status") == "closed"],
+                "steps": session.get("steps", 0),
+            }
+        
+        # Return in v2 format (walks=[] since this is just resume, not a walk request)
+        return {
+            "success": True,
+            "session_id": session_id,
+            "nexus_tag": session.get("nexus_tag"),
+            "status": "in_progress",
+            "walks": [],  # Empty - no walks requested, just showing current state
+            "skipped_walks": [],
+            "decisions_applied": [],
+            "scratchpad": session.get("scratchpad", ""),
+            "history_summary": history_summary,
+            "frontier": frontier,  # Include flat frontier for convenience
+            "session_meta": {
+                "created_at": session.get("created_at"),
+                "updated_at": session.get("updated_at"),
+                "exploration_mode": session.get("exploration_mode"),
+                "editable": session.get("editable"),
+                "steps": session.get("steps", 0),
+            }
+        }
+
     def _compute_exploration_frontier(
         self,
         session: dict[str, Any],
@@ -5365,7 +5538,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # --- 2) Apply DECISIONS using existing semantics (thin wrapper) ---
         if decisions:
-            _ = await self.nexus_explore_step(
+            _ = await self._nexus_explore_step_internal(
                 session_id=session_id,
                 actions=decisions,
                 frontier_size=0,
@@ -5556,32 +5729,60 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
     async def nexus_explore_step(
         self,
         session_id: str,
+        decisions: list[dict[str, Any]] | None = None,
+        walks: list[dict[str, Any]] | None = None,
+        max_parallel_walks: int = 4,
+        global_frontier_limit: int = 80,
+        include_history_summary: bool = True,
+    ) -> dict[str, Any]:
+        """Exploration step: separate DECISIONS from WALKs and allow multiple
+        independent rays (origins) in a single call.
+
+        Request:
+            decisions: list of { handle, action, ... } – accept/reject/finalize/etc
+            walks: list of { origin, max_steps } – ray roots and per-ray depth
+            max_parallel_walks: hard cap on how many origins we actually walk
+            global_frontier_limit: total frontier entries to emit across all rays
+
+        Response:
+            {
+              "session_id": ...,
+              "walks": [...],
+              "skipped_walks": [...],
+              "decisions_applied": [...],
+              "scratchpad": "...",
+              "history_summary": {...}  # optional
+            }
+        """
+        # v2 is now THE ONLY VERSION - forward to nexus_explore_step_v2
+        return await self.nexus_explore_step_v2(
+            session_id=session_id,
+            decisions=decisions,
+            walks=walks,
+            max_parallel_walks=max_parallel_walks,
+            global_frontier_limit=global_frontier_limit,
+            include_history_summary=include_history_summary,
+        )
+
+    async def _nexus_explore_step_internal(
+        self,
+        session_id: str,
         actions: list[dict[str, Any]] | None = None,
         frontier_size: int = 5,
         max_depth_per_frontier: int = 1,
         include_history_summary: bool = True,
     ) -> dict[str, Any]:
-        """Apply exploration actions and return the next frontier.
+        """Internal v1-style exploration (used by v2 for decisions delegation).
 
-        This is the agent's primary loop for exploration. Each call can:
-        - mark one or more handles as open / close / finalize / reopen, and
-        - in leaf-first mode, use accept_leaf / reject_leaf / accept_subtree /
-          reject_subtree / backtrack / reopen_branch to drive selection.
-        - request a new frontier of up to frontier_size entries.
+        This is the old nexus_explore_step implementation, kept as an internal
+        helper so that nexus_explore_step_v2 can delegate decision-processing
+        to it while handling multi-ray walks itself.
         """
         import logging
         import json as json_module
         from datetime import datetime
 
         logger = _ClientLogger()
-
-        # Interpret mode with backward compatibility to include_terrain.
-        if mode is None:
-            mode = "full" if include_terrain else "coarse_terrain_only"
-        if mode not in ("full", "coarse_terrain_only"):
-            raise NetworkError(
-                f"Invalid mode '{mode}'. Must be 'full' or 'coarse_terrain_only'."
-            )
 
         sessions_dir = self._get_explore_sessions_dir()
         session_path = os.path.join(sessions_dir, f"{session_id}.json")

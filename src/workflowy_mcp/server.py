@@ -1640,6 +1640,70 @@ async def nexus_explore_step(
 
 
 @mcp.tool(
+    name="nexus_list_exploration_sessions",
+    description="List all exploration sessions (optionally filter by nexus_tag).",
+)
+def nexus_list_exploration_sessions(
+    nexus_tag: str | None = None,
+) -> dict:
+    """List all exploration sessions.
+    
+    Args:
+        nexus_tag: Optional filter - only show sessions for this tag
+        
+    Returns:
+        List of session metadata (session_id, nexus_tag, timestamps, steps, mode, etc.)
+    """
+    client = get_client()
+    return client.nexus_list_exploration_sessions(nexus_tag=nexus_tag)
+
+
+@mcp.tool(
+    name="nexus_resume_exploration",
+    description=(
+        "Resume an exploration session after MCP restart or in new conversation. "
+        "Provide either session_id (exact) or nexus_tag (finds latest session for tag)."
+    ),
+)
+async def nexus_resume_exploration(
+    session_id: str | None = None,
+    nexus_tag: str | None = None,
+    frontier_size: int = 25,
+    include_history_summary: bool = True,
+) -> dict:
+    """Resume an exploration session from persisted state.
+    
+    Args:
+        session_id: Exact session ID to resume (takes precedence)
+        nexus_tag: Alternative - finds latest session for this tag
+        frontier_size: How many frontier entries to return
+        include_history_summary: Include status summary
+        
+    Returns:
+        Current session state with frontier (same format as nexus_explore_step)
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.nexus_resume_exploration(
+            session_id=session_id,
+            nexus_tag=nexus_tag,
+            frontier_size=frontier_size,
+            include_history_summary=include_history_summary,
+        )
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+
+@mcp.tool(
     name="nexus_finalize_exploration",
     description=(
         "Finalize an exploration session into coarse_terrain.json (always) plus "
