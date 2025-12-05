@@ -271,6 +271,37 @@ def scan_active_weaves(nexus_runs_base: str) -> list[dict[str, Any]]:
     return active
 
 
+# 2-LETTER ACTION CODE MAPPING (module-level constant for exploration)
+# Used by all exploration functions to translate compact codes to full action names
+EXPLORATION_ACTION_2LETTER = {
+    "EL": "engulf_leaf_in_gemstorm",
+    "SL": "spare_leaf_from_storm",
+    "ES": "engulf_shell_in_gemstorm",
+    "ST": "spare_subtree_from_storm",
+    "EF": "engulf_frontier_descendants_in_gemstorm",
+    "SF": "spare_frontier_descendants_from_storm",
+    "SA": "spare_all_remaining",
+    "RB": "reserve_branch_for_children",
+    "ED": "engulf_showing_descendants",
+    "SD": "spare_showing_descendants",
+    "EA": "engulf_all_remaining_showing_descendants",
+    "SR": "spare_all_remaining_showing_descendants",
+    "OP": "open",
+    "CL": "close",
+    "FN": "finalize",
+    "RO": "reopen",
+    "BT": "backtrack",
+    "RP": "reopen_branch",
+    "SS": "set_scratchpad",
+    "AS": "append_scratchpad",
+    "AH": "add_hint",
+    "PD": "peek_descendants",
+    "UN": "update_node_and_flag_for_acceptance",
+    "UT": "update_tag_and_flag_for_acceptance",
+    "UE": "update_note_and_flag_for_acceptance",
+}
+
+
 class WorkFlowyClient:
     """Async client for WorkFlowy API operations."""
 
@@ -5081,6 +5112,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "session_id": session_id,
             "nexus_tag": session.get("nexus_tag"),
             "status": "in_progress",
+            "action_key": EXPLORATION_ACTION_2LETTER,
             "walks": [],  # Empty - no walks requested, just showing current state
             "skipped_walks": [],
             "decisions_applied": [],
@@ -5347,15 +5379,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     
                     # Branch-specific guidance for non-strict mode
                     guidance = (
-                        "Branch node (ancestor of frontier leaves). NON-STRICT mode choices:\n"
-                        "  • 'reserve_branch_for_children' (alias: 'engulf_shell_in_gemstorm') → "
-                        "Bring this branch into GEM as shell. You can edit name/note and add new children. "
-                        "Existing children stay in ETHER unless explicitly engulfed separately.\n"
-                        "  • 'spare_subtree_from_storm' → Spare this branch. Smart logic: spares non-engulfed "
-                        "descendants, structurally includes branches with engulfed descendants.\n"
-                        "  • 'engulf_all_remaining_showing_descendants' / 'spare_all_remaining_showing_descendants' → "
-                        "When used from this branch handle, act on all currently showing descendant leaves "
-                        "in the frontier (bulk ENGULF/SPARE for this step)."
+                        "Branch (ancestor of leaves). NON-STRICT: RB=reserve shell (edit parent+add children) | "
+                        "ST=spare subtree (smart: spares non-engulfed, includes engulfed branches) | "
+                        "EA/SR=bulk engulf/spare showing descendants"
                     )
 
                     frontier.append(
@@ -5390,19 +5416,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # Leaf-specific guidance (same for both modes)
                 if exploration_mode == "dfs_full_walk":
                     guidance = (
-                        "Leaf node. STRICT DFS step: decide explicitly with 'engulf_leaf_in_gemstorm' "
-                        "or 'spare_leaf_from_storm'. Branch-level 'engulf_shell_in_gemstorm' / 'spare_subtree_from_storm' "
-                        "is reserved for later when all descendants are decided. For batch decisions on the "
-                        "current showing leaves under a branch, you may use 'engulf_all_remaining_showing_descendants' / "
-                        "'spare_all_remaining_showing_descendants' (aliases for frontier bulk ENGULF/SPARE for this step)."
+                        "Leaf. STRICT DFS: EL=engulf | SL=spare. Branch ES/ST reserved for after descendants decided. "
+                        "Bulk: EA/SR=engulf/spare showing descendants under branch."
                     )
                 else:  # dfs_guided
-                    guidance = (
-                        "Leaf node. Decide with 'engulf_leaf_in_gemstorm' or 'spare_leaf_from_storm'. For batch "
-                        "decisions on the current showing leaves under a branch, you may use "
-                        "'engulf_all_remaining_showing_descendants' / 'spare_all_remaining_showing_descendants' (aliases for frontier bulk "
-                        "ENGULF/SPARE for this step)."
-                    )
+                    guidance = "Leaf. EL=engulf | SL=spare. Bulk: EA/SR=engulf/spare showing descendants."
 
                 frontier.append(
                     {
@@ -5478,17 +5496,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                     is_leaf = len(grandchild_handles) == 0
                     if is_leaf:
-                        guidance = (
-                            "Leaf node. Prefer making decisions here: use "
-                            "'engulf_leaf_in_gemstorm' or 'spare_leaf_from_storm'. Backtrack or close "
-                            "an entire branch only after you've inspected its leaves."
-                        )
+                        guidance = "Leaf. EL=engulf | SL=spare. BT/CL branch only after inspecting leaves."
                     else:
-                        guidance = (
-                            "Branch node. Consider 'open' to explore children; "
-                            "use 'engulf_shell_in_gemstorm' sparingly. Exploring down to "
-                            "leaves yields smaller, more targeted phantom gems."
-                        )
+                        guidance = "Branch. OP=explore children | ES=engulf shell (use sparingly). Leaf decisions = smaller gems."
                     local_hints = child_meta.get("hints") or []
                     hints_from_ancestors = _collect_hints_from_ancestors(child_handle)
 
@@ -5726,6 +5736,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "success": True,
             "session_id": session_id,
             "nexus_tag": nexus_tag,
+            "action_key": EXPLORATION_ACTION_2LETTER,
             "root_handle": "R",
             "root_summary": root_summary,
             "frontier": frontier,
@@ -5870,6 +5881,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "session_id": session_id,
                 "nexus_tag": session.get("nexus_tag"),
                 "status": "in_progress",
+                "action_key": EXPLORATION_ACTION_2LETTER,
                 "walks": [],  # Strict DFS: no per-ray walks; see top-level frontier.
                 "skipped_walks": [],
                 "decisions_applied": decisions,
@@ -6055,6 +6067,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         return {
             "success": True,
             "session_id": session_id,
+            "action_key": EXPLORATION_ACTION_2LETTER,
             "walks": walk_results,
             "skipped_walks": [
                 {
@@ -6363,6 +6376,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # Apply actions
         actions = actions or []
+        
+        # 2-LETTER ACTION CODE EXPANDER: Translate shorthand to full action names
+        # This runs FIRST so aliases can also use 2-letter codes
+        for action in actions:
+            act = action.get("action")
+            if act in EXPLORATION_ACTION_2LETTER:
+                action["action"] = EXPLORATION_ACTION_2LETTER[act]
         
         # ACTION ALIAS MAPPER: Translate human-friendly aliases to machine actions
         ACTION_ALIASES = {
@@ -7190,16 +7210,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         result: dict[str, Any] = {
             "success": True,
             "session_id": session_id,
+            "action_key": EXPLORATION_ACTION_2LETTER,
             "frontier": frontier,
             "scratchpad": session.get("scratchpad", ""),
             "guidance": (
-                "Leaf-first exploration is encouraged. Open branches to reach leaves; "
-                "make decisions with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm' where possible. "
-                "Use 'engulf_shell_in_gemstorm' sparingly for whole branches, and 'reopen_branch' "
-                "if you need to reconsider a decided branch. For bulk operations on the current frontier "
-                "you may use 'engulf_all_remaining_showing_descendants' / 'spare_all_remaining_showing_descendants' (aliases for "
-                "'engulf_frontier_descendants_in_gemstorm' / 'spare_frontier_descendants_from_storm') and, "
-                "as a last resort in non-strict mode, 'spare_all_remaining' to spare all undecided nodes."
+                "Leaf-first encouraged. OP=open branches to reach leaves; EL/SL=engulf/spare leaves. "
+                "ES=engulf shell (sparingly). RP=reopen_branch if reconsidering. "
+                "Bulk: EA/SR=engulf/spare showing descendants. Non-strict: SA=spare all remaining."
             ),
         }
         if history_summary is not None:
