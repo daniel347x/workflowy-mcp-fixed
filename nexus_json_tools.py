@@ -223,7 +223,84 @@ def transform_jewel(
                 existing_ids.add(candidate)
                 return candidate
 
+    def _resolve_to_jewel_id(identifier: str) -> str:
+        """Auto-resolve Workflowy UUID to jewel_id if needed.
+        
+        If identifier looks like a Workflowy UUID (standard UUID format, not J-NNN),
+        search the tree for a node with that id and return its jewel_id.
+        
+        If identifier is already a jewel_id (J-NNN format), return as-is.
+        
+        Args:
+            identifier: Either a jewel_id (J-NNN) or Workflowy UUID
+            
+        Returns:
+            jewel_id to use for the operation
+            
+        Raises:
+            ValueError: If UUID not found in tree
+        """
+        import re
+        
+        # Check if it's a standard UUID format (8-4-4-4-12 hex pattern)
+        uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+        
+        if uuid_pattern.match(identifier):
+            # It's a Workflowy UUID - search for node with this id
+            for jewel_id, node in by_jewel_id.items():
+                if node.get("id") == identifier:
+                    return jewel_id
+            # Not found
+            raise ValueError(
+                f"Node with Workflowy UUID '{identifier}' not found in GEM. "
+                "(Auto-resolved from jewel_id parameter - agent can use Workflowy UUIDs directly)"
+            )
+        else:
+            # Already a jewel_id (J-NNN format) or other format - return as-is
+            return identifier
+
+
+    def _resolve_to_jewel_id(identifier: str) -> str:
+        """Auto-resolve Workflowy UUID to jewel_id if needed.
+        
+        If identifier looks like a Workflowy UUID (standard UUID format, not J-NNN),
+        search the tree for a node with that id and return its jewel_id.
+        
+        If identifier is already a jewel_id (J-NNN format), return as-is.
+        
+        Args:
+            identifier: Either a jewel_id (J-NNN) or Workflowy UUID
+            
+        Returns:
+            jewel_id to use for the operation
+            
+        Raises:
+            ValueError: If UUID not found in tree
+        """
+        import re
+        
+        # Check if it's a standard UUID format (8-4-4-4-12 hex pattern)
+        uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+        
+        if uuid_pattern.match(identifier):
+            # It's a Workflowy UUID - search for node with this id
+            for jewel_id, node in by_jewel_id.items():
+                if node.get("id") == identifier:
+                    return jewel_id
+            # Not found
+            raise ValueError(
+                f"Node with Workflowy UUID '{identifier}' not found in GEM. "
+                "(Auto-resolved from jewel_id parameter - agent can use Workflowy UUIDs directly)"
+            )
+        else:
+            # Already a jewel_id (J-NNN format) or other format - return as-is
+            return identifier
+
+
     def _get_node_and_parent_list(jewel_id: str) -> Tuple[JsonDict, Optional[str], List[JsonDict]]:
+        # Auto-resolve Workflowy UUID to jewel_id if needed
+        jewel_id = _resolve_to_jewel_id(jewel_id)
+        
         node = by_jewel_id.get(jewel_id)
         if node is None:
             raise ValueError(f"Node with jewel_id/id {jewel_id!r} not found")
@@ -361,6 +438,33 @@ def transform_jewel(
 
         op_type = str(op_type_raw).upper()
 
+        # VALIDATION: Reject unknown fields in operation to prevent hallucinations
+        VALID_FIELDS_BY_OP = {
+            "MOVE_NODE": {"op", "operation", "jewel_id", "new_parent_jewel_id", "position", "relative_to_jewel_id"},
+            "DELETE_NODE": {"op", "operation", "jewel_id", "delete_from_ether", "mode"},
+            "DELETE_ALL_CHILDREN": {"op", "operation", "jewel_id", "delete_from_ether", "mode"},
+            "RENAME_NODE": {"op", "operation", "jewel_id", "new_name"},
+            "SET_NOTE": {"op", "operation", "jewel_id", "new_note"},
+            "SET_ATTRS": {"op", "operation", "jewel_id", "attrs"},
+            "CREATE_NODE": {"op", "operation", "parent_jewel_id", "position", "relative_to_jewel_id", "name", "note", "attrs", "data", "jewel_id", "children", "node"},
+            "SET_ATTRS_BY_PATH": {"op", "operation", "path", "attrs"},
+        }
+        
+        valid_fields = VALID_FIELDS_BY_OP.get(op_type)
+        if valid_fields:
+            unknown_fields = set(op.keys()) - valid_fields
+            if unknown_fields:
+                err = {
+                    "index": idx,
+                    "op": op,
+                    "code": "UNKNOWN_FIELDS",
+                    "message": f"Operation '{op_type}' contains unknown field(s): {sorted(unknown_fields)}. Valid fields: {sorted(valid_fields)}",
+                }
+                errors.append(err)
+                if stop_on_error:
+                    break
+                continue
+
         try:
             # MOVE_NODE
             if op_type == "MOVE_NODE":
@@ -375,7 +479,21 @@ def transform_jewel(
                 if position == "TOP":
                     position = "FIRST"
                 rel_jid = op.get("relative_to_jewel_id")
+                if rel_jid:
+                    rel_jid = _resolve_to_jewel_id(rel_jid)
                 new_parent_jid = op.get("new_parent_jewel_id")
+
+                # VALIDATION: MOVE_NODE must have valid parent target
+                # Three valid cases:
+                #   1. new_parent_jewel_id provided and exists in tree
+                #   2. position BEFORE/AFTER with relative_to_jewel_id (parent inferred)
+                #   3. Neither provided → REJECT (ambiguous root move)
+                if new_parent_jid is None and not rel_jid:
+                    raise ValueError(
+                        "MOVE_NODE requires either 'new_parent_jewel_id' or 'relative_to_jewel_id' (for BEFORE/AFTER). "
+                        "Cannot move node without specifying where to place it. "
+                        "To move to GEM root, explicitly provide the root jewel_id as new_parent_jewel_id."
+                    )
 
                 if position in {"BEFORE", "AFTER"}:
                     if not rel_jid:
@@ -387,15 +505,12 @@ def transform_jewel(
                     target_parent_jid = rel_parent_jid
                     target_list = rel_siblings
                 else:
-                    # FIRST/LAST under explicit parent (or root when parent None)
+                    # FIRST/LAST under explicit parent
                     target_parent_jid = new_parent_jid
-                    if new_parent_jid is None:
-                        target_list = roots
-                    else:
-                        parent_node = by_jewel_id.get(new_parent_jid)
-                        if parent_node is None:
-                            raise ValueError(f"New parent jewel_id/id {new_parent_jid!r} not found")
-                        target_list = _ensure_children_list(parent_node)
+                    parent_node = by_jewel_id.get(new_parent_jid)
+                    if parent_node is None:
+                        raise ValueError(f"MOVE_NODE new_parent_jewel_id {new_parent_jid!r} not found in tree")
+                    target_list = _ensure_children_list(parent_node)
 
                 # Cycle check
                 _assert_no_cycle(src_jid, target_parent_jid)
@@ -596,14 +711,29 @@ def transform_jewel(
                 if position == "TOP":
                     position = "FIRST"
                 rel_jid = op.get("relative_to_jewel_id")
+                if rel_jid:
+                    rel_jid = _resolve_to_jewel_id(rel_jid)
+
+                # VALIDATION: CREATE_NODE must have valid parent
+                # Three valid cases:
+                #   1. parent_jewel_id provided and exists in tree
+                #   2. position BEFORE/AFTER with relative_to_jewel_id (parent inferred)
+                #   3. Neither provided → REJECT (ambiguous root creation)
+                if parent_jid is None and not rel_jid:
+                    raise ValueError(
+                        "CREATE_NODE requires either 'parent_jewel_id' or 'relative_to_jewel_id' (for BEFORE/AFTER). "
+                        "Cannot create node without specifying where to place it. "
+                        "To create at GEM root, use parent_jewel_id='R' or provide the root jewel_id explicitly."
+                    )
 
                 if parent_jid is None:
-                    parent_children = roots
-                    target_parent_jid = None
+                    # BEFORE/AFTER mode - parent inferred from relative node
+                    parent_children = roots  # Will be overridden below when resolving relative
+                    target_parent_jid = None  # Will be set from relative node's parent
                 else:
                     parent_node = by_jewel_id.get(parent_jid)
                     if parent_node is None:
-                        raise ValueError(f"CREATE_NODE parent_jewel_id {parent_jid!r} not found")
+                        raise ValueError(f"CREATE_NODE parent_jewel_id {parent_jid!r} not found in tree")
                     parent_children = _ensure_children_list(parent_node)
                     target_parent_jid = parent_jid
 
