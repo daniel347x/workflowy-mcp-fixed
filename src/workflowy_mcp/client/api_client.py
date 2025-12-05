@@ -299,113 +299,34 @@ class WorkFlowyClient:
 
     @staticmethod
     def _validate_note_field(note: str | None, skip_newline_check: bool = False) -> tuple[str | None, str | None]:
-        """Validate and auto-escape note field for Workflowy compatibility.
+        """Validate note field for Workflowy compatibility.
         
-        Handles:
-        1. HTML special characters (auto-escape to HTML entities)
-           - & → &amp;
-           - < → &lt;
-           - > → &gt;
-        
-        REMOVED: Literal backslash-n validation (moved to MCP connector level)
+        HTML entity escaping removed as of Dec 2025 - Workflowy API updated.
+        Function kept as pass-through for compatibility.
         
         Args:
-            note: Note content to validate/escape
-            skip_newline_check: DEPRECATED - check removed, parameter kept for compatibility
+            note: Note content
+            skip_newline_check: DEPRECATED - kept for compatibility
             
         Returns:
-            (processed_note, warning_message)
-            - processed_note: Escaped/fixed note
-            - warning_message: Info message if changes made
+            (note, None) - no modifications applied
         """
-        if note is None:
-            return (None, None)
-        
-        # Check for override token (for documentation that needs literal sequences)
-        OVERRIDE_TOKEN = "<<<LITERAL_BACKSLASH_N_INTENTIONAL>>>"
-        if note.startswith(OVERRIDE_TOKEN):
-            # Strip token and return as-is
-            return (note, None)  # Caller strips token before API call
-        
-        # AUTO-ESCAPE HTML SPECIAL CHARACTERS
-        # Workflowy /nodes-export returns HTML-escaped text; we must send the same.
-        # Order matters: & first (so we don't double-escape &lt; → &amp;lt;)
-        escaped_note = note
-        entities_escaped = False
-        
-        if '&' in note:
-            escaped_note = escaped_note.replace('&', '&amp;')
-            entities_escaped = True
-        if '<' in escaped_note:
-            escaped_note = escaped_note.replace('<', '&lt;')
-            entities_escaped = True
-        if '>' in escaped_note:
-            escaped_note = escaped_note.replace('>', '&gt;')
-            entities_escaped = True
-        
-        # Return processed note with optional warning
-        if entities_escaped:
-            warning_msg = """✅ AUTO-ESCAPED: HTML special characters converted to entities
-
-🐛 WORKFLOWY BEHAVIOR: The API requires HTML entity escaping for special characters.
-
-⚙️ AUTO-FIX APPLIED:
-   & → &amp;
-   < → &lt;
-   > → &gt;
-   
-   This matches how Workflowy stores and returns text.
-   Your note will display correctly.
-
-📖 Bug documentation: SATCHEL VYRTHEX in Deployment Documentation Validation ARC
-"""
-            return (escaped_note, warning_msg)
-        
-        return (escaped_note, None)
+        return (note, None)
     
     @staticmethod
     def _validate_name_field(name: str | None) -> tuple[str | None, str | None]:
-        """Validate and auto-escape name field for Workflowy compatibility.
+        """Validate name field for Workflowy compatibility.
         
-        Handles:
-        1. HTML special characters (auto-escape to HTML entities)
-           - & → &amp;
-           - < → &lt;
-           - > → &gt;
+        HTML entity escaping removed as of Dec 2025 - Workflowy API updated.
+        Function kept as pass-through for compatibility.
         
         Args:
-            name: Node name to validate/escape
+            name: Node name
             
         Returns:
-            (processed_name, warning_message)
-            - processed_name: Escaped/fixed name
-            - warning_message: Info message if changes made
+            (name, None) - no modifications applied
         """
-        if name is None:
-            return (None, None)
-        
-        # AUTO-ESCAPE HTML SPECIAL CHARACTERS
-        # Workflowy /nodes-export returns HTML-escaped text; we must send the same.
-        # Order matters: & first (so we don't double-escape &lt; → &amp;lt;)
-        escaped_name = name
-        entities_escaped = False
-        
-        if '&' in name:
-            escaped_name = escaped_name.replace('&', '&amp;')
-            entities_escaped = True
-        if '<' in escaped_name:
-            escaped_name = escaped_name.replace('<', '&lt;')
-            entities_escaped = True
-        if '>' in escaped_name:
-            escaped_name = escaped_name.replace('>', '&gt;')
-            entities_escaped = True
-        
-        # Return processed name with optional warning
-        if entities_escaped:
-            warning_msg = "✅ AUTO-ESCAPED: HTML special characters in node name converted to entities (& < >)"
-            return (escaped_name, warning_msg)
-        
-        return (escaped_name, None)
+        return (name, None)
 
     @property
     def client(self) -> httpx.AsyncClient:
