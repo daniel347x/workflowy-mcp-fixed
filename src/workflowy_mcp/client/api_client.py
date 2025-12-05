@@ -6223,6 +6223,35 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # Apply actions
         actions = actions or []
+        
+        # Sort actions for correct execution order:
+        # 1. ENGULF actions first, then SPARE actions, then OTHER
+        # 2. Within each category, LEAFMOST first (deepest handles first)
+        def action_sort_key(action: dict[str, Any]) -> tuple[int, int]:
+            """Sort key: (category_priority, depth_priority).
+            
+            Category: ENGULF (0) before SPARE (1) before OTHER (2)
+            Depth: Leafmost first (negative depth, so deeper = lower number = earlier)
+            """
+            act = action.get("action", "")
+            handle = action.get("handle", "")
+            
+            # Category priority
+            if act in {"engulf_leaf_in_gemstorm", "engulf_shell_in_gemstorm"}:
+                category = 0  # ENGULF first
+            elif act in {"spare_leaf_from_storm", "spare_subtree_from_storm"}:
+                category = 1  # SPARE second
+            else:
+                category = 2  # Other actions last (open, close, etc.)
+            
+            # Depth priority: count dots in handle (A.B.C.D has 3 dots = depth 4)
+            # Negate so deeper handles sort first
+            depth = -handle.count(".")
+            
+            return (category, depth)
+        
+        actions.sort(key=action_sort_key)
+        
         peek_results: list[dict[str, Any]] = []
         for action in actions:
             act = action.get("action")
