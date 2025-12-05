@@ -6226,18 +6226,54 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         peek_results: list[dict[str, Any]] = []
         for action in actions:
             act = action.get("action")
-            # Scratchpad actions do not require a handle and can be applied at any time.
-            if act in {"set_scratchpad", "append_scratchpad"}:
-                content = action.get("content") or ""
-                existing = session.get("scratchpad") or ""
-                if act == "set_scratchpad":
-                    session["scratchpad"] = content
-                else:
-                    if existing:
-                        session["scratchpad"] = existing + "\n" + content
-                    else:
+            
+            # Handle-less global actions
+            if act in {"set_scratchpad", "append_scratchpad", "spare_all_remaining"}:
+                if act == "spare_all_remaining":
+                    # NON-STRICT MODE ONLY: Spare all remaining undecided nodes
+                    if exploration_mode != "dfs_guided":
+                        raise NetworkError(
+                            "spare_all_remaining action is only available in non-strict mode (dfs_guided).\n\n"
+                            "In strict DFS mode, you must explicitly decide every leaf."
+                        )
+                    
+                    spared_count = 0
+                    structurally_included = []
+                    
+                    for h in handles:
+                        h_state = state.get(h, {})
+                        h_status = h_state.get("status")
+                        
+                        if h_status in ("unseen", "candidate", "open"):
+                            # Check if this handle or any descendant is engulfed
+                            h_summary = _summarize_descendants(h)
+                            if h_summary["accepted_leaf_count"] > 0:
+                                # Has engulfed descendants - will be structurally included
+                                structurally_included.append(h)
+                            else:
+                                # No engulfed descendants - spare this node
+                                state.setdefault(h, {})["status"] = "closed"
+                                state[h]["selection_type"] = "subtree"
+                                spared_count += 1
+                    
+                    logger.info(
+                        f"spare_all_remaining: {spared_count} nodes spared, "
+                        f"{len(structurally_included)} branches with engulfed descendants will be structurally included"
+                    )
+                    continue
+                
+                # Scratchpad actions
+                if act in {"set_scratchpad", "append_scratchpad"}:
+                    content = action.get("content") or ""
+                    existing = session.get("scratchpad") or ""
+                    if act == "set_scratchpad":
                         session["scratchpad"] = content
-                continue
+                    else:
+                        if existing:
+                            session["scratchpad"] = existing + "\n" + content
+                        else:
+                            session["scratchpad"] = content
+                    continue
 
             handle = action.get("handle")
             max_depth = action.get("max_depth")
@@ -6257,7 +6293,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # apply only to the current DFS focus handle. This keeps navigation
             # deterministic and brain-dead simple for agents: one node at a
             # time.
-            if exploration_mode in {"dfs_guided", "dfs_full_walk"} and act not in {"reopen_branch", "add_hint", "peek_descendants"}:
+            # In non-strict mode, allow spare actions outside frontier for cleanup
+            spare_actions_allowed_outside_frontier = {"spare_leaf_from_storm", "spare_subtree_from_storm"} if exploration_mode == "dfs_guided" else set()
+            
+            if exploration_mode in {"dfs_guided", "dfs_full_walk"} and act not in ({"reopen_branch", "add_hint", "peek_descendants"} | spare_actions_allowed_outside_frontier):
                 # Recompute current DFS frontier based on the *current* state
                 # before applying this action. Any handle in the current
                 # leaf-chunk frontier is a valid focus for decisions in this
@@ -6551,7 +6590,45 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         )
                     raise NetworkError(base_msg)
 
-                if has_decided and has_undecided:
+                # NON-STRICT MODE: Smart spare logic
+                if exploration_mode == "dfs_guided":
+                    # In non-strict, allow spare_subtree even with mixed/engulfed descendants
+                    # by smartly sparing only non-engulfed nodes and structurally including
+                    # branches that have engulfed descendants
+                    
+                    spared_count = 0
+                    structurally_included = []
+                    
+                    for h in handles:
+                        if not (h.startswith(handle + ".")):
+                            continue  # Not a descendant
+                        
+                        h_state = state.get(h, {})
+                        h_status = h_state.get("status")
+                        
+                        if h_status == "finalized":
+                            # Already engulfed - will be structurally included by ancestor logic
+                            continue
+                        elif h_status in ("unseen", "candidate", "open"):
+                            # Check if this is a branch with engulfed descendants
+                            h_summary = _summarize_descendants(h)
+                            if h_summary["accepted_leaf_count"] > 0:
+                                # Branch has engulfed descendants - will be structurally included
+                                structurally_included.append(h)
+                            else:
+                                # No engulfed descendants - spare this node
+                                state.setdefault(h, {})["status"] = "closed"
+                                state[h]["selection_type"] = "subtree"
+                                spared_count += 1
+                    
+                    # Log what happened for agent visibility
+                    logger.info(
+                        f"Smart spare on '{handle}': {spared_count} nodes spared, "
+                        f"{len(structurally_included)} branches structurally included (have engulfed descendants)"
+                    )
+                
+                # STRICT MODE: Enforce all-decided requirement
+                elif has_decided and has_undecided:
                     session["handles"] = handles
                     session["state"] = state
                     current_frontier = self._compute_exploration_frontier(
@@ -6578,9 +6655,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         )
                     raise NetworkError(base_msg)
 
-                # All descendants decided but some leaves accepted – do not allow
-                # a branch-wide reject that silently overrides positive decisions.
-                if has_decided and not has_undecided and accepted_leaves > 0:
+                # STRICT MODE: All descendants decided but some leaves accepted
+                elif has_decided and not has_undecided and accepted_leaves > 0:
                     raise NetworkError(
                         f"Cannot spare_subtree_from_storm on branch '{handle}' because one or more leaves "
                         "under this branch have already been engulfed in the GEMSTORM. "
@@ -6988,6 +7064,20 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             more_note = "" if len(uncovered_handles) <= 50 else f"\n…and {len(uncovered_handles) - 50} more handles."  # noqa: E501
 
+            # Check exploration mode for smart spare suggestion
+            exploration_mode = session.get("exploration_mode", "manual")
+            spare_all_hint = ""
+            if exploration_mode == "dfs_guided":
+                spare_all_hint = (
+                    "\n\n💡 NON-STRICT MODE SHORTCUT:\n"
+                    "To spare all remaining undecided nodes (with smart handling of engulfed descendants):\n"
+                    "  nexus_explore_step(session_id, decisions=[{'action': 'spare_all_remaining'}])\n"
+                    "\nThis will:\n"
+                    "  • Spare all non-engulfed descendants\n"
+                    "  • Structurally include branches with engulfed descendants\n"
+                    "  • Then you can finalize successfully"
+                )
+
             raise NetworkError(
                 "Incomplete exploration detected during nexus_finalize_exploration.\n\n"
                 "You attempted to finalize without accounting for all branches.\n\n"
@@ -6997,8 +7087,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 + more_note
                 + "\n\nTo proceed safely, either:\n"
                 "• Visit these handles and decide with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm', OR\n"
-                "• Use 'engulf_shell_in_gemstorm' / 'spare_subtree_from_storm' on an ancestor branch to cover them.\n\n"
-                "Once every handle is accounted for, nexus_finalize_exploration will succeed "
+                "• Use 'engulf_shell_in_gemstorm' / 'spare_subtree_from_storm' on an ancestor branch to cover them."
+                + spare_all_hint
+                + "\n\nOnce every handle is accounted for, nexus_finalize_exploration will succeed "
                 "and the phantom gem will be a true minimal covering tree."
             )
 
