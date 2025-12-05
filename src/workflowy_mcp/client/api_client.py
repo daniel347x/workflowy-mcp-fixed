@@ -5404,6 +5404,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         from datetime import datetime
         import os
         import glob
+        from pathlib import Path
 
         logger = _ClientLogger()
 
