@@ -6225,22 +6225,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # but require all other decisions to target a handle that is
                 # currently in the strict DFS leaf frontier.
                 if allowed_handles and handle not in allowed_handles:
-                    meta = handles.get(current_handle, {}) or {}
-                    current_name = meta.get("name", "Untitled")
                     raise NetworkError(
-                        "DFS-guided exploration is currently focused on handle "
-                        f"'{current_handle}' ({current_name!r}).\n\n"
-                        f"You attempted to apply '{act}' to handle '{handle}', which "
-                        "would violate the depth-first traversal order.\n\n"
-                        "To proceed safely, either:\n"
-                        "• Make a decision about the current handle using one of:\n"
-                        "  - 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm' (for leaves)\n"
-                        "  - 'engulf_shell_in_gemstorm' / 'spare_subtree_from_storm' (for whole branches),\n"
-                        "  - 'backtrack' (close this branch without including it), or\n"
-                        "• Use 'reopen_branch' on a previously decided branch that you\n"
-                        "  intentionally want to revisit.\n\n"
-                        "This keeps NEXUS exploration deterministic and ensures minimal,\n"
-                        "reproducible phantom gems across conversations."
+                        "Strict DFS exploration only allows decisions on the current leaf frontier.\\n\\n"
+                        f"You attempted to apply '{act}' to handle '{handle}', which is not in the current "
+                        "leaf-chunk frontier. Decide on one of the frontier handles instead, or refresh the "
+                        "frontier and try again.\\n\\n"
+                        f"Current leaf frontier: {sorted(list(allowed_handles))}"
                     )
 
             if handle not in state:
