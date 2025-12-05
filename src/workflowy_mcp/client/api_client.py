@@ -6273,7 +6273,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         h_state = state.get(h, {})
                         h_status = h_state.get("status")
                         
-                        if h_status in ("unseen", "candidate", "open"):
+                        # Treat missing status as undecided (same as "unseen")
+                        if h_status in ("unseen", "candidate", "open", None):
                             # Check if this handle or any descendant is engulfed
                             h_summary = _summarize_descendants(h)
                             if h_summary["accepted_leaf_count"] > 0:
