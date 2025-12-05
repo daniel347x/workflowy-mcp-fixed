@@ -4589,6 +4589,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         if original_ids_seen:
             coarse_data["original_ids_seen"] = sorted({str(nid) for nid in original_ids_seen})
 
+        # Merge explicitly_spared_ids from TERRAIN and GEM (if present).
+        explicitly_spared_ids: set[str] = set(coarse_data.get("explicitly_spared_ids", []) or [])
+        explicitly_spared_ids.update(phantom_data.get("explicitly_spared_ids", []) or [])
+        if explicitly_spared_ids:
+            coarse_data["explicitly_spared_ids"] = sorted({str(nid) for nid in explicitly_spared_ids})
+
         # Write shimmering terrain out; header from coarse_terrain is preserved.
         coarse_data["nodes"] = terrain_nodes
         try:
@@ -6833,6 +6839,46 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         index_tree(root_node, None)
 
+        # Compute explicitly_spared_ids: nodes explicitly spared from GEMSTORM.
+        explicitly_spared_ids: set[str] = set()
+        spared_subtree_root_ids: set[str] = set()
+
+        for handle_key, st in state.items():
+            # Skip synthetic root handle
+            if handle_key == "R":
+                continue
+            status = st.get("status")
+            if status != "closed":
+                continue
+            meta = handles.get(handle_key) or {}
+            node_id_for_handle = meta.get("id")
+            if not node_id_for_handle:
+                continue
+            child_handles = handles.get(handle_key, {}).get("children", []) or []
+            if child_handles and st.get("selection_type") == "subtree":
+                # Branch-level spare_subtree_from_storm: protect entire subtree
+                spared_subtree_root_ids.add(node_id_for_handle)
+            else:
+                # Leaf-level spare or closed singleton: protect just this node
+                explicitly_spared_ids.add(node_id_for_handle)
+
+        # Expand spared subtrees to include all descendants under each spared root.
+        for spared_root_id in spared_subtree_root_ids:
+            if spared_root_id not in node_by_id:
+                logger.warning(
+                    f"nexus_finalize_exploration: spared subtree root id {spared_root_id} "
+                    "not found in cached tree; skipping descendant expansion."
+                )
+                continue
+            stack_ids: list[str] = [spared_root_id]
+            while stack_ids:
+                cur_id = stack_ids.pop()
+                if cur_id in explicitly_spared_ids:
+                    continue
+                explicitly_spared_ids.add(cur_id)
+                for child_id in children_by_id.get(cur_id, []):
+                    stack_ids.append(child_id)
+
         # Build original_ids_seen ledger from the cached exploration tree: all
         # node IDs reachable under the exploration root (before any pruning).
         original_ids_seen: set[str] = set(node_by_id.keys())
@@ -7111,6 +7157,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "export_root_id": root_explore_id,
             "export_root_name": root_node.get("name", "Root"),
             "original_ids_seen": sorted(original_ids_seen),
+            "explicitly_spared_ids": sorted(explicitly_spared_ids),
             "nodes": gem_nodes,
             "scratchpad": scratchpad_text,
             "hints": hints_export,
@@ -7164,6 +7211,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "export_root_name": export_root_name,
                     "export_timestamp": export_timestamp,
                     "original_ids_seen": sorted(original_ids_seen),
+                    "explicitly_spared_ids": sorted(explicitly_spared_ids),
                     "nodes": root_children,
                 }
                 with open(coarse_path, "w", encoding="utf-8") as f:
