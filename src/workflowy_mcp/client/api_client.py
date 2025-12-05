@@ -299,34 +299,129 @@ class WorkFlowyClient:
 
     @staticmethod
     def _validate_note_field(note: str | None, skip_newline_check: bool = False) -> tuple[str | None, str | None]:
-        """Validate note field for Workflowy compatibility.
+        """Validate and smart-escape note field for Workflowy compatibility.
         
-        HTML entity escaping removed as of Dec 2025 - Workflowy API updated.
-        Function kept as pass-through for compatibility.
+        Workflowy GUI rendering (Dec 2025):
+        - Valid XML tags (<code>, <foo>, etc.) render correctly (hidden as HTML)
+        - Bare/unpaired brackets (< or >) cause content to vanish
+        
+        Smart escaping:
+        - Preserves valid XML tags: <alphanumeric-only>
+        - Escapes bare brackets and & that would break rendering
         
         Args:
-            note: Note content
+            note: Note content to validate/escape
             skip_newline_check: DEPRECATED - kept for compatibility
             
         Returns:
-            (note, None) - no modifications applied
+            (processed_note, warning_message)
         """
-        return (note, None)
+        if note is None:
+            return (None, None)
+        
+        import re
+        
+        # Escape & first (before bracket processing to avoid double-escape)
+        escaped = note.replace('&', '&amp;')
+        
+        # Smart bracket escaping: preserve valid XML tags, escape bare brackets
+        # Valid XML tag pattern: <alphanumeric-only> (no spaces, only letters/numbers/hyphens/underscores)
+        # Strategy: Find all < and > characters, check if they're part of valid tags
+        
+        # Pattern: <valid_tag_name> or </valid_tag_name>
+        # valid_tag_name = one or more alphanumeric/hyphen/underscore characters
+        xml_tag_pattern = re.compile(r'</?[a-zA-Z0-9_-]+>')
+        
+        # Find all valid XML tag positions to preserve them
+        valid_tags = [(m.start(), m.end()) for m in xml_tag_pattern.finditer(escaped)]
+        
+        # Build result character by character, escaping < > outside valid tag ranges
+        result = []
+        i = 0
+        entities_escaped = ('&' in note)  # Track if we made changes
+        
+        while i < len(escaped):
+            char = escaped[i]
+            
+            # Check if current position is inside a valid XML tag
+            inside_tag = any(start <= i < end for start, end in valid_tags)
+            
+            if char == '<' and not inside_tag:
+                result.append('&lt;')
+                entities_escaped = True
+            elif char == '>' and not inside_tag:
+                result.append('&gt;')
+                entities_escaped = True
+            else:
+                result.append(char)
+            
+            i += 1
+        
+        escaped_note = ''.join(result)
+        
+        if entities_escaped:
+            return (escaped_note, "✅ SMART-ESCAPED: Preserved XML tags, escaped bare brackets (& < >)")
+        
+        return (escaped_note, None)
     
     @staticmethod
     def _validate_name_field(name: str | None) -> tuple[str | None, str | None]:
-        """Validate name field for Workflowy compatibility.
+        """Validate and smart-escape name field for Workflowy compatibility.
         
-        HTML entity escaping removed as of Dec 2025 - Workflowy API updated.
-        Function kept as pass-through for compatibility.
+        Workflowy NAME field behavior (Dec 2025):
+        - API decodes entities ONCE on input before storage
+        - GUI decodes entities AGAIN when rendering
+        - Result: Must DOUBLE-ENCODE for proper display
+        
+        Valid XML tags (<code>, <foo>) preserved (not escaped).
+        Bare brackets DOUBLE-ENCODED: < → &amp;lt; (API decodes to &lt;, GUI shows <)
         
         Args:
-            name: Node name
+            name: Node name to validate/escape
             
         Returns:
-            (name, None) - no modifications applied
+            (processed_name, warning_message)
         """
-        return (name, None)
+        if name is None:
+            return (None, None)
+        
+        import re
+        
+        # DOUBLE-ENCODE & first: & → &amp;amp;
+        # (API decodes to &amp;, GUI decodes to &)
+        escaped = name.replace('&', '&amp;amp;')
+        
+        # Find valid XML tags to preserve
+        xml_tag_pattern = re.compile(r'</?[a-zA-Z0-9_-]+>')
+        
+        # Must search in ORIGINAL (before & encoding) to find tag positions correctly
+        valid_tags_in_original = [(m.start(), m.end()) for m in xml_tag_pattern.finditer(name)]
+        
+        # Build result from original, applying double-encoding for bare brackets
+        result = []
+        i = 0
+        entities_escaped = ('&' in name)
+        
+        for j, char in enumerate(name):
+            inside_tag = any(start <= j < end for start, end in valid_tags_in_original)
+            
+            if char == '&':
+                result.append('&amp;amp;')  # Already handled, consistent with escaped var
+            elif char == '<' and not inside_tag:
+                result.append('&amp;lt;')  # DOUBLE-ENCODE
+                entities_escaped = True
+            elif char == '>' and not inside_tag:
+                result.append('&amp;gt;')  # DOUBLE-ENCODE
+                entities_escaped = True
+            else:
+                result.append(char)
+        
+        escaped_name = ''.join(result)
+        
+        if entities_escaped:
+            return (escaped_name, "✅ SMART-ESCAPED NAME: Double-encoded bare brackets, preserved XML tags")
+        
+        return (escaped_name, None)
 
     @property
     def client(self) -> httpx.AsyncClient:
