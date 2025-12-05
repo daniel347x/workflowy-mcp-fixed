@@ -5323,11 +5323,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     # Branch-specific guidance for non-strict mode
                     guidance = (
                         "Branch node (ancestor of frontier leaves). NON-STRICT mode choices:\n"
-                        "  • 'reserve_branch_for_children' (alias: engulf_shell_in_gemstorm) → "
+                        "  • 'reserve_branch_for_children' (alias: 'engulf_shell_in_gemstorm') → "
                         "Bring this branch into GEM as shell. You can edit name/note and add new children. "
-                        "Existing children stay in ETHER unless explicitly engulfed.\n"
+                        "Existing children stay in ETHER unless explicitly engulfed separately.\n"
                         "  • 'spare_subtree_from_storm' → Spare this branch. Smart logic: spares non-engulfed "
-                        "descendants, structurally includes branches with engulfed descendants."
+                        "descendants, structurally includes branches with engulfed descendants.\n"
+                        "  • 'engulf_all_remaining_showing_descendants' / 'spare_all_remaining_showing_descendants' → "
+                        "When used from this branch handle, act on all currently showing descendant leaves "
+                        "in the frontier (bulk ENGULF/SPARE for this step)."
                     )
 
                     frontier.append(
@@ -5364,11 +5367,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     guidance = (
                         "Leaf node. STRICT DFS step: decide explicitly with 'engulf_leaf_in_gemstorm' "
                         "or 'spare_leaf_from_storm'. Branch-level 'engulf_shell_in_gemstorm' / 'spare_subtree_from_storm' "
-                        "is reserved for later when all descendants are decided."
+                        "is reserved for later when all descendants are decided. For batch decisions on the "
+                        "current showing leaves under a branch, you may use 'engulf_all_remaining_showing_descendants' / "
+                        "'spare_all_remaining_showing_descendants' (aliases for frontier bulk ENGULF/SPARE for this step)."
                     )
                 else:  # dfs_guided
                     guidance = (
-                        "Leaf node. Decide with 'engulf_leaf_in_gemstorm' or 'spare_leaf_from_storm'."
+                        "Leaf node. Decide with 'engulf_leaf_in_gemstorm' or 'spare_leaf_from_storm'. For batch "
+                        "decisions on the current showing leaves under a branch, you may use "
+                        "'engulf_all_remaining_showing_descendants' / 'spare_all_remaining_showing_descendants' (aliases for frontier bulk "
+                        "ENGULF/SPARE for this step)."
                     )
 
                 frontier.append(
@@ -6336,8 +6344,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "reserve_branch_for_children": "engulf_shell_in_gemstorm",
             "engulf_showing_descendants": "engulf_frontier_descendants_in_gemstorm",
             "spare_showing_descendants": "spare_frontier_descendants_from_storm",
-            "engulf_all_remaining_showing": "engulf_frontier_descendants_in_gemstorm",
-            "spare_all_remaining_showing": "spare_frontier_descendants_from_storm",
+            "engulf_all_remaining_showing_descendants": "engulf_frontier_descendants_in_gemstorm",
+            "spare_all_remaining_showing_descendants": "spare_frontier_descendants_from_storm",
         }
         
         for action in actions:
@@ -7154,7 +7162,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "Leaf-first exploration is encouraged. Open branches to reach leaves; "
                 "make decisions with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm' where possible. "
                 "Use 'engulf_shell_in_gemstorm' sparingly for whole branches, and 'reopen_branch' "
-                "if you need to reconsider a decided branch."
+                "if you need to reconsider a decided branch. For bulk operations on the current frontier "
+                "you may use 'engulf_all_remaining_showing_descendants' / 'spare_all_remaining_showing_descendants' (aliases for "
+                "'engulf_frontier_descendants_in_gemstorm' / 'spare_frontier_descendants_from_storm') and, "
+                "as a last resort in non-strict mode, 'spare_all_remaining' to spare all undecided nodes."
             ),
         }
         if history_summary is not None:
