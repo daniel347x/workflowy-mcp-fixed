@@ -5242,8 +5242,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 local_hints = meta.get("hints") or []
                 hints_from_ancestors = _collect_hints_from_ancestors(h)
                 guidance = (
-                    "Leaf node. STRICT DFS step: decide explicitly with 'accept_leaf' "
-                    "or 'reject_leaf'. Branch-level 'accept_subtree' / 'reject_subtree' "
+                    "Leaf node. STRICT DFS step: decide explicitly with 'engulf_leaf_in_gemstorm' "
+                    "or 'spare_leaf_from_storm'. Branch-level 'engulf_shell_in_gemstorm' / 'spare_subtree_from_storm' "
                     "is reserved for later when all descendants are decided."
                 )
 
@@ -5323,13 +5323,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     if is_leaf:
                         guidance = (
                             "Leaf node. Prefer making decisions here: use "
-                            "'accept_leaf' or 'reject_leaf'. Backtrack or close "
+                            "'engulf_leaf_in_gemstorm' or 'spare_leaf_from_storm'. Backtrack or close "
                             "an entire branch only after you've inspected its leaves."
                         )
                     else:
                         guidance = (
                             "Branch node. Consider 'open' to explore children; "
-                            "use 'accept_subtree' sparingly. Exploring down to "
+                            "use 'engulf_shell_in_gemstorm' sparingly. Exploring down to "
                             "leaves yields smaller, more targeted phantom gems."
                         )
                     local_hints = child_meta.get("hints") or []
@@ -5550,14 +5550,21 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         global_frontier_limit: int = 80,
         include_history_summary: bool = True,
     ) -> dict[str, Any]:
-        """v2 Exploration step: separate DECISIONS from WALKs and allow multiple
-        independent rays (origins) in a single call.
+        """Exploration step with GEMSTORM action vocabulary.
 
-        Request:
-            decisions: list of { handle, action, ... } – accept/reject/finalize/etc
-            walks: list of { origin, max_steps } – ray roots and per-ray depth
-            max_parallel_walks: hard cap on how many origins we actually walk
-            global_frontier_limit: total frontier entries to emit across all rays
+        STRICT MODES (dfs_full_walk / dfs_guided):
+            - decisions: list of { handle, action, ... }
+              Actions:
+                - 'engulf_leaf_in_gemstorm' = Include leaf in GEM (will edit/delete)
+                - 'spare_leaf_from_storm' = Exclude leaf from GEM (leave in ETHER)
+                - 'engulf_shell_in_gemstorm' = Include branch shell in GEM (children opaque)
+                - 'spare_subtree_from_storm' = Exclude branch from GEM (all descendants safe)
+            - walks: IGNORED in strict modes (engine controls DFS traversal)
+            - global_frontier_limit: leaf budget per step (default 80)
+
+        NON-STRICT / LEGACY MODES:
+            - walks: list of { origin, max_steps } – ray roots and per-ray depth
+            - max_parallel_walks: hard cap on how many origins we actually walk
 
         Response:
             {
@@ -6195,8 +6202,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         "would violate the depth-first traversal order.\n\n"
                         "To proceed safely, either:\n"
                         "• Make a decision about the current handle using one of:\n"
-                        "  - 'accept_leaf' / 'reject_leaf' (for leaves)\n"
-                        "  - 'accept_subtree' / 'reject_subtree' (for whole branches),\n"
+                        "  - 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm' (for leaves)\n"
+                        "  - 'engulf_shell_in_gemstorm' / 'spare_subtree_from_storm' (for whole branches),\n"
                         "  - 'backtrack' (close this branch without including it), or\n"
                         "• Use 'reopen_branch' on a previously decided branch that you\n"
                         "  intentionally want to revisit.\n\n"
@@ -6292,57 +6299,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 entry["max_depth"] = None
 
             # Leaf-first enhancements
-            elif act == "accept_leaf":
+            elif act == "engulf_leaf_in_gemstorm":
                 entry["status"] = "finalized"
                 entry["selection_type"] = "leaf"
                 entry["max_depth"] = max_depth
                 _auto_complete_ancestors_from_leaf(handle)
-            elif act == "reject_leaf":
+            elif act == "spare_leaf_from_storm":
                 entry["status"] = "closed"
                 entry["selection_type"] = None
                 entry["max_depth"] = None
                 _auto_complete_ancestors_from_leaf(handle)
-            elif act == "replace_leaf_node_with_appended_scratch_note":
-                # Capture good wording from a leaf node into the scratchpad while
-                # excluding the node from the minimal phantom gem. This behaves
-                # like a reject_leaf decision for gem construction, but preserves
-                # the leaf's name/note in the exploration scratchpad for later use.
-                child_handles = handles.get(handle, {}).get("children", []) or []
-                if child_handles:
-                    raise NetworkError(
-                        "replace_leaf_node_with_appended_scratch_note is only valid on leaf "
-                        "handles (no children in cached tree)."
-                    )
-                meta = handles.get(handle) or {}
-                name = meta.get("name", "Untitled")
-                node_id_for_scratch = meta.get("id")
-                note_preview = meta.get("note") or ""
-
-                # Build a compact, human-readable scratch entry
-                header_parts = [f"[DROPPED_LEAF] {handle}", f'"{name}"']
-                if node_id_for_scratch:
-                    header_parts.append(f"id={node_id_for_scratch}")
-                header_line = " ".join(header_parts)
-
-                scratch_lines = [header_line]
-                if note_preview.strip():
-                    scratch_lines.append(note_preview)
-                else:
-                    scratch_lines.append("<no note>")
-
-                snippet = "\n".join(scratch_lines)
-                existing_scratch = session.get("scratchpad") or ""
-                if existing_scratch:
-                    session["scratchpad"] = existing_scratch + "\n\n" + snippet
-                else:
-                    session["scratchpad"] = snippet
-
-                # Semantically treat this as a rejected leaf for the minimal gem
-                entry["status"] = "closed"
-                entry["selection_type"] = None
-                entry["max_depth"] = None
-                _auto_complete_ancestors_from_leaf(handle)
-            elif act == "accept_subtree":
+            elif act == "engulf_shell_in_gemstorm":
                 summary = _summarize_descendants(handle)
                 desc_count = summary["descendant_count"]
                 has_decided = summary["has_decided"]
@@ -6354,13 +6321,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     # No descendants at all: this is effectively a leaf; require
                     # leaf-level decisions instead of subtree semantics.
                     raise NetworkError(
-                        f"Handle '{handle}' has no descendants; use 'accept_leaf' / 'reject_leaf' "
-                        "for leaves instead of 'accept_subtree'."
+                        f"Handle '{handle}' has no descendants; use 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm' "
+                        "for leaves instead of 'engulf_shell_in_gemstorm'."
                     )
 
                 # STRICT DFS FULL-WALK MODE:
-                # In dfs_full_walk, accept_subtree is ONLY allowed when all
-                # descendants are rejected (no undecided, no accepted leaves).
+                # In dfs_full_walk, engulf_shell_in_gemstorm is ONLY allowed when all
+                # descendants are spared from storm (no undecided, no engulfed leaves).
                 if exploration_mode == "dfs_full_walk":
                     if has_undecided or accepted_leaves > 0:
                         session["handles"] = handles
@@ -6380,10 +6347,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         )
                         base_msg = (
                             f"Strict DFS mode is active for this exploration session; "
-                            f"cannot accept_subtree on branch '{handle}' while any descendants "
-                            "remain undecided or any leaves have already been accepted.\n\n"
+                            f"cannot engulf_shell_in_gemstorm on branch '{handle}' while any descendants "
+                            "remain undecided or any leaves have already been engulfed.\n\n"
                             "Walk the branch in depth-first order and make leaf-level decisions "
-                            "with 'accept_leaf' / 'reject_leaf'."
+                            "with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm'."
                         )
                         if next_handle:
                             base_msg += (
@@ -6392,7 +6359,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             )
                         raise NetworkError(base_msg)
                     # If we get here in dfs_full_walk, all descendants are decided
-                    # and rejected; the existing non-strict logic below will treat
+                    # and spared; the existing non-strict logic below will treat
                     # this as a branch-only shell (children opaque).
 
                 # Mixed case: some descendants decided, some not → force DFS
@@ -6412,14 +6379,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         else None
                     )
                     base_msg = (
-                        f"Cannot accept_subtree on branch '{handle}' while some descendants are "
+                        f"Cannot engulf_shell_in_gemstorm on branch '{handle}' while some descendants are "
                         "still undecided and others have already been decided.\n\n"
                         "Finish exploring this branch in depth-first order first."
                     )
                     if next_handle:
                         base_msg += (
                             f"\n\nNext DFS node is '{next_handle}' ({next_name!r}). "
-                            "Make a leaf-level decision there with 'accept_leaf' / 'reject_leaf', "
+                            "Make a leaf-level decision there with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm', "
                             "or close/reopen branches as needed."
                         )
                     raise NetworkError(base_msg)
@@ -6433,12 +6400,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # All descendants decided: behavior depends on leaf outcomes.
                 elif has_decided and not has_undecided:
                     if accepted_leaves > 0:
-                        # Some leaves already accepted – accepting the subtree is
+                        # Some leaves already engulfed – engulfing the shell is
                         # a no-op. The minimal covering tree will be built from
                         # leaf decisions (branch becomes a path element).
                         _auto_complete_ancestors_from_decision(handle)
                         continue
-                    # All descendants rejected: include branch-only shell (no children).
+                    # All descendants spared: include branch-only shell (no children).
                     if rejected_leaves > 0:
                         entry["status"] = "finalized"
                         entry["selection_type"] = "subtree"
@@ -6460,7 +6427,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # so that fully decided regions auto-backtrack in all modes.
                 _auto_complete_ancestors_from_decision(handle)
 
-            elif act == "reject_subtree":
+            elif act == "spare_subtree_from_storm":
                 summary = _summarize_descendants(handle)
                 desc_count = summary["descendant_count"]
                 has_decided = summary["has_decided"]
@@ -6469,15 +6436,15 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                 if desc_count == 0:
                     raise NetworkError(
-                        f"Handle '{handle}' has no descendants; use 'reject_leaf' "
-                        "for leaves instead of 'reject_subtree'."
+                        f"Handle '{handle}' has no descendants; use 'spare_leaf_from_storm' "
+                        "for leaves instead of 'spare_subtree_from_storm'."
                     )
 
                 # STRICT DFS FULL-WALK MODE:
-                # In dfs_full_walk, reject_subtree is ONLY allowed when all
-                # descendants are decided (no undecided). Accepted leaves are
+                # In dfs_full_walk, spare_subtree_from_storm is ONLY allowed when all
+                # descendants are decided (no undecided). Engulfed leaves are
                 # handled by the generic check below (we never allow a branch-
-                # wide reject that silently overrides accepted leaves).
+                # wide spare that silently overrides engulfed leaves).
                 if exploration_mode == "dfs_full_walk" and has_undecided:
                     session["handles"] = handles
                     session["state"] = state
@@ -6495,11 +6462,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         else None
                     )
                     base_msg = (
-                        f"Strict DFS mode is active for this exploration session; "
-                        f"cannot reject_subtree on branch '{handle}' while any descendants "
-                        "remain undecided.\n\n"
-                        "Walk the branch in depth-first order and make leaf-level decisions "
-                        "with 'accept_leaf' / 'reject_leaf'."
+                    f"Strict DFS mode is active for this exploration session; "
+                    f"cannot spare_subtree_from_storm on branch '{handle}' while any descendants "
+                    "remain undecided.\n\n"
+                    "Walk the branch in depth-first order and make leaf-level decisions "
+                    "with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm'."
                     )
                     if next_handle:
                         base_msg += (
@@ -6523,14 +6490,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         else None
                     )
                     base_msg = (
-                        f"Cannot reject_subtree on branch '{handle}' while some descendants are "
+                        f"Cannot spare_subtree_from_storm on branch '{handle}' while some descendants are "
                         "still undecided and others have already been decided.\n\n"
                         "Finish exploring this branch in depth-first order first."
                     )
                     if next_handle:
                         base_msg += (
                             f"\n\nNext DFS node is '{next_handle}' ({next_name!r}). "
-                            "Make a leaf-level decision there with 'accept_leaf' / 'reject_leaf', "
+                            "Make a leaf-level decision there with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm', "
                             "or close/reopen branches as needed."
                         )
                     raise NetworkError(base_msg)
@@ -6539,9 +6506,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # a branch-wide reject that silently overrides positive decisions.
                 if has_decided and not has_undecided and accepted_leaves > 0:
                     raise NetworkError(
-                        f"Cannot reject_subtree on branch '{handle}' because one or more leaves "
-                        "under this branch have already been accepted. "
-                        "Revisit those leaves with 'reject_leaf' or use 'reopen_branch' first."
+                        f"Cannot spare_subtree_from_storm on branch '{handle}' because one or more leaves "
+                        "under this branch have already been engulfed in the GEMSTORM. "
+                        "Revisit those leaves with 'spare_leaf_from_storm' or use 'reopen_branch' first."
                     )
 
                 # All descendants undecided, or all decided with no accepted leaves:
@@ -6712,16 +6679,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             }
 
         result: dict[str, Any] = {
-            "success": True,
-            "session_id": session_id,
-            "frontier": frontier,
-            "scratchpad": session.get("scratchpad", ""),
-            "guidance": (
-                "Leaf-first exploration is encouraged. Open branches to reach leaves; "
-                "make decisions with 'accept_leaf' / 'reject_leaf' where possible. "
-                "Use 'accept_subtree' sparingly for whole branches, and 'reopen_branch' "
-                "if you need to reconsider a decided branch."
-            ),
+        "success": True,
+        "session_id": session_id,
+        "frontier": frontier,
+        "scratchpad": session.get("scratchpad", ""),
+        "guidance": (
+        "Leaf-first exploration is encouraged. Open branches to reach leaves; "
+        "make decisions with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm' where possible. "
+        "Use 'engulf_shell_in_gemstorm' sparingly for whole branches, and 'reopen_branch' "
+        "if you need to reconsider a decided branch."
+        ),
         }
         if history_summary is not None:
             result["history_summary"] = history_summary
@@ -6902,13 +6869,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             raise NetworkError(
                 "Incomplete exploration detected during nexus_finalize_exploration.\n\n"
                 "You attempted to finalize without accounting for all branches.\n\n"
-                "Handles that are neither explicitly accepted/rejected nor covered "
-                "by an accepted/rejected subtree decision:\n"
+                "Handles that are neither explicitly decided (engulfed/spared) nor covered "
+                "by an engulfed/spared subtree decision:\n"
                 + "\n".join(details_lines)
                 + more_note
                 + "\n\nTo proceed safely, either:\n"
-                "• Visit these handles and decide with 'accept_leaf' / 'reject_leaf', OR\n"
-                "• Use 'accept_subtree' / 'reject_subtree' on an ancestor branch to cover them.\n\n"
+                "• Visit these handles and decide with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm', OR\n"
+                "• Use 'engulf_shell_in_gemstorm' / 'spare_subtree_from_storm' on an ancestor branch to cover them.\n\n"
                 "Once every handle is accounted for, nexus_finalize_exploration will succeed "
                 "and the phantom gem will be a true minimal covering tree."
             )
