@@ -302,12 +302,14 @@ class WorkFlowyClient:
         """Validate and smart-escape note field for Workflowy compatibility.
         
         Workflowy GUI rendering (Dec 2025):
-        - Valid XML tags (<code>, <foo>, etc.) render correctly (hidden as HTML)
+        - Whitelisted XML tags render correctly: <b>, <i>, <s>, <code>
+        - <a href> tags cause rendering failures
         - Bare/unpaired brackets (< or >) cause content to vanish
         
-        Smart escaping:
-        - Preserves valid XML tags: <alphanumeric-only>
-        - Escapes bare brackets and & that would break rendering
+        Smart processing:
+        1. Normalize <a href="URL">text</a> → text (URL)
+        2. Preserve whitelisted XML tags only: <b>, <i>, <s>, <code>
+        3. Escape all other bare brackets and &
         
         Args:
             note: Note content to validate/escape
@@ -321,18 +323,21 @@ class WorkFlowyClient:
         
         import re
         
-        # Escape & first (before bracket processing to avoid double-escape)
-        escaped = note.replace('&', '&amp;')
+        # STEP 1: Normalize <a href> tags to "text (URL)" format
+        # Pattern matches: <a href="URL">text</a> or <a href='URL'>text</a>
+        link_pattern = re.compile(r'<a\s+href=["\']([^"\'>]+)["\'][^>]*>([^<]+)</a>', re.IGNORECASE)
+        normalized = link_pattern.sub(r'\2 (\1)', note)
+        links_normalized = (normalized != note)
         
-        # Smart bracket escaping: preserve valid XML tags, escape bare brackets
-        # Valid XML tag pattern: <alphanumeric-only> (no spaces, only letters/numbers/hyphens/underscores)
-        # Strategy: Find all < and > characters, check if they're part of valid tags
+        # STEP 2: Escape & first (before bracket processing to avoid double-escape)
+        escaped = normalized.replace('&', '&amp;')
         
-        # Pattern: <valid_tag_name> or </valid_tag_name>
-        # valid_tag_name = one or more alphanumeric/hyphen/underscore characters
-        xml_tag_pattern = re.compile(r'</?[a-zA-Z0-9_-]+>')
+        # STEP 3: Strict whitelist for XML tags
+        # ONLY preserve: <b>, <i>, <s>, <code> (and their closing variants)
+        # All other angle brackets get escaped
+        xml_tag_pattern = re.compile(r'</?(?:b|i|s|code)>', re.IGNORECASE)
         
-        # Find all valid XML tag positions to preserve them
+        # Find all whitelisted XML tag positions to preserve them
         valid_tags = [(m.start(), m.end()) for m in xml_tag_pattern.finditer(escaped)]
         
         # Build result character by character, escaping < > outside valid tag ranges
@@ -359,8 +364,13 @@ class WorkFlowyClient:
         
         escaped_note = ''.join(result)
         
-        if entities_escaped:
-            return (escaped_note, "✅ SMART-ESCAPED: Preserved XML tags, escaped bare brackets (& < >)")
+        # Build warning message if any transformations occurred
+        if links_normalized and entities_escaped:
+            return (escaped_note, "✅ NORMALIZED: <a href> → text (URL), escaped bare brackets, preserved whitelisted tags")
+        elif links_normalized:
+            return (escaped_note, "✅ NORMALIZED: <a href> → text (URL)")
+        elif entities_escaped:
+            return (escaped_note, "✅ SMART-ESCAPED: Escaped bare brackets (& < >), preserved whitelisted tags")
         
         return (escaped_note, None)
     
@@ -373,8 +383,10 @@ class WorkFlowyClient:
         - GUI decodes entities AGAIN when rendering
         - Result: Must DOUBLE-ENCODE for proper display
         
-        Valid XML tags (<code>, <foo>) preserved (not escaped).
-        Bare brackets DOUBLE-ENCODED: < → &amp;lt; (API decodes to &lt;, GUI shows <)
+        Smart processing:
+        1. Normalize <a href="URL">text</a> → text (URL)
+        2. Preserve whitelisted XML tags only: <b>, <i>, <s>, <code>
+        3. DOUBLE-ENCODE bare brackets: < → &amp;lt; (API decodes to &lt;, GUI shows <)
         
         Args:
             name: Node name to validate/escape
@@ -387,22 +399,30 @@ class WorkFlowyClient:
         
         import re
         
-        # DOUBLE-ENCODE & first: & → &amp;amp;
-        # (API decodes to &amp;, GUI decodes to &)
-        escaped = name.replace('&', '&amp;amp;')
+        # STEP 1: Normalize <a href> tags to "text (URL)" format
+        # Pattern matches: <a href="URL">text</a> or <a href='URL'>text</a>
+        link_pattern = re.compile(r'<a\s+href=["\']([^"\'>]+)["\'][^>]*>([^<]+)</a>', re.IGNORECASE)
+        normalized = link_pattern.sub(r'\2 (\1)', name)
+        links_normalized = (normalized != name)
         
-        # Find valid XML tags to preserve
-        xml_tag_pattern = re.compile(r'</?[a-zA-Z0-9_-]+>')
+        # STEP 2: DOUBLE-ENCODE & first: & → &amp;amp;
+        # (API decodes to &amp;, GUI decodes to &)
+        escaped = normalized.replace('&', '&amp;amp;')
+        
+        # STEP 3: Strict whitelist for XML tags
+        # ONLY preserve: <b>, <i>, <s>, <code> (and their closing variants)
+        # All other angle brackets get DOUBLE-ENCODED
+        xml_tag_pattern = re.compile(r'</?(?:b|i|s|code)>', re.IGNORECASE)
         
         # Must search in ORIGINAL (before & encoding) to find tag positions correctly
-        valid_tags_in_original = [(m.start(), m.end()) for m in xml_tag_pattern.finditer(name)]
+        valid_tags_in_original = [(m.start(), m.end()) for m in xml_tag_pattern.finditer(normalized)]
         
-        # Build result from original, applying double-encoding for bare brackets
+        # Build result from NORMALIZED (not original), applying double-encoding for bare brackets
         result = []
         i = 0
-        entities_escaped = ('&' in name)
+        entities_escaped = ('&' in name or links_normalized)  # Track if we made changes
         
-        for j, char in enumerate(name):
+        for j, char in enumerate(normalized):
             inside_tag = any(start <= j < end for start, end in valid_tags_in_original)
             
             if char == '&':
@@ -418,8 +438,13 @@ class WorkFlowyClient:
         
         escaped_name = ''.join(result)
         
-        if entities_escaped:
-            return (escaped_name, "✅ SMART-ESCAPED NAME: Double-encoded bare brackets, preserved XML tags")
+        # Build warning message if any transformations occurred
+        if links_normalized and entities_escaped:
+            return (escaped_name, "✅ NORMALIZED NAME: <a href> → text (URL), double-encoded bare brackets, preserved whitelisted tags")
+        elif links_normalized:
+            return (escaped_name, "✅ NORMALIZED NAME: <a href> → text (URL)")
+        elif entities_escaped:
+            return (escaped_name, "✅ SMART-ESCAPED NAME: Double-encoded bare brackets, preserved whitelisted tags")
         
         return (escaped_name, None)
 
