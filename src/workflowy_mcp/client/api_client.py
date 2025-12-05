@@ -6314,6 +6314,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # Apply actions
         actions = actions or []
         
+        # ACTION ALIAS MAPPER: Translate human-friendly aliases to machine actions
+        ACTION_ALIASES = {
+            "reserve_branch_for_children": "engulf_shell_in_gemstorm",
+        }
+        
+        for action in actions:
+            act = action.get("action")
+            if act in ACTION_ALIASES:
+                action["action"] = ACTION_ALIASES[act]
+        
         # Sort actions for correct execution order:
         # 1. ENGULF actions first, then SPARE actions, then OTHER
         # 2. Within each category, LEAFMOST first (deepest handles first)
