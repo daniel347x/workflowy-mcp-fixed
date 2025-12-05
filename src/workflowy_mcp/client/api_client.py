@@ -5646,7 +5646,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 _ = await self._nexus_explore_step_internal(
                     session_id=session_id,
                     actions=decisions,
-                    frontier_size=0,
+                    frontier_size=global_frontier_limit,
                     max_depth_per_frontier=1,
                     include_history_summary=False,
                 )
@@ -6209,19 +6209,22 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # time.
             if exploration_mode in {"dfs_guided", "dfs_full_walk"} and act not in {"reopen_branch", "add_hint", "peek_descendants"}:
                 # Recompute current DFS frontier based on the *current* state
-                # before applying this action.
+                # before applying this action. Any handle in the current
+                # leaf-chunk frontier is a valid focus for decisions in this
+                # step; actions outside that set are rejected as out-of-order.
                 session["handles"] = handles
                 session["state"] = state
                 current_frontier = self._compute_exploration_frontier(
                     session,
-                    frontier_size=1,
+                    frontier_size=max(frontier_size, 1),
                     max_depth_per_frontier=max_depth_per_frontier,
                 )
-                current_handle = current_frontier[0]["handle"] if current_frontier else None
+                allowed_handles = {entry["handle"] for entry in current_frontier}
 
                 # Allow branch-wide corrections from anywhere via reopen_branch,
-                # but require all other decisions to target the current handle.
-                if act not in {"reopen_branch", "add_hint"} and current_handle and handle != current_handle:
+                # but require all other decisions to target a handle that is
+                # currently in the strict DFS leaf frontier.
+                if allowed_handles and handle not in allowed_handles:
                     meta = handles.get(current_handle, {}) or {}
                     current_name = meta.get("name", "Untitled")
                     raise NetworkError(
