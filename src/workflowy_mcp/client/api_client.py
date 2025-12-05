@@ -296,9 +296,9 @@ EXPLORATION_ACTION_2LETTER = {
     "AS": "append_scratchpad",
     "AH": "add_hint",
     "PD": "peek_descendants",
-    "UN": "update_node_and_flag_for_acceptance",
-    "UT": "update_tag_and_flag_for_acceptance",
-    "UE": "update_note_and_flag_for_acceptance",
+    "UN": "update_node_and_engulf_in_gemstorm",
+    "UT": "update_tag_and_engulf_in_gemstorm",
+    "UE": "update_note_and_engulf_in_gemstorm",
 }
 
 
@@ -6603,10 +6603,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             if handle not in handles:
                 raise NetworkError(f"Unknown handle in actions: '{handle}'")
 
-            if act in {"update_node_and_flag_for_acceptance", "update_note_and_flag_for_acceptance", "update_tag_and_flag_for_acceptance"} and not editable_mode:
+            if act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm", "update_tag_and_engulf_in_gemstorm"} and not editable_mode:
                 raise NetworkError(
                     "This exploration session was started with editable=False; "
-                    "update_node_and_flag_for_acceptance/update_note_and_flag_for_acceptance/update_tag_and_flag_for_acceptance "
+                    "update_node_and_engulf_in_gemstorm / update_note_and_engulf_in_gemstorm / update_tag_and_engulf_in_gemstorm "
                     "are only allowed when editable=True. Start a new session with "
                     "editable=True if you want to change names/notes/tags as you explore."
                 )
@@ -7081,10 +7081,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     child_handles = handles.get(h, {}).get("children", []) or []
                     for ch in child_handles:
                         queue.append(ch)
-            elif act in {"update_node_and_flag_for_acceptance", "update_note_and_flag_for_acceptance"}:
+            elif act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm"}:
                 if not editable_mode:
                     raise NetworkError(
-                        "update_node_and_flag_for_acceptance/update_note_and_flag_for_acceptance is only allowed when session.editable=True"
+                        "update_node_and_engulf_in_gemstorm / update_note_and_engulf_in_gemstorm is only allowed when session.editable=True"
                     )
 
                 new_name = action.get("name")
@@ -7104,7 +7104,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 if new_name is not None:
                     if not isinstance(new_name, str):
                         raise NetworkError(
-                            "update_node_and_flag_for_acceptance requires 'name' to be a string if provided"
+                            "update_node_and_engulf_in_gemstorm requires 'name' to be a string if provided"
                         )
                     target_node["name"] = new_name
                     meta["name"] = new_name
@@ -7112,7 +7112,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 if new_note is not None:
                     if not isinstance(new_note, str):
                         raise NetworkError(
-                            "update_node_and_flag_for_acceptance requires 'note' to be a string if provided"
+                            "update_node_and_engulf_in_gemstorm requires 'note' to be a string if provided"
                         )
                     target_node["note"] = new_note
                     meta["note"] = new_note
@@ -7132,13 +7132,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 else:
                     entry["accept_on_finalize"] = True
 
-            elif act == "update_tag_and_flag_for_acceptance":
+            elif act == "update_tag_and_engulf_in_gemstorm":
                 if not editable_mode:
-                    raise NetworkError("update_tag_and_flag_for_acceptance is only allowed when session.editable=True")
+                    raise NetworkError("update_tag_and_engulf_in_gemstorm is only allowed when session.editable=True")
 
                 raw_tag = action.get("tag")
                 if not isinstance(raw_tag, str) or not raw_tag.strip():
-                    raise NetworkError("update_tag_and_flag_for_acceptance requires non-empty 'tag' string")
+                    raise NetworkError("update_tag_and_engulf_in_gemstorm requires non-empty 'tag' string")
 
                 tag = raw_tag.strip()
                 if not tag.startswith("#"):
