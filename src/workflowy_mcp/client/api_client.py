@@ -5128,6 +5128,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # ========= STRICT DFS / DFS-GUIDED MODES: LEAF-CHUNK FRONTIER =========
         if exploration_mode in {"dfs_guided", "dfs_full_walk"}:
 
+            # NON-STRICT (dfs_guided): Also surface undecided branch ancestors
+            # leading to frontier leaves so agent can choose:
+            #   - reserve_branch_for_children (engulf shell), or
+            #   - spare_subtree_from_storm
+            include_branch_ancestors = (exploration_mode == "dfs_guided")
+
             def _is_covered_by_subtree(h: str) -> bool:
                 """True if some ancestor has a subtree selection covering this handle.
 
@@ -5241,6 +5247,27 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # are handled by decision logic rather than this function.
                 return frontier
 
+            # NON-STRICT MODE: Collect undecided branch ancestors for frontier
+            branch_ancestors_for_frontier: list[str] = []
+            if include_branch_ancestors:
+                # For each selected leaf, walk ancestors to find undecided branches
+                branch_set: set[str] = set()
+                for leaf_h in selected:
+                    ancestor_h = handles.get(leaf_h, {}).get("parent")
+                    while ancestor_h and ancestor_h != "R":
+                        # Check if this ancestor is undecided
+                        anc_st = state.get(ancestor_h, {"status": "unseen"})
+                        anc_status = anc_st.get("status")
+                        if anc_status not in {"finalized", "closed"}:
+                            # Undecided branch - add to set
+                            if ancestor_h not in branch_set:
+                                branch_set.add(ancestor_h)
+                        # Walk up to next ancestor
+                        ancestor_h = handles.get(ancestor_h, {}).get("parent")
+                
+                # Convert to sorted list (DFS order = alphabetic + numeric handle order)
+                branch_ancestors_for_frontier = sorted(list(branch_set))
+
             def _build_path_string(handle: str) -> str:
                 """Return a human-readable path: Name (UUID8...) -> ... -> Leaf (UUID8...)."""
                 path_ids: list[str] = []
@@ -5265,6 +5292,46 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             MAX_CHILDREN_HINT = 0  # strict leaf frontier: children_hint not needed
 
+            # BRANCH ENTRIES FIRST (non-strict mode only)
+            if include_branch_ancestors and branch_ancestors_for_frontier:
+                for h in branch_ancestors_for_frontier:
+                    meta = handles.get(h, {}) or {}
+                    st = state.get(h, {"status": "unseen"})
+                    child_handles = meta.get("children", []) or []
+
+                    children_hint: list[str] = []
+                    local_hints = meta.get("hints") or []
+                    hints_from_ancestors = _collect_hints_from_ancestors(h)
+                    
+                    # Branch-specific guidance for non-strict mode
+                    guidance = (
+                        "Branch node (ancestor of frontier leaves). NON-STRICT mode choices:\n"
+                        "  • 'reserve_branch_for_children' (alias: engulf_shell_in_gemstorm) → "
+                        "Bring this branch into GEM as shell. You can edit name/note and add new children. "
+                        "Existing children stay in ETHER unless explicitly engulfed.\n"
+                        "  • 'spare_subtree_from_storm' → Spare this branch. Smart logic: spares non-engulfed "
+                        "descendants, structurally includes branches with engulfed descendants."
+                    )
+
+                    frontier.append(
+                        {
+                            "handle": h,
+                            "path": _build_path_string(h),
+                            "parent_handle": meta.get("parent"),
+                            "name_preview": meta.get("name", ""),
+                            "child_count": len(child_handles),
+                            "children_hint": children_hint,
+                            "depth": meta.get("depth", 0),
+                            "status": st.get("status", "candidate"),
+                            "is_leaf": False,  # These are branches by definition
+                            "guidance": guidance,
+                            "hints": local_hints,
+                            "hints_from_ancestors": hints_from_ancestors,
+                            "_frontier_role": "branch_ancestor",  # Mark for agent clarity
+                        }
+                    )
+
+            # LEAF ENTRIES
             for h in selected:
                 meta = handles.get(h, {}) or {}
                 st = state.get(h, {"status": "unseen"})
@@ -5274,11 +5341,18 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 children_hint: list[str] = []
                 local_hints = meta.get("hints") or []
                 hints_from_ancestors = _collect_hints_from_ancestors(h)
-                guidance = (
-                    "Leaf node. STRICT DFS step: decide explicitly with 'engulf_leaf_in_gemstorm' "
-                    "or 'spare_leaf_from_storm'. Branch-level 'engulf_shell_in_gemstorm' / 'spare_subtree_from_storm' "
-                    "is reserved for later when all descendants are decided."
-                )
+                
+                # Leaf-specific guidance (same for both modes)
+                if exploration_mode == "dfs_full_walk":
+                    guidance = (
+                        "Leaf node. STRICT DFS step: decide explicitly with 'engulf_leaf_in_gemstorm' "
+                        "or 'spare_leaf_from_storm'. Branch-level 'engulf_shell_in_gemstorm' / 'spare_subtree_from_storm' "
+                        "is reserved for later when all descendants are decided."
+                    )
+                else:  # dfs_guided
+                    guidance = (
+                        "Leaf node. Decide with 'engulf_leaf_in_gemstorm' or 'spare_leaf_from_storm'."
+                    )
 
                 frontier.append(
                     {
@@ -6523,6 +6597,31 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     # and spared; the existing non-strict logic below will treat
                     # this as a branch-only shell (children opaque).
 
+                # NON-STRICT MODE (dfs_guided): Allow reserve_branch_for_children
+                # even when descendants are undecided or mixed.
+                if exploration_mode == "dfs_guided":
+                    # In dfs_guided, engulf_shell_in_gemstorm (reserve_branch_for_children)
+                    # is allowed regardless of descendant state. This enables:
+                    # "I want this section as a home for new docs, regardless of
+                    # how much I've explored under it."
+                    #
+                    # Semantics:
+                    # - Branch itself → GEM as shell (editable, can add children)
+                    # - Existing descendants → stay as-is:
+                    #     * Already engulfed → remain engulfed (in GEM)
+                    #     * Already spared → remain spared (out of GEM)
+                    #     * Undecided → effectively spared (covered by shell subtree selection)
+                    #
+                    # At finalize time, undecided descendants under a shell are
+                    # considered covered (ancestor has selection_type='subtree').
+                    entry["status"] = "finalized"
+                    entry["selection_type"] = "subtree"
+                    entry["max_depth"] = max_depth
+                    entry["subtree_mode"] = "shell"
+                    # Do NOT call _auto_complete_ancestors - shell is explicit decision
+                    continue
+
+                # STRICT MODE (dfs_full_walk) or legacy: enforce stricter rules
                 # Mixed case: some descendants decided, some not → force DFS
                 # further down rather than allowing a coarse branch decision.
                 if has_decided and has_undecided:
@@ -7064,10 +7163,62 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 f"Exploration session '{session_id}' has no finalized paths to export."
             )
 
+        # Helper: summarize descendants for finalize-time validation
+        def _summarize_descendants_for_handle(branch_handle: str) -> dict[str, Any]:
+            """Summarize descendant decisions for completeness validation.
+            
+            Mirrors _summarize_descendants from _nexus_explore_step_internal but
+            local to nexus_finalize_exploration for validation purposes.
+            """
+            queue: list[str] = list(handles.get(branch_handle, {}).get("children", []) or [])
+            descendants: list[str] = []
+            while queue:
+                h = queue.pop(0)
+                descendants.append(h)
+                child_handles = handles.get(h, {}).get("children", []) or []
+                if child_handles:
+                    queue.extend(child_handles)
+
+            if not descendants:
+                return {
+                    "descendant_count": 0,
+                    "accepted_leaf_count": 0,
+                    "rejected_leaf_count": 0,
+                }
+
+            accepted_leaves = 0
+            rejected_leaves = 0
+
+            for h in descendants:
+                st = state.get(h, {"status": "unseen"})
+                status = st.get("status")
+
+                # Leaf = no children in the cached tree
+                child_handles = handles.get(h, {}).get("children", []) or []
+                is_leaf = not child_handles
+                if not is_leaf:
+                    continue
+
+                if status == "finalized":
+                    accepted_leaves += 1
+                elif status == "closed":
+                    rejected_leaves += 1
+
+            return {
+                "descendant_count": len(descendants),
+                "accepted_leaf_count": accepted_leaves,
+                "rejected_leaf_count": rejected_leaves,
+            }
+
         # COMPLETENESS CHECK: ensure every handle is either explicitly decided
         # (status in {finalized, closed}) or covered by an ancestor subtree
         # decision (selection_type == "subtree"). This prevents accidental
         # partial exploration like the Claude failure case.
+        #
+        # TIGHTENED (Dec 2025): Handles with status='finalized' and
+        # selection_type='path' are ONLY considered decided if they actually
+        # anchor engulfed leaves. Otherwise they're bogus path elements (from
+        # auto-completion bugs) and should be flagged as undecided.
         uncovered_handles: list[str] = []
 
         for handle, meta in handles.items():
@@ -7077,8 +7228,20 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             st = state.get(handle, {"status": "unseen"})
             status = st.get("status")
+            sel_type = st.get("selection_type")
 
-            # Explicitly decided handles are fine
+            # Special validation: finalized/path must anchor engulfed leaves
+            if status == "finalized" and sel_type == "path":
+                summary = _summarize_descendants_for_handle(handle)
+                if summary["accepted_leaf_count"] == 0:
+                    # Bogus path element - no engulfed leaves under it.
+                    # Treat as undecided so it shows in uncovered_handles.
+                    status = "unseen"  # Override for completeness logic below
+                else:
+                    # True path element - considered decided
+                    continue
+
+            # Normal decided cases
             if status in {"finalized", "closed"}:
                 continue
 
@@ -7112,16 +7275,19 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             # Check exploration mode for smart spare suggestion
             exploration_mode = session.get("exploration_mode", "manual")
-            spare_all_hint = ""
+            mode_specific_hints = ""
             if exploration_mode == "dfs_guided":
-                spare_all_hint = (
-                    "\n\n💡 NON-STRICT MODE SHORTCUT:\n"
-                    "To spare all remaining undecided nodes (with smart handling of engulfed descendants):\n"
-                    "  nexus_explore_step(session_id, decisions=[{'action': 'spare_all_remaining'}])\n"
-                    "\nThis will:\n"
-                    "  • Spare all non-engulfed descendants\n"
-                    "  • Structurally include branches with engulfed descendants\n"
-                    "  • Then you can finalize successfully"
+                mode_specific_hints = (
+                    "\n\n💡 NON-STRICT MODE OPTIONS:\n"
+                    "\n1. For branch nodes you want to add children under:\n"
+                    "     {'handle': 'A.4.2', 'action': 'engulf_shell_in_gemstorm'}\n"
+                    "   (Human-friendly alias: 'reserve_branch_for_children')\n"
+                    "\n2. To spare all remaining undecided nodes (with smart handling):\n"
+                    "     {'action': 'spare_all_remaining'}\n"
+                    "   This will:\n"
+                    "     • Spare all non-engulfed descendants\n"
+                    "     • Structurally include branches with engulfed descendants\n"
+                    "     • Then you can finalize successfully"
                 )
 
             raise NetworkError(
@@ -7134,7 +7300,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 + "\n\nTo proceed safely, either:\n"
                 "• Visit these handles and decide with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm', OR\n"
                 "• Use 'engulf_shell_in_gemstorm' / 'spare_subtree_from_storm' on an ancestor branch to cover them."
-                + spare_all_hint
+                + mode_specific_hints
                 + "\n\nOnce every handle is accounted for, nexus_finalize_exploration will succeed "
                 "and the phantom gem will be a true minimal covering tree."
             )
