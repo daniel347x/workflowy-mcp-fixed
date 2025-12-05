@@ -7517,7 +7517,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             else:
                 true_subtree_root_ids.add(node_id)
 
-        # 1) Accept full subtrees: include subtree roots and ALL descendants
+        # 1) Accept full subtrees: include subtree roots and ALL descendants,
+        #    EXCEPT nodes explicitly spared from the storm.
         for node_id in true_subtree_root_ids:
             if node_id not in node_by_id:
                 logger.warning(
@@ -7527,7 +7528,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             stack = [node_id]
             while stack:
                 cur = stack.pop()
-                if cur in needed_ids:
+                # Skip nodes explicitly spared from storm (descendant spares
+                # override full-subtree engulf decisions for this node).
+                if cur in needed_ids or cur in explicitly_spared_ids:
                     continue
                 needed_ids.add(cur)
                 for child_id in children_by_id.get(cur, []):
@@ -7564,11 +7567,20 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 needed_ids.add(cur)
                 cur = parent_by_id.get(cur)
 
-        # Carve out explicitly spared nodes from GEM membership: explicitly spared
-        # nodes do not appear in phantom_gem.json even when an ancestor was
-        # engulfed as a full subtree.
+        # No node whose final exploration status is 'finalized' (leaf, subtree,
+        # or path element) should remain in explicitly_spared_ids. The spare
+        # ledger is strictly for nodes whose final state is spared-from-storm.
         if explicitly_spared_ids:
-            needed_ids -= explicitly_spared_ids
+            finalized_node_ids: set[str] = set()
+            for handle_key, st in state.items():
+                if st.get("status") != "finalized":
+                    continue
+                meta = handles.get(handle_key) or {}
+                node_id_for_handle = meta.get("id")
+                if node_id_for_handle:
+                    finalized_node_ids.add(node_id_for_handle)
+            if finalized_node_ids:
+                explicitly_spared_ids -= finalized_node_ids
 
         if not needed_ids:
             raise NetworkError(
