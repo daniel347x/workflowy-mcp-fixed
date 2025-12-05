@@ -5638,18 +5638,20 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # shared _compute_exploration_frontier helper. DECISIONS (if any) have
         # already been applied above via _nexus_explore_step_internal.
         exploration_mode = session.get("exploration_mode", "manual")
+        skipped_decisions: list[dict[str, Any]] = []
         if exploration_mode in {"dfs_guided", "dfs_full_walk"}:
             # In strict DFS modes, we must APPLY DECISIONS before computing the
             # next leaf-chunk frontier. Delegate decision semantics to the v1
             # helper, then reload the updated session state.
             if decisions:
-                _ = await self._nexus_explore_step_internal(
+                internal_result = await self._nexus_explore_step_internal(
                     session_id=session_id,
                     actions=decisions,
                     frontier_size=global_frontier_limit,
                     max_depth_per_frontier=1,
                     include_history_summary=False,
                 )
+                skipped_decisions = internal_result.get("skipped_decisions", []) or []
                 with open(session_path, "r", encoding="utf-8") as f:
                     session = json_module.load(f)
                 handles = session.get("handles", {}) or {}
@@ -5687,6 +5689,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "walks": [],  # Strict DFS: no per-ray walks; see top-level frontier.
                 "skipped_walks": [],
                 "decisions_applied": decisions,
+                "skipped_decisions": skipped_decisions,
                 "scratchpad": session.get("scratchpad", ""),
                 "history_summary": history_summary,
                 "frontier": frontier,
@@ -5694,13 +5697,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # --- 2) Apply DECISIONS using existing semantics (thin wrapper) ---
         if decisions:
-            _ = await self._nexus_explore_step_internal(
+            internal_result = await self._nexus_explore_step_internal(
                 session_id=session_id,
                 actions=decisions,
                 frontier_size=0,
                 max_depth_per_frontier=1,
                 include_history_summary=False,
             )
+            skipped_decisions = internal_result.get("skipped_decisions", []) or []
             with open(session_path, "r", encoding="utf-8") as f:
                 session = json_module.load(f)
             handles = session.get("handles", {}) or {}
@@ -5878,6 +5882,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 if w.get("skipped")
             ],
             "decisions_applied": decisions,
+            "skipped_decisions": skipped_decisions,
             "scratchpad": session.get("scratchpad", ""),
             "history_summary": history_summary,
         }
@@ -5942,6 +5947,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         sessions_dir = self._get_explore_sessions_dir()
         session_path = os.path.join(sessions_dir, f"{session_id}.json")
+        skipped_decisions: list[dict[str, Any]] = []
 
         if not os.path.exists(session_path):
             raise NetworkError(f"Exploration session '{session_id}' not found.")
@@ -6225,13 +6231,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # but require all other decisions to target a handle that is
                 # currently in the strict DFS leaf frontier.
                 if allowed_handles and handle not in allowed_handles:
-                    raise NetworkError(
-                        "Strict DFS exploration only allows decisions on the current leaf frontier.\\n\\n"
-                        f"You attempted to apply '{act}' to handle '{handle}', which is not in the current "
-                        "leaf-chunk frontier. Decide on one of the frontier handles instead, or refresh the "
-                        "frontier and try again.\\n\\n"
-                        f"Current leaf frontier: {sorted(list(allowed_handles))}"
+                    # Harmless: skip out-of-frontier decisions and record them
+                    # for the caller instead of raising an error.
+                    skipped_decisions.append(
+                        {
+                            "handle": handle,
+                            "action": act,
+                            "reason": "not_in_current_leaf_frontier",
+                            "current_leaf_frontier": sorted(list(allowed_handles)),
+                        }
                     )
+                    continue
 
             if handle not in state:
                 state[handle] = {"status": "unseen", "max_depth": None, "selection_type": None}
@@ -6701,21 +6711,27 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             }
 
         result: dict[str, Any] = {
-        "success": True,
-        "session_id": session_id,
-        "frontier": frontier,
-        "scratchpad": session.get("scratchpad", ""),
-        "guidance": (
-        "Leaf-first exploration is encouraged. Open branches to reach leaves; "
-        "make decisions with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm' where possible. "
-        "Use 'engulf_shell_in_gemstorm' sparingly for whole branches, and 'reopen_branch' "
-        "if you need to reconsider a decided branch."
-        ),
+            "success": True,
+            "session_id": session_id,
+            "frontier": frontier,
+            "scratchpad": session.get("scratchpad", ""),
+            "guidance": (
+                "Leaf-first exploration is encouraged. Open branches to reach leaves; "
+                "make decisions with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm' where possible. "
+                "Use 'engulf_shell_in_gemstorm' sparingly for whole branches, and 'reopen_branch' "
+                "if you need to reconsider a decided branch."
+            ),
         }
         if history_summary is not None:
             result["history_summary"] = history_summary
         if peek_results:
             result["peek_results"] = peek_results
+        if skipped_decisions:
+            result["skipped_decisions"] = skipped_decisions
+            summary_handles = sorted({d.get("handle") for d in skipped_decisions if d.get("handle")})
+            result["skipped_decisions_summary"] = (
+                "NODES SKIPPED (harmless, but no-op): " + ", ".join(summary_handles)
+            )
 
         return result
 
