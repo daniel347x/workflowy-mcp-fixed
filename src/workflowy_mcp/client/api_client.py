@@ -4961,12 +4961,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 raise NetworkError(f"Session '{session_id}' not found")
         elif nexus_tag:
             # Find latest session for this tag
+            # Pattern matches: YYYY-MM-DD_HH-MM-SS__<nexus_tag>-<hex>.json
             tag_sessions = []
-            for f in Path(sessions_dir).glob(f"{nexus_tag}-*.json"):
+            for f in Path(sessions_dir).glob(f"*__{nexus_tag}-*.json"):
                 tag_sessions.append(f)
             if not tag_sessions:
                 raise NetworkError(f"No sessions found for nexus_tag '{nexus_tag}'")
-            # Sort by name (includes timestamp in session_id)
+            # Sort by filename (lexicographic = chronological due to timestamp prefix)
             latest = sorted(tag_sessions)[-1]
             session_path = str(latest)
             session_id = latest.stem  # Extract session_id from filename
@@ -5403,7 +5404,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         for child_handle in handles.get("R", {}).get("children", []) or []:
             state[child_handle] = {"status": "candidate", "max_depth": None}
 
-        session_id = f"{nexus_tag}-{uuid.uuid4().hex[:8]}"
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        session_id = f"{timestamp}__{nexus_tag}-{uuid.uuid4().hex[:8]}"
         session = {
             "session_id": session_id,
             "nexus_tag": nexus_tag,
