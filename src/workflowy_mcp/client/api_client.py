@@ -349,6 +349,10 @@ class WorkFlowyClient:
         Returns:
             (processed_note, warning_message)
         """
+        # NOTE: Whitening disabled; pass-through.
+        return (note, None)
+        
+        # Legacy implementation (unreachable, kept for reference):
         if note is None:
             return (None, None)
         
@@ -425,6 +429,10 @@ class WorkFlowyClient:
         Returns:
             (processed_name, warning_message)
         """
+        # NOTE: Whitening disabled; pass-through.
+        return (name, None)
+        
+        # Legacy implementation (unreachable, kept for reference):
         if name is None:
             return (None, None)
         
