@@ -3425,6 +3425,30 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         success, error_msg, warnings = validate_and_escape_nodes_recursive(nodes_to_create)
         
         if not success:
+            # Validation/escaping failed BEFORE reconcile_tree was invoked.
+            # Record this in the weave journal (if present) so a "stub_only"
+            # journal can be distinguished from a crash-before-reconcile.
+            if weave_journal is not None and weave_journal_path is not None:
+                try:
+                    from datetime import datetime as _dt
+                    weave_journal["last_run_completed"] = False
+                    weave_journal["last_run_error"] = error_msg or "Note/name field validation failed before reconcile_tree"
+                    weave_journal["last_run_failed_at"] = _dt.now().isoformat()
+                    weave_journal["phase"] = "error_validation"
+                    with open(weave_journal_path, "w", encoding="utf-8") as jf:
+                        json.dump(weave_journal, jf, indent=2)
+                except Exception as e2:  # noqa: BLE001
+                    log_event(
+                        f"Failed to update weave journal on validation error: {type(e2).__name__}: {e2}",
+                        "WEAVE",
+                    )
+            # Also emit a WEAVE-level log line to the detached worker log.
+            log_event(
+                f"WEAVE validation failed before reconcile_tree: {error_msg or 'Note/name field validation failed'}",
+                "WEAVE",
+            )
+            # Clear WEAVE context before returning.
+            _current_weave_context["json_file"] = None
             return {
                 "success": False,
                 "nodes_created": 0,
