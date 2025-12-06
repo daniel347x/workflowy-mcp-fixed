@@ -5119,6 +5119,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "scratchpad": session.get("scratchpad", ""),
             "history_summary": history_summary,
             "frontier": frontier,  # Include flat frontier for convenience
+            "frontier_tree": self._build_frontier_tree_from_flat(frontier),
             "session_meta": {
                 "created_at": session.get("created_at"),
                 "updated_at": session.get("updated_at"),
@@ -5525,6 +5526,41 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         return frontier
 
+    def _build_frontier_tree_from_flat(
+        self,
+        frontier: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Build a nested frontier tree from the flat frontier list.
+
+        This is a presentation helper only; it does not affect exploration
+        semantics. Each node in the returned tree is a shallow copy of the
+        flat entry with an added ``children`` list.
+        """
+        if not frontier:
+            return []
+
+        # Shallow-copy entries and initialize children lists
+        by_handle: dict[str, dict[str, Any]] = {}
+        for entry in frontier:
+            node = dict(entry)
+            node["children"] = []
+            by_handle[node["handle"]] = node
+
+        roots: list[dict[str, Any]] = []
+        for handle, node in by_handle.items():
+            parent = node.get("parent_handle")
+            if parent and parent in by_handle:
+                by_handle[parent]["children"].append(node)
+            else:
+                roots.append(node)
+
+        # Stable ordering by handle for readability
+        roots.sort(key=lambda n: n["handle"])
+        for node in by_handle.values():
+            node["children"].sort(key=lambda n: n["handle"])
+
+        return roots
+
     async def nexus_start_exploration(
         self,
         nexus_tag: str,
@@ -5740,6 +5776,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "child_count": len(handles.get("R", {}).get("children", []) or []),
         }
 
+        frontier_tree = self._build_frontier_tree_from_flat(frontier)
+
         return {
             "success": True,
             "session_id": session_id,
@@ -5748,6 +5786,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "root_handle": "R",
             "root_summary": root_summary,
             "frontier": frontier,
+            "frontier_tree": frontier_tree,
             "scratchpad": session.get("scratchpad", ""),
             "stats": {
                 "total_nodes_indexed": glimpse.get("node_count", 0),
@@ -5868,6 +5907,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 frontier_size=global_frontier_limit,
                 max_depth_per_frontier=1,
             )
+            frontier_tree = self._build_frontier_tree_from_flat(frontier)
 
             # Update session timestamp and persist.
             from datetime import datetime as _dt
@@ -5897,6 +5937,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "scratchpad": session.get("scratchpad", ""),
                 "history_summary": history_summary,
                 "frontier": frontier,
+                "frontier_tree": frontier_tree,
             }
 
         # --- 2) Apply DECISIONS using existing semantics (thin wrapper) ---
@@ -7256,6 +7297,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "session_id": session_id,
             "action_key": EXPLORATION_ACTION_2LETTER,
             "frontier": frontier,
+            "frontier_tree": self._build_frontier_tree_from_flat(frontier),
             "scratchpad": session.get("scratchpad", ""),
             "guidance": guidance_text,
         }
