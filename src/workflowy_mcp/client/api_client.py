@@ -7130,7 +7130,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     entry["max_depth"] = max_depth
                     _auto_complete_ancestors_from_leaf(handle)
                 else:
-                    entry["accept_on_finalize"] = True
+                    # Branch case: behave like immediate subtree finalize
+                    entry["status"] = "finalized"
+                    if entry.get("selection_type") is None:
+                        entry["selection_type"] = "subtree"
+                    entry["max_depth"] = max_depth
+                    _auto_complete_ancestors_from_decision(handle)
 
             elif act == "update_tag_and_engulf_in_gemstorm":
                 if not editable_mode:
@@ -7174,7 +7179,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     entry["max_depth"] = max_depth
                     _auto_complete_ancestors_from_leaf(handle)
                 else:
-                    entry["accept_on_finalize"] = True
+                    # Branch case: behave like immediate subtree finalize
+                    entry["status"] = "finalized"
+                    if entry.get("selection_type") is None:
+                        entry["selection_type"] = "subtree"
+                    entry["max_depth"] = max_depth
+                    _auto_complete_ancestors_from_decision(handle)
             else:
                 raise NetworkError(f"Unsupported exploration action: '{act}'")
 
@@ -7301,15 +7311,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         handles = session.get("handles", {}) or {}
         state = session.get("state", {}) or {}
         root_node = session.get("root_node") or {}
-
-        # Interpret any accept_on_finalize flags from editable sessions:
-        # promote flagged branches to explicit subtree selections before building
-        # the minimal gem.
-        for handle, st in state.items():
-            if st.get("accept_on_finalize") and st.get("status") not in {"finalized", "closed"}:
-                st["status"] = "finalized"
-                if st.get("selection_type") is None:
-                    st["selection_type"] = "subtree"
 
         # Build basic indexes over the cached tree
         node_by_id: dict[str, dict[str, Any]] = {}
