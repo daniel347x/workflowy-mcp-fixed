@@ -5181,6 +5181,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         frontier: list[dict[str, Any]] = []
 
         exploration_mode = session.get("exploration_mode", "manual")
+        editable_mode = bool(session.get("editable", False))
+        DEFAULT_NOTE_PREVIEW = 1024
 
         # ========= STRICT DFS / DFS-GUIDED MODES: LEAF-CHUNK FRONTIER =========
         if exploration_mode in {"dfs_guided", "dfs_full_walk"}:
@@ -5367,7 +5369,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 branch_ancestors_for_frontier = sorted(list(branch_set))
 
             MAX_CHILDREN_HINT = 0  # strict leaf frontier: children_hint not needed
-            MAX_NOTE_PREVIEW = 200  # limit note preview length per frontier entry
+            # In editable sessions, do not truncate note_preview; otherwise cap length.
+            MAX_NOTE_PREVIEW = None if editable_mode else DEFAULT_NOTE_PREVIEW
 
             # BRANCH ENTRIES FIRST (non-strict mode only)
             if include_branch_ancestors and branch_ancestors_for_frontier:
@@ -5382,9 +5385,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                     # Note preview (token-bounded)
                     note_full = meta.get("note") or ""
-                    note_preview = (
-                        note_full if len(note_full) <= MAX_NOTE_PREVIEW else note_full[:MAX_NOTE_PREVIEW]
-                    )
+                    if MAX_NOTE_PREVIEW is None:
+                        note_preview = note_full
+                    else:
+                        note_preview = (
+                            note_full
+                            if len(note_full) <= MAX_NOTE_PREVIEW
+                            else note_full[:MAX_NOTE_PREVIEW]
+                        )
 
                     guidance = "Branch. ES/ST. EA/SR. (RB=reserve)"
 
@@ -5419,9 +5427,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                 # Note preview (token-bounded)
                 note_full = meta.get("note") or ""
-                note_preview = (
-                    note_full if len(note_full) <= MAX_NOTE_PREVIEW else note_full[:MAX_NOTE_PREVIEW]
-                )
+                if MAX_NOTE_PREVIEW is None:
+                    note_preview = note_full
+                else:
+                    note_preview = (
+                        note_full
+                        if len(note_full) <= MAX_NOTE_PREVIEW
+                        else note_full[:MAX_NOTE_PREVIEW]
+                    )
 
                 # Leaf-specific guidance (same for both modes; we keep it minimal)
                 if exploration_mode == "dfs_full_walk":
@@ -5460,7 +5473,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # Limit on how many immediate child names we surface per entry to keep
         # the frontier compact while still providing strong guidance.
         MAX_CHILDREN_HINT = 10
-        MAX_NOTE_PREVIEW = 200
+        # In editable sessions, do not truncate note_preview; otherwise cap length.
+        MAX_NOTE_PREVIEW = None if editable_mode else DEFAULT_NOTE_PREVIEW
 
         if not candidate_parents or frontier_size <= 0:
             return frontier
@@ -5510,9 +5524,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                     # Note preview (token-bounded)
                     note_full = child_meta.get("note") or ""
-                    note_preview = (
-                        note_full if len(note_full) <= MAX_NOTE_PREVIEW else note_full[:MAX_NOTE_PREVIEW]
-                    )
+                    if MAX_NOTE_PREVIEW is None:
+                        note_preview = note_full
+                    else:
+                        note_preview = (
+                            note_full
+                            if len(note_full) <= MAX_NOTE_PREVIEW
+                            else note_full[:MAX_NOTE_PREVIEW]
+                        )
 
                     local_hints = child_meta.get("hints") or []
                     hints_from_ancestors = _collect_hints_from_ancestors(child_handle)
@@ -6055,9 +6074,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     if nm:
                         children_hint.append(nm)
 
-                # Note preview (token-bounded)
+                # Note preview (token-bounded; no truncation in editable sessions)
                 note_full = meta.get("note") or ""
-                note_preview = note_full if len(note_full) <= 200 else note_full[:200]
+                if editable_mode:
+                    note_preview = note_full
+                else:
+                    note_preview = note_full if len(note_full) <= DEFAULT_NOTE_PREVIEW else note_full[:DEFAULT_NOTE_PREVIEW]
 
                 nodes_out.append(
                     {
