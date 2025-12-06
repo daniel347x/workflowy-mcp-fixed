@@ -523,7 +523,7 @@ async def reconcile_tree(
         return same_name and same_note and same_completed
 
     # ------------- phase 0: build maps -------------
-    log(f"\n[PHASE 0] Building maps for parent {parent_uuid}")
+    log(f"\n[PHASE 0] START - Building maps for parent {parent_uuid}")
     Map_T, Parent_T, Children_T = await snapshot_target(parent_uuid, use_efficient_traversal=False, export_func=export_nodes)
     log(f"   Target snapshot: {len(Map_T)} nodes found in Workflowy (excluding root)")
     log(f"   Target UUIDs: {len(Map_T)} (list suppressed)")
@@ -745,7 +745,7 @@ async def reconcile_tree(
             # recurse
             await ensure_created(n.get('children', []), n.get('id'), current_path)
 
-    log(f"\n[PHASE 1] CREATE (top-down)")
+    log(f"\n[PHASE 1] START - CREATE (top-down)")
     await ensure_created(source_nodes, parent_uuid)
     log(f"   CREATE phase complete - created {create_count} new nodes")
 
@@ -753,7 +753,7 @@ async def reconcile_tree(
     Map_S, Parent_S, Order_S = desired_maps(source_nodes, parent_uuid)
 
     # ------------- phase 2: MOVE (root-to-leaf following source) -------------
-    log(f"\n[PHASE 2] MOVE (root-to-leaf)")
+    log(f"\n[PHASE 2] START - MOVE (root-to-leaf)")
 
     move_count = 0
     for n in preorder(source_nodes):
@@ -819,7 +819,7 @@ async def reconcile_tree(
     log(f"   MOVE phase complete - moved {move_count} nodes")
 
     # ------------- phase 3: REORDER siblings per parent -------------
-    log(f"\n[PHASE 3] REORDER siblings")
+    log(f"\n[PHASE 3] START - REORDER siblings")
 
     # Optimization: if there were no creates and no moves in this run,
     # then sibling order is already correct relative to the source JSON.
@@ -870,7 +870,7 @@ async def reconcile_tree(
         log(f"   REORDER phase complete - processed {len(Order_S)} parents, {reorder_count} reorder moves")
 
     # ------------- phase 4: UPDATE content -------------
-    log(f"\n[PHASE 4] UPDATE content")
+    log(f"\n[PHASE 4] START - UPDATE content")
     update_count = 0
     for nid, tgt in list(Map_T.items()):
         src = Map_S.get(nid)
@@ -942,7 +942,7 @@ async def reconcile_tree(
     log(f"   UPDATE phase complete - {update_count} updates")
 
     # ------------- phase 5: DELETE (delete-roots only) -------------
-    log(f"\n[PHASE 5] DELETE (delete-roots only)")
+    log(f"\n[PHASE 5] START - DELETE (delete-roots only)")
     if skip_delete:
         log("   Clone mode active: SKIPPING DELETE phase by design.")
         return log_summary_and_close(note="Clone mode: no deletes")

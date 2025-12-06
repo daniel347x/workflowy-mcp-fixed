@@ -3303,6 +3303,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "last_run_started_at": datetime.now().isoformat(),
                 "last_run_completed": False,
                 "last_run_error": None,
+                # Phase field helps distinguish how far a failed run progressed:
+                #   stub_created      – initial journal written before reconciliation
+                #   before_reconcile  – about to call reconcile_tree(...)
+                #   completed         – reconcile_tree finished and journal finalized
+                #   error             – exception handled in bulk_import_from_file
+                "phase": "stub_created",
                 "entries": [],
             }
             try:
@@ -3537,6 +3543,24 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # The reconciler will also populate a per-node JEWEL sync ledger
             # (created/fetched/jewel_updated) that we can use to decide whether
             # the weave is safely resumable after timeouts.
+            #
+            # BEFORE calling reconcile_tree, update the journal phase so that a
+            # "stub-only" journal can be distinguished from a failure that
+            # occurs inside reconcile_tree (or later). If we see a journal
+            # with phase="stub_created" only, the process died before we ever
+            # reached reconciliation. If we see phase="before_reconcile" but no
+            # per-node entries, the failure happened inside or after
+            # reconcile_tree.
+            if weave_journal is not None and weave_journal_path is not None:
+                try:
+                    weave_journal["phase"] = "before_reconcile"
+                    with open(weave_journal_path, 'w', encoding='utf-8') as jf:
+                        json.dump(weave_journal, jf, indent=2)
+                except Exception as e2:  # noqa: BLE001
+                    log_event(
+                        f"Failed to update weave journal phase before_reconcile: {e2}",
+                        "WEAVE",
+                    )
             result_plan = await reconcile_tree(
                 source_json=payload,
                 parent_uuid=parent_id,
@@ -3630,6 +3654,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     weave_journal["last_run_completed"] = True
                     weave_journal["last_run_error"] = None
                     weave_journal["last_run_completed_at"] = datetime.now().isoformat()
+                    weave_journal["phase"] = "completed"
                     with open(weave_journal_path, 'w', encoding='utf-8') as jf:
                         json.dump(weave_journal, jf, indent=2)
                 except Exception as e:  # noqa: BLE001
@@ -3703,6 +3728,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     weave_journal["last_run_completed"] = False
                     weave_journal["last_run_error"] = error_msg
                     weave_journal["last_run_failed_at"] = datetime.now().isoformat()
+                    weave_journal["phase"] = "error"
                     with open(weave_journal_path, 'w', encoding='utf-8') as jf:
                         json.dump(weave_journal, jf, indent=2)
             except Exception:
