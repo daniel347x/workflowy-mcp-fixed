@@ -5240,28 +5240,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 
                 return False
 
-            # Build a canonical DFS order over all handles (excluding synthetic R
-            # as a frontier entry).
-            dfs_order: list[str] = []
+            # Collect undecided leaves in BFS order over the *active* tree.
+            # Decided nodes/subtrees are pruned by _is_decided(), so this
+            # effectively walks only the remaining search space. We still
+            # chunk leaves by sibling groups below to avoid splitting siblings
+            # across frontiers.
+            from collections import deque
 
-            def _visit(handle: str) -> None:
-                if handle != "R":
-                    dfs_order.append(handle)
-                for ch in handles.get(handle, {}).get("children", []) or []:
-                    _visit(ch)
-
-            _visit("R")
-
-            # Collect undecided leaves in DFS order
-            undecided_leaves: list[str] = []
-            for h in dfs_order:
-                if _is_decided(h):
-                    continue
-                child_handles = handles.get(h, {}).get("children", []) or []
-                if not child_handles:
-                    undecided_leaves.append(h)
-
-            if frontier_size <= 0 or not undecided_leaves:
+            if frontier_size <= 0:
                 return frontier
 
             # Leaf budget per step: show ~frontier_size leaves, allowing a small
@@ -5269,6 +5255,45 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             leaf_target = max(1, frontier_size)
             leaf_leeway = max(1, min(leaf_target, 10))  # simple guardrail
 
+            bfs_leaves: list[str] = []
+            queue: deque[str] = deque(["R"])
+            visited: set[str] = set()
+
+            while queue and len(bfs_leaves) < leaf_target + leaf_leeway:
+                h = queue.popleft()
+                if h in visited:
+                    continue
+                visited.add(h)
+
+                # Never treat synthetic root as a frontier entry; just expand its children
+                if h == "R":
+                    for ch in handles.get("R", {}).get("children", []) or []:
+                        if ch not in visited:
+                            queue.append(ch)
+                    continue
+
+                if _is_decided(h):
+                    # Prune decided nodes/subtrees from the active search space
+                    continue
+
+                child_handles = handles.get(h, {}).get("children", []) or []
+                if not child_handles:
+                    # Undecided leaf → candidate for leaf-chunk selection
+                    bfs_leaves.append(h)
+                else:
+                    # Undecided branch → keep walking breadth‑first
+                    for ch in child_handles:
+                        if ch not in visited:
+                            queue.append(ch)
+
+            undecided_leaves: list[str] = bfs_leaves
+
+            if not undecided_leaves:
+                # Nothing left to decide in the active tree
+                return frontier
+
+            # Now apply the existing sibling‑chunk logic over the BFS‑ordered
+            # leaves so that siblings under the same parent appear together.
             selected: list[str] = []
             selected_set: set[str] = set()
             total_selected = 0
@@ -5294,7 +5319,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         if not ch_children:
                             sibling_group.append(ch)
                 else:
-                    # Root-level leaf (no parent in handle graph)
+                    # Root‑level leaf (no parent in handle graph)
                     sibling_group.append(leaf)
 
                 if not sibling_group:
@@ -5342,28 +5367,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # Convert to sorted list (DFS order = alphabetic + numeric handle order)
                 branch_ancestors_for_frontier = sorted(list(branch_set))
 
-            def _build_path_string(handle: str) -> str:
-                """Return a human-readable path: Name (UUID8...) -> ... -> Leaf (UUID8...)."""
-                path_ids: list[str] = []
-                path_names: list[str] = []
-                cur = handle
-                seen: set[str] = set()
-                while cur and cur not in seen:
-                    seen.add(cur)
-                    meta = handles.get(cur, {}) or {}
-                    nid = meta.get("id") or ""
-                    name = meta.get("name", "Untitled")
-                    path_ids.append(nid)
-                    path_names.append(name)
-                    cur = meta.get("parent")
-                path_ids.reverse()
-                path_names.reverse()
-                truncated_ids = [f"{nid[:8]}..." if nid else "" for nid in path_ids]
-                return " > ".join(
-                    f"{nm} ({tid})" if tid else nm
-                    for nm, tid in zip(path_names, truncated_ids)
-                )
-
             MAX_CHILDREN_HINT = 0  # strict leaf frontier: children_hint not needed
 
             # BRANCH ENTRIES FIRST (non-strict mode only)
@@ -5377,17 +5380,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     local_hints = meta.get("hints") or []
                     hints_from_ancestors = _collect_hints_from_ancestors(h)
                     
-                    # Branch-specific guidance for non-strict mode
-                    guidance = (
-                        "Branch (ancestor of leaves). NON-STRICT: RB=reserve shell (edit parent+add children) | "
-                        "ST=spare subtree (smart: spares non-engulfed, includes engulfed branches) | "
-                        "EA/SR=bulk engulf/spare showing descendants"
-                    )
+                    guidance = "Branch. ES/ST. EA/SR. (RB=reserve)"
 
                     frontier.append(
                         {
                             "handle": h,
-                            "path": _build_path_string(h),
                             "parent_handle": meta.get("parent"),
                             "name_preview": meta.get("name", ""),
                             "child_count": len(child_handles),
@@ -5413,19 +5410,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 local_hints = meta.get("hints") or []
                 hints_from_ancestors = _collect_hints_from_ancestors(h)
                 
-                # Leaf-specific guidance (same for both modes)
+
+                # Leaf-specific guidance (same for both modes; we keep it minimal)
                 if exploration_mode == "dfs_full_walk":
-                    guidance = (
-                        "Leaf. STRICT DFS: EL=engulf | SL=spare. Branch ES/ST reserved for after descendants decided. "
-                        "Bulk: EA/SR=engulf/spare showing descendants under branch."
-                    )
+                    guidance = "Leaf. EL|SL. EA/SR."
                 else:  # dfs_guided
-                    guidance = "Leaf. EL=engulf | SL=spare. Bulk: EA/SR=engulf/spare showing descendants."
+                    guidance = "Leaf. EL|SL. EA/SR."
 
                 frontier.append(
                     {
                         "handle": h,
-                        "path": _build_path_string(h),
                         "parent_handle": meta.get("parent"),
                         "name_preview": meta.get("name", ""),
                         "child_count": len(child_handles),
@@ -5496,16 +5490,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                     is_leaf = len(grandchild_handles) == 0
                     if is_leaf:
-                        guidance = "Leaf. EL=engulf | SL=spare. BT/CL branch only after inspecting leaves."
+                        guidance = "Leaf. EL|SL. EA/SR."
                     else:
-                        guidance = "Branch. OP=explore children | ES=engulf shell (use sparingly). Leaf decisions = smaller gems."
+                        guidance = "Branch. OP/ES. EA/SR."
+
                     local_hints = child_meta.get("hints") or []
                     hints_from_ancestors = _collect_hints_from_ancestors(child_handle)
 
                     frontier.append(
                         {
                             "handle": child_handle,
-                            "path": child_handle,
                             "parent_handle": parent_handle,
                             "name_preview": child_meta.get("name", ""),
                             "child_count": len(grandchild_handles),
@@ -7231,18 +7225,41 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "steps": session["steps"],
             }
 
+
+        # Mode-aware once-per-step guidance (agent does NOT need to navigate;
+        # frontiers are auto-selected, agent mainly decides).
+        if exploration_mode == "dfs_full_walk":
+            # Strict: leaf frontier only; no spare_all_remaining.
+            guidance_text = (
+                "Strict DFS. Frontier is auto-selected leaves; do not navigate. "
+                "For each leaf handle: EL|SL. "
+                "Branch ES/ST only when all descendants are already decided. "
+                "No SA."
+            )
+        elif exploration_mode == "dfs_guided":
+            # Non-strict guided: branch shells + smart spare + bulk.
+            guidance_text = (
+                "Guided (non-strict). Frontier is auto-selected; do not navigate. "
+                "Leaf: EL|SL. Branch: ES/ST. "
+                "Bulk over current frontier: EA/SR. Global spare: SA."
+            )
+        else:
+            # Legacy / manual modes.
+            guidance_text = (
+                "Legacy mode. OP/CL to navigate if needed. "
+                "Decisions: EL|SL for leaves, ES/ST for branches. "
+                "Bulk over current strip: EA/SR."
+            )
+
         result: dict[str, Any] = {
             "success": True,
             "session_id": session_id,
             "action_key": EXPLORATION_ACTION_2LETTER,
             "frontier": frontier,
             "scratchpad": session.get("scratchpad", ""),
-            "guidance": (
-                "Leaf-first encouraged. OP=open branches to reach leaves; EL/SL=engulf/spare leaves. "
-                "ES=engulf shell (sparingly). RP=reopen_branch if reconsidering. "
-                "Bulk: EA/SR=engulf/spare showing descendants. Non-strict: SA=spare all remaining."
-            ),
+            "guidance": guidance_text,
         }
+
         if history_summary is not None:
             result["history_summary"] = history_summary
         if peek_results:
