@@ -5632,6 +5632,20 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "children": root_children,
         }
 
+        # In editable sessions, stash original_name/original_note so FINALIZE can
+        # reconstruct both coarse TERRAIN (original view) and JEWEL (edited view)
+        # from a single minimal covering tree.
+        def _stash_original_fields(node: dict) -> None:
+            if "original_name" not in node:
+                node["original_name"] = node.get("name")
+            if "original_note" not in node:
+                node["original_note"] = node.get("note")
+            for child in node.get("children") or []:
+                _stash_original_fields(child)
+
+        if editable:
+            _stash_original_fields(root_node)
+
         # LOGGING: observe chosen root vs requested root and child count
         self._log_debug(f"nexus_start_exploration: root_id={root_id} root_node_id={root_node['id']} root_node_name={root_node.get('name')} children={len(root_children)}")
 
@@ -7716,44 +7730,45 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "no nodes available to build phantom_gem."
             )
 
-        # For GEM, we follow the same convention as SCRY / IGNITE SHARDS:
-        # export_root_id identifies the logical root, and 'nodes' holds its
-        # immediate children (not the root node itself).
+        # Minimal covering tree: gem_nodes holds the pruned children under the
+        # exploration root (R). EXPLORATION IS SPECIAL: coarse TERRAIN, GEM, and
+        # SHIMMERING TERRAIN all share this minimal covering skeleton.
         gem_nodes: list[dict[str, Any]] = pruned_root.get("children", [])
 
-        run_dir = self._get_nexus_dir(nexus_tag)
-        phantom_path = os.path.join(run_dir, "phantom_gem.json")
-        coarse_path = os.path.join(run_dir, "coarse_terrain.json")
+        # --- PROJECT TO ORIGINAL VIEW (for coarse TERRAIN + GEM + SHIMMERING) ---
+        import copy as _copy
 
-        # Pack exploration scratchpad and per-handle hints into the phantom gem
-        # so GEMSTORM / transform_gem can use this scaffolding later.
-        scratchpad_text = session.get("scratchpad", "")
-        hints_export: list[dict[str, Any]] = []
-        for handle_key, meta in handles.items():
-            handle_hints = meta.get("hints") or []
-            if not handle_hints:
-                continue
-            hints_export.append(
-                {
-                    "handle": handle_key,
-                    "node_id": meta.get("id"),
-                    "name": meta.get("name"),
-                    "depth": meta.get("depth"),
-                    "hints": handle_hints,
-                }
-            )
+        coarse_nodes = _copy.deepcopy(gem_nodes)
 
-        phantom_payload = {
-            "nexus_tag": nexus_tag,
-            "roots": ordered_root_ids,
-            "export_root_id": root_explore_id,
-            "export_root_name": root_node.get("name", "Root"),
-            "original_ids_seen": sorted(original_ids_seen),
-            "explicitly_spared_ids": sorted(explicitly_spared_ids),
-            "nodes": gem_nodes,
-            "scratchpad": scratchpad_text,
-            "hints": hints_export,
-        }
+        def _project_to_original(node: dict) -> None:
+            """Use original_name/original_note if present, then drop them.
+
+            This yields an "original" view (ETHER snapshot at exploration
+            start) without any original_* fields left in the JSON.
+            """
+            if "original_name" in node:
+                node["name"] = node.get("original_name")
+            if "original_note" in node:
+                node["note"] = node.get("original_note")
+            node.pop("original_name", None)
+            node.pop("original_note", None)
+            for child in node.get("children") or []:
+                _project_to_original(child)
+
+        for n in coarse_nodes:
+            _project_to_original(n)
+
+        # --- PROJECT TO EDITED VIEW (for JEWEL) ---
+        jewel_nodes = _copy.deepcopy(gem_nodes)
+
+        def _strip_original_fields(node: dict) -> None:
+            node.pop("original_name", None)
+            node.pop("original_note", None)
+            for child in node.get("children") or []:
+                _strip_original_fields(child)
+
+        for n in jewel_nodes:
+            _strip_original_fields(n)
 
         # NEXUS run directory initialization for this exploration-derived tag.
         # If a run dir already exists for this tag (from nexus_scry/nexus_glimpse/
@@ -7777,62 +7792,93 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         phantom_path = run_dir / "phantom_gem.json"
         coarse_path = run_dir / "coarse_terrain.json"
+        shimmering_path = run_dir / "shimmering_terrain.json"
+        phantom_jewel_path = run_dir / "phantom_jewel.json"
+
+        # Pack exploration scratchpad and per-handle hints into the JEWEL wrapper
+        scratchpad_text = session.get("scratchpad", "")
+        hints_export: list[dict[str, Any]] = []
+        for handle_key, meta in handles.items():
+            handle_hints = meta.get("hints") or []
+            if not handle_hints:
+                continue
+            hints_export.append(
+                {
+                    "handle": handle_key,
+                    "node_id": meta.get("id"),
+                    "name": meta.get("name"),
+                    "depth": meta.get("depth"),
+                    "hints": handle_hints,
+                }
+            )
+
+        export_root_id = session.get("root_id")
+        export_root_name = session.get("root_name") or root_node.get("name", "Root")
+        export_timestamp = None  # Exploration does not track per-node timestamps
+
+        # --- GEM (S0) & COARSE TERRAIN (T0) & SHIMMERING TERRAIN (T1) ---
+        # EXPLORATION IS SPECIAL: GEM == COARSE TERRAIN == SHIMMERING TERRAIN
+        gem_wrapper = {
+            "export_root_id": export_root_id,
+            "export_root_name": export_root_name,
+            "export_timestamp": export_timestamp,
+            "export_root_children_status": "complete",
+            "original_ids_seen": sorted(original_ids_seen),
+            "explicitly_spared_ids": sorted(explicitly_spared_ids),
+            "nodes": coarse_nodes,
+        }
 
         try:
             with open(phantom_path, "w", encoding="utf-8") as f:
-                json_module.dump(phantom_payload, f, indent=2, ensure_ascii=False)
+                json_module.dump(gem_wrapper, f, indent=2, ensure_ascii=False)
         except Exception as e:
             raise NetworkError(f"Failed to write phantom_gem.json: {e}") from e
 
-        # ALWAYS ensure minimal coarse_terrain.json exists for this tag.
-        if not coarse_path.exists():
-            try:
-                export_root_id = session.get("root_id")
-                export_root_name = session.get("root_name") or root_node.get("name", "Root")
-                export_timestamp = None  # Exploration does not track per-node timestamps
+        try:
+            with open(coarse_path, "w", encoding="utf-8") as f:
+                json_module.dump(gem_wrapper, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(
+                f"Failed to write coarse_terrain.json during finalize_exploration: {e}"
+            )
 
-                # IMPORTANT: children only – do NOT include the root node itself here.
-                # This keeps the NEXUS invariant that 'nodes' holds the children of
-                # export_root_id, matching bulk_export_to_file and nexus_glimpse,
-                # and prevents the reconciliation algorithm from trying to create
-                # the root as a child of itself.
-                root_children = root_node.get("children", []) or []
+        try:
+            with open(shimmering_path, "w", encoding="utf-8") as f:
+                json_module.dump(gem_wrapper, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            raise NetworkError(f"Failed to write shimmering_terrain.json: {e}") from e
 
-                coarse_payload = {
-                    "export_root_id": export_root_id,
-                    "export_root_name": export_root_name,
-                    "export_timestamp": export_timestamp,
-                    "original_ids_seen": sorted(original_ids_seen),
-                    "explicitly_spared_ids": sorted(explicitly_spared_ids),
-                    "nodes": root_children,
-                }
-                with open(coarse_path, "w", encoding="utf-8") as f:
-                    json_module.dump(coarse_payload, f, indent=2, ensure_ascii=False)
-            except Exception as e:
-                logger.error(
-                    f"Failed to write coarse_terrain.json during finalize_exploration: {e}"
-                )
+        # --- JEWEL (S1) FROM EXPLORATION ---
+        # Edited view (current name/note), with original_* removed.
+        phantom_jewel_wrapper = {
+            "export_root_id": export_root_id,
+            "export_root_name": export_root_name,
+            "export_timestamp": export_timestamp,
+            "export_root_children_status": "complete",
+            "original_ids_seen": sorted(original_ids_seen),
+            "explicitly_spared_ids": sorted(explicitly_spared_ids),
+            "nodes": jewel_nodes,
+            "scratchpad": scratchpad_text,
+            "hints": hints_export,
+        }
+
+        try:
+            with open(phantom_jewel_path, "w", encoding="utf-8") as f:
+                json_module.dump(phantom_jewel_wrapper, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            raise NetworkError(f"Failed to write phantom_jewel.json: {e}") from e
 
         result: dict[str, Any] = {
             "success": True,
             "session_id": session_id,
             "nexus_tag": nexus_tag,
-            "coarse_terrain": str(coarse_path) if coarse_path.exists() else None,
+            "coarse_terrain": str(coarse_path),
+            "phantom_gem": str(phantom_path),
+            "shimmering_terrain": str(shimmering_path),
+            "phantom_jewel": str(phantom_jewel_path),
             "finalized_branch_count": len(ordered_root_ids),
             "node_count": len(gem_nodes),
             "mode": mode,
         }
-
-        if mode == "full":
-            # We already wrote phantom_gem.json for this tag; expose its path and
-            # also anchor gems into shimmering_terrain.json for convenience.
-            result["phantom_gem"] = str(phantom_path)
-            try:
-                anchor_result = await self.nexus_anchor_gems(nexus_tag)
-                result["shimmering_terrain"] = anchor_result.get("shimmering_terrain")
-            except Exception as e:
-                raise NetworkError(
-                    f"nexus_finalize_exploration: nexus_anchor_gems failed: {e}"
-                ) from e
 
         return result
