@@ -349,9 +349,33 @@ class WorkFlowyClient:
         Returns:
             (processed_note, warning_message)
         """
-        # NOTE: Whitening disabled; pass-through.
-        return (note, None)
-        
+        # NOTE: Whitening ENABLED for notes: whitelist <b>/<i>/<s>/<code> tags, escape other brackets.
+        import re
+
+        if note is None:
+            return (None, None)
+
+        text = note
+
+        # Find positions of whitelisted tags so we don't escape their angle brackets
+        xml_tag_pattern = re.compile(r'</?(?:b|i|s|code)>', re.IGNORECASE)
+        valid_tags = [(m.start(), m.end()) for m in xml_tag_pattern.finditer(text)]
+
+        def _inside_whitelisted_tag(idx: int) -> bool:
+            return any(start <= idx < end for start, end in valid_tags)
+
+        result_chars: list[str] = []
+        for i, ch in enumerate(text):
+            if ch == '<' and not _inside_whitelisted_tag(i):
+                result_chars.append('&lt;')
+            elif ch == '>' and not _inside_whitelisted_tag(i):
+                result_chars.append('&gt;')
+            else:
+                result_chars.append(ch)
+
+        escaped_note = ''.join(result_chars)
+        return (escaped_note, None)
+
         # Legacy implementation (unreachable, kept for reference):
         if note is None:
             return (None, None)
@@ -429,9 +453,43 @@ class WorkFlowyClient:
         Returns:
             (processed_name, warning_message)
         """
-        # NOTE: Whitening disabled; pass-through.
-        return (name, None)
-        
+        # NOTE: Whitening ENABLED for names: whitelist <b>/<i>/<s>/<code> tags, then two-stage encode.
+        import re
+
+        if name is None:
+            return (None, None)
+
+        text = name
+
+        # STEP 1: replace < and > outside whitelisted tags with &lt; and &gt;
+        xml_tag_pattern = re.compile(r'</?(?:b|i|s|code)>', re.IGNORECASE)
+        valid_tags = [(m.start(), m.end()) for m in xml_tag_pattern.finditer(text)]
+
+        def _inside_whitelisted_tag(idx: int) -> bool:
+            return any(start <= idx < end for start, end in valid_tags)
+
+        stage1_chars: list[str] = []
+        for i, ch in enumerate(text):
+            if ch == '<' and not _inside_whitelisted_tag(i):
+                stage1_chars.append('&lt;')
+            elif ch == '>' and not _inside_whitelisted_tag(i):
+                stage1_chars.append('&gt;')
+            else:
+                stage1_chars.append(ch)
+
+        stage1 = ''.join(stage1_chars)
+
+        # STEP 2: encode all ampersands to &amp; (including those introduced in STEP 1)
+        stage2_chars: list[str] = []
+        for ch in stage1:
+            if ch == '&':
+                stage2_chars.append('&amp;')
+            else:
+                stage2_chars.append(ch)
+
+        escaped_name = ''.join(stage2_chars)
+        return (escaped_name, None)
+
         # Legacy implementation (unreachable, kept for reference):
         if name is None:
             return (None, None)
