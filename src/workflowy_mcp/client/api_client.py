@@ -5118,7 +5118,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "decisions_applied": [],
             "scratchpad": session.get("scratchpad", ""),
             "history_summary": history_summary,
-            "frontier": frontier,  # Include flat frontier for convenience
             "frontier_tree": self._build_frontier_tree_from_flat(frontier),
             "session_meta": {
                 "created_at": session.get("created_at"),
