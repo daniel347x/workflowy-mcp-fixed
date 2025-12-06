@@ -5367,6 +5367,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 branch_ancestors_for_frontier = sorted(list(branch_set))
 
             MAX_CHILDREN_HINT = 0  # strict leaf frontier: children_hint not needed
+            MAX_NOTE_PREVIEW = 200  # limit note preview length per frontier entry
 
             # BRANCH ENTRIES FIRST (non-strict mode only)
             if include_branch_ancestors and branch_ancestors_for_frontier:
@@ -5378,7 +5379,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     children_hint: list[str] = []
                     local_hints = meta.get("hints") or []
                     hints_from_ancestors = _collect_hints_from_ancestors(h)
-                    
+
+                    # Note preview (token-bounded)
+                    note_full = meta.get("note") or ""
+                    note_preview = (
+                        note_full if len(note_full) <= MAX_NOTE_PREVIEW else note_full[:MAX_NOTE_PREVIEW]
+                    )
+
                     guidance = "Branch. ES/ST. EA/SR. (RB=reserve)"
 
                     frontier.append(
@@ -5386,6 +5393,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             "handle": h,
                             "parent_handle": meta.get("parent"),
                             "name_preview": meta.get("name", ""),
+                            "note_preview": note_preview,
                             "child_count": len(child_handles),
                             "children_hint": children_hint,
                             "depth": meta.get("depth", 0),
@@ -5408,7 +5416,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 children_hint: list[str] = []
                 local_hints = meta.get("hints") or []
                 hints_from_ancestors = _collect_hints_from_ancestors(h)
-                
+
+                # Note preview (token-bounded)
+                note_full = meta.get("note") or ""
+                note_preview = (
+                    note_full if len(note_full) <= MAX_NOTE_PREVIEW else note_full[:MAX_NOTE_PREVIEW]
+                )
 
                 # Leaf-specific guidance (same for both modes; we keep it minimal)
                 if exploration_mode == "dfs_full_walk":
@@ -5421,6 +5434,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         "handle": h,
                         "parent_handle": meta.get("parent"),
                         "name_preview": meta.get("name", ""),
+                        "note_preview": note_preview,
                         "child_count": len(child_handles),
                         "children_hint": children_hint,
                         "depth": meta.get("depth", 0),
@@ -5446,6 +5460,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # Limit on how many immediate child names we surface per entry to keep
         # the frontier compact while still providing strong guidance.
         MAX_CHILDREN_HINT = 10
+        MAX_NOTE_PREVIEW = 200
 
         if not candidate_parents or frontier_size <= 0:
             return frontier
@@ -5493,6 +5508,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     else:
                         guidance = "Branch. OP/ES. EA/SR."
 
+                    # Note preview (token-bounded)
+                    note_full = child_meta.get("note") or ""
+                    note_preview = (
+                        note_full if len(note_full) <= MAX_NOTE_PREVIEW else note_full[:MAX_NOTE_PREVIEW]
+                    )
+
                     local_hints = child_meta.get("hints") or []
                     hints_from_ancestors = _collect_hints_from_ancestors(child_handle)
 
@@ -5501,6 +5522,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             "handle": child_handle,
                             "parent_handle": parent_handle,
                             "name_preview": child_meta.get("name", ""),
+                            "note_preview": note_preview,
                             "child_count": len(grandchild_handles),
                             "children_hint": children_hint,
                             "depth": child_meta.get("depth", 0),
@@ -6033,6 +6055,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     if nm:
                         children_hint.append(nm)
 
+                # Note preview (token-bounded)
+                note_full = meta.get("note") or ""
+                note_preview = note_full if len(note_full) <= 200 else note_full[:200]
+
                 nodes_out.append(
                     {
                         "handle": h,
@@ -6041,6 +6067,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         "depth_in_tree": meta.get("depth", 0),
                         "status": st.get("status", "candidate"),
                         "name_preview": meta.get("name", "Untitled"),
+                        "note_preview": note_preview,
                         "child_count": len(child_handles),
                         "children_hint": children_hint,
                         "is_leaf": is_leaf,
