@@ -216,7 +216,13 @@ async def reconcile_tree(
                     f"jewel_updated={e.get('jewel_updated')}"
                 )
 
-        debug_log.close()
+        # Close debug_log only when we actually opened it in this function.
+        if debug_log is not None:
+            try:
+                debug_log.close()
+            except Exception:
+                # Never let debug-log cleanup affect reconciliation outcome.
+                pass
         return plan if dry_run else None
 
     async def update_jewel_with_uuid(
