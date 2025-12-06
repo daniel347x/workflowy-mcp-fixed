@@ -5785,7 +5785,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "action_key": EXPLORATION_ACTION_2LETTER,
             "root_handle": "R",
             "root_summary": root_summary,
-            "frontier": frontier,
             "frontier_tree": frontier_tree,
             "scratchpad": session.get("scratchpad", ""),
             "stats": {
@@ -5936,7 +5935,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "skipped_decisions": skipped_decisions,
                 "scratchpad": session.get("scratchpad", ""),
                 "history_summary": history_summary,
-                "frontier": frontier,
                 "frontier_tree": frontier_tree,
             }
 
@@ -7296,7 +7294,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "success": True,
             "session_id": session_id,
             "action_key": EXPLORATION_ACTION_2LETTER,
-            "frontier": frontier,
             "frontier_tree": self._build_frontier_tree_from_flat(frontier),
             "scratchpad": session.get("scratchpad", ""),
             "guidance": guidance_text,
