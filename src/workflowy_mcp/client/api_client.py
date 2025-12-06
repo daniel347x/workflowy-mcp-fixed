@@ -5185,11 +5185,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # ========= STRICT DFS / DFS-GUIDED MODES: LEAF-CHUNK FRONTIER =========
         if exploration_mode in {"dfs_guided", "dfs_full_walk"}:
 
-            # NON-STRICT (dfs_guided): Also surface undecided branch ancestors
-            # leading to frontier leaves so agent can choose:
-            #   - reserve_branch_for_children (engulf shell), or
-            #   - spare_subtree_from_storm
-            include_branch_ancestors = (exploration_mode == "dfs_guided")
+            # For BOTH strict and guided modes, also surface undecided branch
+            # ancestors leading to frontier leaves so agent/human can see
+            # structure and optionally choose branch-level actions (ES/ST/EA/SR).
+            include_branch_ancestors = True
 
             def _is_covered_by_subtree(h: str) -> bool:
                 """True if some ancestor has a subtree selection covering this handle.
