@@ -473,6 +473,16 @@ class WorkFlowyClient:
         text = note
         segments = WorkFlowyClient._segment_whitelisted_markup(text)
 
+        import re
+        wrapped_segments = []
+        for seg in segments:
+            if seg["kind"] == "markup":
+                v = seg["value"]
+                if re.fullmatch(r'<span\s+class="colored\s+(?:c|bc)-[^\"]+">.*?</span>', v):
+                    seg = {"kind": "markup", "value": f"<b>{v}</b>"}
+            wrapped_segments.append(seg)
+        segments = wrapped_segments
+
         result_chars: list[str] = []
         for seg in segments:
             if seg["kind"] == "markup":
@@ -576,6 +586,16 @@ class WorkFlowyClient:
 
         text = name
         segments = WorkFlowyClient._segment_whitelisted_markup(text)
+
+        import re
+        wrapped_segments = []
+        for seg in segments:
+            if seg["kind"] == "markup":
+                v = seg["value"]
+                if re.fullmatch(r'<span\s+class="colored\s+(?:c|bc)-[^\"]+">.*?</span>', v):
+                    seg = {"kind": "markup", "value": f"<b>{v}</b>"}
+            wrapped_segments.append(seg)
+        segments = wrapped_segments
 
         # STEP 1: escape < and > in text segments only; leave markup untouched
         stage1_chars: list[str] = []
