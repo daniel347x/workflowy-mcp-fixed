@@ -1369,6 +1369,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         raise NetworkError("move_node failed after maximum retries")
 
+    @staticmethod
+    def _dewhiten_text(value: str | None) -> str | None:
+        """Single-pass dewhitening for SCRY (/nodes-export) names and notes.
+
+        Decodes &amp;, &lt;, &gt; once to recover semantic text. We *only* touch
+        these three entities so that other entities (e.g. &nbsp;) remain literal.
+        """
+        if value is None or not isinstance(value, str):
+            return value
+        return value.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+
     async def export_nodes(
         self,
         node_id: str | None = None,
@@ -1406,6 +1417,15 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     data = await self._handle_response(response)
 
                     all_nodes = data.get("nodes", []) or []
+
+                    # SCRY reverse-whitening (dewhitening) for names/notes:
+                    # decode &amp;, &lt;, &gt; once so subsequent writes can safely
+                    # re-whiten using _validate_name_field/_validate_note_field.
+                    for node in all_nodes:
+                        for key in ("name", "nm", "note", "no"):
+                            if key in node:
+                                node[key] = self._dewhiten_text(node.get(key))
+
                     total_before_filter = len(all_nodes)
 
                     # Annotate actual count from API (before any subtree filtering)
