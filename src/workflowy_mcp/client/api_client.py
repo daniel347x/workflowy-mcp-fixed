@@ -379,29 +379,36 @@ class WorkFlowyClient:
                 stack.append({"tag": tag, "start": start, "allowed": allowed})
 
         if not candidates:
-            return [{"kind": "text", "value": text}]
+            segments = [{"kind": "text", "value": text}]
+        else:
+            # Reduce to non-overlapping outermost ranges
+            candidates.sort(key=lambda r: r[0])
+            merged: list[tuple[int, int]] = []
+            last_end = -1
+            for start, end in candidates:
+                if start >= last_end:
+                    merged.append((start, end))
+                    last_end = end
+                else:
+                    # Nested or overlapping range; outermost already captured, so skip
+                    continue
 
-        # Reduce to non-overlapping outermost ranges
-        candidates.sort(key=lambda r: r[0])
-        merged: list[tuple[int, int]] = []
-        last_end = -1
-        for start, end in candidates:
-            if start >= last_end:
-                merged.append((start, end))
-                last_end = end
-            else:
-                # Nested or overlapping range; outermost already captured, so skip
-                continue
+            segments: list[dict[str, str]] = []
+            pos = 0
+            for start, end in merged:
+                if start > pos:
+                    segments.append({"kind": "text", "value": text[pos:start]})
+                segments.append({"kind": "markup", "value": text[start:end]})
+                pos = end
+            if pos < len(text):
+                segments.append({"kind": "text", "value": text[pos:]})
 
-        segments: list[dict[str, str]] = []
-        pos = 0
-        for start, end in merged:
-            if start > pos:
-                segments.append({"kind": "text", "value": text[pos:start]})
-            segments.append({"kind": "markup", "value": text[start:end]})
-            pos = end
-        if pos < len(text):
-            segments.append({"kind": "text", "value": text[pos:]})
+        if "colored" in text:
+            try:
+                log_event(f"[SPAN-DEBUG] text={text!r}", "CLIENT_DEBUG")
+                log_event(f"[SPAN-DEBUG] segments={segments!r}", "CLIENT_DEBUG")
+            except Exception:
+                pass
 
         return segments
 
