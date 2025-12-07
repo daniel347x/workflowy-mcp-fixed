@@ -1655,9 +1655,12 @@ async def nexus_weave_enchanted_async(
 @mcp.tool(
     name="nexus_start_exploration",
     description=(
-        "Initialize an exploration session over a Workflowy subtree and return "
-        "an initial frontier of handles for agent-driven navigation. Set editable=True "
-        "to enable in-session note/tag edits that will be reflected in the phantom gem."
+        "Start a NEXUS exploration session over a Workflowy subtree. The engine "
+        "always controls traversal and returns frontiers (batches of leaves) for "
+        "you to label. In dfs_guided_explicit you explicitly decide every leaf; in "
+        "dfs_guided_bulk you may also perform bulk branch/descendant actions. Set "
+        "editable=True to enable update-and-engulf actions that mutate names/notes "
+        "in the cached tree."
     ),
 )
 async def nexus_start_exploration(
@@ -1670,7 +1673,41 @@ async def nexus_start_exploration(
     max_depth_per_frontier: int = 1,
     editable: bool = False,
 ) -> dict:
-    """Start an exploration session over a Workflowy subtree."""
+    """Start an exploration session and return the first frontier.
+
+    Mental model:
+
+    - Exploration is a labeling pass over a tree, not manual navigation.
+    - The engine always chooses the path and surfaces a frontier of leaves for
+      you to decide on.
+    - You control which nodes are engulfed/spared (and which branches are
+      flagged), not the traversal order.
+
+    Modes (stored as exploration_mode in the session):
+
+    - dfs_guided_explicit:
+        Engine-guided DFS with explicit leaf coverage. Every leaf is expected to
+        be labeled (engulf/spare/update), and bulk descendant actions are
+        typically disabled.
+    - dfs_guided_bulk:
+        Engine-guided DFS with bulk support. You may still label leaves
+        individually, but can also use bulk descendant actions such as
+        engulf_frontier_descendants_in_gemstorm, spare_frontier_descendants_from_gemstorm
+        and spare_all_remaining to operate on many leaves at once.
+
+    Args:
+        nexus_tag: Tag name for this NEXUS run (directory under temp/nexus_runs).
+        root_id: Workflowy UUID to treat as exploration root.
+        source_mode: Currently decorative; source is always a GLIMPSE_FULL SCRY.
+        max_nodes: Safety cap for SCRY (size_limit).
+        session_hint: Controls exploration_mode; if it contains "bulk" or
+            "guided_bulk" the session uses dfs_guided_bulk, otherwise
+            dfs_guided_explicit is used (default).
+        frontier_size: Leaf-budget target for each frontier batch.
+        max_depth_per_frontier: Reserved for future multi-level frontiers.
+        editable: If True, enables update_*_and_engulf actions that write back to
+            the cached tree before GEM finalization.
+    """
     client = get_client()
 
     if _rate_limiter:
@@ -1699,9 +1736,10 @@ async def nexus_start_exploration(
 @mcp.tool(
     name="nexus_explore_step",
     description=(
-        "Apply exploration decisions and multi-ray walks to an exploration session "
-        "and return the next frontiers. Use 'decisions' for accept/reject/finalize/etc "
-        "and 'walks' for multi-origin ray expansion."
+        "Apply exploration decisions to an existing NEXUS session and return the "
+        "next frontier. The engine always drives traversal and returns a frontier "
+        "of leaves; in dfs_guided_explicit you explicitly label every leaf, and in "
+        "dfs_guided_bulk you may also use bulk descendant actions."
     ),
 )
 async def nexus_explore_step(
@@ -1712,31 +1750,61 @@ async def nexus_explore_step(
     global_frontier_limit: int = 80,
     include_history_summary: bool = True,
 ) -> dict:
-    """v2 Exploration API: separate DECISIONS from WALKs and support multi-ray steps.
+    """Apply a single exploration step: label nodes and advance the frontier.
 
-    Request:
-      - decisions: [{ "handle": "H_1", "action": "accept_leaf", ... }, ...]
-      - walks:     [{ "origin": "H_10", "max_steps": 2 }, ...]
-      - max_parallel_walks: cap on how many rays are walked in this call
-      - global_frontier_limit: total nodes across all rays
+    GUIDED MODES (dfs_guided_explicit / dfs_guided_bulk):
 
-    Response:
-      {
-        "session_id": ...,
-        "walks": [
-          {
-            "origin": "H_10",
-            "requested_max_steps": 2,
-            "complete": false,
-            "frontier": [...]
-          },
-          ...
-        ],
-        "skipped_walks": [...],
-        "decisions_applied": [...],
-        "scratchpad": "...",
-        "history_summary": {...}
-      }
+    - The engine controls traversal and frontier composition.
+    - You do not manually navigate; you label what appears in the frontier.
+
+    In dfs_guided_explicit:
+
+    - "walks" is ignored.
+    - You are expected to explicitly decide every leaf using leaf actions and
+      branch-node actions.
+    - Bulk descendant actions are generally not used in this mode.
+
+    In dfs_guided_bulk:
+
+    - Frontiers are still engine-driven DFS batches of leaves.
+    - All explicit actions remain available.
+    - Bulk descendant actions are enabled:
+        - engulf_frontier_descendants_in_gemstorm
+        - spare_frontier_descendants_from_gemstorm
+        - spare_all_remaining
+
+    Decisions:
+
+        * handle: frontier handle id.
+        * action: one of the leaf/branch/bulk action names:
+
+          Leaf actions:
+            - engulf_leaf_in_gemstorm
+            - spare_leaf_from_storm
+            - update_leaf_node_and_engulf_in_gemstorm
+
+          Branch-node actions:
+            - engulf_branch_node_flag_only_in_gemstorm
+            - spare_branch_node_flag_only_from_gemstorm
+            - update_branch_node_and_engulf_in_gemstorm__descendants_unaffected
+            - update_branch_note_and_engulf_in_gemstorm__descendants_unaffected
+            - auto_decide_branch_no_change_required
+
+          Bulk descendant actions (dfs_guided_bulk only):
+            - engulf_frontier_descendants_in_gemstorm
+            - spare_frontier_descendants_from_gemstorm
+            - spare_all_remaining
+
+    Args:
+        session_id: Exploration session id.
+        decisions: Optional list of decision dicts.
+        walks: Optional list of walk dicts (ignored in dfs_guided_explicit).
+        max_parallel_walks: Upper bound on concurrent rays (dfs_guided_bulk / legacy).
+        global_frontier_limit: Leaf-budget limit for this step when batching frontiers.
+        include_history_summary: If True, include a compact status summary.
+
+    Returns:
+        Dict with new frontier, decisions_applied, scratchpad, history_summary, etc.
     """
     client = get_client()
 
