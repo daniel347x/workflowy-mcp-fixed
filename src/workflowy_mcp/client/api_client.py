@@ -375,8 +375,12 @@ class WorkFlowyClient:
                 elif tag == "span":
                     # Allow any span that carries a 'colored' class; precise color
                     # matching / auto-wrap is handled later in the whitening stage.
+                    log_event(f"[SPAN-DEBUG-ATTRS] attrs_stripped={attrs_stripped!r}", "CLIENT_DEBUG")
                     if "colored" in attrs_stripped:
                         allowed = True
+                        log_event(f"[SPAN-DEBUG-ATTRS] allowed=True", "CLIENT_DEBUG")
+                    else:
+                        log_event(f"[SPAN-DEBUG-ATTRS] allowed=False (no 'colored')", "CLIENT_DEBUG")
                 stack.append({"tag": tag, "start": start, "allowed": allowed})
 
         if not candidates:
