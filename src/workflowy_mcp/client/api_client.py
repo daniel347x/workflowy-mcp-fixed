@@ -345,6 +345,8 @@ class WorkFlowyClient:
         """
         import re
 
+        log_event(f"[SPAN-DEBUG-INPUT] text={text!r} has_lt={('<' in text)} has_colored={('colored' in text)}", "CLIENT_DEBUG")
+
         if not text:
             return [{"kind": "text", "value": text}]
 
