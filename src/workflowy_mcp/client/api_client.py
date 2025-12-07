@@ -598,31 +598,23 @@ class WorkFlowyClient:
             wrapped_segments.append(seg)
         segments = wrapped_segments
 
-        # STEP 1: escape < and > in text segments only; leave markup untouched
-        stage1_chars: list[str] = []
+        # SINGLE-STAGE: escape &, <, > in text segments only; leave markup untouched
+        result_chars: list[str] = []
         for seg in segments:
             if seg["kind"] == "markup":
-                stage1_chars.append(seg["value"])
+                result_chars.append(seg["value"])
             else:
                 for ch in seg["value"]:
-                    if ch == '<':
-                        stage1_chars.append('&lt;')
+                    if ch == '&':
+                        result_chars.append('&amp;')
+                    elif ch == '<':
+                        result_chars.append('&lt;')
                     elif ch == '>':
-                        stage1_chars.append('&gt;')
+                        result_chars.append('&gt;')
                     else:
-                        stage1_chars.append(ch)
+                        result_chars.append(ch)
 
-        stage1 = ''.join(stage1_chars)
-
-        # STEP 2: encode all ampersands to &amp; (including those introduced in STEP 1)
-        stage2_chars: list[str] = []
-        for ch in stage1:
-            if ch == '&':
-                stage2_chars.append('&amp;')
-            else:
-                stage2_chars.append(ch)
-
-        escaped_name = ''.join(stage2_chars)
+        escaped_name = ''.join(result_chars)
         return (escaped_name, None)
 
         # Legacy implementation (unreachable, kept for reference):
