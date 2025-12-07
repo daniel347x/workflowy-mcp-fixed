@@ -3032,6 +3032,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                                             ]
                                         }
         
+        # 🔁 SECOND-PASS DECODE: Handle valid JSON strings that themselves contain JSON
+        # e.g. "\"[{\\\"name\\\": \\\"Test\\\"}]\"" → first load gives string "[{\"name\": \"Test\"}]"
+        if isinstance(nodes, str):
+            try:
+                second = json.loads(nodes)
+                stringify_strategy_used = (stringify_strategy_used or "Strategy 1: Direct json.loads()") + " + Second-pass json.loads()"
+                nodes = second
+            except json.JSONDecodeError:
+                # Leave as-is; final validation below will report a clear error
+                pass
+
         # 🔥 FINAL VALIDATION: Ensure parsed result is valid JSON
         # This catches any corruption that survived the parsing gauntlet
         if not isinstance(nodes, list):

@@ -1621,9 +1621,33 @@ async def nexus_weave_enchanted_async(
     Progress tracked via .weave.pid and .weave_journal.json files.
     
     Use mcp_job_status() to monitor progress (scans directory for active PIDs).
+
+    NOTE: nexus_tag must be a NEXUS TAG (e.g. "my-arc-tag"), **not** a JSON file path.
+    If you have a JSON file that describes nodes you want to create, use
+    workflowy_etch or workflowy_etch_async instead.
     """
     client = get_client()
-    
+
+    # Detect misuse: nexus_tag looks like a JSON file path
+    lowered = (nexus_tag or "").lower()
+    if lowered.endswith(".json") or "/" in nexus_tag or "\\" in nexus_tag:
+        return {
+            "success": False,
+            "error": (
+                "nexus_weave_enchanted_async expects a NEXUS TAG (e.g. 'my-arc-tag'), not a JSON file path.\n\n"
+                "If you have a JSON file representing nodes to create, use ETCH instead:\n\n"
+                "  workflowy_etch(\n"
+                "    parent_id='...',\n"
+                "    nodes_file='E:...\\your_nodes.json'\n"
+                "  )\n\n"
+                "or the async variant:\n\n"
+                "  workflowy_etch_async(\n"
+                "    parent_id='...',\n"
+                "    nodes_file='E:...\\your_nodes.json'\n"
+                "  ).\n"
+            ),
+        }
+
     # Use detached launcher (survives MCP restart)
     return client.nexus_weave_enchanted_detached(nexus_tag=nexus_tag, dry_run=dry_run)
 
@@ -1957,8 +1981,9 @@ async def glimpse_full(
 )
 async def etch(
     parent_id: str,
-    nodes: list[dict] | str,
+    nodes: list[dict] | str | None = None,
     replace_all: bool = False,
+    nodes_file: str | None = None,
 ) -> dict:
     """Create multiple nodes from JSON structure.
 
@@ -1980,10 +2005,68 @@ async def etch(
     """
     client = get_client()
 
+    # Resolve nodes source: direct value or file-based
+    payload_nodes: list[dict] | str | None = nodes
+    used_nodes_file = False
+
+    if nodes_file:
+        try:
+            with open(nodes_file, "r", encoding="utf-8") as f:
+                payload_nodes = f.read()
+            used_nodes_file = True
+        except Exception as e:
+            return {
+                "success": False,
+                "nodes_created": 0,
+                "root_node_ids": [],
+                "api_calls": 0,
+                "retries": 0,
+                "rate_limit_hits": 0,
+                "errors": [
+                    f"Failed to read nodes_file '{nodes_file}': {str(e)}",
+                    "Hint: Ensure the path is correct and accessible from the MCP server",
+                ],
+            }
+    elif isinstance(payload_nodes, str):
+        # Agent convenience: if 'nodes' looks like a real JSON file path, try it as such.
+        candidate = payload_nodes.strip()
+        if os.path.exists(candidate) and candidate.lower().endswith(".json"):
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    payload_nodes = f.read()
+                used_nodes_file = True
+                nodes_file = candidate
+                log_event(
+                    f"workflowy_etch: treating 'nodes' string as nodes_file path -> {candidate}",
+                    "ETCH",
+                )
+            except Exception as e:
+                # Fall back to treating it as JSON; let the ETCH parser report a clear error
+                log_event(
+                    f"workflowy_etch: failed to read candidate nodes file '{candidate}': {e}",
+                    "ETCH",
+                )
+
+    if payload_nodes is None:
+        return {
+            "success": False,
+            "nodes_created": 0,
+            "root_node_ids": [],
+            "api_calls": 0,
+            "retries": 0,
+            "rate_limit_hits": 0,
+            "errors": [
+                "Missing ETCH payload: provide either 'nodes' (list or stringified JSON) or 'nodes_file' (path to JSON file)",
+            ],
+        }
+
     # Rate limiter handled within workflowy_etch method due to recursive operations
 
     try:
-        result = await client.workflowy_etch(parent_id, nodes, replace_all=replace_all)
+        result = await client.workflowy_etch(parent_id, payload_nodes, replace_all=replace_all)
+        # Annotate result to show where nodes came from (helps debugging real-world agent usage)
+        if used_nodes_file:
+            result.setdefault("_source", {})["nodes_file"] = nodes_file
         return result
     except Exception as e:
         # Top-level exception capture
@@ -2004,18 +2087,57 @@ async def etch(
 )
 async def etch_async(
     parent_id: str,
-    nodes: list[dict] | str,
+    nodes: list[dict] | str | None = None,
     replace_all: bool = False,
+    nodes_file: str | None = None,
 ) -> dict:
     """Start ETCH as a background job and return a job_id."""
     client = get_client()
 
+    # Resolve nodes source for the background job
+    payload_nodes: list[dict] | str | None = nodes
+
+    if nodes_file:
+        try:
+            with open(nodes_file, "r", encoding="utf-8") as f:
+                payload_nodes = f.read()
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to read nodes_file '{nodes_file}': {str(e)}",
+            }
+    elif isinstance(payload_nodes, str):
+        # Agent convenience: if 'nodes' looks like a real JSON file path, try it as such.
+        candidate = payload_nodes.strip()
+        if os.path.exists(candidate) and candidate.lower().endswith(".json"):
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    payload_nodes = f.read()
+                nodes_file = candidate
+                log_event(
+                    f"workflowy_etch_async: treating 'nodes' string as nodes_file path -> {candidate}",
+                    "ETCH_ASYNC",
+                )
+            except Exception as e:
+                # Fall back to treating it as JSON; let the ETCH parser report a clear error
+                log_event(
+                    f"workflowy_etch_async: failed to read candidate nodes file '{candidate}': {e}",
+                    "ETCH_ASYNC",
+                )
+
+    if payload_nodes is None:
+        return {
+            "success": False,
+            "error": "Missing ETCH payload: provide either 'nodes' (list or stringified JSON) or 'nodes_file' (path to JSON file)",
+        }
+
     async def run_etch(job_id: str) -> dict:  # job_id reserved for future logging
-        return await client.workflowy_etch(parent_id, nodes, replace_all=replace_all)
+        return await client.workflowy_etch(parent_id, payload_nodes, replace_all=replace_all)
 
     payload = {
         "parent_id": parent_id,
         "replace_all": replace_all,
+        "nodes_file": nodes_file,
     }
 
     return await _start_background_job("etch", payload, run_etch)
