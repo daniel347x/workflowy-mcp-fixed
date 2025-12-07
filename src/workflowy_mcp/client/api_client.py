@@ -478,7 +478,7 @@ class WorkFlowyClient:
         for seg in segments:
             if seg["kind"] == "markup":
                 v = seg["value"]
-                if re.fullmatch(r'<span\s+class="colored\s+(?:c|bc)-[^\"]+">.*?</span>', v):
+                if re.fullmatch(r'<span\s+class="colored\s+(?:c|bc)-[^"]+">.*?</span>', v):
                     seg = {"kind": "markup", "value": f"<b>{v}</b>"}
             wrapped_segments.append(seg)
         segments = wrapped_segments
@@ -592,7 +592,7 @@ class WorkFlowyClient:
         for seg in segments:
             if seg["kind"] == "markup":
                 v = seg["value"]
-                if re.fullmatch(r'<span\s+class="colored\s+(?:c|bc)-[^\"]+">.*?</span>', v):
+                if re.fullmatch(r'<span\s+class="colored\s+(?:c|bc)-[^"]+">.*?</span>', v):
                     seg = {"kind": "markup", "value": f"<b>{v}</b>"}
             wrapped_segments.append(seg)
         segments = wrapped_segments
