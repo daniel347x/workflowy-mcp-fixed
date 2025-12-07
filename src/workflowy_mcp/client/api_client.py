@@ -368,13 +368,14 @@ class WorkFlowyClient:
                     candidates.append((int(top["start"]), end))
             else:  # opening tag
                 allowed = False
-                attrs_stripped = attrs.strip()
+                attrs_stripped = attrs.trim() if hasattr(attrs, 'trim') else attrs.strip()
                 if tag in {"b", "i", "s", "code"}:
                     # Only accept markup if there are *no* attributes
                     allowed = attrs_stripped == ""
                 elif tag == "span":
-                    # Only accept spans of the form: class="colored c-..." or 'colored c-...'
-                    if re.search(r'class=[\'\"]colored (?:c|bc)-[^\'\"]+[\'\"]', attrs_stripped):
+                    # Allow any span that carries a 'colored' class; precise color
+                    # matching / auto-wrap is handled later in the whitening stage.
+                    if "colored" in attrs_stripped:
                         allowed = True
                 stack.append({"tag": tag, "start": start, "allowed": allowed})
 
