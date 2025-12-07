@@ -356,6 +356,7 @@ class WorkFlowyClient:
 
         for m in tag_pattern.finditer(text):
             slash, tag, attrs = m.group(1), m.group(2).lower(), m.group(3) or ""
+            log_event(f"[SPAN-DEBUG-MATCH] tag={tag} slash={slash!r} attrs={attrs!r}", "CLIENT_DEBUG")
             start, end = m.start(), m.end()
 
             if slash:  # closing tag
