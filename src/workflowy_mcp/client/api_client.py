@@ -350,7 +350,7 @@ class WorkFlowyClient:
         if not text:
             return [{"kind": "text", "value": text}]
 
-        tag_pattern = re.compile(r'<(/?)(b|i|s|code|span)([^>]*)>', re.IGNORECASE)
+        tag_pattern = re.compile(r'<(/?)(span|code|b|i|s)([^>]*)>', re.IGNORECASE)
         stack: list[dict[str, object]] = []
         candidates: list[tuple[int, int]] = []
 
