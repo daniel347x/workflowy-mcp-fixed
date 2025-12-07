@@ -329,49 +329,121 @@ class WorkFlowyClient:
         _log_to_file_helper(message, log_type)
 
     @staticmethod
+    def _segment_whitelisted_markup(text: str) -> list[dict[str, str]]:
+        """Segment text into plain-text vs whitelisted markup ranges.
+
+        Only *properly matched* whitelisted tags are treated as markup:
+        - <b>..</b>, <i>..</i>, <s>..</s>, <code>..</code> with NO attributes
+        - <span class="colored c-...">..</span> (exact class pattern)
+
+        Any unmatched tags, unknown tags, or spans with other attributes are
+        treated as plain text and will be escaped by the normal whitener.
+
+        Returns a list of segments like:
+            [{"kind": "text", "value": "..."},
+             {"kind": "markup", "value": "<b>foo</b>"}, ...]
+        """
+        import re
+
+        if not text:
+            return [{"kind": "text", "value": text}]
+
+        tag_pattern = re.compile(r'<(/?)(b|i|s|code|span)([^>]*)>', re.IGNORECASE)
+        stack: list[dict[str, object]] = []
+        candidates: list[tuple[int, int]] = []
+
+        for m in tag_pattern.finditer(text):
+            slash, tag, attrs = m.group(1), m.group(2).lower(), m.group(3) or ""
+            start, end = m.start(), m.end()
+
+            if slash:  # closing tag
+                if not stack:
+                    continue
+                top = stack[-1]
+                if top["tag"] != tag:
+                    continue
+                top = stack.pop()
+                if top.get("allowed"):
+                    # Record full range from opening '<tag>' start to closing '</tag>' end
+                    candidates.append((int(top["start"]), end))
+            else:  # opening tag
+                allowed = False
+                attrs_stripped = attrs.strip()
+                if tag in {"b", "i", "s", "code"}:
+                    # Only accept markup if there are *no* attributes
+                    allowed = attrs_stripped == ""
+                elif tag == "span":
+                    # Only accept spans of the form: class="colored c-..." or 'colored c-...'
+                    if re.search(r'class=[\'\"]colored (?:c|bc)-[^\'\"]+[\'\"]', attrs_stripped):
+                        allowed = True
+                stack.append({"tag": tag, "start": start, "allowed": allowed})
+
+        if not candidates:
+            return [{"kind": "text", "value": text}]
+
+        # Reduce to non-overlapping outermost ranges
+        candidates.sort(key=lambda r: r[0])
+        merged: list[tuple[int, int]] = []
+        last_end = -1
+        for start, end in candidates:
+            if start >= last_end:
+                merged.append((start, end))
+                last_end = end
+            else:
+                # Nested or overlapping range; outermost already captured, so skip
+                continue
+
+        segments: list[dict[str, str]] = []
+        pos = 0
+        for start, end in merged:
+            if start > pos:
+                segments.append({"kind": "text", "value": text[pos:start]})
+            segments.append({"kind": "markup", "value": text[start:end]})
+            pos = end
+        if pos < len(text):
+            segments.append({"kind": "text", "value": text[pos:]})
+
+        return segments
+
+    @staticmethod
     def _validate_note_field(note: str | None, skip_newline_check: bool = False) -> tuple[str | None, str | None]:
         """Validate and smart-escape note field for Workflowy compatibility.
         
         Workflowy GUI rendering (Dec 2025):
-        - Whitelisted XML tags render correctly: <b>, <i>, <s>, <code>
+        - Whitelisted XML tags render correctly: <b>, <i>, <s>, <code>, and
+          selected <span class="colored c-...">…</span>
         - <a href> tags cause rendering failures
         - Bare/unpaired brackets (< or >) cause content to vanish
         
-        Smart processing:
-        1. Normalize <a href="URL">text</a> → text (URL)
-        2. Preserve whitelisted XML tags only: <b>, <i>, <s>, <code>
-        3. Escape all other bare brackets and &
+        New behavior with parser:
+        - Properly matched whitelisted tags are preserved as markup ranges
+        - EVERYTHING ELSE (including stray <b>, non-whitelisted tags, and
+          arbitrary <foo>) is treated as text and has < and > escaped
         
-        Args:
-            note: Note content to validate/escape
-            skip_newline_check: DEPRECATED - kept for compatibility
-            
-        Returns:
-            (processed_note, warning_message)
+        This guarantees that discussionary text like `/file-<tag>.json` and
+        unmatched `<b>` from notes remain visible as literal text instead of
+        breaking rendering.
         """
-        # NOTE: Whitening ENABLED for notes: whitelist <b>/<i>/<s>/<code> tags, escape other brackets.
-        import re
-
         if note is None:
             return (None, None)
 
         text = note
-
-        # Find positions of whitelisted tags so we don't escape their angle brackets
-        xml_tag_pattern = re.compile(r'</?(?:b|i|s|code)>', re.IGNORECASE)
-        valid_tags = [(m.start(), m.end()) for m in xml_tag_pattern.finditer(text)]
-
-        def _inside_whitelisted_tag(idx: int) -> bool:
-            return any(start <= idx < end for start, end in valid_tags)
+        segments = WorkFlowyClient._segment_whitelisted_markup(text)
 
         result_chars: list[str] = []
-        for i, ch in enumerate(text):
-            if ch == '<' and not _inside_whitelisted_tag(i):
-                result_chars.append('&lt;')
-            elif ch == '>' and not _inside_whitelisted_tag(i):
-                result_chars.append('&gt;')
+        for seg in segments:
+            if seg["kind"] == "markup":
+                # Preserve whitelisted markup exactly as-is
+                result_chars.append(seg["value"])
             else:
-                result_chars.append(ch)
+                # Plain text: escape < and > so they can't break rendering
+                for ch in seg["value"]:
+                    if ch == '<':
+                        result_chars.append('&lt;')
+                    elif ch == '>':
+                        result_chars.append('&gt;')
+                    else:
+                        result_chars.append(ch)
 
         escaped_note = ''.join(result_chars)
         return (escaped_note, None)
@@ -442,40 +514,32 @@ class WorkFlowyClient:
         - GUI decodes entities AGAIN when rendering
         - Result: Must DOUBLE-ENCODE for proper display
         
-        Smart processing:
-        1. Normalize <a href="URL">text</a> → text (URL)
-        2. Preserve whitelisted XML tags only: <b>, <i>, <s>, <code>
-        3. DOUBLE-ENCODE bare brackets: < → &amp;lt; (API decodes to &lt;, GUI shows <)
-        
-        Args:
-            name: Node name to validate/escape
-            
-        Returns:
-            (processed_name, warning_message)
+        New behavior with parser:
+        - Properly matched whitelisted tags (<b>/<i>/<s>/<code> and allowed
+          <span class="colored c-...">) are preserved as markup ranges
+        - EVERYTHING ELSE is treated as plain text and has < and > escaped
+        - Then we double-encode '&' across the entire string so that a
+          round-trip API+GUI decode yields the intended characters
         """
-        # NOTE: Whitening ENABLED for names: whitelist <b>/<i>/<s>/<code> tags, then two-stage encode.
-        import re
-
         if name is None:
             return (None, None)
 
         text = name
+        segments = WorkFlowyClient._segment_whitelisted_markup(text)
 
-        # STEP 1: replace < and > outside whitelisted tags with &lt; and &gt;
-        xml_tag_pattern = re.compile(r'</?(?:b|i|s|code)>', re.IGNORECASE)
-        valid_tags = [(m.start(), m.end()) for m in xml_tag_pattern.finditer(text)]
-
-        def _inside_whitelisted_tag(idx: int) -> bool:
-            return any(start <= idx < end for start, end in valid_tags)
-
+        # STEP 1: escape < and > in text segments only; leave markup untouched
         stage1_chars: list[str] = []
-        for i, ch in enumerate(text):
-            if ch == '<' and not _inside_whitelisted_tag(i):
-                stage1_chars.append('&lt;')
-            elif ch == '>' and not _inside_whitelisted_tag(i):
-                stage1_chars.append('&gt;')
+        for seg in segments:
+            if seg["kind"] == "markup":
+                stage1_chars.append(seg["value"])
             else:
-                stage1_chars.append(ch)
+                for ch in seg["value"]:
+                    if ch == '<':
+                        stage1_chars.append('&lt;')
+                    elif ch == '>':
+                        stage1_chars.append('&gt;')
+                    else:
+                        stage1_chars.append(ch)
 
         stage1 = ''.join(stage1_chars)
 
