@@ -276,29 +276,28 @@ def scan_active_weaves(nexus_runs_base: str) -> list[dict[str, Any]]:
 EXPLORATION_ACTION_2LETTER = {
     "EL": "engulf_leaf_in_gemstorm",
     "SL": "spare_leaf_from_storm",
-    "ES": "engulf_shell_in_gemstorm",
-    "ST": "spare_subtree_from_storm",
+    "UL": "update_leaf_node_and_engulf_in_gemstorm",
+    "EB": "engulf_branch_node_flag_only_in_gemstorm",
+    "SB": "spare_branch_node_flag_only_from_gemstorm",
+    "UB": "update_branch_node_and_engulf_in_gemstorm__descendants_unaffected",
+    "UN": "update_branch_note_and_engulf_in_gemstorm__descendants_unaffected",
+    "AB": "auto_decide_branch_no_change_required",
     "EF": "engulf_frontier_descendants_in_gemstorm",
-    "SF": "spare_frontier_descendants_from_storm",
+    "SF": "spare_frontier_descendants_from_gemstorm",
     "SA": "spare_all_remaining",
-    "RB": "reserve_branch_for_children",
-    "ED": "engulf_showing_descendants",
-    "SD": "spare_showing_descendants",
-    "EA": "engulf_all_remaining_showing_descendants",
-    "SR": "spare_all_remaining_showing_descendants",
+    "EA": "engulf_frontier_descendants_in_gemstorm",
+    "SR": "spare_frontier_descendants_from_gemstorm",
     "OP": "open",
     "CL": "close",
     "FN": "finalize",
     "RO": "reopen",
+    "RB": "reopen_branch",
     "BT": "backtrack",
-    "RP": "reopen_branch",
     "SS": "set_scratchpad",
     "AS": "append_scratchpad",
     "AH": "add_hint",
     "PD": "peek_descendants",
-    "UN": "update_node_and_engulf_in_gemstorm",
     "UT": "update_tag_and_engulf_in_gemstorm",
-    "UE": "update_note_and_engulf_in_gemstorm",
 }
 
 
@@ -5243,7 +5242,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                   "created_at": "...",
                   "updated_at": "...",
                   "steps": 5,
-                  "exploration_mode": "dfs_guided",
+                  "exploration_mode": "dfs_guided_bulk",
                   "editable": false
                 },
                 ...
@@ -5459,7 +5458,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         DEFAULT_NOTE_PREVIEW = 1024
 
         # ========= STRICT DFS / DFS-GUIDED MODES: LEAF-CHUNK FRONTIER =========
-        if exploration_mode in {"dfs_guided", "dfs_full_walk"}:
+        if exploration_mode in {"dfs_guided_bulk", "dfs_guided_explicit"}:
 
             # For BOTH strict and guided modes, also surface undecided branch
             # ancestors leading to frontier leaves so agent/human can see
@@ -5506,7 +5505,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 
                 # NON-STRICT MODE: Do NOT hide descendants under subtree ancestors
                 # (enables frontier bulk actions and explicit individual decisions)
-                if exploration_mode == "dfs_guided":
+                if exploration_mode == "dfs_guided_bulk":
                     return False
                 
                 # STRICT MODE: Respect subtree coverage (original discipline)
@@ -5711,7 +5710,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     )
 
                 # Leaf-specific guidance (same for both modes; we keep it minimal)
-                if exploration_mode == "dfs_full_walk":
+                if exploration_mode == "dfs_guided_explicit":
                     guidance = "Leaf. EL|SL. EA/SR."
                 else:  # dfs_guided
                     guidance = "Leaf. EL|SL. EA/SR."
@@ -5939,11 +5938,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # Determine exploration mode from session_hint.
         # DEFAULT: dfs_full_walk (strict full leaf walk, DO OR DIE).
         # Optional override: explicitly request dfs_guided for softer behavior.
-        exploration_mode = "dfs_full_walk"
+        exploration_mode = "dfs_guided_explicit"
         if session_hint:
             hint = session_hint.strip().lower()
-            if "dfs_guided" in hint or "non_strict" in hint:
-                exploration_mode = "dfs_guided"
+            if "dfs_guided_bulk" in hint or "non_strict" in hint:
+                exploration_mode = "dfs_guided_bulk"
 
         # Fetch subtree once via GLIMPSE FULL (Agent hunts mode)
         glimpse = await self.workflowy_scry(
@@ -6122,8 +6121,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
               Actions:
                 - 'engulf_leaf_in_gemstorm' = Include leaf in GEM (will edit/delete)
                 - 'spare_leaf_from_storm' = Exclude leaf from GEM (leave in ETHER)
-                - 'engulf_shell_in_gemstorm' = Include branch shell in GEM (children opaque)
-                - 'spare_subtree_from_storm' = Exclude branch from GEM (all descendants safe)
+                - 'engulf_branch_node_flag_only_in_gemstorm' = Include branch shell in GEM (children opaque)
+                - 'spare_branch_node_flag_only_from_gemstorm' = Exclude branch from GEM (all descendants safe)
             - walks: IGNORED in strict modes (engine controls DFS traversal)
             - global_frontier_limit: leaf budget per step (default 80)
 
@@ -6193,7 +6192,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # already been applied above via _nexus_explore_step_internal.
         exploration_mode = session.get("exploration_mode", "manual")
         skipped_decisions: list[dict[str, Any]] = []
-        if exploration_mode in {"dfs_guided", "dfs_full_walk"}:
+        if exploration_mode in {"dfs_guided_bulk", "dfs_guided_explicit"}:
             # In strict DFS modes, we must APPLY DECISIONS before computing the
             # next leaf-chunk frontier. Delegate decision semantics to the v1
             # helper, then reload the updated session state.
@@ -6754,11 +6753,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         # ACTION ALIAS MAPPER: Translate human-friendly aliases to machine actions
         ACTION_ALIASES = {
-            "reserve_branch_for_children": "engulf_shell_in_gemstorm",
+            "reserve_branch_for_children": "engulf_branch_node_flag_only_in_gemstorm",
             "engulf_showing_descendants": "engulf_frontier_descendants_in_gemstorm",
-            "spare_showing_descendants": "spare_frontier_descendants_from_storm",
+            "spare_showing_descendants": "spare_frontier_descendants_from_gemstorm",
             "engulf_all_remaining_showing_descendants": "engulf_frontier_descendants_in_gemstorm",
-            "spare_all_remaining_showing_descendants": "spare_frontier_descendants_from_storm",
+            "spare_all_remaining_showing_descendants": "spare_frontier_descendants_from_gemstorm",
         }
         
         for action in actions:
@@ -6786,7 +6785,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 category = 0  # ENGULF first
             elif act in {"spare_leaf_from_storm", "spare_branch_node_flag_only_from_gemstorm"}:
                 category = 1  # SPARE second
-            elif act in {"engulf_frontier_descendants_in_gemstorm", "spare_frontier_descendants_from_storm"}:
+            elif act in {"engulf_frontier_descendants_in_gemstorm", "spare_frontier_descendants_from_gemstorm"}:
                 category = 3  # Frontier bulk near the end
             elif act == "spare_all_remaining":
                 category = 4  # Global spare_all_remaining last
@@ -6823,9 +6822,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             if act in {"set_scratchpad", "append_scratchpad", "spare_all_remaining"}:
                 if act == "spare_all_remaining":
                     # NON-STRICT MODE ONLY: Spare all remaining undecided nodes
-                    if exploration_mode != "dfs_guided":
+                    if exploration_mode != "dfs_guided_bulk":
                         raise NetworkError(
-                            "spare_all_remaining action is only available in non-strict mode (dfs_guided).\n\n"
+                            "spare_all_remaining action is only available in dfs_guided_bulk mode.\n\n"
                             "In strict DFS mode, you must explicitly decide every leaf."
                         )
                     
@@ -6873,10 +6872,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             # FRONTIER-BASED BULK ACTIONS (non-strict mode only)
             if act in {"engulf_frontier_descendants_in_gemstorm", "spare_frontier_descendants_from_storm"}:
-                if exploration_mode != "dfs_guided":
+                if exploration_mode != "dfs_guided_bulk":
                     raise NetworkError(
-                        f"Action '{act}' is only available in non-strict mode (dfs_guided).\n\n"
-                        "In strict DFS mode, you must explicitly decide each leaf individually."
+                        f"Action '{act}' is only available in dfs_guided_bulk mode.\n\n"
+                        "In dfs_guided_explicit mode, you must explicitly decide each leaf individually."
                     )
                 
                 if handle not in handles:
@@ -6984,9 +6983,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # deterministic and brain-dead simple for agents: one node at a
             # time.
             # In non-strict mode, allow spare actions outside frontier for cleanup
-            spare_actions_allowed_outside_frontier = {"spare_leaf_from_storm", "spare_subtree_from_storm"} if exploration_mode == "dfs_guided" else set()
+            spare_actions_allowed_outside_frontier = {"spare_leaf_from_storm", "spare_branch_node_flag_only_from_gemstorm"} if exploration_mode == "dfs_guided_bulk" else set()
             
-            if exploration_mode in {"dfs_guided", "dfs_full_walk"} and act not in ({"reopen_branch", "add_hint", "peek_descendants"} | spare_actions_allowed_outside_frontier):
+            if exploration_mode in {"dfs_guided_bulk", "dfs_guided_explicit"} and act not in ({"reopen_branch", "add_hint", "peek_descendants"} | spare_actions_allowed_outside_frontier):
                 # Recompute current DFS frontier based on the *current* state
                 # before applying this action. Any handle in the current
                 # leaf-chunk frontier is a valid focus for decisions in this
@@ -7004,17 +7003,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # but require all other decisions to target a handle that is
                 # currently in the strict DFS leaf frontier.
                 if allowed_handles and handle not in allowed_handles:
-                    # Skip out-of-frontier decisions (agent tried to decide a node not in current DFS batch).
-                    # Only report if this handle is truly UNDECIDED - don't spam about already-decided nodes.
-                    handle_state = state.get(handle, {})
-                    if handle_state.get("status") not in {"finalized", "closed"}:
-                        skipped_decisions.append(
-                            {
-                                "handle": handle,
-                                "action": act,
-                                "reason": "not_in_current_leaf_frontier",
-                            }
-                        )
+                    # Harmless: skip out-of-frontier decisions and record them
+                    # for the caller instead of raising an error.
+                    skipped_decisions.append(
+                        {
+                            "handle": handle,
+                            "action": act,
+                            "reason": "not_in_current_leaf_frontier",
+                            "current_leaf_frontier": sorted(list(allowed_handles)),
+                        }
+                    )
                     continue
 
             if handle not in state:
@@ -7129,7 +7127,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 entry["selection_type"] = None
                 entry["max_depth"] = None
                 _auto_complete_ancestors_from_leaf(handle)
-            elif act == "engulf_shell_in_gemstorm":
+            elif act == "engulf_branch_node_flag_only_in_gemstorm":
                 # Prevent re-deciding already-decided nodes
                 prev = prev_state.get(handle, {})
                 if prev.get("status") in {"finalized", "closed"}:
@@ -7150,13 +7148,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     # leaf-level decisions instead of subtree semantics.
                     raise NetworkError(
                         f"Handle '{handle}' has no descendants; use 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm' "
-                        "for leaves instead of 'engulf_shell_in_gemstorm'."
+                        "for leaves instead of 'engulf_branch_node_flag_only_in_gemstorm'."
                     )
 
                 # STRICT DFS FULL-WALK MODE:
-                # In dfs_full_walk, engulf_shell_in_gemstorm is ONLY allowed when all
+                # In dfs_full_walk, engulf_branch_node_flag_only_in_gemstorm is ONLY allowed when all
                 # descendants are spared from storm (no undecided, no engulfed leaves).
-                if exploration_mode == "dfs_full_walk":
+                if exploration_mode == "dfs_guided_explicit":
                     if has_undecided or accepted_leaves > 0:
                         session["handles"] = handles
                         session["state"] = state
@@ -7174,8 +7172,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             else None
                         )
                         base_msg = (
-                            f"Strict DFS mode is active for this exploration session; "
-                            f"cannot engulf_shell_in_gemstorm on branch '{handle}' while any descendants "
+                            f"Guided explicit mode is active for this exploration session; "
+                            f"cannot engulf_branch_node_flag_only_in_gemstorm on branch '{handle}' while any descendants "
                             "remain undecided or any leaves have already been engulfed.\n\n"
                             "Walk the branch in depth-first order and make leaf-level decisions "
                             "with 'engulf_leaf_in_gemstorm' / 'spare_leaf_from_storm'."
@@ -7190,10 +7188,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     # and spared; the existing non-strict logic below will treat
                     # this as a branch-only shell (children opaque).
 
-                # GUIDED BULK MODE: Allow reserve_branch_for_children
+                # NON-STRICT MODE (dfs_guided): Allow reserve_branch_for_children
                 # even when descendants are undecided or mixed.
                 if exploration_mode == "dfs_guided_bulk":
-                    # In dfs_guided_bulk, engulf_branch_node_flag_only_in_gemstorm (reserve_branch_for_children)
+                    # In dfs_guided, engulf_branch_node_flag_only_in_gemstorm (reserve_branch_for_children)
                     # is allowed regardless of descendant state. This enables:
                     # "I want this section as a home for new docs, regardless of
                     # how much I've explored under it."
@@ -7232,7 +7230,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         else None
                     )
                     base_msg = (
-                        f"Cannot engulf_shell_in_gemstorm on branch '{handle}' while some descendants are "
+                        f"Cannot engulf_branch_node_flag_only_in_gemstorm on branch '{handle}' while some descendants are "
                         "still undecided and others have already been decided.\n\n"
                         "Finish exploring this branch in depth-first order first."
                     )
@@ -7301,8 +7299,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         "for leaves instead of 'spare_branch_node_flag_only_from_gemstorm'."
                     )
 
-                # GUIDED EXPLICIT MODE:
-                # In dfs_guided_explicit, spare_branch_node_flag_only_from_gemstorm is ONLY allowed when all
+                # STRICT DFS FULL-WALK MODE:
+                # In dfs_full_walk, spare_branch_node_flag_only_from_gemstorm is ONLY allowed when all
                 # descendants are decided (no undecided). Engulfed leaves are
                 # handled by the generic check below (we never allow a branch-
                 # wide spare that silently overrides engulfed leaves).
@@ -7336,7 +7334,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         )
                     raise NetworkError(base_msg)
 
-                # GUIDED BULK MODE: Smart spare logic
+                # NON-STRICT MODE: Smart spare logic
                 if exploration_mode == "dfs_guided_bulk":
                     # In non-strict, allow spare_subtree even with mixed/engulfed descendants
                     # by smartly sparing only non-engulfed nodes and structurally including
@@ -7373,7 +7371,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         f"{len(structurally_included)} branches structurally included (have engulfed descendants)"
                     )
                 
-                # GUIDED EXPLICIT MODE: Enforce all-decided requirement
+                # STRICT MODE: Enforce all-decided requirement
                 elif has_decided and has_undecided:
                     session["handles"] = handles
                     session["state"] = state
@@ -7389,7 +7387,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         else None
                     )
                     base_msg = (
-                        f"Cannot spare_subtree_from_storm on branch '{handle}' while some descendants are "
+                        f"Cannot spare_branch_node_flag_only_from_gemstorm on branch '{handle}' while some descendants are "
                         "still undecided and others have already been decided.\n\n"
                         "Finish exploring this branch in depth-first order first."
                     )
@@ -7401,7 +7399,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         )
                     raise NetworkError(base_msg)
 
-                # GUIDED EXPLICIT MODE: All descendants decided but some leaves accepted
+                # STRICT MODE: All descendants decided but some leaves accepted
                 elif has_decided and not has_undecided and accepted_leaves > 0:
                     raise NetworkError(
                         f"Cannot spare_branch_node_flag_only_from_gemstorm on branch '{handle}' because one or more leaves "
@@ -7494,10 +7492,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     child_handles = handles.get(h, {}).get("children", []) or []
                     for ch in child_handles:
                         queue.append(ch)
-            elif act in {"update_leaf_node_and_engulf_in_gemstorm", "update_branch_node_and_engulf_in_gemstorm__descendants_unaffected", "update_branch_note_and_engulf_in_gemstorm__descendants_unaffected"}:
+            elif act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm"}:
                 if not editable_mode:
                     raise NetworkError(
-                        f"{act} is only allowed when session.editable=True"
+                        "update_node_and_engulf_in_gemstorm / update_note_and_engulf_in_gemstorm is only allowed when session.editable=True"
                     )
 
                 new_name = action.get("name")
@@ -7514,37 +7512,27 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         f"Node id '{node_id_for_edit}' not found in cached exploration tree; cannot update node."
                     )
 
-                # Determine if this is leaf vs branch update
-                child_handles = handles.get(handle, {}).get("children", []) or []
-                is_leaf = not child_handles
-                
-                # Validate action matches node type
-                if act == "update_leaf_node_and_engulf_in_gemstorm" and not is_leaf:
-                    raise NetworkError(
-                        f"Action 'update_leaf_node_and_engulf_in_gemstorm' requires a leaf node, but '{handle}' is a branch. "
-                        "Use 'update_branch_node_and_engulf_in_gemstorm__descendants_unaffected' for branches."
-                    )
-                if act in {"update_branch_node_and_engulf_in_gemstorm__descendants_unaffected", "update_branch_note_and_engulf_in_gemstorm__descendants_unaffected"} and is_leaf:
-                    raise NetworkError(
-                        f"Action '{act}' requires a branch node, but '{handle}' is a leaf. "
-                        "Use 'update_leaf_node_and_engulf_in_gemstorm' for leaves."
-                    )
-
-                # Apply name update (if provided and action allows it)
-                if new_name is not None and act != "update_branch_note_and_engulf_in_gemstorm__descendants_unaffected":
+                if new_name is not None:
                     if not isinstance(new_name, str):
-                        raise NetworkError(f"{act} requires 'name' to be a string if provided")
+                        raise NetworkError(
+                            "update_node_and_engulf_in_gemstorm requires 'name' to be a string if provided"
+                        )
                     target_node["name"] = new_name
                     meta["name"] = new_name
 
-                # Apply note update (if provided)
                 if new_note is not None:
                     if not isinstance(new_note, str):
-                        raise NetworkError(f"{act} requires 'note' to be a string if provided")
+                        raise NetworkError(
+                            "update_node_and_engulf_in_gemstorm requires 'note' to be a string if provided"
+                        )
                     target_node["note"] = new_note
                     meta["note"] = new_note
 
                 handles[handle] = meta
+
+                child_handles = handles.get(handle, {}).get("children", []) or []
+                is_leaf = not child_handles
+
                 entry = state.setdefault(handle, {"status": "unseen", "max_depth": None, "selection_type": None})
 
                 if is_leaf:
@@ -7553,9 +7541,10 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     entry["max_depth"] = max_depth
                     _auto_complete_ancestors_from_leaf(handle)
                 else:
-                    # Branch case: flag branch for engulfment, no effect on descendants
+                    # Branch case: behave like immediate subtree finalize
                     entry["status"] = "finalized"
-                    entry["selection_type"] = "path"  # Branch node flagged, not subtree
+                    if entry.get("selection_type") is None:
+                        entry["selection_type"] = "subtree"
                     entry["max_depth"] = max_depth
                     _auto_complete_ancestors_from_decision(handle)
 
@@ -7642,7 +7631,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # Mode-aware once-per-step guidance (agent does NOT need to navigate;
         # frontiers are auto-selected, agent mainly decides).
-        if exploration_mode == "dfs_full_walk":
+        if exploration_mode == "dfs_guided_explicit":
             # Strict: leaf frontier only; no spare_all_remaining.
             guidance_text = (
                 "Strict DFS. Frontier is auto-selected leaves; do not navigate. "
@@ -7650,7 +7639,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "Branch ES/ST only when all descendants are already decided. "
                 "No SA."
             )
-        elif exploration_mode == "dfs_guided":
+        elif exploration_mode == "dfs_guided_bulk":
             # Non-strict guided: branch shells + smart spare + bulk.
             guidance_text = (
                 "Guided (non-strict). Frontier is auto-selected; do not navigate. "
@@ -7793,7 +7782,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 continue
             child_handles = handles.get(handle_key, {}).get("children", []) or []
             if child_handles and st.get("selection_type") == "subtree":
-                # Branch-level spare_subtree_from_storm: protect entire subtree
+                # Branch-level spare_branch_node_flag_only_from_gemstorm: protect entire subtree
                 spared_subtree_root_ids.add(node_id_for_handle)
             else:
                 # Leaf-level spare or closed singleton: protect just this node
@@ -7956,7 +7945,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             mode_specific_hints = ""
             if exploration_mode == "dfs_guided_bulk":
                 mode_specific_hints = (
-                    "\n\n💡 GUIDED BULK MODE OPTIONS:\n"
+                    "\n\n💡 NON-STRICT MODE OPTIONS:\n"
                     "\n1. For branch nodes you want to add children under:\n"
                     "     {'handle': 'A.4.2', 'action': 'engulf_branch_node_flag_only_in_gemstorm'}\n"
                     "   (Human-friendly alias: 'reserve_branch_for_children')\n"
