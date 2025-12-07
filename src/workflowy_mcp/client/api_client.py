@@ -345,8 +345,6 @@ class WorkFlowyClient:
         """
         import re
 
-        log_event(f"[SPAN-DEBUG-INPUT] text={text!r} has_lt={('<' in text)} has_colored={('colored' in text)}", "CLIENT_DEBUG")
-
         if not text:
             return [{"kind": "text", "value": text}]
 
@@ -356,7 +354,6 @@ class WorkFlowyClient:
 
         for m in tag_pattern.finditer(text):
             slash, tag, attrs = m.group(1), m.group(2).lower(), m.group(3) or ""
-            log_event(f"[SPAN-DEBUG-MATCH] tag={tag} slash={slash!r} attrs={attrs!r}", "CLIENT_DEBUG")
             start, end = m.start(), m.end()
 
             if slash:  # closing tag
@@ -378,12 +375,8 @@ class WorkFlowyClient:
                 elif tag == "span":
                     # Allow any span that carries a 'colored' class; precise color
                     # matching / auto-wrap is handled later in the whitening stage.
-                    log_event(f"[SPAN-DEBUG-ATTRS] attrs_stripped={attrs_stripped!r}", "CLIENT_DEBUG")
                     if "colored" in attrs_stripped:
                         allowed = True
-                        log_event(f"[SPAN-DEBUG-ATTRS] allowed=True", "CLIENT_DEBUG")
-                    else:
-                        log_event(f"[SPAN-DEBUG-ATTRS] allowed=False (no 'colored')", "CLIENT_DEBUG")
                 stack.append({"tag": tag, "start": start, "allowed": allowed})
 
         if not candidates:
@@ -410,13 +403,6 @@ class WorkFlowyClient:
                 pos = end
             if pos < len(text):
                 segments.append({"kind": "text", "value": text[pos:]})
-
-        if "colored" in text:
-            try:
-                log_event(f"[SPAN-DEBUG] text={text!r}", "CLIENT_DEBUG")
-                log_event(f"[SPAN-DEBUG] segments={segments!r}", "CLIENT_DEBUG")
-            except Exception:
-                pass
 
         return segments
 
