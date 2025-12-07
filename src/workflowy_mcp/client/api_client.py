@@ -406,6 +406,42 @@ class WorkFlowyClient:
         return segments
 
     @staticmethod
+    def _extract_whitener_mode(value: str | None) -> tuple[str | None, str | None]:
+        """Detect and strip per-value WORKFLOWY_WHITENER_MODE tokens.
+
+        Pattern (anywhere in the string):
+            WORKFLOWY_WHITENER_MODE=<mode>
+
+        Recognized modes:
+            raw    – bypass whitener for this value only
+            normal – explicit no-op (whitener still runs)
+
+        Returns:
+            (mode, cleaned_value)
+            mode is None if no token or unrecognized mode.
+        """
+        if value is None:
+            return (None, None)
+
+        import re
+
+        text = value
+        pattern = re.compile(r"WORKFLOWY_WHITENER_MODE\s*=\s*([A-Za-z0-9_\-]+)")
+        modes = pattern.findall(text)
+        if not modes:
+            return (None, text)
+
+        mode = modes[-1].strip().lower()
+        cleaned = pattern.sub("", text).strip()
+
+        if mode not in {"raw", "normal"}:
+            # Unrecognized mode: treat as no special behavior but still
+            # remove the token so it doesn't leak into Workflowy.
+            return (None, cleaned)
+
+        return (mode, cleaned)
+
+    @staticmethod
     def _validate_note_field(note: str | None, skip_newline_check: bool = False) -> tuple[str | None, str | None]:
         """Validate and smart-escape note field for Workflowy compatibility.
         
@@ -426,6 +462,13 @@ class WorkFlowyClient:
         """
         if note is None:
             return (None, None)
+
+        # Per-node whitener override via inline token in the NOTE text
+        mode, clean_note = WorkFlowyClient._extract_whitener_mode(note)
+        if mode == "raw":
+            return (clean_note, None)
+        if clean_note is not None:
+            note = clean_note
 
         text = note
         segments = WorkFlowyClient._segment_whitelisted_markup(text)
@@ -523,6 +566,13 @@ class WorkFlowyClient:
         """
         if name is None:
             return (None, None)
+
+        # Per-node whitener override via inline token in the NAME text
+        mode, clean_name = WorkFlowyClient._extract_whitener_mode(name)
+        if mode == "raw":
+            return (clean_name, None)
+        if clean_name is not None:
+            name = clean_name
 
         text = name
         segments = WorkFlowyClient._segment_whitelisted_markup(text)
