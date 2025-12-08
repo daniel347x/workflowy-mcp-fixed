@@ -5670,7 +5670,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             else note_full[:MAX_NOTE_PREVIEW]
                         )
 
-                    guidance = "branch node flag: RB=reserve, SB=spare, UB|UN=update, AB=auto"
+                    # Mode-aware branch guidance
+                    # Check if branch has ANY descendants showing in current leaf frontier
+                    selected_set = set(selected)  # Current leaf frontier handles
+                    has_showing_descendants = any(
+                        leaf_h.startswith(h + ".") for leaf_h in selected_set
+                    )
+                    
+                    if exploration_mode == "dfs_guided_bulk" and has_showing_descendants:
+                        guidance = "branch: RB=reserve, SB=spare, UB|UN=update, AB=auto, EF=engulf_showing, SF=spare_showing"
+                    else:
+                        guidance = "branch: RB=reserve, SB=spare, UB|UN=update, AB=auto"
 
                     entry = {
                         "handle": h,
