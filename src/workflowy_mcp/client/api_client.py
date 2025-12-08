@@ -5667,7 +5667,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             else note_full[:MAX_NOTE_PREVIEW]
                         )
 
-                    guidance = "branch: flag/spare/update/auto"
+                    guidance = "branch node flag: reserve/mark/spare/update/auto"
 
                     entry = {
                         "handle": h,
@@ -5796,7 +5796,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     if is_leaf:
                         guidance = "leaf: engulf/spare"
                     else:
-                        guidance = "branch: open/flag"
+                        guidance = "branch: open/reserve"
 
                     # Note preview (token-bounded)
                     note_full = child_meta.get("note") or ""
