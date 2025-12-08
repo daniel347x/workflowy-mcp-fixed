@@ -5890,6 +5890,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         roots.sort(key=lambda n: n["handle"])
         for node in by_handle.values():
             node["children"].sort(key=lambda n: n["handle"])
+        
+        # Remove empty children arrays (token optimization)
+        for node in by_handle.values():
+            if not node["children"]:
+                del node["children"]
 
         return roots
 
