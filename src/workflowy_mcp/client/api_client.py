@@ -6096,27 +6096,30 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # Build mode-aware guidance for initial frontier
         if exploration_mode == "dfs_guided_explicit":
-            step_guidance = (
-                "🎯 EXPLICIT MODE: Auto-frontier. No navigation needed.\n"
-                "\nLeaf actions: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)\n"
-                "Branch actions (when all descendants decided): engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB)\n"
+            step_guidance = [
+                "🎯 EXPLICIT MODE: Auto-frontier. No navigation needed.",
+                "",
+                "Leaf actions: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                "Branch actions (when all descendants decided): engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB)",
                 "No bulk actions available in explicit mode."
-            )
+            ]
         elif exploration_mode == "dfs_guided_bulk":
-            step_guidance = (
-                "🎯 BULK MODE: Auto-frontier with bulk actions.\n"
-                "\nLeaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)\n"
-                "Branch: engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)\n"
-                "Bulk over current frontier: engulf_frontier_descendants_in_gemstorm (EF, alias: engulf_showing_descendants), spare_frontier_descendants_from_gemstorm (SF, alias: spare_showing_descendants)\n"
+            step_guidance = [
+                "🎯 BULK MODE: Auto-frontier with bulk actions.",
+                "",
+                "Leaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                "Branch: engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
+                "Bulk over current frontier: engulf_frontier_descendants_in_gemstorm (EF, alias: engulf_showing_descendants), spare_frontier_descendants_from_gemstorm (SF, alias: spare_showing_descendants)",
                 "Global spare: spare_all_remaining (SA)"
-            )
+            ]
         else:
-            step_guidance = (
-                "🎯 LEGACY MODE: Manual navigation.\n"
-                "\nNavigate: open (OP), close (CL)\n"
-                "Leaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL)\n"
+            step_guidance = [
+                "🎯 LEGACY MODE: Manual navigation.",
+                "",
+                "Navigate: open (OP), close (CL)",
+                "Leaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL)",
                 "Branch: engulf_branch_node_flag_only_in_gemstorm (EB), spare_branch_node_flag_only_from_gemstorm (SB)"
-            )
+            ]
 
         return {
             "success": True,
@@ -6267,27 +6270,30 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             # Build mode-aware step guidance
             if exploration_mode == "dfs_guided_explicit":
-                step_guidance = (
-                    "🎯 EXPLICIT MODE: Auto-frontier. No navigation needed.\n"
-                    "\nLeaf actions: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)\n"
-                    "Branch actions (when all descendants decided): engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB)\n"
+                step_guidance = [
+                    "🎯 EXPLICIT MODE: Auto-frontier. No navigation needed.",
+                    "",
+                    "Leaf actions: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                    "Branch actions (when all descendants decided): engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB)",
                     "No bulk actions available in explicit mode."
-                )
+                ]
             elif exploration_mode == "dfs_guided_bulk":
-                step_guidance = (
-                    "🎯 BULK MODE: Auto-frontier with bulk actions.\n"
-                    "\nLeaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)\n"
-                    "Branch: engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)\n"
-                    "Bulk over current frontier: engulf_frontier_descendants_in_gemstorm (EF, alias: engulf_showing_descendants), spare_frontier_descendants_from_gemstorm (SF, alias: spare_showing_descendants)\n"
+                step_guidance = [
+                    "🎯 BULK MODE: Auto-frontier with bulk actions.",
+                    "",
+                    "Leaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                    "Branch: engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
+                    "Bulk over current frontier: engulf_frontier_descendants_in_gemstorm (EF, alias: engulf_showing_descendants), spare_frontier_descendants_from_gemstorm (SF, alias: spare_showing_descendants)",
                     "Global spare: spare_all_remaining (SA)"
-                )
+                ]
             else:
-                step_guidance = (
-                    "🎯 LEGACY MODE: Manual navigation.\n"
-                    "\nNavigate: open (OP), close (CL)\n"
-                    "Leaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL)\n"
+                step_guidance = [
+                    "🎯 LEGACY MODE: Manual navigation.",
+                    "",
+                    "Navigate: open (OP), close (CL)",
+                    "Leaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL)",
                     "Branch: engulf_branch_node_flag_only_in_gemstorm (EB), spare_branch_node_flag_only_from_gemstorm (SB)"
-                )
+                ]
 
             return {
                 "success": True,
@@ -7643,27 +7649,30 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # Build mode-aware step guidance
         if exploration_mode == "dfs_guided_explicit":
-            step_guidance = (
-                "🎯 EXPLICIT MODE: Auto-frontier. No navigation needed.\n"
-                "\nLeaf actions: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)\n"
-                "Branch actions (when all descendants decided): engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB)\n"
+            step_guidance = [
+                "🎯 EXPLICIT MODE: Auto-frontier. No navigation needed.",
+                "",
+                "Leaf actions: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                "Branch actions (when all descendants decided): engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB)",
                 "No bulk actions available in explicit mode."
-            )
+            ]
         elif exploration_mode == "dfs_guided_bulk":
-            step_guidance = (
-                "🎯 BULK MODE: Auto-frontier with bulk actions.\n"
-                "\nLeaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)\n"
-                "Branch: engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)\n"
-                "Bulk over current frontier: engulf_frontier_descendants_in_gemstorm (EF, alias: engulf_showing_descendants), spare_frontier_descendants_from_gemstorm (SF, alias: spare_showing_descendants)\n"
+            step_guidance = [
+                "🎯 BULK MODE: Auto-frontier with bulk actions.",
+                "",
+                "Leaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                "Branch: engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
+                "Bulk over current frontier: engulf_frontier_descendants_in_gemstorm (EF, alias: engulf_showing_descendants), spare_frontier_descendants_from_gemstorm (SF, alias: spare_showing_descendants)",
                 "Global spare: spare_all_remaining (SA)"
-            )
+            ]
         else:
-            step_guidance = (
-                "🎯 LEGACY MODE: Manual navigation.\n"
-                "\nNavigate: open (OP), close (CL)\n"
-                "Leaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL)\n"
+            step_guidance = [
+                "🎯 LEGACY MODE: Manual navigation.",
+                "",
+                "Navigate: open (OP), close (CL)",
+                "Leaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL)",
                 "Branch: engulf_branch_node_flag_only_in_gemstorm (EB), spare_branch_node_flag_only_from_gemstorm (SB)"
-            )
+            ]
 
         result: dict[str, Any] = {
             "success": True,
