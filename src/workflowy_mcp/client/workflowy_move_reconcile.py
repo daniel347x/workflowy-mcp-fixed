@@ -292,7 +292,7 @@ async def reconcile_tree(
     # the conservative Option A behavior.
     original_ids_seen = set()
     option_b_enabled = False
-    explicitly_spared_ids = set()
+    explicitly_preserved_ids = set()
 
     if isinstance(source_json, dict):
         file_root = source_json.get('export_root_id') or source_json.get('root_id') or source_json.get('parent_id')
@@ -310,10 +310,10 @@ async def reconcile_tree(
         option_b_enabled = len(original_ids_seen) > 0
 
         # Optional explicit sparing metadata from exploration pipelines: nodes
-        # that were explicitly spared-from-storm (and, for spared subtrees, all
+        # that were explicitly preserved-in-ETHER (and, for preserved subtrees, all
         # their descendants). These IDs – and their ancestors – must never be
         # deleted even though they are missing from the GEM nodes list.
-        explicitly_spared_ids = set(source_json.get('explicitly_spared_ids', []) or [])
+        explicitly_preserved_ids = set(source_json.get('explicitly_preserved_ids', []) or [])
 
         log(f"Detected source document with export_root_id={file_root} jewel_file={jewel_file}")
         log(f"   Root children_status: {root_children_status!r}")
@@ -321,10 +321,10 @@ async def reconcile_tree(
             log(f"   Option B deletion ledger: {len(original_ids_seen)} originally-seen node IDs")
         else:
             log("   No original_ids_seen ledger; using conservative Option A deletion semantics")
-        if explicitly_spared_ids:
-            log(f"   explicitly_spared_ids present: {len(explicitly_spared_ids)} IDs marked as spared-from-storm (exploration)")
+        if explicitly_preserved_ids:
+            log(f"   explicitly_preserved_ids present: {len(explicitly_preserved_ids)} IDs marked as preserved-in-ETHER (exploration)")
         else:
-            log("   No explicitly_spared_ids present; DELETE phase will treat all missing nodes via Option A/B only")
+            log("   No explicitly_preserved_ids present; DELETE phase will treat all missing nodes via Option A/B only")
     else:
         source_nodes = source_json
         root_children_status = 'complete'
@@ -989,26 +989,26 @@ async def reconcile_tree(
     Map_T2, Parent_T2, _ = await snapshot_target(parent_uuid, use_efficient_traversal=False, export_func=export_nodes)
     ids_in_target = set(Map_T2.keys())
 
-    # Precompute protection set for explicitly spared nodes and their ancestors
-    # (only meaningful for exploration-origin JSON where explicitly_spared_ids
+    # Precompute protection set for explicitly preserved nodes and their ancestors
+    # (only meaningful for exploration-origin JSON where explicitly_preserved_ids
     # is present). Any node in this set must never be deleted, even if it is
     # missing from the GEM nodes list.
-    protected_spared_ids: set[str] = set()
-    if explicitly_spared_ids:
-        protected_spared_ids.update(explicitly_spared_ids)
-        for sid in explicitly_spared_ids:
+    protected_preserved_ids: set[str] = set()
+    if explicitly_preserved_ids:
+        protected_preserved_ids.update(explicitly_preserved_ids)
+        for sid in explicitly_preserved_ids:
             cur = Parent_T2.get(sid)
             while cur is not None:
-                if cur in protected_spared_ids:
+                if cur in protected_preserved_ids:
                     break
-                protected_spared_ids.add(cur)
+                protected_preserved_ids.add(cur)
                 cur = Parent_T2.get(cur)
         log(
-            f"   explicit spared protection: {len(explicitly_spared_ids)} explicitly_spared_ids, "
-            f"{len(protected_spared_ids)} IDs including ancestors"
+            f"   explicit preserved protection: {len(explicitly_preserved_ids)} explicitly_preserved_ids, "
+            f"{len(protected_preserved_ids)} IDs including ancestors"
         )
     else:
-        log("   No explicitly_spared_ids present; no additional ancestor protection in DELETE phase")
+        log("   No explicitly_preserved_ids present; no additional ancestor protection in DELETE phase")
 
     # Guardrail: never consider the reconciliation root for deletion
     if parent_uuid in ids_in_target:
@@ -1054,11 +1054,11 @@ async def reconcile_tree(
 
     raw_delete_candidates = ids_in_target - ids_in_source
 
-    # Remove explicitly spared nodes (and their ancestors) from deletion
-    # consideration entirely. These were explicitly spared-from-storm during
+    # Remove explicitly preserved nodes (and their ancestors) from deletion
+    # consideration entirely. These were explicitly preserved-in-ETHER during
     # exploration and must remain in ETHER unchanged.
-    if protected_spared_ids:
-        raw_delete_candidates -= protected_spared_ids
+    if protected_preserved_ids:
+        raw_delete_candidates -= protected_preserved_ids
         log(
             f"   After explicit-sparing protection, raw_delete_candidates={len(raw_delete_candidates)} "
             "(IDs list suppressed)"
