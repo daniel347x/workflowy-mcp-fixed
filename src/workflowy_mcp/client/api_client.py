@@ -5675,13 +5675,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         "name_preview": meta.get("name", ""),
                         "note_preview": note_preview,
                         "child_count": len(child_handles),
-                        "children_hint": children_hint,
                         "depth": meta.get("depth", 0),
                         "status": st.get("status", "candidate"),
                         "is_leaf": False,  # These are branches by definition
                         "guidance": guidance,
                         "_frontier_role": "branch_ancestor",  # Mark for agent clarity
                     }
+                    if children_hint:
+                        entry["children_hint"] = children_hint
                     if local_hints:
                         entry["hints"] = local_hints
                     if hints_from_ancestors:
@@ -5720,12 +5721,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "name_preview": meta.get("name", ""),
                     "note_preview": note_preview,
                     "child_count": len(child_handles),
-                    "children_hint": children_hint,
                     "depth": meta.get("depth", 0),
                     "status": st.get("status", "candidate"),
                     "is_leaf": is_leaf,
                     "guidance": guidance,
                 }
+                if children_hint:
+                    entry["children_hint"] = children_hint
                 if local_hints:
                     entry["hints"] = local_hints
                 if hints_from_ancestors:
@@ -5816,13 +5818,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         "name_preview": child_meta.get("name", ""),
                         "note_preview": note_preview,
                         "child_count": len(grandchild_handles),
-                        "children_hint": children_hint,
                         "depth": child_meta.get("depth", 0),
                         "status": child_state.get("status", "candidate"),
                         "is_leaf": is_leaf,
                         "guidance": guidance,
                     }
                     # Only include non-empty lists
+                    if children_hint:
+                        entry["children_hint"] = children_hint
                     if local_hints:
                         entry["hints"] = local_hints
                     if hints_from_ancestors:
