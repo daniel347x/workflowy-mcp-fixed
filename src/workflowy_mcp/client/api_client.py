@@ -7197,38 +7197,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             # Leaf-first enhancements
             elif act == "engulf_leaf_in_gemstorm":
-                # Prevent re-deciding already-decided nodes (unless covered by ancestor shell)
-                prev = prev_state.get(handle, {})
-                if prev.get("status") in {"finalized", "closed"}:
-                    raise NetworkError(
-                        f"Cannot re-decide handle '{handle}' (already {prev.get('status')}). "
-                        f"Use 'reopen_branch' to re-open this node for exploration first."
-                    )
                 entry["status"] = "finalized"
                 entry["selection_type"] = "leaf"
                 entry["max_depth"] = max_depth
                 _auto_complete_ancestors_from_leaf(handle)
             elif act == "spare_leaf_from_storm":
-                # Prevent re-deciding already-decided nodes
-                prev = prev_state.get(handle, {})
-                if prev.get("status") in {"finalized", "closed"}:
-                    raise NetworkError(
-                        f"Cannot re-decide handle '{handle}' (already {prev.get('status')}). "
-                        f"Use 'reopen_branch' to re-open this node for exploration first."
-                    )
                 entry["status"] = "closed"
                 entry["selection_type"] = None
                 entry["max_depth"] = None
                 _auto_complete_ancestors_from_leaf(handle)
             elif act == "engulf_branch_node_flag_only_in_gemstorm":
-                # Prevent re-deciding already-decided nodes
-                prev = prev_state.get(handle, {})
-                if prev.get("status") in {"finalized", "closed"}:
-                    raise NetworkError(
-                        f"Cannot re-decide handle '{handle}' (already {prev.get('status')}). "
-                        f"Use 'reopen_branch' to re-open this node for exploration first."
-                    )
-                
                 summary = _summarize_descendants(handle)
                 desc_count = summary["descendant_count"]
                 has_decided = summary["has_decided"]
@@ -7372,14 +7350,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 _auto_complete_ancestors_from_decision(handle)
 
             elif act == "spare_branch_node_flag_only_from_gemstorm":
-                # Prevent re-deciding already-decided nodes
-                prev = prev_state.get(handle, {})
-                if prev.get("status") in {"finalized", "closed"}:
-                    raise NetworkError(
-                        f"Cannot re-decide handle '{handle}' (already {prev.get('status')}). "
-                        f"Use 'reopen_branch' to re-open this node for exploration first."
-                    )
-                
                 summary = _summarize_descendants(handle)
                 desc_count = summary["descendant_count"]
                 has_decided = summary["has_decided"]
