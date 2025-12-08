@@ -1680,20 +1680,20 @@ async def nexus_start_exploration(
     - Exploration is a labeling pass over a tree, not manual navigation.
     - The engine always chooses the path and surfaces a frontier of leaves for
       you to decide on.
-    - You control which nodes are engulfed/spared (and which branches are
+    - You control which nodes are engulfed/preserved (and which branches are
       flagged), not the traversal order.
 
     Modes (stored as exploration_mode in the session):
 
     - dfs_guided_explicit:
         Engine-guided DFS with explicit leaf coverage. Every leaf is expected to
-        be labeled (engulf/spare/update), and bulk descendant actions are
+        be labeled (engulf/preserve/update), and bulk descendant actions are
         typically disabled.
     - dfs_guided_bulk:
         Engine-guided DFS with bulk support. You may still label leaves
         individually, but can also use bulk descendant actions such as
-        engulf_frontier_descendants_in_gemstorm, spare_frontier_descendants_from_gemstorm
-        and spare_all_remaining to operate on many leaves at once.
+        engulf_all_showing_undecided_descendants_into_gem_for_editing, preserve_all_showing_undecided_descendants_in_ether
+        and preserve_all_remaining_nodes_in_ether_at_finalization to operate on many leaves at once.
 
     Args:
         nexus_tag: Tag name for this NEXUS run (directory under temp/nexus_runs).
@@ -1769,9 +1769,9 @@ async def nexus_explore_step(
     - Frontiers are still engine-driven DFS batches of leaves.
     - All explicit actions remain available.
     - Bulk descendant actions are enabled:
-        - engulf_frontier_descendants_in_gemstorm
-        - spare_frontier_descendants_from_gemstorm
-        - spare_all_remaining
+        - engulf_all_showing_undecided_descendants_into_gem_for_editing
+        - preserve_all_showing_undecided_descendants_in_ether
+        - preserve_all_remaining_nodes_in_ether_at_finalization
 
     Decisions:
 
@@ -1779,21 +1779,25 @@ async def nexus_explore_step(
         * action: one of the leaf/branch/bulk action names:
 
           Leaf actions:
-            - engulf_leaf_in_gemstorm
-            - spare_leaf_from_storm
+            - engulf_leaf_into_gem_for_editing
+            - preserve_leaf_in_ether_untouched
             - update_leaf_node_and_engulf_in_gemstorm
 
           Branch-node actions:
-            - engulf_branch_node_flag_only_in_gemstorm
-            - spare_branch_node_flag_only_from_gemstorm
+            - flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (alias: reserve_branch_for_children)
+            - preserve_branch_node_in_ether_untouched__when_no_engulfed_children
             - update_branch_node_and_engulf_in_gemstorm__descendants_unaffected
             - update_branch_note_and_engulf_in_gemstorm__descendants_unaffected
             - auto_decide_branch_no_change_required
 
           Bulk descendant actions (dfs_guided_bulk only):
-            - engulf_frontier_descendants_in_gemstorm
-            - spare_frontier_descendants_from_gemstorm
-            - spare_all_remaining
+            - engulf_all_showing_undecided_descendants_into_gem_for_editing
+            - preserve_all_showing_undecided_descendants_in_ether
+            - preserve_all_remaining_nodes_in_ether_at_finalization
+
+          DECISION OUTCOMES:
+          • ENGULF → Node brought into GEM → Editable/deletable → Changes apply to ETHER
+          • PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)
 
     Args:
         session_id: Exploration session id.
