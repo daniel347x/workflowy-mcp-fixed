@@ -7078,7 +7078,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # In non-strict mode, allow spare actions outside frontier for cleanup
             spare_actions_allowed_outside_frontier = {"spare_leaf_from_storm", "spare_branch_node_flag_only_from_gemstorm"} if exploration_mode == "dfs_guided_bulk" else set()
             
-            if exploration_mode in {"dfs_guided_explicit", "dfs_guided_bulk"} and act not in ({"reopen_branch", "add_hint", "peek_descendants"} | spare_actions_allowed_outside_frontier):
+            # Frontier gating disabled: decisions allowed on any known handle; frontier is descriptive only.
+            if False and exploration_mode in {"dfs_guided_explicit", "dfs_guided_bulk"} and act not in ({"reopen_branch", "add_hint", "peek_descendants"} | spare_actions_allowed_outside_frontier):
                 # Recompute current DFS frontier based on the *current* state
                 # before applying this action. Any handle in the current
                 # leaf-chunk frontier is a valid focus for decisions in this
