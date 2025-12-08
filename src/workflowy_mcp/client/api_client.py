@@ -5383,6 +5383,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "session_id": session_id,
             "nexus_tag": session.get("nexus_tag"),
             "status": "in_progress",
+            "action_key_primary_aliases": {
+                "EB": "reserve_branch_for_children",
+                "EF": "engulf_showing_descendants",
+                "SF": "spare_showing_descendants",
+            },
             "action_key": EXPLORATION_ACTION_2LETTER,
             "walks": [],  # Empty - no walks requested, just showing current state
             "skipped_walks": [],
@@ -6127,6 +6132,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "session_id": session_id,
             "nexus_tag": nexus_tag,
             "exploration_mode": exploration_mode,
+            "action_key_primary_aliases": {
+                "EB": "reserve_branch_for_children",
+                "EF": "engulf_showing_descendants",
+                "SF": "spare_showing_descendants",
+            },
             "action_key": EXPLORATION_ACTION_2LETTER,
             "step_guidance": step_guidance,
             "root_handle": "R",
@@ -6302,6 +6312,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "nexus_tag": session.get("nexus_tag"),
                 "status": "in_progress",
                 "exploration_mode": exploration_mode,
+                "action_key_primary_aliases": {
+                    "EB": "reserve_branch_for_children",
+                    "EF": "engulf_showing_descendants",
+                    "SF": "spare_showing_descendants",
+                },
                 "action_key": EXPLORATION_ACTION_2LETTER,
                 "step_guidance": step_guidance,
                 "walks": [],  # Strict DFS: no per-ray walks; see top-level frontier.
@@ -7678,6 +7693,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         result: dict[str, Any] = {
             "success": True,
             "session_id": session_id,
+            "action_key_primary_aliases": {
+                "EB": "reserve_branch_for_children",
+                "EF": "engulf_showing_descendants",
+                "SF": "spare_showing_descendants",
+            },
             "action_key": EXPLORATION_ACTION_2LETTER,
             "step_guidance": step_guidance,
             "frontier_tree": self._build_frontier_tree_from_flat(frontier),
