@@ -284,9 +284,7 @@ EXPLORATION_ACTION_2LETTER = {
     "AB": "auto_decide_branch_no_change_required",
     "EF": "engulf_frontier_descendants_in_gemstorm",
     "SF": "spare_frontier_descendants_from_gemstorm",
-    "SA": "spare_all_remaining",
-    "EA": "engulf_frontier_descendants_in_gemstorm",
-    "SR": "spare_frontier_descendants_from_gemstorm",
+    "UT": "update_tag_and_engulf_in_gemstorm",
     "OP": "open",
     "CL": "close",
     "FN": "finalize",
@@ -297,7 +295,7 @@ EXPLORATION_ACTION_2LETTER = {
     "AS": "append_scratchpad",
     "AH": "add_hint",
     "PD": "peek_descendants",
-    "UT": "update_tag_and_engulf_in_gemstorm",
+    "SA": "spare_all_remaining_during_finalization",
 }
 
 
@@ -5667,7 +5665,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             else note_full[:MAX_NOTE_PREVIEW]
                         )
 
-                    guidance = "branch node flag: reserve/mark/spare/update/auto"
+                    guidance = "branch node flag: reserve/spare/update/auto"
 
                     entry = {
                         "handle": h,
