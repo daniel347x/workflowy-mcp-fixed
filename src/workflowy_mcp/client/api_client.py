@@ -277,7 +277,7 @@ EXPLORATION_ACTION_2LETTER = {
     "EL": "engulf_leaf_in_gemstorm",
     "SL": "spare_leaf_from_storm",
     "UL": "update_leaf_node_and_engulf_in_gemstorm",
-    "EB": "engulf_branch_node_flag_only_in_gemstorm",
+    "RB": "engulf_branch_node_flag_only_in_gemstorm",
     "SB": "spare_branch_node_flag_only_from_gemstorm",
     "UB": "update_branch_node_and_engulf_in_gemstorm__descendants_unaffected",
     "UN": "update_branch_note_and_engulf_in_gemstorm__descendants_unaffected",
@@ -289,7 +289,7 @@ EXPLORATION_ACTION_2LETTER = {
     "CL": "close",
     "FN": "finalize",
     "RO": "reopen",
-    "RB": "reopen_branch",
+    "OB": "reopen_branch",
     "BT": "backtrack",
     "SS": "set_scratchpad",
     "AS": "append_scratchpad",
@@ -5384,7 +5384,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "nexus_tag": session.get("nexus_tag"),
             "status": "in_progress",
             "action_key_primary_aliases": {
-                "EB": "reserve_branch_for_children",
+                "RB": "reserve_branch_for_children",
                 "EF": "engulf_showing_descendants",
                 "SF": "spare_showing_descendants",
             },
@@ -5670,7 +5670,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             else note_full[:MAX_NOTE_PREVIEW]
                         )
 
-                    guidance = "branch node flag: reserve/spare/update/auto"
+                    guidance = "branch node flag: RB=reserve, SB=spare, UB|UN=update, AB=auto"
 
                     entry = {
                         "handle": h,
@@ -5716,7 +5716,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     )
 
                 # Leaf-specific guidance (compact)
-                guidance = "leaf: engulf/spare"
+                guidance = "leaf: EL=engulf, SL=spare"
 
                 entry = {
                     "handle": h,
@@ -5797,9 +5797,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                     is_leaf = len(grandchild_handles) == 0
                     if is_leaf:
-                        guidance = "leaf: engulf/spare"
+                        guidance = "leaf: EL=engulf, SL=spare"
                     else:
-                        guidance = "branch: open/reserve"
+                        guidance = "branch: OP=open, RB=reserve"
 
                     # Note preview (token-bounded)
                     note_full = child_meta.get("note") or ""
@@ -6133,7 +6133,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "nexus_tag": nexus_tag,
             "exploration_mode": exploration_mode,
             "action_key_primary_aliases": {
-                "EB": "reserve_branch_for_children",
+                "RB": "reserve_branch_for_children",
                 "EF": "engulf_showing_descendants",
                 "SF": "spare_showing_descendants",
             },
@@ -7694,7 +7694,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "success": True,
             "session_id": session_id,
             "action_key_primary_aliases": {
-                "EB": "reserve_branch_for_children",
+                "RB": "reserve_branch_for_children",
                 "EF": "engulf_showing_descendants",
                 "SF": "spare_showing_descendants",
             },
