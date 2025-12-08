@@ -7851,15 +7851,72 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             max_depth = st.get("max_depth")
             finalized_entries.append((handle, node_id, selection_type, max_depth))
 
+        # If no finalized entries exist yet, look for branch shells that were
+        # flagged during exploration but never upgraded to explicit subtree
+        # selections. When all descendants of a shell are decided (no
+        # undecided nodes) and no leaves under it were engulfed, we can safely
+        # auto-finalize that shell here.
+        if not finalized_entries:
+            auto_shells: list[str] = []
+            for handle_key, st in state.items():
+                if st.get("subtree_mode") != "shell":
+                    continue
+                meta = handles.get(handle_key) or {}
+                node_id_for_handle = meta.get("id")
+                if not node_id_for_handle:
+                    continue
+
+                summary = _summarize_descendants_for_handle(handle_key)
+                desc_count = summary["descendant_count"]
+                has_undecided = summary["has_undecided"]
+                accepted_leaves = summary["accepted_leaf_count"]
+
+                # Require a real subtree, fully decided, with no engulfed leaves.
+                if desc_count <= 0:
+                    continue
+                if has_undecided:
+                    continue
+                if accepted_leaves > 0:
+                    continue
+
+                # Upgrade this shell to an explicit subtree selection.
+                st["status"] = "finalized"
+                st["selection_type"] = "subtree"
+                st["subtree_mode"] = "shell"
+                auto_shells.append(handle_key)
+
+            if auto_shells:
+                finalized_entries = []
+                for handle_key, st in state.items():
+                    if st.get("status") != "finalized":
+                        continue
+                    meta = handles.get(handle_key) or {}
+                    node_id_for_handle = meta.get("id")
+                    if not node_id_for_handle:
+                        continue
+                    selection_type = st.get("selection_type") or "subtree"
+                    max_depth = st.get("max_depth")
+                    finalized_entries.append(
+                        (handle_key, node_id_for_handle, selection_type, max_depth)
+                    )
+
         if not finalized_entries:
             raise NetworkError(
-                f"Exploration session '{session_id}' has no finalized paths to export."
+                "Exploration complete but no finalized paths to export.\n\n"
+                f"Session '{session_id}' contains no handles marked as engulfed leaves or subtrees.\n\n"
+                "To produce a GEM you must explicitly accept something into the storm:\n"
+                "  • Use 'engulf_leaf_in_gemstorm' (EL) on one or more leaves, or\n"
+                "  • Use 'engulf_branch_node_flag_only_in_gemstorm' (RB / reserve_branch_for_children)\n"
+                "    on one or more branches, or\n"
+                "  • In dfs_guided_bulk mode, consider 'spare_all_remaining_during_finalization' (SA)\n"
+                "    after you have flagged/engulfed the branches you care about.\n\n"
+                "Once at least one leaf or branch is finalized, run nexus_finalize_exploration again."
             )
 
         # Helper: summarize descendants for finalize-time validation
         def _summarize_descendants_for_handle(branch_handle: str) -> dict[str, Any]:
             """Summarize descendant decisions for completeness validation.
-            
+
             Mirrors _summarize_descendants from _nexus_explore_step_internal but
             local to nexus_finalize_exploration for validation purposes.
             """
@@ -7875,16 +7932,25 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             if not descendants:
                 return {
                     "descendant_count": 0,
+                    "has_decided": False,
+                    "has_undecided": False,
                     "accepted_leaf_count": 0,
                     "rejected_leaf_count": 0,
                 }
 
             accepted_leaves = 0
             rejected_leaves = 0
+            has_decided = False
+            has_undecided = False
 
             for h in descendants:
                 st = state.get(h, {"status": "unseen"})
                 status = st.get("status")
+
+                if status in {"finalized", "closed"}:
+                    has_decided = True
+                else:
+                    has_undecided = True
 
                 # Leaf = no children in the cached tree
                 child_handles = handles.get(h, {}).get("children", []) or []
@@ -7899,6 +7965,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
             return {
                 "descendant_count": len(descendants),
+                "has_decided": has_decided,
+                "has_undecided": has_undecided,
                 "accepted_leaf_count": accepted_leaves,
                 "rejected_leaf_count": rejected_leaves,
             }
