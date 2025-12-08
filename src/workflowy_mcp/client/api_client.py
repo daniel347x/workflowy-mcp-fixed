@@ -8332,7 +8332,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         phantom_path = run_dir / "phantom_gem.json"
         coarse_path = run_dir / "coarse_terrain.json"
         shimmering_path = run_dir / "shimmering_terrain.json"
-        phantom_jewel_path = run_dir / "phantom_jewel.json"
 
         # Pack exploration scratchpad and per-handle hints into the JEWEL wrapper
         scratchpad_text = session.get("scratchpad", "")
@@ -8387,25 +8386,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         except Exception as e:
             raise NetworkError(f"Failed to write shimmering_terrain.json: {e}") from e
 
-        # --- JEWEL (S1) FROM EXPLORATION ---
-        # Edited view (current name/note), with original_* removed.
-        phantom_jewel_wrapper = {
-            "export_root_id": export_root_id,
-            "export_root_name": export_root_name,
-            "export_timestamp": export_timestamp,
-            "export_root_children_status": "complete",
-            "original_ids_seen": sorted(original_ids_seen),
-            "explicitly_preserved_ids": sorted(explicitly_preserved_ids),
-            "nodes": jewel_nodes,
-            "scratchpad": scratchpad_text,
-            "hints": hints_export,
-        }
-
-        try:
-            with open(phantom_jewel_path, "w", encoding="utf-8") as f:
-                json_module.dump(phantom_jewel_wrapper, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            raise NetworkError(f"Failed to write phantom_jewel.json: {e}") from e
+        # NOTE: JEWEL (S1) IS NO LONGER AUTO-CREATED HERE.
+        # JEWELSTORM now owns JEWEL creation (phantom_jewel.json) via
+        # JEWELSTRIKE → transform_jewel → JEWELMORPH. nexus_finalize_exploration
+        # produces only coarse_terrain (T0) and phantom_gem (S0); shimmering_terrain
+        # (T1) is a convenience mirror of T0 for EXPLORATION's special case.
 
         result: dict[str, Any] = {
             "success": True,
@@ -8414,9 +8399,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "coarse_terrain": str(coarse_path),
             "phantom_gem": str(phantom_path),
             "shimmering_terrain": str(shimmering_path),
-            "phantom_jewel": str(phantom_jewel_path),
             "finalized_branch_count": len(ordered_root_ids),
-            "node_count": len(gem_nodes),
+            "node_count": len(needed_ids),
             "mode": mode,
         }
 
