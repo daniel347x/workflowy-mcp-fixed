@@ -5667,25 +5667,27 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             else note_full[:MAX_NOTE_PREVIEW]
                         )
 
-                    guidance = "Branch. ES/ST. EA/SR. (RB=reserve)"
+                    guidance = "branch: flag/spare/update/auto"
 
-                    frontier.append(
-                        {
-                            "handle": h,
-                            "parent_handle": meta.get("parent"),
-                            "name_preview": meta.get("name", ""),
-                            "note_preview": note_preview,
-                            "child_count": len(child_handles),
-                            "children_hint": children_hint,
-                            "depth": meta.get("depth", 0),
-                            "status": st.get("status", "candidate"),
-                            "is_leaf": False,  # These are branches by definition
-                            "guidance": guidance,
-                            "hints": local_hints,
-                            "hints_from_ancestors": hints_from_ancestors,
-                            "_frontier_role": "branch_ancestor",  # Mark for agent clarity
-                        }
-                    )
+                    entry = {
+                        "handle": h,
+                        "parent_handle": meta.get("parent"),
+                        "name_preview": meta.get("name", ""),
+                        "note_preview": note_preview,
+                        "child_count": len(child_handles),
+                        "children_hint": children_hint,
+                        "depth": meta.get("depth", 0),
+                        "status": st.get("status", "candidate"),
+                        "is_leaf": False,  # These are branches by definition
+                        "guidance": guidance,
+                        "_frontier_role": "branch_ancestor",  # Mark for agent clarity
+                    }
+                    if local_hints:
+                        entry["hints"] = local_hints
+                    if hints_from_ancestors:
+                        entry["hints_from_ancestors"] = hints_from_ancestors
+                    
+                    frontier.append(entry)
 
             # LEAF ENTRIES
             for h in selected:
@@ -5709,28 +5711,27 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         else note_full[:MAX_NOTE_PREVIEW]
                     )
 
-                # Leaf-specific guidance (same for both modes; we keep it minimal)
-                if exploration_mode == "dfs_guided_explicit":
-                    guidance = "Leaf. EL|SL. EA/SR."
-                else:  # dfs_guided
-                    guidance = "Leaf. EL|SL. EA/SR."
+                # Leaf-specific guidance (compact)
+                guidance = "leaf: engulf/spare"
 
-                frontier.append(
-                    {
-                        "handle": h,
-                        "parent_handle": meta.get("parent"),
-                        "name_preview": meta.get("name", ""),
-                        "note_preview": note_preview,
-                        "child_count": len(child_handles),
-                        "children_hint": children_hint,
-                        "depth": meta.get("depth", 0),
-                        "status": st.get("status", "candidate"),
-                        "is_leaf": is_leaf,
-                        "guidance": guidance,
-                        "hints": local_hints,
-                        "hints_from_ancestors": hints_from_ancestors,
-                    }
-                )
+                entry = {
+                    "handle": h,
+                    "parent_handle": meta.get("parent"),
+                    "name_preview": meta.get("name", ""),
+                    "note_preview": note_preview,
+                    "child_count": len(child_handles),
+                    "children_hint": children_hint,
+                    "depth": meta.get("depth", 0),
+                    "status": st.get("status", "candidate"),
+                    "is_leaf": is_leaf,
+                    "guidance": guidance,
+                }
+                if local_hints:
+                    entry["hints"] = local_hints
+                if hints_from_ancestors:
+                    entry["hints_from_ancestors"] = hints_from_ancestors
+                
+                frontier.append(entry)
 
             return frontier
 
@@ -5791,9 +5792,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                     is_leaf = len(grandchild_handles) == 0
                     if is_leaf:
-                        guidance = "Leaf. EL|SL. EA/SR."
+                        guidance = "leaf: engulf/spare"
                     else:
-                        guidance = "Branch. OP/ES. EA/SR."
+                        guidance = "branch: open/flag"
 
                     # Note preview (token-bounded)
                     note_full = child_meta.get("note") or ""
@@ -5809,22 +5810,25 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     local_hints = child_meta.get("hints") or []
                     hints_from_ancestors = _collect_hints_from_ancestors(child_handle)
 
-                    frontier.append(
-                        {
-                            "handle": child_handle,
-                            "parent_handle": parent_handle,
-                            "name_preview": child_meta.get("name", ""),
-                            "note_preview": note_preview,
-                            "child_count": len(grandchild_handles),
-                            "children_hint": children_hint,
-                            "depth": child_meta.get("depth", 0),
-                            "status": child_state.get("status", "candidate"),
-                            "is_leaf": is_leaf,
-                            "guidance": guidance,
-                            "hints": local_hints,
-                            "hints_from_ancestors": hints_from_ancestors,
-                        }
-                    )
+                    entry = {
+                        "handle": child_handle,
+                        "parent_handle": parent_handle,
+                        "name_preview": child_meta.get("name", ""),
+                        "note_preview": note_preview,
+                        "child_count": len(grandchild_handles),
+                        "children_hint": children_hint,
+                        "depth": child_meta.get("depth", 0),
+                        "status": child_state.get("status", "candidate"),
+                        "is_leaf": is_leaf,
+                        "guidance": guidance,
+                    }
+                    # Only include non-empty lists
+                    if local_hints:
+                        entry["hints"] = local_hints
+                    if hints_from_ancestors:
+                        entry["hints_from_ancestors"] = hints_from_ancestors
+                    
+                    frontier.append(entry)
 
                     made_progress = True
                     break  # Move to next parent in round-robin
@@ -6090,11 +6094,37 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         frontier_tree = self._build_frontier_tree_from_flat(frontier)
 
+        # Build mode-aware guidance for initial frontier
+        if exploration_mode == "dfs_guided_explicit":
+            step_guidance = (
+                "🎯 EXPLICIT MODE: Auto-frontier. No navigation needed.\n"
+                "\nLeaf actions: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)\n"
+                "Branch actions (when all descendants decided): engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB)\n"
+                "No bulk actions available in explicit mode."
+            )
+        elif exploration_mode == "dfs_guided_bulk":
+            step_guidance = (
+                "🎯 BULK MODE: Auto-frontier with bulk actions.\n"
+                "\nLeaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)\n"
+                "Branch: engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)\n"
+                "Bulk over current frontier: engulf_frontier_descendants_in_gemstorm (EF, alias: engulf_showing_descendants), spare_frontier_descendants_from_gemstorm (SF, alias: spare_showing_descendants)\n"
+                "Global spare: spare_all_remaining (SA)"
+            )
+        else:
+            step_guidance = (
+                "🎯 LEGACY MODE: Manual navigation.\n"
+                "\nNavigate: open (OP), close (CL)\n"
+                "Leaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL)\n"
+                "Branch: engulf_branch_node_flag_only_in_gemstorm (EB), spare_branch_node_flag_only_from_gemstorm (SB)"
+            )
+
         return {
             "success": True,
             "session_id": session_id,
             "nexus_tag": nexus_tag,
+            "exploration_mode": exploration_mode,
             "action_key": EXPLORATION_ACTION_2LETTER,
+            "step_guidance": step_guidance,
             "root_handle": "R",
             "root_summary": root_summary,
             "frontier_tree": frontier_tree,
@@ -6235,12 +6265,38 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "closed": [h for h, st in state.items() if st.get("status") == "closed"],
                 }
 
+            # Build mode-aware step guidance
+            if exploration_mode == "dfs_guided_explicit":
+                step_guidance = (
+                    "🎯 EXPLICIT MODE: Auto-frontier. No navigation needed.\n"
+                    "\nLeaf actions: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)\n"
+                    "Branch actions (when all descendants decided): engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB)\n"
+                    "No bulk actions available in explicit mode."
+                )
+            elif exploration_mode == "dfs_guided_bulk":
+                step_guidance = (
+                    "🎯 BULK MODE: Auto-frontier with bulk actions.\n"
+                    "\nLeaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)\n"
+                    "Branch: engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)\n"
+                    "Bulk over current frontier: engulf_frontier_descendants_in_gemstorm (EF, alias: engulf_showing_descendants), spare_frontier_descendants_from_gemstorm (SF, alias: spare_showing_descendants)\n"
+                    "Global spare: spare_all_remaining (SA)"
+                )
+            else:
+                step_guidance = (
+                    "🎯 LEGACY MODE: Manual navigation.\n"
+                    "\nNavigate: open (OP), close (CL)\n"
+                    "Leaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL)\n"
+                    "Branch: engulf_branch_node_flag_only_in_gemstorm (EB), spare_branch_node_flag_only_from_gemstorm (SB)"
+                )
+
             return {
                 "success": True,
                 "session_id": session_id,
                 "nexus_tag": session.get("nexus_tag"),
                 "status": "in_progress",
+                "exploration_mode": exploration_mode,
                 "action_key": EXPLORATION_ACTION_2LETTER,
+                "step_guidance": step_guidance,
                 "walks": [],  # Strict DFS: no per-ray walks; see top-level frontier.
                 "skipped_walks": [],
                 "decisions_applied": decisions,
@@ -7585,36 +7641,37 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             }
 
 
-        # Mode-aware once-per-step guidance (agent does NOT need to navigate;
-        # frontiers are auto-selected, agent mainly decides).
+        # Build mode-aware step guidance
         if exploration_mode == "dfs_guided_explicit":
-            guidance_text = (
-                "Guided explicit mode. Frontier is auto-selected leaves; do not navigate. "
-                "For each leaf handle: EL|SL/UL. "
-                "Branch EB/SB/UB/UN only when conditions are satisfied. "
-                "No bulk descendant actions (EF/SF/SA)."
+            step_guidance = (
+                "🎯 EXPLICIT MODE: Auto-frontier. No navigation needed.\n"
+                "\nLeaf actions: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)\n"
+                "Branch actions (when all descendants decided): engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB)\n"
+                "No bulk actions available in explicit mode."
             )
         elif exploration_mode == "dfs_guided_bulk":
-            guidance_text = (
-                "Guided bulk mode. Frontier is auto-selected; do not navigate. "
-                "Leaf: EL|SL/UL. Branch: EB/SB/UB/UN/AB. "
-                "Bulk over current frontier: EF/SF. Global spare: SA."
+            step_guidance = (
+                "🎯 BULK MODE: Auto-frontier with bulk actions.\n"
+                "\nLeaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL), update_leaf_node_and_engulf_in_gemstorm (UL)\n"
+                "Branch: engulf_branch_node_flag_only_in_gemstorm (EB, alias: reserve_branch_for_children), spare_branch_node_flag_only_from_gemstorm (SB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)\n"
+                "Bulk over current frontier: engulf_frontier_descendants_in_gemstorm (EF, alias: engulf_showing_descendants), spare_frontier_descendants_from_gemstorm (SF, alias: spare_showing_descendants)\n"
+                "Global spare: spare_all_remaining (SA)"
             )
         else:
-            # Legacy / manual modes.
-            guidance_text = (
-                "Legacy mode. OP/CL to navigate if needed. "
-                "Decisions: EL|SL for leaves, ES/ST for branches. "
-                "Bulk over current strip: EA/SR."
+            step_guidance = (
+                "🎯 LEGACY MODE: Manual navigation.\n"
+                "\nNavigate: open (OP), close (CL)\n"
+                "Leaf: engulf_leaf_in_gemstorm (EL), spare_leaf_from_storm (SL)\n"
+                "Branch: engulf_branch_node_flag_only_in_gemstorm (EB), spare_branch_node_flag_only_from_gemstorm (SB)"
             )
 
         result: dict[str, Any] = {
             "success": True,
             "session_id": session_id,
             "action_key": EXPLORATION_ACTION_2LETTER,
+            "step_guidance": step_guidance,
             "frontier_tree": self._build_frontier_tree_from_flat(frontier),
             "scratchpad": session.get("scratchpad", ""),
-            "guidance": guidance_text,
         }
 
         if history_summary is not None:
