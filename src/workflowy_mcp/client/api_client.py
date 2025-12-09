@@ -6614,9 +6614,28 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             search_actions = [d for d in (decisions or []) if d.get("action") == "search_descendants_for_text"]
             non_search_decisions = [d for d in (decisions or []) if d.get("action") != "search_descendants_for_text"]
             
+            # PRE-COMPUTE the correct frontier for this step (search or normal DFS)
+            # This frontier will be passed to _nexus_explore_step_internal() so bulk actions
+            # (EF/PF) operate on the correct set when SEARCH is active.
+            if search_actions:
+                # SEARCH MODE: Compute search frontier FIRST
+                correct_frontier_for_bulk = self._compute_search_frontier(
+                    session=session,
+                    search_actions=search_actions,
+                    scope="undecided",
+                    max_results=global_frontier_limit,
+                )
+            else:
+                # NORMAL MODE: Compute normal DFS frontier
+                correct_frontier_for_bulk = self._compute_exploration_frontier(
+                    session,
+                    frontier_size=global_frontier_limit,
+                    max_depth_per_frontier=1,
+                )
+            
             # In strict DFS modes, we must APPLY DECISIONS before computing the
-            # next leaf-chunk frontier. Delegate decision semantics to the v1
-            # helper, then reload the updated session state.
+            # next (final) frontier. Delegate decision semantics to the v1 helper,
+            # passing the pre-computed frontier so bulk actions use the correct set.
             if non_search_decisions:
                 internal_result = await self._nexus_explore_step_internal(
                     session_id=session_id,
@@ -6624,6 +6643,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     frontier_size=global_frontier_limit,
                     max_depth_per_frontier=1,
                     include_history_summary=False,
+                    _precomputed_frontier=correct_frontier_for_bulk,  # NEW: pass search/normal frontier
                 )
                 skipped_decisions = internal_result.get("skipped_decisions", []) or []
                 with open(session_path, "r", encoding="utf-8") as f:
@@ -6633,10 +6653,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 root_node = session.get("root_node") or {}
                 editable_mode = bool(session.get("editable", False))
 
-            # Compute frontier: SEARCH overrides normal DFS if search_actions present
-            
+            # Re-compute final frontier after decisions applied (state may have changed)
             if search_actions:
-                # SEARCH MODE: Build frontier from search results
+                # SEARCH MODE: Re-compute search frontier with updated state
                 frontier = self._compute_search_frontier(
                     session=session,
                     search_actions=search_actions,
@@ -6644,7 +6663,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     max_results=global_frontier_limit,  # Respect same budget as normal DFS
                 )
             else:
-                # NORMAL MODE: Compute strict DFS frontier (leaf chunks in canonical DFS order)
+                # NORMAL MODE: Re-compute strict DFS frontier with updated state
                 frontier = self._compute_exploration_frontier(
                     session,
                     frontier_size=global_frontier_limit,
@@ -7001,6 +7020,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         frontier_size: int = 5,
         max_depth_per_frontier: int = 1,
         include_history_summary: bool = True,
+        _precomputed_frontier: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Internal v1-style exploration (used by v2 for decisions delegation).
 
@@ -7302,14 +7322,19 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         actions.sort(key=action_sort_key)
         
-        # Compute current frontier ONCE before action loop (needed for frontier-based bulk actions)
+        # Use pre-computed frontier (from v2 caller) OR compute it here if not provided
         session["handles"] = handles
         session["state"] = state
-        current_step_frontier = self._compute_exploration_frontier(
-            session,
-            frontier_size=frontier_size,
-            max_depth_per_frontier=max_depth_per_frontier,
-        )
+        if _precomputed_frontier is not None:
+            # v2 pre-computed the correct frontier (search or normal) for bulk actions
+            current_step_frontier = _precomputed_frontier
+        else:
+            # Legacy path: compute normal DFS frontier here
+            current_step_frontier = self._compute_exploration_frontier(
+                session,
+                frontier_size=frontier_size,
+                max_depth_per_frontier=max_depth_per_frontier,
+            )
         
         # Snapshot of state before this step for re-decision guards
         prev_state: dict[str, dict[str, Any]] = {
