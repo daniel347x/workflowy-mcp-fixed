@@ -1897,8 +1897,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "__preview_tree__": preview_tree,
                 "export_root_id": node_id,
                 "export_root_name": root_node_info.get('name') if root_node_info else 'Unknown',
-                "nodes": hierarchical_tree
-                "original_ids_seen": original_ids_seen,
+                "nodes": hierarchical_tree,
+                "original_ids_seen": original_ids_seen
             }
             
             # Write JSON file (working copy)
