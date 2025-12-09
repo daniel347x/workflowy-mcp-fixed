@@ -443,11 +443,14 @@ def transform_jewel(
             "MOVE_NODE": {"op", "operation", "jewel_id", "new_parent_jewel_id", "position", "relative_to_jewel_id"},
             "DELETE_NODE": {"op", "operation", "jewel_id", "delete_from_ether", "mode"},
             "DELETE_ALL_CHILDREN": {"op", "operation", "jewel_id", "delete_from_ether", "mode"},
-            "RENAME_NODE": {"op", "operation", "jewel_id", "new_name"},
-            "SET_NOTE": {"op", "operation", "jewel_id", "new_note"},
+            "RENAME_NODE": {"op", "operation", "jewel_id", "new_name", "name"},
+            "SET_NOTE": {"op", "operation", "jewel_id", "new_note", "note"},
             "SET_ATTRS": {"op", "operation", "jewel_id", "attrs"},
             "CREATE_NODE": {"op", "operation", "parent_jewel_id", "position", "relative_to_jewel_id", "name", "note", "attrs", "data", "jewel_id", "children", "node"},
             "SET_ATTRS_BY_PATH": {"op", "operation", "path", "attrs"},
+            # Text-level JEWELSTORM helpers
+            "SEARCH_REPLACE": {"op", "operation", "search", "replace", "case_sensitive", "whole_word", "regex", "fields"},
+            "SEARCH_AND_TAG": {"op", "operation", "search", "tag", "case_sensitive", "whole_word", "regex", "fields", "tag_in_name", "tag_in_note"},
         }
         
         valid_fields = VALID_FIELDS_BY_OP.get(op_type)
@@ -644,9 +647,10 @@ def transform_jewel(
                 jid = op.get("jewel_id")
                 if not jid:
                     raise ValueError("RENAME_NODE requires 'jewel_id'")
-                new_name = op.get("new_name")
+                # Accept both 'name' and 'new_name' for consistency with CREATE_NODE
+                new_name = op.get("name") or op.get("new_name")
                 if new_name is None:
-                    raise ValueError("RENAME_NODE requires 'new_name'")
+                    raise ValueError("RENAME_NODE requires 'name' or 'new_name'")
 
                 node = by_jewel_id.get(jid)
                 if node is None:
@@ -659,7 +663,8 @@ def transform_jewel(
                 jid = op.get("jewel_id")
                 if not jid:
                     raise ValueError("SET_NOTE requires 'jewel_id'")
-                new_note = op.get("new_note")
+                # Accept both 'note' and 'new_note' for consistency with CREATE_NODE
+                new_note = op.get("note") if "note" in op else op.get("new_note")
                 # Allow empty string / None to clear
 
                 node = by_jewel_id.get(jid)
@@ -836,6 +841,161 @@ def transform_jewel(
                         )
 
                 attrs_updated += 1
+
+            # SEARCH_REPLACE – text-level search/replace over name/note fields
+            elif op_type == "SEARCH_REPLACE":
+                import re
+
+                search = op.get("search")
+                if not isinstance(search, str) or not search:
+                    raise ValueError("SEARCH_REPLACE requires non-empty 'search' string")
+                replace = op.get("replace", "")
+                if not isinstance(replace, str):
+                    raise ValueError("SEARCH_REPLACE 'replace' must be a string")
+
+                case_sensitive = bool(op.get("case_sensitive", False))
+                whole_word = bool(op.get("whole_word", False))
+                use_regex = bool(op.get("regex", False))
+
+                fields_opt = str(op.get("fields", "both")).lower()
+                if fields_opt not in {"name", "note", "both"}:
+                    raise ValueError("SEARCH_REPLACE 'fields' must be 'name', 'note', or 'both'")
+
+                flags = 0 if case_sensitive else re.IGNORECASE
+
+                if use_regex:
+                    pattern = re.compile(search, flags)
+                else:
+                    pat = re.escape(search)
+                    if whole_word:
+                        pat = r"\b" + pat + r"\b"
+                    pattern = re.compile(pat, flags)
+
+                def _apply_replace(text: Optional[str]) -> tuple[Optional[str], bool]:
+                    if not isinstance(text, str) or text == "":
+                        return text, False
+                    new_text, count = pattern.subn(replace, text)
+                    return new_text, count > 0
+
+                renamed_nodes = 0
+                updated_notes = 0
+
+                for node in by_jewel_id.values():
+                    name_changed = False
+                    note_changed = False
+
+                    if fields_opt in {"name", "both"}:
+                        name = node.get("name")
+                        new_name, changed = _apply_replace(name)
+                        if changed:
+                            node["name"] = new_name
+                            name_changed = True
+
+                    if fields_opt in {"note", "both"}:
+                        note = node.get("note")
+                        new_note, changed = _apply_replace(note)
+                        if changed:
+                            node["note"] = new_note
+                            note_changed = True
+
+                    if name_changed:
+                        renamed_nodes += 1
+                    if note_changed:
+                        updated_notes += 1
+
+                nodes_renamed += renamed_nodes
+                notes_updated += updated_notes
+
+            # SEARCH_AND_TAG – search, then add a tag to name and/or note
+            elif op_type == "SEARCH_AND_TAG":
+                import re
+
+                search = op.get("search")
+                if not isinstance(search, str) or not search:
+                    raise ValueError("SEARCH_AND_TAG requires non-empty 'search' string")
+
+                raw_tag = op.get("tag")
+                if not isinstance(raw_tag, str) or not raw_tag.strip():
+                    raise ValueError("SEARCH_AND_TAG requires non-empty 'tag' string")
+                tag = raw_tag.strip()
+                if not tag.startswith("#"):
+                    tag = "#" + tag
+
+                case_sensitive = bool(op.get("case_sensitive", False))
+                whole_word = bool(op.get("whole_word", False))
+                use_regex = bool(op.get("regex", False))
+
+                fields_opt = str(op.get("fields", "both")).lower()
+                if fields_opt not in {"name", "note", "both"}:
+                    raise ValueError("SEARCH_AND_TAG 'fields' must be 'name', 'note', or 'both'")
+
+                tag_in_name = bool(op.get("tag_in_name", True))
+                tag_in_note = bool(op.get("tag_in_note", False))
+
+                flags = 0 if case_sensitive else re.IGNORECASE
+
+                if use_regex:
+                    pattern = re.compile(search, flags)
+                else:
+                    pat = re.escape(search)
+                    if whole_word:
+                        pat = r"\b" + pat + r"\b"
+                    pattern = re.compile(pat, flags)
+
+                def _matches(text: Optional[str]) -> bool:
+                    if not isinstance(text, str) or text == "":
+                        return False
+                    return bool(pattern.search(text))
+
+                def _has_tag(text: Optional[str]) -> bool:
+                    if not isinstance(text, str) or text == "":
+                        return False
+                    # Simple token-based check to avoid duplicate tags
+                    return tag in text.split()
+
+                renamed_nodes = 0
+                updated_notes = 0
+
+                for node in by_jewel_id.values():
+                    name = node.get("name")
+                    note = node.get("note")
+
+                    match = False
+                    if fields_opt in {"name", "both"} and _matches(name):
+                        match = True
+                    if fields_opt in {"note", "both"} and _matches(note):
+                        match = True
+
+                    if not match:
+                        continue
+
+                    name_changed = False
+                    note_changed = False
+
+                    if tag_in_name:
+                        base_name = name or ""
+                        if not _has_tag(base_name):
+                            new_name = (base_name + " " + tag).strip()
+                            node["name"] = new_name
+                            name_changed = True
+
+                    if tag_in_note:
+                        base_note = note or ""
+                        if not _has_tag(base_note):
+                            if base_note:
+                                new_note = base_note + "\n" + tag
+                            else:
+                                new_note = tag
+                            node["note"] = new_note
+                            note_changed = True
+
+                    if name_changed:
+                        renamed_nodes += 1
+                    if note_changed:
+                        updated_notes += 1
+
+                nodes_renamed += renamed_nodes
+                notes_updated += updated_notes
 
             else:
                 raise ValueError(f"Unknown operation type {op_type!r}")
