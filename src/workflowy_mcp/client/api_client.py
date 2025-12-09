@@ -7408,7 +7408,18 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             # Check if this handle or any descendant is engulfed
                             h_summary = _summarize_descendants(h)
                             if h_summary["accepted_leaf_count"] > 0:
-                                # Has engulfed descendants - will be structurally included
+                                # Has engulfed descendants - this handle lies on a path to one
+                                # or more engulfed leaves. It must be treated as DECIDED so
+                                # completeness checks do not flag it as uncovered.
+                                f_entry = state.setdefault(
+                                    h,
+                                    {"status": "unseen", "max_depth": None, "selection_type": None},
+                                )
+                                if f_entry.get("status") not in {"finalized", "closed"}:
+                                    f_entry["status"] = "finalized"
+                                    # Explicitly mark as PATH so finalize_exploration understands
+                                    # this is an ancestor anchor, not a subtree selection.
+                                    f_entry["selection_type"] = "path"
                                 structurally_included.append(h)
                             else:
                                 # No engulfed descendants - preserve this node in ETHER
