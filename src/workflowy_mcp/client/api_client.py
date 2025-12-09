@@ -295,6 +295,7 @@ EXPLORATION_ACTION_2LETTER = {
     "AS": "append_scratchpad",
     "AH": "add_hint",
     "PD": "peek_descendants",
+    "SX": "search_descendants_for_text",
     "PA": "preserve_all_remaining_nodes_in_ether_at_finalization",
 }
 
@@ -5402,6 +5403,275 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             }
         }
 
+    def _apply_search_filter_to_frontier(
+        self,
+        frontier: list[dict[str, Any]],
+        search_filter: dict[str, Any],
+        handles: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Apply persistent search filter to a frontier (SECONDARY implementation).
+
+        This is used by dfs_guided_explicit mode when search_filter was provided
+        at START. It filters the normal DFS frontier to show only nodes that
+        match the search criteria, preserving DFS order and leaf budget semantics.
+
+        Args:
+            frontier: Normal DFS frontier (leaf chunks)
+            search_filter: Search criteria from session (search_text, case_sensitive, etc.)
+            handles: Session handles dict (needed for name/note lookup)
+
+        Returns:
+            Filtered frontier (same structure, subset of entries)
+        """
+        import re
+
+        search_text = search_filter.get("search_text", "")
+        case_sensitive = search_filter.get("case_sensitive", False)
+        whole_word = search_filter.get("whole_word", False)
+        use_regex = search_filter.get("regex", False)
+
+        if not search_text:
+            return frontier  # No filter text, return original
+
+        filtered_frontier = []
+
+        for entry in frontier:
+            h = entry.get("handle")
+            meta = handles.get(h, {}) or {}
+            name = meta.get("name", "")
+            note = meta.get("note", "")
+
+            # Combine name + note for searching
+            searchable_text = f"{name}\n{note}"
+
+            # Match logic (same as PRIMARY implementation)
+            matches = False
+            if use_regex:
+                try:
+                    flags = 0 if case_sensitive else re.IGNORECASE
+                    if re.search(search_text, searchable_text, flags):
+                        matches = True
+                except re.error:
+                    # Invalid regex - skip this handle
+                    pass
+            elif whole_word:
+                pattern = r"\b" + re.escape(search_text) + r"\b"
+                flags = 0 if case_sensitive else re.IGNORECASE
+                if re.search(pattern, searchable_text, flags):
+                    matches = True
+            else:
+                # Simple substring matching
+                if case_sensitive:
+                    if search_text in searchable_text:
+                        matches = True
+                else:
+                    if search_text.lower() in searchable_text.lower():
+                        matches = True
+
+            if matches:
+                # Update guidance to indicate this is a SEARCH match
+                filtered_entry = dict(entry)
+                if entry.get("is_leaf"):
+                    filtered_entry["guidance"] = "SEARCH MATCH - leaf: EL=engulf, PL=preserve"
+                else:
+                    filtered_entry["guidance"] = "SEARCH MATCH - branch: RB=reserve, PB=preserve"
+                filtered_frontier.append(filtered_entry)
+
+        return filtered_frontier
+
+    def _compute_search_frontier(
+        self,
+        session: dict[str, Any],
+        search_actions: list[dict[str, Any]],
+        scope: str = "undecided",
+        max_results: int = 80,
+    ) -> list[dict[str, Any]]:
+        """Compute frontier from SEARCH results (text matching in names/notes).
+
+        This frontier builder is used when one or more search_descendants_for_text
+        actions are present in nexus_explore_step. It:
+        - Searches all handles under the specified branch (or "R" for entire tree)
+        - Filters by scope ("undecided" or "all")
+        - Applies AND logic across multiple searches (intersection)
+        - Returns matching nodes + all their ancestors as frontier entries
+        - Respects max_results limit (prioritizes matches over ancestors)
+
+        Args:
+            session: Exploration session dict
+            search_actions: List of search_descendants_for_text actions
+            scope: "undecided" (default) or "all"
+            max_results: Maximum frontier entries (default 80, same as global_frontier_limit)
+
+        Returns:
+            Flat frontier list (convert to tree via _build_frontier_tree_from_flat)
+        """
+        import re
+
+        handles = session.get("handles", {}) or {}
+        state = session.get("state", {}) or {}
+        editable_mode = bool(session.get("editable", False))
+        DEFAULT_NOTE_PREVIEW = 1024
+
+        def _collect_hints_from_ancestors(handle: str) -> list[str]:
+            """Collect hints from all ancestors of a given handle (closest first)."""
+            hints: list[str] = []
+            parent = handles.get(handle, {}).get("parent")
+            while parent:
+                parent_meta = handles.get(parent, {}) or {}
+                parent_hints = parent_meta.get("hints") or []
+                hints.extend(parent_hints)
+                parent = parent_meta.get("parent")
+            return hints
+
+        # Start with all handles (will be filtered by search)
+        candidate_handles = set(handles.keys())
+        candidate_handles.discard("R")  # Never include synthetic root in search results
+
+        # Apply each search in sequence (AND logic)
+        for search_action in search_actions:
+            handle_filter = search_action.get("handle", "R")
+            search_text = search_action.get("search_text", "")
+            case_sensitive = search_action.get("case_sensitive", False)
+            whole_word = search_action.get("whole_word", False)
+            use_regex = search_action.get("regex", False)
+
+            if not search_text:
+                continue  # Skip empty searches
+
+            # Filter to descendants under the specified handle
+            if handle_filter != "R":
+                # Only consider handles that descend from handle_filter
+                filtered_candidates = set()
+                for h in candidate_handles:
+                    if h == handle_filter or h.startswith(handle_filter + "."):
+                        filtered_candidates.add(h)
+                candidate_handles = filtered_candidates
+
+            # Build matching set for this search
+            matching_handles = set()
+
+            for h in candidate_handles:
+                meta = handles.get(h, {}) or {}
+                name = meta.get("name", "")
+                note = meta.get("note", "")
+
+                # Combine name + note for searching
+                searchable_text = f"{name}\n{note}"
+
+                # Match logic
+                if use_regex:
+                    try:
+                        flags = 0 if case_sensitive else re.IGNORECASE
+                        if re.search(search_text, searchable_text, flags):
+                            matching_handles.add(h)
+                    except re.error:
+                        # Invalid regex - skip this handle
+                        pass
+                elif whole_word:
+                    # Whole word matching
+                    pattern = r"\b" + re.escape(search_text) + r"\b"
+                    flags = 0 if case_sensitive else re.IGNORECASE
+                    if re.search(pattern, searchable_text, flags):
+                        matching_handles.add(h)
+                else:
+                    # Simple substring matching
+                    if case_sensitive:
+                        if search_text in searchable_text:
+                            matching_handles.add(h)
+                    else:
+                        if search_text.lower() in searchable_text.lower():
+                            matching_handles.add(h)
+
+            # Intersection with previous search results (AND logic)
+            candidate_handles &= matching_handles
+
+        # Apply scope filter
+        if scope == "undecided":
+            # Only include handles whose status is in {unseen, candidate, open}
+            filtered = set()
+            for h in candidate_handles:
+                st = state.get(h, {"status": "unseen"})
+                status = st.get("status")
+                if status in {"unseen", "candidate", "open"}:
+                    filtered.add(h)
+            candidate_handles = filtered
+
+        # Apply max_results limit to MATCHES, then include ALL required ancestors
+        # Strategy: Limit controls how many search hits are shown, but each hit
+        # gets its complete ancestor path to root (navigational requirement)
+        matches_sorted = sorted(candidate_handles)  # Actual search matches
+        
+        # Limit the number of matches
+        limited_matches = matches_sorted[:max_results]
+        
+        # Build frontier: limited matches + ALL their ancestors up to root
+        final_frontier_handles = set(limited_matches)
+        for h in limited_matches:
+            ancestor_h = handles.get(h, {}).get("parent")
+            while ancestor_h and ancestor_h != "R":
+                final_frontier_handles.add(ancestor_h)
+                ancestor_h = handles.get(ancestor_h, {}).get("parent")
+        
+        # Sort for stable output (matches first in handle order, then ancestors)
+        matches_in_frontier = sorted([h for h in final_frontier_handles if h in limited_matches])
+        ancestors_in_frontier = sorted([h for h in final_frontier_handles if h not in limited_matches])
+        final_frontier_list = matches_in_frontier + ancestors_in_frontier
+
+        # Build frontier entries
+        frontier: list[dict[str, Any]] = []
+        MAX_NOTE_PREVIEW = None if editable_mode else DEFAULT_NOTE_PREVIEW
+
+        for h in final_frontier_list:  # Respects max_results for matches; includes all required ancestors
+            meta = handles.get(h, {}) or {}
+            st = state.get(h, {"status": "unseen"})
+            child_handles = meta.get("children", []) or []
+            is_leaf = not child_handles
+
+            # Note preview
+            note_full = meta.get("note") or ""
+            if MAX_NOTE_PREVIEW is None:
+                note_preview = note_full
+            else:
+                note_preview = (
+                    note_full
+                    if len(note_full) <= MAX_NOTE_PREVIEW
+                    else note_full[:MAX_NOTE_PREVIEW]
+                )
+
+            local_hints = meta.get("hints") or []
+            hints_from_ancestors = _collect_hints_from_ancestors(h)
+
+            # SEARCH-specific guidance
+            if h in limited_matches:
+                # This node matched the search
+                if is_leaf:
+                    guidance = "MATCH - leaf: EL=engulf, PL=preserve"
+                else:
+                    guidance = "MATCH - branch: RB=reserve, PB=preserve, EF=engulf_showing, PF=preserve_showing"
+            else:
+                # This is an ancestor of a match (navigational context)
+                guidance = "ancestor (navigational context)"
+
+            entry = {
+                "handle": h,
+                "parent_handle": meta.get("parent"),
+                "name_preview": meta.get("name", ""),
+                "note_preview": note_preview,
+                "child_count": len(child_handles),
+                "depth": meta.get("depth", 0),
+                "status": st.get("status", "candidate"),
+                "is_leaf": is_leaf,
+                "guidance": guidance,
+            }
+            if local_hints:
+                entry["hints"] = local_hints
+            if hints_from_ancestors:
+                entry["hints_from_ancestors"] = hints_from_ancestors
+
+            frontier.append(entry)
+
+        return frontier
+
     def _compute_exploration_frontier(
         self,
         session: dict[str, Any],
@@ -5440,6 +5710,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         """
         handles = session.get("handles", {}) or {}
         state = session.get("state", {}) or {}
+        search_filter = session.get("search_filter")  # SECONDARY: persistent filter (explicit mode only)
 
         def _collect_hints_from_ancestors(handle: str) -> list[str]:
             """Collect hints from all ancestors of a given handle (closest first)."""
@@ -5746,6 +6017,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 
                 frontier.append(entry)
 
+            # SECONDARY SEARCH: Apply persistent search filter (explicit mode only)
+            if search_filter is not None and exploration_mode == "dfs_guided_explicit":
+                frontier = self._apply_search_filter_to_frontier(
+                    frontier=frontier,
+                    search_filter=search_filter,
+                    handles=handles,
+                )
+
             return frontier
 
         # ========= NON-STRICT / LEGACY MODES: ROUND-ROBIN OPEN PARENTS =========
@@ -5906,6 +6185,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         frontier_size: int = 25,
         max_depth_per_frontier: int = 1,
         editable: bool = False,
+        search_filter: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Initialize an exploration session over a Workflowy subtree.
 
@@ -5913,6 +6193,20 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         (summon/glimpse_full/existing are treated identically for now). The
         GLIMPSE result is cached in a JSON session file along with handle and
         state metadata, and an initial frontier is returned.
+        
+        Args:
+            nexus_tag: Human-readable tag for this exploration
+            root_id: Workflowy node UUID to explore
+            source_mode: Reserved (currently all use glimpse_full)
+            max_nodes: Safety cap on tree size
+            session_hint: Controls exploration_mode ('bulk'/'guided_bulk' → dfs_guided_bulk)
+            frontier_size: Leaf budget for guided modes
+            max_depth_per_frontier: Reserved for future
+            editable: Enable update_node/tag actions if True
+            search_filter: SECONDARY search (dfs_guided_explicit only) - Persistent filter
+                applied to every frontier. Dict with keys: search_text (required),
+                case_sensitive (default False), whole_word (default False),
+                regex (default False). Filters normal DFS frontier to show only matches.
         """
         import logging
         import uuid
@@ -5962,10 +6256,31 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # DEFAULT: dfs_guided_explicit (explicit leaf coverage, no bulk actions).
         # Optional override: request dfs_guided_bulk for bulk descendant actions.
         exploration_mode = "dfs_guided_explicit"
+        strict_completeness = False  # NEW: Disables PA action in bulk mode
+        
         if session_hint:
             hint = session_hint.strip().lower()
             if "bulk" in hint or "guided_bulk" in hint or "non_strict" in hint:
                 exploration_mode = "dfs_guided_bulk"
+            if "strict_completeness" in hint or "strict" in hint:
+                strict_completeness = True
+        
+        # SECONDARY SEARCH IMPLEMENTATION: Validate search_filter for explicit mode only
+        if search_filter is not None:
+            if exploration_mode != "dfs_guided_explicit":
+                raise NetworkError(
+                    "search_filter parameter is only available in dfs_guided_explicit mode.\n\n"
+                    "The SECONDARY search implementation (persistent filter at START) is designed "
+                    "for strict DFS exploration with filtered frontiers.\n\n"
+                    "For bulk mode, use the PRIMARY search implementation: "
+                    "search_descendants_for_text action in nexus_explore_step."
+                )
+            # Validate search_filter structure
+            if not isinstance(search_filter, dict) or not search_filter.get("search_text"):
+                raise NetworkError(
+                    "search_filter must be a dict with at least 'search_text' key.\n\n"
+                    "Example: search_filter={'search_text': 'spare', 'case_sensitive': False}"
+                )
 
         # Fetch subtree once via GLIMPSE FULL (Agent hunts mode)
         glimpse = await self.workflowy_scry(
@@ -6077,11 +6392,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "exploration_mode": exploration_mode,
             "max_nodes": max_nodes,
             "editable": bool(editable),
+            "strict_completeness": strict_completeness,  # NEW: Disables PA in bulk mode
             "handles": handles,
             "state": state,
             "scratchpad": "",
             "root_node": root_node,
             "steps": 0,
+            "search_filter": search_filter,  # SECONDARY: persistent filter for explicit mode
             "glimpse_stats": {
                 "node_count": glimpse.get("node_count", 0),
                 "depth": glimpse.get("depth", 0),
@@ -6124,21 +6441,47 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "",
                 "Leaf actions: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
                 "Branch actions (when all descendants decided): flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB)",
-                "No bulk actions available in explicit mode."
+                "No bulk actions available in explicit mode. PA (preserve_all) never available in explicit mode.",
+                "",
+                "🔍 SEARCH: SECONDARY implementation (set at START via search_filter param) - Filters normal DFS frontier to show only matches. PRIMARY implementation (search_descendants_for_text action in STEP) not available in explicit mode."
             ]
         elif exploration_mode == "dfs_guided_bulk":
-            step_guidance = [
-                "🎯 BULK MODE: Auto-frontier with bulk actions.",
-                "",
-                "💎 DECISION OUTCOMES:",
-                "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
-                "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
-                "",
-                "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
-                "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
-                "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
-                "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA)"
-            ]
+            # Check strict_completeness for initial guidance
+            if strict_completeness:
+                step_guidance = [
+                    "🎯 BULK MODE: Auto-frontier with bulk actions.",
+                    "",
+                    "🛡️ STRICT COMPLETENESS ACTIVE - PA action DISABLED",
+                    "",
+                    "⚠️ COMMON AGENT FAILURE MODE: Agents routinely opt out early with PA after a few frontiers.",
+                    "DON'T BE ONE OF THOSE AGENTS. This mode forces thorough exploration.",
+                    "",
+                    "💎 DECISION OUTCOMES:",
+                    "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
+                    "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
+                    "",
+                    "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                    "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
+                    "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
+                    "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA) - DISABLED in strict_completeness mode",
+                    "",
+                    "🔍 SEARCH: search_descendants_for_text (SX) - Returns frontier of matches + ancestors. Params: handle='R'|branch, search_text='...', case_sensitive=False, whole_word=False, regex=False, scope='undecided'|'all'. Multiple searches use AND logic. Next step without search returns to normal DFS frontier."
+                ]
+            else:
+                step_guidance = [
+                    "🎯 BULK MODE: Auto-frontier with bulk actions.",
+                    "",
+                    "💎 DECISION OUTCOMES:",
+                    "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
+                    "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
+                    "",
+                    "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                    "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
+                    "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
+                    "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA)",
+                    "",
+                    "🔍 SEARCH: search_descendants_for_text (SX) - Returns frontier of matches + ancestors. Params: handle='R'|branch, search_text='...', case_sensitive=False, whole_word=False, regex=False, scope='undecided'|'all'. Multiple searches use AND logic. Next step without search returns to normal DFS frontier."
+                ]
         else:
             step_guidance = [
                 "🎯 LEGACY MODE: Manual navigation.",
@@ -6279,12 +6622,25 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 root_node = session.get("root_node") or {}
                 editable_mode = bool(session.get("editable", False))
 
-            # Compute strict DFS frontier (leaf chunks in canonical DFS order).
-            frontier = self._compute_exploration_frontier(
-                session,
-                frontier_size=global_frontier_limit,
-                max_depth_per_frontier=1,
-            )
+            # Compute frontier: SEARCH overrides normal DFS if search_actions present
+            search_actions = [d for d in (decisions or []) if d.get("action") == "search_descendants_for_text"]
+            
+            if search_actions:
+                # SEARCH MODE: Build frontier from search results
+                frontier = self._compute_search_frontier(
+                    session=session,
+                    search_actions=search_actions,
+                    scope="undecided",  # Default: only undecided nodes
+                    max_results=global_frontier_limit,  # Respect same budget as normal DFS
+                )
+            else:
+                # NORMAL MODE: Compute strict DFS frontier (leaf chunks in canonical DFS order)
+                frontier = self._compute_exploration_frontier(
+                    session,
+                    frontier_size=global_frontier_limit,
+                    max_depth_per_frontier=1,
+                )
+            
             frontier_tree = self._build_frontier_tree_from_flat(frontier)
 
             # Update session timestamp and persist.
@@ -6313,21 +6669,49 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "",
                     "Leaf actions: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
                     "Branch actions (when all descendants decided): flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB)",
-                    "No bulk actions available in explicit mode."
+                    "No bulk actions available in explicit mode.",
+                    "",
+                    "🔍 SEARCH (not available in explicit mode by default - PRIMARY implementation is bulk mode only)"
                 ]
             elif exploration_mode == "dfs_guided_bulk":
-                step_guidance = [
-                    "🎯 BULK MODE: Auto-frontier with bulk actions.",
-                    "",
-                    "💎 DECISION OUTCOMES:",
-                    "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
-                    "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
-                    "",
-                    "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
-                    "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
-                    "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
-                    "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA)"
-                ]
+                # Check if strict_completeness is active
+                strict_completeness_active = session.get("strict_completeness", False)
+                
+                if strict_completeness_active:
+                    step_guidance = [
+                        "🎯 BULK MODE: Auto-frontier with bulk actions.",
+                        "",
+                        "🛡️ STRICT COMPLETENESS ACTIVE - PA action DISABLED",
+                        "",
+                        "⚠️ COMMON AGENT FAILURE MODE: Agents routinely opt out early with PA after a few frontiers.",
+                        "DON'T BE ONE OF THOSE AGENTS. This mode forces thorough exploration.",
+                        "",
+                        "💎 DECISION OUTCOMES:",
+                        "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
+                        "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
+                        "",
+                        "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                        "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
+                        "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
+                        "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA) - DISABLED in strict_completeness mode",
+                        "",
+                        "🔍 SEARCH: search_descendants_for_text (SX) - Returns frontier of matches + ancestors. Params: handle='R'|branch, search_text='...', case_sensitive=False, whole_word=False, regex=False, scope='undecided'|'all'. Multiple searches use AND logic. Next step without search returns to normal DFS frontier."
+                    ]
+                else:
+                    step_guidance = [
+                        "🎯 BULK MODE: Auto-frontier with bulk actions.",
+                        "",
+                        "💎 DECISION OUTCOMES:",
+                        "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
+                        "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
+                        "",
+                        "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                        "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
+                        "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
+                        "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA)",
+                        "",
+                        "🔍 SEARCH: search_descendants_for_text (SX) - Returns frontier of matches + ancestors. Params: handle='R'|branch, search_text='...', case_sensitive=False, whole_word=False, regex=False, scope='undecided'|'all'. Multiple searches use AND logic. Next step without search returns to normal DFS frontier."
+                    ]
             else:
                 step_guidance = [
                     "🎯 LEGACY MODE: Manual navigation.",
@@ -6653,6 +7037,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             _index_tree_for_edit(root_node)
 
         editable_mode = bool(session.get("editable", False))
+        DEFAULT_NOTE_PREVIEW = 1024
 
         # Lazy-loaded map of guardian override tokens for this session. These
         # allow Dan to bypass strict dfs_full_walk enforcement on a
@@ -6931,8 +7316,23 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     # BULK MODE ONLY: Preserve all remaining undecided nodes in ETHER
                     if exploration_mode != "dfs_guided_bulk":
                         raise NetworkError(
-                            "preserve_all_remaining_nodes_in_ether_at_finalization action is only available in non-strict mode (dfs_guided).\n\n"
-                            "In strict DFS mode, you must explicitly decide every leaf."
+                            "preserve_all_remaining_nodes_in_ether_at_finalization action is only available in non-strict mode (dfs_guided_bulk).\n\n"
+                            "In strict DFS mode (dfs_guided_explicit), you must explicitly decide every leaf."
+                        )
+                    
+                    # STRICT COMPLETENESS: Disable PA even in bulk mode
+                    strict_completeness = session.get("strict_completeness", False)
+                    if strict_completeness:
+                        raise NetworkError(
+                            "preserve_all_remaining_nodes_in_ether_at_finalization (PA) is disabled in strict_completeness mode.\n\n"
+                            "⚠️ COMMON AGENT FAILURE MODE: Agents routinely opt out early after just a few frontiers, \n"
+                            "using the catch-all PA to skip thorough exploration. DON'T BE ONE OF THOSE AGENTS.\n\n"
+                            "strict_completeness forces you to look at ALL frontiers and make explicit decisions.\n\n"
+                            "Use this mode for:\n"
+                            "  • Terminology cleanup (must review every node)\n"
+                            "  • Critical refactoring (can't afford to miss anything)\n"
+                            "  • Documentation updates requiring thoroughness\n\n"
+                            "To proceed: Make explicit decisions on all nodes via EL/PL (leaves) or RB/PB (branches)."
                         )
                     
                     preserved_count = 0
@@ -7674,21 +8074,49 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "",
                 "Leaf actions: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
                 "Branch actions (when all descendants decided): flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB)",
-                "No bulk actions available in explicit mode."
+                "No bulk actions available in explicit mode. PA (preserve_all) never available in explicit mode.",
+                "",
+                "🔍 SEARCH: SECONDARY implementation (set at START via search_filter param) - Filters normal DFS frontier to show only matches. PRIMARY implementation (search_descendants_for_text action in STEP) not available in explicit mode."
             ]
         elif exploration_mode == "dfs_guided_bulk":
-            step_guidance = [
-                "🎯 BULK MODE: Auto-frontier with bulk actions.",
-                "",
-                "💎 DECISION OUTCOMES:",
-                "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
-                "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
-                "",
-                "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
-                "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
-                "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
-                "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA)"
-            ]
+            # Check strict_completeness for step guidance
+            strict_completeness_active = session.get("strict_completeness", False)
+            
+            if strict_completeness_active:
+                step_guidance = [
+                    "🎯 BULK MODE: Auto-frontier with bulk actions.",
+                    "",
+                    "🛡️ STRICT COMPLETENESS ACTIVE - PA action DISABLED",
+                    "",
+                    "⚠️ COMMON AGENT FAILURE MODE: Agents routinely opt out early with PA after a few frontiers.",
+                    "DON'T BE ONE OF THOSE AGENTS. This mode forces thorough exploration.",
+                    "",
+                    "💎 DECISION OUTCOMES:",
+                    "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
+                    "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
+                    "",
+                    "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                    "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
+                    "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
+                    "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA) - DISABLED in strict_completeness mode",
+                    "",
+                    "🔍 SEARCH: search_descendants_for_text (SX) - Returns frontier of matches + ancestors. Params: handle='R'|branch, search_text='...', case_sensitive=False, whole_word=False, regex=False, scope='undecided'|'all'. Multiple searches use AND logic. Next step without search returns to normal DFS frontier."
+                ]
+            else:
+                step_guidance = [
+                    "🎯 BULK MODE: Auto-frontier with bulk actions.",
+                    "",
+                    "💎 DECISION OUTCOMES:",
+                    "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
+                    "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
+                    "",
+                    "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                    "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
+                    "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
+                    "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA)",
+                    "",
+                    "🔍 SEARCH: search_descendants_for_text (SX) - Returns frontier of matches + ancestors. Params: handle='R'|branch, search_text='...', case_sensitive=False, whole_word=False, regex=False, scope='undecided'|'all'. Multiple searches use AND logic. Next step without search returns to normal DFS frontier."
+                ]
         else:
             step_guidance = [
                 "🎯 LEGACY MODE: Manual navigation.",

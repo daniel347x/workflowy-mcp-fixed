@@ -1672,6 +1672,7 @@ async def nexus_start_exploration(
     frontier_size: int = 25,
     max_depth_per_frontier: int = 1,
     editable: bool = False,
+    search_filter: dict[str, Any] | None = None,
 ) -> dict:
     """Start an exploration session and return the first frontier.
 
@@ -1700,13 +1701,27 @@ async def nexus_start_exploration(
         root_id: Workflowy UUID to treat as exploration root.
         source_mode: Currently decorative; source is always a GLIMPSE_FULL SCRY.
         max_nodes: Safety cap for SCRY (size_limit).
-        session_hint: Controls exploration_mode; if it contains "bulk" or
-            "guided_bulk" the session uses dfs_guided_bulk, otherwise
-            dfs_guided_explicit is used (default).
+        session_hint: Controls exploration_mode and strict_completeness:
+            - Contains "bulk" or "guided_bulk" → dfs_guided_bulk mode
+            - Contains "strict_completeness" or "strict" → Disables PA action (bulk mode only)
+            - Default (neither) → dfs_guided_explicit mode
+            - Example: "bulk strict_completeness" enables both
+            
+            ⚠️ STRICT COMPLETENESS: Prevents agents from using preserve_all_remaining_nodes_in_ether_at_finalization
+            (PA) to opt out early. COMMON AGENT FAILURE MODE: Agents routinely call PA after
+            just a few frontiers instead of thoroughly exploring. Use strict_completeness for:
+              • Terminology cleanup (must review every node)
+              • Critical refactoring (can't afford to miss anything)
+              • Documentation updates requiring thoroughness
         frontier_size: Leaf-budget target for each frontier batch.
         max_depth_per_frontier: Reserved for future multi-level frontiers.
         editable: If True, enables update_*_and_engulf actions that write back to
             the cached tree before GEM finalization.
+        search_filter: SECONDARY search (dfs_guided_explicit only) - Persistent filter applied
+            to every frontier. Dict with keys: search_text (required), case_sensitive (default False),
+            whole_word (default False), regex (default False). Filters normal DFS frontier to show
+            only matching nodes in DFS order. Not available in bulk mode (use PRIMARY search action
+            in nexus_explore_step instead).
     """
     client = get_client()
 
@@ -1723,6 +1738,7 @@ async def nexus_start_exploration(
             frontier_size=frontier_size,
             max_depth_per_frontier=max_depth_per_frontier,
             editable=editable,
+            search_filter=search_filter,
         )
         if _rate_limiter:
             _rate_limiter.on_success()
@@ -1793,7 +1809,23 @@ async def nexus_explore_step(
           Bulk descendant actions (dfs_guided_bulk only):
             - engulf_all_showing_undecided_descendants_into_gem_for_editing
             - preserve_all_showing_undecided_descendants_in_ether
-            - preserve_all_remaining_nodes_in_ether_at_finalization
+            - preserve_all_remaining_nodes_in_ether_at_finalization (PA)
+            
+          ⚠️ AGENT FAILURE MODE WARNING - PA (preserve_all_remaining_nodes_in_ether_at_finalization):
+            Agents ROUTINELY call PA after just 2-3 frontiers instead of thoroughly exploring.
+            This is a SHORTCUT that causes incomplete exploration. DON'T BE ONE OF THOSE AGENTS.
+            
+            Use strict_completeness mode (session_hint="bulk strict_completeness") to disable PA
+            and force thorough exploration for:
+              • Terminology cleanup
+              • Critical refactoring
+              • Documentation updates requiring completeness
+          
+          SEARCH (dfs_guided_bulk only - PRIMARY implementation):
+            - search_descendants_for_text (SX) - Returns frontier of matching nodes + ancestors.
+              Params: handle (default 'R'), search_text (required), case_sensitive (default False),
+              whole_word (default False), regex (default False), scope ('undecided' or 'all').
+              Multiple searches use AND logic. Next step without search returns to normal DFS frontier.
 
           DECISION OUTCOMES:
           • ENGULF → Node brought into GEM → Editable/deletable → Changes apply to ETHER
