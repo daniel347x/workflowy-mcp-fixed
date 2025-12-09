@@ -1795,7 +1795,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
             # Build hierarchical tree from flat list
             hierarchical_tree = self._build_hierarchy(flat_nodes, include_metadata)
-            
+
             # Preserve root node info and build complete path to Dagger root
             root_node_info = None
             root_immediate_child_count: int | None = None
@@ -1890,6 +1890,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "original_ids_seen": original_ids_seen,
                 "nodes": hierarchical_tree
             }
+
+            # Attach preview_id + preview_tree for known NEXUS artifacts (purely for humans/agents).
+            prefix_for_preview = self._infer_preview_prefix_from_path(output_file)
+            preview_tree = None
+            if prefix_for_preview:
+                preview_tree = self._annotate_preview_ids_and_build_tree(
+                    export_package["nodes"],
+                    prefix_for_preview,
+                )
+                export_package["__preview_tree__"] = preview_tree
             
             # Write JSON file (working copy)
             with open(output_file, 'w', encoding='utf-8') as f:
@@ -2144,7 +2154,125 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             total_descendants_here += total_desc_for_node
 
         return total_descendants_here
-    
+
+    @staticmethod
+    def _infer_preview_prefix_from_path(path: str) -> str | None:
+        """Infer preview_id prefix from a known NEXUS JSON filename.
+
+        This is best-effort and only used for coarse TERRAIN-style exports
+        written by bulk_export_to_file. Other NEXUS helpers pass an explicit
+        prefix when writing phantom_gem/shimmering/enchanted payloads.
+        """
+        base = os.path.basename(path)
+        if base == "coarse_terrain.json":
+            return "CT"
+        if base == "phantom_gem.json":
+            return "PG"
+        if base == "shimmering_terrain.json":
+            return "ST"
+        if base == "enchanted_terrain.json":
+            return "ET"
+        return None
+
+    @staticmethod
+    def _annotate_preview_ids_and_build_tree(
+        nodes: list[dict[str, Any]] | None,
+        prefix: str,
+        max_note_chars: int = 1024,
+    ) -> list[str]:
+        """Assign preview_id to each node and build a human-readable tree.
+
+        preview_id format: "<PREFIX>-1.2.3" where the numeric path is
+        1-based, computed per artifact. This helper is purely for agents/humans;
+        NEXUS / JEWELSTORM algorithms never read preview_id or the returned
+        preview lines.
+        """
+        if not nodes:
+            return []
+
+        lines: list[str] = []
+
+        def walk(node: dict[str, Any], path_parts: list[str]) -> None:
+            if not isinstance(node, dict):
+                return
+            # Assign preview_id
+            path_str = ".".join(path_parts)
+            preview_id = f"{prefix}-{path_str}"
+            node["preview_id"] = preview_id
+
+            # Build one-line preview
+            depth = max(1, len(path_parts))
+            indent = " " * 4 * (depth - 1)
+            children = node.get("children") or []
+            has_child_dicts = any(isinstance(c, dict) for c in children)
+            bullet = "•" if not has_child_dicts else "⦿"
+            name = node.get("name") or "Untitled"
+            note = node.get("note") or ""
+            if isinstance(note, str) and note:
+                flat = note.replace("\n", "\\n")
+                if len(flat) > max_note_chars:
+                    flat = flat[:max_note_chars]
+                name_part = f"{name} [{flat}]"
+            else:
+                name_part = name
+            lines.append(f"[{preview_id}] {indent}{bullet} {name_part}")
+
+            # Recurse into children with extended path
+            for idx, child in enumerate(children, start=1):
+                if isinstance(child, dict):
+                    walk(child, path_parts + [str(idx)])
+
+        for root_index, root in enumerate(nodes, start=1):
+            if isinstance(root, dict):
+                walk(root, [str(root_index)])
+
+        return lines
+
+    @staticmethod
+    def _build_frontier_preview_lines(
+        frontier: list[dict[str, Any]] | None,
+        max_note_chars: int = 1024,
+    ) -> list[str]:
+        """Build a one-line-per-handle preview for exploration frontiers.
+
+        Format:
+            [A.1      ] ⦿ Name [note-preview]
+        with the handle right-padded to the longest handle width and
+        indentation based on handle depth (segments separated by '.').
+        """
+        if not frontier:
+            return []
+
+        handles = [str(entry.get("handle", "")) for entry in frontier]
+        if not handles:
+            return []
+        max_len = max(len(h) for h in handles)
+
+        lines: list[str] = []
+        for entry in frontier:
+            handle = str(entry.get("handle", ""))
+            label = handle.ljust(max_len)
+            # Depth from handle segments (A, A.1, A.1.3.2, ...)
+            depth = max(1, len(handle.split("."))) if handle else 1
+            indent = " " * 4 * (depth - 1)
+
+            is_leaf = bool(entry.get("is_leaf"))
+            bullet = "•" if is_leaf else "⦿"
+
+            name = entry.get("name_preview") or "Untitled"
+            note = entry.get("note_preview") or ""
+            if isinstance(note, str) and note:
+                flat = note.replace("\n", "\\n")
+                if len(flat) > max_note_chars:
+                    flat = flat[:max_note_chars]
+                name_part = f"{name} [{flat}]"
+            else:
+                name_part = name
+
+            lines.append(f"[{label}] {indent}{bullet} {name_part}")
+
+        return lines
+
     def _generate_markdown(
         self,
         nodes: list[dict[str, Any]],
@@ -2559,6 +2687,28 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     response['_source'] = 'websocket'
                     logger.info("✅ GLIMPSE via WebSocket successful")
                     
+                    # Attach preview_id + preview_tree for in-memory GLIMPSE tree (WG-1.2.3)
+                    try:
+                        root_obj = response.get("root") or {}
+                        children = response.get("children") or []
+                        if isinstance(root_obj, dict):
+                            # Attach children to root for preview traversal; children list
+                            # itself remains the primary contract for agents.
+                            root_obj.setdefault("children", children)
+                            preview_tree = self._annotate_preview_ids_and_build_tree(
+                                [root_obj],
+                                prefix="WG",
+                            )
+                        else:
+                            preview_tree = self._annotate_preview_ids_and_build_tree(
+                                children,
+                                prefix="WG",
+                            )
+                        response["preview_tree"] = preview_tree
+                    except Exception:
+                        # Preview must never break GLIMPSE; ignore errors.
+                        pass
+                    
                     # Log to persistent file
                     _log_glimpse_to_file("glimpse", node_id, response)
                     
@@ -2753,6 +2903,15 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # Build hierarchical tree
             hierarchical_tree = self._build_hierarchy(flat_nodes, include_metadata=True)
 
+            # Attach preview_id + preview_tree for GLIMPSE FULL (WS-1.2.3)
+            try:
+                preview_tree = self._annotate_preview_ids_and_build_tree(
+                    hierarchical_tree,
+                    prefix="WS",
+                )
+            except Exception:
+                preview_tree = []
+
             # LOGGING: inspect root candidates from hierarchy for debugging
             try:
                 self._log_debug(f"workflowy_scry: node_id={node_id} use_efficient_traversal={use_efficient_traversal} flat_nodes={len(flat_nodes)} roots={len(hierarchical_tree)}")
@@ -2809,7 +2968,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "children": children,
                 "node_count": len(flat_nodes),
                 "depth": max_depth,
-                "_source": "api"  # Indicate data came from API (not WebSocket)
+                "_source": "api",  # Indicate data came from API (not WebSocket)
+                "preview_tree": preview_tree,
             }
             
             # Log to persistent file
@@ -4598,6 +4758,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "nodes": top_level_nodes,
             }
 
+            # Attach preview_id + preview_tree for phantom GEM (PG-1.2.3).
+            try:
+                phantom_preview = self._annotate_preview_ids_and_build_tree(
+                    phantom_payload.get("nodes") or [],
+                    prefix="PG",
+                )
+                phantom_payload["__preview_tree__"] = phantom_preview
+            except Exception:
+                # Preview is best-effort only; never break IGNITE.
+                pass
+
         # Best-effort: update coarse_terrain.json with the expanded ledger so
         # downstream consumers (e.g. anchor_gems) can see all originally-seen
         # IDs without recomputing.
@@ -4777,6 +4948,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             original_ids_seen=original_ids_seen,
         )
 
+        # Attach preview_id + preview_tree for coarse TERRAIN (CT-1.2.3) from GLIMPSE.
+        try:
+            terrain_preview = self._annotate_preview_ids_and_build_tree(
+                terrain_data.get("nodes") or [],
+                prefix="CT",
+            )
+            terrain_data["__preview_tree__"] = terrain_preview
+        except Exception:
+            # Preview is best-effort only; never break GLIMPSE.
+            pass
+
         # Always write coarse_terrain.json
         try:
             with open(coarse_path, "w", encoding="utf-8") as f:
@@ -4941,6 +5123,18 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # Write shimmering terrain out; header from coarse_terrain is preserved.
         coarse_data["nodes"] = terrain_nodes
+
+        # Attach preview_id + preview_tree for SHIMMERING TERRAIN (ST-1.2.3).
+        try:
+            shimmering_preview = self._annotate_preview_ids_and_build_tree(
+                coarse_data.get("nodes") or [],
+                prefix="ST",
+            )
+            coarse_data["__preview_tree__"] = shimmering_preview
+        except Exception:
+            # Preview is best-effort only; never break ANCHOR GEMS.
+            pass
+
         try:
             with open(shimmering_path, "w", encoding="utf-8") as f:
                 json.dump(coarse_data, f, indent=2, ensure_ascii=False)
@@ -5204,6 +5398,22 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         except Exception as e:
             raise NetworkError(f"nexus_anchor_jewels: fuse-shard-3way failed: {e}") from e
 
+        # Attach preview_id + preview_tree for ENCHANTED TERRAIN (ET-1.2.3).
+        try:
+            with open(enchanted_path, "r", encoding="utf-8") as f:
+                enchanted_data = json.load(f)
+            if isinstance(enchanted_data, dict) and isinstance(enchanted_data.get("nodes"), list):
+                enchanted_preview = self._annotate_preview_ids_and_build_tree(
+                    enchanted_data.get("nodes") or [],
+                    prefix="ET",
+                )
+                enchanted_data["__preview_tree__"] = enchanted_preview
+                with open(enchanted_path, "w", encoding="utf-8") as f:
+                    json.dump(enchanted_data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            # Preview is best-effort only; never break ANCHOR JEWELS.
+            pass
+
         return {
             "success": True,
             "nexus_tag": nexus_tag,
@@ -5365,6 +5575,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             max_depth_per_frontier=1,
         )
 
+        # Build preview for this frontier (handle-padded, depth-indented)
+        frontier_preview = self._build_frontier_preview_lines(frontier)
+
         # Persist this flat frontier so that the very next nexus_explore_step
         # call uses this as the active frontier for actions (EF/PF/etc.).
         from datetime import datetime as _dt
@@ -5402,6 +5615,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "scratchpad": session.get("scratchpad", ""),
             "history_summary": history_summary,
             "frontier_tree": self._build_frontier_tree_from_flat(frontier),
+            "frontier_preview": frontier_preview,
             "session_meta": {
                 "created_at": session.get("created_at"),
                 "updated_at": session.get("updated_at"),
@@ -6458,6 +6672,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             max_depth_per_frontier=max_depth_per_frontier,
         )
 
+        frontier_preview = self._build_frontier_preview_lines(frontier)
+
         # Persist session to disk
         try:
             sessions_dir = self._get_explore_sessions_dir()
@@ -6553,6 +6769,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "root_handle": "R",
             "root_summary": root_summary,
             "frontier_tree": frontier_tree,
+            "frontier_preview": frontier_preview,
             "scratchpad": session.get("scratchpad", ""),
             "stats": {
                 "total_nodes_indexed": glimpse.get("node_count", 0),
@@ -6729,6 +6946,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 )
             
             frontier_tree = self._build_frontier_tree_from_flat(frontier)
+            frontier_preview = self._build_frontier_preview_lines(frontier)
 
             # Persist this flat frontier so the NEXT step's actions operate on
             # exactly what was shown to the agent/human in THIS step, unless
@@ -6835,7 +7053,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "scratchpad": session.get("scratchpad", ""),
                 "history_summary": history_summary,
                 "frontier_tree": frontier_tree,
-            }
+                }
 
         # --- 2) Apply DECISIONS using existing semantics (thin wrapper) ---
         if decisions:
@@ -7001,6 +7219,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "requested_max_steps": ray["requested_max_steps"],
                     "complete": ray["complete"],
                     "frontier": frontier,
+                    "frontier_preview": self._build_frontier_preview_lines(frontier),
                 }
             )
 
@@ -8915,6 +9134,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "explicitly_preserved_ids": sorted(explicitly_preserved_ids),
             "nodes": coarse_nodes,
         }
+
+        # Attach preview_id + preview_tree for coarse TERRAIN (CT-1.2.3).
+        try:
+            exploration_preview = self._annotate_preview_ids_and_build_tree(
+                gem_wrapper.get("nodes") or [],
+                prefix="CT",
+            )
+            gem_wrapper["__preview_tree__"] = exploration_preview
+        except Exception:
+            # Preview is best-effort only; never break finalize_exploration.
+            pass
 
         try:
             with open(phantom_path, "w", encoding="utf-8") as f:

@@ -57,6 +57,44 @@ from typing import Any, Dict, List, Optional, Tuple, Set
 JsonDict = Dict[str, Any]
 
 
+def _build_jewel_preview_lines(
+    roots: List[JsonDict],
+    max_note_chars: int = 1024,
+) -> List[str]:
+    """Build a human-readable preview of the JEWEL / GEM tree.
+
+    This preview is purely for agents/humans. It is never read by any NEXUS or
+    JEWELSTORM algorithm and is safe to regenerate or discard at any time.
+    """
+    lines: List[str] = []
+
+    def walk(node: JsonDict, depth: int) -> None:
+        jewel_id = node.get("jewel_id") or node.get("id") or "?"
+        id_label = str(jewel_id)
+        indent = " " * 4 * depth
+        children = node.get("children") or []
+        has_child_dicts = any(isinstance(c, dict) for c in children)
+        bullet = "•" if not has_child_dicts else "⦿"
+        name = node.get("name") or "Untitled"
+        note = node.get("note") or ""
+        if isinstance(note, str) and note:
+            flat = note.replace("\n", "\\n")
+            if len(flat) > max_note_chars:
+                flat = flat[:max_note_chars]
+            name_part = f"{name} [{flat}]"
+        else:
+            name_part = name
+        lines.append(f"[{id_label}] {indent}{bullet} {name_part}")
+        for child in children:
+            if isinstance(child, dict):
+                walk(child, depth + 1)
+
+    for root in roots or []:
+        if isinstance(root, dict):
+            walk(root, 0)
+    return lines
+
+
 def log_jewel(message: str) -> None:
     """Log JEWELSTORM operations to a persistent logfile (best-effort).
 
@@ -1014,11 +1052,17 @@ def transform_jewel(
             if stop_on_error:
                 break
 
+    # Build preview tree from the updated working roots (for agents/humans).
+    # This is ephemeral and never read by NEXUS/JEWELSTORM algorithms.
+    preview_tree = _build_jewel_preview_lines(roots)
+
     # ------- Persist changes (if not dry-run and no stop-on-error failure) -------
     if not dry_run and (not stop_on_error or not errors):
         # Attach modified roots back to original structure
         if isinstance(data, dict) and isinstance(data.get("nodes"), list):
             data["nodes"] = roots
+            # Attach preview to the JEWEL file itself for convenience
+            data["__preview_tree__"] = preview_tree
             # Recalculate counts for readability in the JEWEL working_gem,
             # but DO NOT touch children_status here. Truncation semantics belong
             # to the NEXUS/TERRAIN layer (shimmering/enchanted terrain).
@@ -1032,6 +1076,7 @@ def transform_jewel(
         save_json(jewel_file, data)  # type: ignore[arg-type]
 
     return {
+        "preview_tree": preview_tree,
         "success": len(errors) == 0,
         "applied_count": applied_count,
         "dry_run": dry_run,
