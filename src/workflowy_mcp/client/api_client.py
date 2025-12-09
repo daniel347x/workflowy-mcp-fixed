@@ -1892,13 +1892,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
             # Wrap with metadata for safe round-trip editing
             export_package = {
-                "export_root_id": node_id,
-                "export_root_name": root_node_info.get('name') if root_node_info else 'Unknown',
                 "export_timestamp": hierarchical_tree[0].get('modifiedAt') if hierarchical_tree else None,
                 "export_root_children_status": root_children_status,
-                "original_ids_seen": original_ids_seen,
                 "__preview_tree__": preview_tree,
+                "export_root_id": node_id,
+                "export_root_name": root_node_info.get('name') if root_node_info else 'Unknown',
                 "nodes": hierarchical_tree
+                "original_ids_seen": original_ids_seen,
             }
             
             # Write JSON file (working copy)
@@ -2738,11 +2738,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         response = {
                             "success": old_response.get("success"),
                             "_source": old_response.get("_source"),
+                            "node_count": old_response.get("node_count"),
+                            "depth": old_response.get("depth"),
                             "preview_tree": preview_tree_for_response,
                             "root": old_response.get("root"),
                             "children": old_response.get("children"),
-                            "node_count": old_response.get("node_count"),
-                            "depth": old_response.get("depth"),
                         }
                     
                     # Log to persistent file
@@ -3001,11 +3001,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             result = {
                 "success": True,
                 "_source": "api",  # Indicate data came from API (not WebSocket)
+                "node_count": len(flat_nodes),
+                "depth": max_depth,
                 "preview_tree": preview_tree,
                 "root": root_metadata,
                 "children": children,
-                "node_count": len(flat_nodes),
-                "depth": max_depth,
             }
             
             # Log to persistent file
@@ -4798,12 +4798,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
             phantom_payload = {
                 "nexus_tag": nexus_tag,
-                "roots": roots_resolved,
+                "__preview_tree__": phantom_preview,
                 "export_root_id": export_root_id,
                 "export_root_name": coarse_data.get("export_root_name", "Root"),
-                "original_ids_seen": sorted(original_ids_seen),
-                "__preview_tree__": phantom_preview,
                 "nodes": top_level_nodes,
+                "roots": roots_resolved,
+                "original_ids_seen": sorted(original_ids_seen),
             }
 
         # Best-effort: update coarse_terrain.json with the expanded ledger so
@@ -4998,15 +4998,15 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         # Insert preview early in terrain_data dict
         if terrain_preview is not None:
-            # Rebuild dict with preview_tree in early position
+            # Rebuild dict with terrain_preview in early position
             terrain_data = {
-                "export_root_id": terrain_data.get("export_root_id"),
-                "export_root_name": terrain_data.get("export_root_name"),
                 "export_timestamp": terrain_data.get("export_timestamp"),
                 "export_root_children_status": terrain_data.get("export_root_children_status"),
-                "original_ids_seen": terrain_data.get("original_ids_seen"),
                 "__preview_tree__": terrain_preview,
+                "export_root_id": terrain_data.get("export_root_id"),
+                "export_root_name": terrain_data.get("export_root_name"),
                 "nodes": terrain_data.get("nodes"),
+                "original_ids_seen": terrain_data.get("original_ids_seen"),
             }
 
         # Always write coarse_terrain.json
@@ -5174,7 +5174,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # Write shimmering terrain out; header from coarse_terrain is preserved.
         coarse_data["nodes"] = terrain_nodes
 
-        # Compute and attach preview_tree EARLY
+        # Compute and attach shimmering_preview EARLY
         shimmering_preview = None
         try:
             shimmering_preview = self._annotate_preview_ids_and_build_tree(
@@ -5185,17 +5185,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # Preview is best-effort only; never break ANCHOR GEMS.
             pass
         
-        # Rebuild coarse_data with preview_tree in early position
+        # Rebuild coarse_data with shimmering_preview in early position
         if shimmering_preview is not None:
             coarse_data = {
-                "export_root_id": coarse_data.get("export_root_id"),
-                "export_root_name": coarse_data.get("export_root_name"),
                 "export_timestamp": coarse_data.get("export_timestamp"),
                 "export_root_children_status": coarse_data.get("export_root_children_status"),
+                "__preview_tree__": shimmering_preview,
+                "export_root_id": coarse_data.get("export_root_id"),
+                "export_root_name": coarse_data.get("export_root_name"),
+                "nodes": coarse_data.get("nodes"),
                 "original_ids_seen": coarse_data.get("original_ids_seen"),
                 "explicitly_preserved_ids": coarse_data.get("explicitly_preserved_ids"),
-                "__preview_tree__": shimmering_preview,
-                "nodes": coarse_data.get("nodes"),
             }
 
         try:
@@ -5461,7 +5461,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         except Exception as e:
             raise NetworkError(f"nexus_anchor_jewels: fuse-shard-3way failed: {e}") from e
 
-        # Compute and attach preview_tree for ENCHANTED TERRAIN (ET-1.2.3).
+        # Compute and attach enchanted_preview for ENCHANTED TERRAIN (ET-1.2.3).
         try:
             with open(enchanted_path, "r", encoding="utf-8") as f:
                 enchanted_data = json.load(f)
@@ -5470,16 +5470,16 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     enchanted_data.get("nodes") or [],
                     prefix="ET",
                 )
-                # Rebuild dict with preview_tree in early position
+                # Rebuild dict with enchanted_preview in early position
                 enchanted_data = {
-                    "export_root_id": enchanted_data.get("export_root_id"),
-                    "export_root_name": enchanted_data.get("export_root_name"),
                     "export_timestamp": enchanted_data.get("export_timestamp"),
                     "export_root_children_status": enchanted_data.get("export_root_children_status"),
+                    "__preview_tree__": enchanted_preview,
+                    "export_root_id": enchanted_data.get("export_root_id"),
+                    "export_root_name": enchanted_data.get("export_root_name"),
+                    "nodes": enchanted_data.get("nodes"),
                     "original_ids_seen": enchanted_data.get("original_ids_seen"),
                     "explicitly_preserved_ids": enchanted_data.get("explicitly_preserved_ids"),
-                    "__preview_tree__": enchanted_preview,
-                    "nodes": enchanted_data.get("nodes"),
                 }
                 with open(enchanted_path, "w", encoding="utf-8") as f:
                     json.dump(enchanted_data, f, indent=2, ensure_ascii=False)
@@ -5686,9 +5686,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "skipped_walks": [],
             "decisions_applied": [],
             "scratchpad": session.get("scratchpad", ""),
+            "frontier_preview": frontier_preview,
             "history_summary": history_summary,
             "frontier_tree": self._build_frontier_tree_from_flat(frontier),
-            "frontier_preview": frontier_preview,
             "session_meta": {
                 "created_at": session.get("created_at"),
                 "updated_at": session.get("updated_at"),
@@ -6840,9 +6840,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             "action_key": EXPLORATION_ACTION_2LETTER,
             "step_guidance": step_guidance,
             "root_handle": "R",
+            "frontier_preview": frontier_preview,
             "root_summary": root_summary,
             "frontier_tree": frontier_tree,
-            "frontier_preview": frontier_preview,
             "scratchpad": session.get("scratchpad", ""),
             "stats": {
                 "total_nodes_indexed": glimpse.get("node_count", 0),
@@ -7291,8 +7291,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "origin": ray["origin"],
                     "requested_max_steps": ray["requested_max_steps"],
                     "complete": ray["complete"],
-                    "frontier": frontier,
                     "frontier_preview": self._build_frontier_preview_lines(frontier),
+                    "frontier": frontier,
                 }
             )
 
@@ -9196,7 +9196,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         export_root_name = session.get("root_name") or root_node.get("name", "Root")
         export_timestamp = None  # Exploration does not track per-node timestamps
 
-        # Compute preview_tree FIRST
+        # Compute exploration_preview FIRST
         exploration_preview = None
         try:
             exploration_preview = self._annotate_preview_ids_and_build_tree(
@@ -9210,14 +9210,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         # --- GEM (S0) & COARSE TERRAIN (T0) & SHIMMERING TERRAIN (T1) ---
         # EXPLORATION IS SPECIAL: GEM == COARSE TERRAIN == SHIMMERING TERRAIN
         gem_wrapper = {
-            "export_root_id": export_root_id,
-            "export_root_name": export_root_name,
             "export_timestamp": export_timestamp,
             "export_root_children_status": "complete",
+            "__preview_tree__": exploration_preview,
+            "export_root_id": export_root_id,
+            "export_root_name": export_root_name,
+            "nodes": coarse_nodes,
             "original_ids_seen": sorted(original_ids_seen),
             "explicitly_preserved_ids": sorted(explicitly_preserved_ids),
-            "__preview_tree__": exploration_preview,
-            "nodes": coarse_nodes,
         }
 
         try:
