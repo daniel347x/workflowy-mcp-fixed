@@ -1569,7 +1569,9 @@ async def nexus_anchor_jewels(
         "Apply JEWELSTORM semantic operations to a NEXUS working_gem JSON file "
         "(PHANTOM GEM working copy). This is the semantic analogue of edit_file "
         "for PHANTOM GEM JSON: MOVE_NODE, DELETE_NODE, RENAME_NODE, SET_NOTE, "
-        "SET_ATTRS, CREATE_NODE, all referencing nodes by jewel_id."
+        "SET_ATTRS, CREATE_NODE, all referencing nodes by jewel_id, plus text-level "
+        "SEARCH_REPLACE / SEARCH_AND_TAG over name/note fields (substring/whole-word, "
+        "optional regex, tagging in name and/or note based on matches)."
     ),
 )
 def nexus_transform_jewel(
