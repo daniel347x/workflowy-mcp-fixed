@@ -7524,9 +7524,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 
                 # Apply bulk decision to all matching frontier entries
                 if act == "engulf_all_showing_undecided_descendants_into_gem_for_editing":
-                    engulfed_count = 0
+                    engulfed_leaf_count = 0
+                    engulfed_branch_count = 0
                     skipped_already_decided = 0
-                    skipped_branches = 0
                     
                     for entry in matching_frontier_entries:
                         fh = entry["handle"]
@@ -7537,22 +7537,35 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             skipped_already_decided += 1
                             continue
                         
-                        # Only engulf leaves (branches need explicit reserve_branch_for_children)
-                        if not entry["is_leaf"]:
-                            skipped_branches += 1
-                            continue
-                        
-                        # Engulf this leaf
-                        f_entry = state.setdefault(fh, {"status": "unseen", "max_depth": None, "selection_type": None})
-                        f_entry["status"] = "finalized"
-                        f_entry["selection_type"] = "leaf"
-                        f_entry["max_depth"] = max_depth
-                        _auto_complete_ancestors_from_leaf(fh)
-                        engulfed_count += 1
+                        if entry["is_leaf"]:
+                            # Leaf: standard engulf behavior
+                            f_entry = state.setdefault(
+                                fh,
+                                {"status": "unseen", "max_depth": None, "selection_type": None},
+                            )
+                            f_entry["status"] = "finalized"
+                            f_entry["selection_type"] = "leaf"
+                            f_entry["max_depth"] = max_depth
+                            _auto_complete_ancestors_from_leaf(fh)
+                            engulfed_leaf_count += 1
+                        else:
+                            # Branch: treat as shell subtree in GEM (children semantics preserved)
+                            f_entry = state.setdefault(
+                                fh,
+                                {"status": "unseen", "max_depth": None, "selection_type": None},
+                            )
+                            f_entry["status"] = "finalized"
+                            f_entry["selection_type"] = "subtree"
+                            f_entry["max_depth"] = max_depth
+                            f_entry["subtree_mode"] = "shell"
+                            # Do NOT auto-complete ancestors here; shells are explicit coverage points.
+                            engulfed_branch_count += 1
                     
                     logger.info(
-                        f"engulf_frontier_descendants: {engulfed_count} leaves engulfed, "
-                        f"{skipped_already_decided} already decided, {skipped_branches} branches skipped"
+                        "engulf_frontier_descendants: "
+                        f"{engulfed_leaf_count} leaves engulfed, "
+                        f"{engulfed_branch_count} branches engulfed as shells, "
+                        f"{skipped_already_decided} already decided"
                     )
                 
                 elif act == "preserve_all_showing_undecided_descendants_in_ether":
