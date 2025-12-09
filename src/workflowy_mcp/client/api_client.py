@@ -5595,13 +5595,44 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         # Apply scope filter
         if scope == "undecided":
-            # Only include handles whose status is in {unseen, candidate, open}
+            undecided_statuses = {"unseen", "candidate", "open"}
+            # Precompute undecided handles for quick membership checks
+            undecided_handles = {
+                h for h, st in state.items()
+                if st.get("status") in undecided_statuses
+            }
+
+            def is_structural_leaf(handle: str) -> bool:
+                return not (handles.get(handle, {}) or {}).get("children")
+
+            def has_undecided_matching_descendant(branch: str) -> bool:
+                # Walk descendants structurally; a descendant counts if it is
+                # both in candidate_handles (matches search) and undecided.
+                child_handles = (handles.get(branch, {}) or {}).get("children") or []
+                stack = list(child_handles)
+                seen: set[str] = set()
+                while stack:
+                    ch = stack.pop()
+                    if ch in seen:
+                        continue
+                    seen.add(ch)
+                    if ch in candidate_handles and ch in undecided_handles:
+                        return True
+                    child_children = (handles.get(ch, {}) or {}).get("children") or []
+                    stack.extend(child_children)
+                return False
+
             filtered = set()
             for h in candidate_handles:
                 st = state.get(h, {"status": "unseen"})
                 status = st.get("status")
-                if status in {"unseen", "candidate", "open"}:
-                    filtered.add(h)
+                if is_structural_leaf(h):
+                    if status in undecided_statuses:
+                        filtered.add(h)
+                else:
+                    # Branch: keep only if it has at least one undecided matching descendant.
+                    if has_undecided_matching_descendant(h):
+                        filtered.add(h)
             candidate_handles = filtered
 
         # Apply max_results limit to MATCHES, then include ALL required ancestors
@@ -5826,19 +5857,25 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             queue.append(ch)
                     continue
 
-                if _is_decided(h):
-                    # Prune decided nodes/subtrees from the active search space
-                    continue
-
+                # Structural children regardless of decision state
                 child_handles = handles.get(h, {}).get("children", []) or []
-                if not child_handles:
-                    # Undecided leaf → candidate for leaf-chunk selection
+                is_structural_leaf = not child_handles
+
+                st = state.get(h, {"status": "unseen"})
+                status = st.get("status")
+                is_undecided = status in {"unseen", "candidate", "open"}
+
+                # Only undecided structural leaves become leaf candidates;
+                # decided leaves are still traversed for completeness, but do not
+                # appear in the leaf frontier.
+                if is_structural_leaf and is_undecided:
                     bfs_leaves.append(h)
-                else:
-                    # Undecided branch → keep walking breadth‑first
-                    for ch in child_handles:
-                        if ch not in visited:
-                            queue.append(ch)
+
+                # Always traverse children so descendants under decided branches
+                # are still considered for future frontiers.
+                for ch in child_handles:
+                    if ch not in visited:
+                        queue.append(ch)
 
             undecided_leaves: list[str] = bfs_leaves
 
