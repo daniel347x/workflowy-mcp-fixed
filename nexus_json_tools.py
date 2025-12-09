@@ -66,11 +66,29 @@ def _build_jewel_preview_lines(
     This preview is purely for agents/humans. It is never read by any NEXUS or
     JEWELSTORM algorithm and is safe to regenerate or discard at any time.
     """
+    # PASS 1: Collect all jewel_id / id labels to compute max width
+    all_labels: List[str] = []
+
+    def collect_labels(node: JsonDict) -> None:
+        jewel_id = node.get("jewel_id") or node.get("id") or "?"
+        all_labels.append(str(jewel_id))
+        children = node.get("children") or []
+        for child in children:
+            if isinstance(child, dict):
+                collect_labels(child)
+
+    for root in roots or []:
+        if isinstance(root, dict):
+            collect_labels(root)
+
+    max_id_width = max((len(lbl) for lbl in all_labels), default=0)
+
+    # PASS 2: Build aligned preview lines
     lines: List[str] = []
 
     def walk(node: JsonDict, depth: int) -> None:
         jewel_id = node.get("jewel_id") or node.get("id") or "?"
-        id_label = str(jewel_id)
+        id_label = str(jewel_id).ljust(max_id_width)
         indent = " " * 4 * depth
         children = node.get("children") or []
         has_child_dicts = any(isinstance(c, dict) for c in children)

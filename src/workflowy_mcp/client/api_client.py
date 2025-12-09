@@ -2190,15 +2190,36 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         if not nodes:
             return []
 
+        # PASS 1: Assign preview_id to all nodes and collect max width
+        all_preview_ids: list[str] = []
+
+        def assign_ids(node: dict[str, Any], path_parts: list[str]) -> None:
+            if not isinstance(node, dict):
+                return
+            path_str = ".".join(path_parts)
+            preview_id = f"{prefix}-{path_str}"
+            node["preview_id"] = preview_id
+            all_preview_ids.append(preview_id)
+            children = node.get("children") or []
+            for idx, child in enumerate(children, start=1):
+                if isinstance(child, dict):
+                    assign_ids(child, path_parts + [str(idx)])
+
+        for root_index, root in enumerate(nodes, start=1):
+            if isinstance(root, dict):
+                assign_ids(root, [str(root_index)])
+
+        # Compute max width for right-padding
+        max_id_width = max((len(pid) for pid in all_preview_ids), default=0)
+
+        # PASS 2: Build aligned preview lines
         lines: list[str] = []
 
         def walk(node: dict[str, Any], path_parts: list[str]) -> None:
             if not isinstance(node, dict):
                 return
-            # Assign preview_id
-            path_str = ".".join(path_parts)
-            preview_id = f"{prefix}-{path_str}"
-            node["preview_id"] = preview_id
+            preview_id = node.get("preview_id", "")
+            padded_id = preview_id.ljust(max_id_width)
 
             # Build one-line preview
             depth = max(1, len(path_parts))
@@ -2215,7 +2236,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 name_part = f"{name} [{flat}]"
             else:
                 name_part = name
-            lines.append(f"[{preview_id}] {indent}{bullet} {name_part}")
+            lines.append(f"[{padded_id}] {indent}{bullet} {name_part}")
 
             # Recurse into children with extended path
             for idx, child in enumerate(children, start=1):
