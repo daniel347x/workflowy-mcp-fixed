@@ -5364,6 +5364,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             frontier_size=frontier_size,
             max_depth_per_frontier=1,
         )
+
+        # Persist this flat frontier so that the very next nexus_explore_step
+        # call uses this as the active frontier for actions (EF/PF/etc.).
+        from datetime import datetime as _dt
+        session["last_frontier_flat"] = frontier
+        session["updated_at"] = _dt.utcnow().isoformat() + "Z"
+        with open(session_path, "w", encoding="utf-8") as f:
+            json_module.dump(session, f, indent=2, ensure_ascii=False)
         
         # Build history summary if requested
         handles = session.get("handles", {}) or {}
@@ -6595,6 +6603,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         state = session.get("state", {}) or {}
         root_node = session.get("root_node") or {}
         editable_mode = bool(session.get("editable", False))
+        # Persisted frontier from the previous step (flat list). When present,
+        # this represents exactly what the agent/human saw as the frontier in
+        # the last call and is the default action frontier for the NEXT call
+        # unless overridden by an explicit SEARCH (SX) in the current step.
+        last_frontier_flat = session.get("last_frontier_flat") or []
 
         # If this session is running in a strict DFS mode, we ignore WALK
         # requests entirely and surface a single leaf-chunk frontier via the
@@ -6617,21 +6630,29 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             # PRE-COMPUTE the correct frontier for this step (search or normal DFS)
             # This frontier will be passed to _nexus_explore_step_internal() so bulk actions
             # (EF/PF) operate on the correct set when SEARCH is active.
+            # Decide which frontier to use for bulk actions in THIS step.
+            # Priority:
+            #   1) If this step has SX actions → use the SEARCH frontier for bulk.
+            #   2) Else if we have a stored frontier from the previous step →
+            #      use that as the bulk/action frontier.
+            #   3) Else → fall back to a fresh DFS frontier.
             if search_actions:
-                # SEARCH MODE: Compute search frontier FIRST
+                effective_search_actions = search_actions
                 correct_frontier_for_bulk = self._compute_search_frontier(
                     session=session,
-                    search_actions=search_actions,
+                    search_actions=effective_search_actions,
                     scope="undecided",
                     max_results=global_frontier_limit,
                 )
             else:
-                # NORMAL MODE: Compute normal DFS frontier
-                correct_frontier_for_bulk = self._compute_exploration_frontier(
-                    session,
-                    frontier_size=global_frontier_limit,
-                    max_depth_per_frontier=1,
-                )
+                if last_frontier_flat:
+                    correct_frontier_for_bulk = last_frontier_flat
+                else:
+                    correct_frontier_for_bulk = self._compute_exploration_frontier(
+                        session,
+                        frontier_size=global_frontier_limit,
+                        max_depth_per_frontier=1,
+                    )
             
             # In strict DFS modes, we must APPLY DECISIONS before computing the
             # next (final) frontier. Delegate decision semantics to the v1 helper,
@@ -6671,6 +6692,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 )
             
             frontier_tree = self._build_frontier_tree_from_flat(frontier)
+
+            # Persist this flat frontier so the NEXT step's actions operate on
+            # exactly what was shown to the agent/human in THIS step, unless
+            # overridden by an explicit SEARCH (SX) in that next step.
+            session["last_frontier_flat"] = frontier
 
             # Update session timestamp and persist.
             from datetime import datetime as _dt
