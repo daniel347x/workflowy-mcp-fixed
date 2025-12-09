@@ -1060,14 +1060,21 @@ def transform_jewel(
     if not dry_run and (not stop_on_error or not errors):
         # Attach modified roots back to original structure
         if isinstance(data, dict) and isinstance(data.get("nodes"), list):
-            data["nodes"] = roots
-            # Attach preview to the JEWEL file itself for convenience
-            data["__preview_tree__"] = preview_tree
-            # Recalculate counts for readability in the JEWEL working_gem,
-            # but DO NOT touch children_status here. Truncation semantics belong
-            # to the NEXUS/TERRAIN layer (shimmering/enchanted terrain).
+            # Recalculate counts FIRST
             wrapper = {"nodes": roots}
             recalc_all_counts_gem(wrapper)
+            
+            # Rebuild data dict with preview_tree in early position
+            data = {
+                "export_root_id": data.get("export_root_id"),
+                "export_root_name": data.get("export_root_name"),
+                "export_timestamp": data.get("export_timestamp"),
+                "export_root_children_status": data.get("export_root_children_status"),
+                "original_ids_seen": data.get("original_ids_seen"),
+                "explicitly_preserved_ids": data.get("explicitly_preserved_ids"),
+                "__preview_tree__": preview_tree,
+                "nodes": roots,
+            }
         elif isinstance(data, list):
             data = roots  # type: ignore[assignment]
             wrapper = {"nodes": roots}
