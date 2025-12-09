@@ -6603,13 +6603,24 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         exploration_mode = session.get("exploration_mode", "manual")
         skipped_decisions: list[dict[str, Any]] = []
         if exploration_mode in {"dfs_guided_explicit", "dfs_guided_bulk"}:
+            # EXPAND 2-LETTER CODES FIRST (before separating search actions)
+            if decisions:
+                for decision in decisions:
+                    act = decision.get("action")
+                    if act in EXPLORATION_ACTION_2LETTER:
+                        decision["action"] = EXPLORATION_ACTION_2LETTER[act]
+            
+            # Separate search actions (now that codes are expanded)
+            search_actions = [d for d in (decisions or []) if d.get("action") == "search_descendants_for_text"]
+            non_search_decisions = [d for d in (decisions or []) if d.get("action") != "search_descendants_for_text"]
+            
             # In strict DFS modes, we must APPLY DECISIONS before computing the
             # next leaf-chunk frontier. Delegate decision semantics to the v1
             # helper, then reload the updated session state.
-            if decisions:
+            if non_search_decisions:
                 internal_result = await self._nexus_explore_step_internal(
                     session_id=session_id,
-                    actions=decisions,
+                    actions=non_search_decisions,
                     frontier_size=global_frontier_limit,
                     max_depth_per_frontier=1,
                     include_history_summary=False,
@@ -6623,7 +6634,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 editable_mode = bool(session.get("editable", False))
 
             # Compute frontier: SEARCH overrides normal DFS if search_actions present
-            search_actions = [d for d in (decisions or []) if d.get("action") == "search_descendants_for_text"]
             
             if search_actions:
                 # SEARCH MODE: Build frontier from search results
