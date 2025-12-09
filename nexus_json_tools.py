@@ -1088,10 +1088,10 @@ def transform_jewel(
                 "export_root_name": data.get("export_root_name"),
                 "export_timestamp": data.get("export_timestamp"),
                 "export_root_children_status": data.get("export_root_children_status"),
-                "original_ids_seen": data.get("original_ids_seen"),
-                "explicitly_preserved_ids": data.get("explicitly_preserved_ids"),
                 "__preview_tree__": preview_tree,
                 "nodes": roots,
+                "original_ids_seen": data.get("original_ids_seen"),
+                "explicitly_preserved_ids": data.get("explicitly_preserved_ids"),
             }
         elif isinstance(data, list):
             data = roots  # type: ignore[assignment]
