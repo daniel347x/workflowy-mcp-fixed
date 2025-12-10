@@ -1064,7 +1064,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "🛡️ STRICT COMPLETENESS - PA disabled",
                     "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER, UL=UPDATE_LEAF_IN_GEM",
                     "Branch: RB, PB, UB, UN, AB",
-                    "Bulk: EF, PF",
+                    "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
                     "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                 ]
@@ -1073,8 +1073,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "🎯 BULK MODE: Auto-frontier",
                     "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER, UL=UPDATE_LEAF_IN_GEM",
                     "Branch: RB, PB, UB, UN, AB",
-                    "Bulk: EF, PF",
-                    "Global: PA",
+                    "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
+                    "Global: PA=PRESERVE_ALL_REMAINING_IN_ETHER (ETHER only; NOT in GEM)",
                     "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                 ]
@@ -1228,7 +1228,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "🛡️ STRICT - PA disabled",
                         "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER",
                         "Branch: RB, PB",
-                        "Bulk: EF, PF",
+                        "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
                         "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
                         "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                     ]
@@ -1237,8 +1237,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "🎯 BULK MODE",
                         "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER",
                         "Branch: RB, PB",
-                        "Bulk: EF, PF",
-                        "Global: PA",
+                        "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
+                        "Global: PA=PRESERVE_ALL_REMAINING_IN_ETHER (ETHER only; NOT in GEM)",
                         "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
                         "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                     ]
