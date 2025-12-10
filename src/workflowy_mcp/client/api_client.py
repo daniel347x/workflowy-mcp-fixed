@@ -7225,14 +7225,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 },
                 "action_key": EXPLORATION_ACTION_2LETTER,
                 "step_guidance": step_guidance,
+                "frontier_preview": frontier_preview,
+                "frontier_tree": frontier_tree,
                 "walks": [],  # Strict DFS: no per-ray walks; see top-level frontier.
                 "skipped_walks": [],
                 "decisions_applied": decisions,
                 "skipped_decisions": skipped_decisions,
                 "scratchpad": session.get("scratchpad", ""),
                 "history_summary": history_summary,
-                "frontier_tree": frontier_tree,
-                "frontier_preview": frontier_preview,
             }
 
     async def nexus_explore_step(
