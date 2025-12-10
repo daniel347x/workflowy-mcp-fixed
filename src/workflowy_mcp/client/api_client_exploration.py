@@ -2207,6 +2207,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "nodes": coarse_nodes,
             "original_ids_seen": sorted(original_ids_seen),
             "explicitly_preserved_ids": sorted(explicitly_preserved_ids),
+            # Persist exploration scratchpad so JEWELSTORM can materialize it into new sections later
+            "exploration_scratchpad": session.get("scratchpad", ""),
         }
 
         with open(phantom_path, "w", encoding="utf-8") as f:
