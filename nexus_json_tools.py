@@ -1081,9 +1081,12 @@ def transform_jewel(
             # Recalculate counts FIRST
             wrapper = {"nodes": roots}
             recalc_all_counts_gem(wrapper)
-            
-            # Rebuild data dict with preview_tree in early position
-            data = {
+
+            # Rebuild data dict but preserve any existing top-level fields
+            # (e.g., exploration_scratchpad, future metadata) while updating
+            # core NEXUS fields and injecting a fresh preview tree.
+            new_data = dict(data)
+            new_data.update({
                 "export_root_id": data.get("export_root_id"),
                 "export_root_name": data.get("export_root_name"),
                 "export_timestamp": data.get("export_timestamp"),
@@ -1092,7 +1095,8 @@ def transform_jewel(
                 "nodes": roots,
                 "original_ids_seen": data.get("original_ids_seen"),
                 "explicitly_preserved_ids": data.get("explicitly_preserved_ids"),
-            }
+            })
+            data = new_data
         elif isinstance(data, list):
             data = roots  # type: ignore[assignment]
             wrapper = {"nodes": roots}
