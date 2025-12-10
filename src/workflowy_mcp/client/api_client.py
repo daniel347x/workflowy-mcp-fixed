@@ -6959,7 +6959,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "resume_guided_frontier"
                 }
             ]
-            
+
+            # All decisions except SEARCH (which v2 handles specially) and PEEK (handled via _peek_frontier)
+            # go to the internal engine, including resume_guided_frontier.
+            non_search_decisions = (resume_actions or []) + (other_decisions or [])
+
             # PRE-COMPUTE the correct frontier for this step (search/peek/normal DFS)
             # This frontier will be passed to _nexus_explore_step_internal() so bulk actions
             # (EF/PF) operate on the correct set.
@@ -7015,12 +7019,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 state = session.get("state", {}) or {}
                 root_node = session.get("root_node") or {}
                 editable_mode = bool(session.get("editable", False))
-
-
-
-
-
-
 
             # PEEK STEP: if this step includes a PEEK action, return the peek frontier now.
             # The stashed _peek_frontier will then be used for bulk decisions in the next step.
