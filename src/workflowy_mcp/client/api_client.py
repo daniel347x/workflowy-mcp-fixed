@@ -7032,6 +7032,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     frontier_preview = self._build_frontier_preview_lines(frontier)
 
                     # Persist for next step
+                    from datetime import datetime as _dt
                     session["last_frontier_flat"] = frontier
                     session["updated_at"] = _dt.utcnow().isoformat() + "Z"
                     with open(session_path, "w", encoding="utf-8") as f:
