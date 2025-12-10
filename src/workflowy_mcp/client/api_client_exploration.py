@@ -637,7 +637,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         filtered.add(h)
             candidates = filtered
 
-        # Limit matches, include ancestors (including root 'R')
+        # Limit matches, include ancestors (including root 'R'), then sort naturally by handle
         matches = sorted(candidates)[:max_results]
         final_handles = set(matches)
 
@@ -647,9 +647,22 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 final_handles.add(ancestor)
                 ancestor = handles.get(ancestor, {}).get("parent")
 
-        matches_in_frontier = sorted([h for h in final_handles if h in matches])
-        ancestors_in_frontier = sorted([h for h in final_handles if h not in matches])
-        final_list = matches_in_frontier + ancestors_in_frontier
+        def _natural_key_handle(handle: str) -> list[tuple[int, object]]:
+            parts = handle.split(".")
+            result: list[tuple[int, object]] = []
+            for part in parts:
+                if part.isdigit():
+                    result.append((0, int(part)))
+                else:
+                    result.append((1, part))
+            return result
+
+        # Root 'R' first if present, then others in natural handle order
+        if "R" in final_handles:
+            others = [h for h in final_handles if h != "R"]
+            final_list = ["R"] + sorted(others, key=_natural_key_handle)
+        else:
+            final_list = sorted(final_handles, key=_natural_key_handle)
 
         # Build entries
         frontier = []
