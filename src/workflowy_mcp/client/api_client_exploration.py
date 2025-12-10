@@ -1052,7 +1052,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         if exploration_mode == "dfs_guided_explicit":
             step_guidance = [
                 "🎯 EXPLICIT MODE: Auto-frontier",
-                "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL)",
+                "Leaf: EL=ENGULF_TO_GEM (IN GEM; editable, may be deleted in ETHER), PL=PRESERVE_IN_ETHER (ETHER only; NOT in GEM)",
                 "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (RB), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB)",
                 "Lightning: LF=multi-root lightning strike (default 15 nodes per root; large branches show [STRUCT] preview only)",
                 "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
@@ -1062,7 +1062,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 step_guidance = [
                     "🎯 BULK MODE: Auto-frontier",
                     "🛡️ STRICT COMPLETENESS - PA disabled",
-                    "Leaf: EL, PL, UL",
+                    "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER, UL=UPDATE_LEAF_IN_GEM",
                     "Branch: RB, PB, UB, UN, AB",
                     "Bulk: EF, PF",
                     "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
@@ -1071,7 +1071,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             else:
                 step_guidance = [
                     "🎯 BULK MODE: Auto-frontier",
-                    "Leaf: EL, PL, UL",
+                    "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER, UL=UPDATE_LEAF_IN_GEM",
                     "Branch: RB, PB, UB, UN, AB",
                     "Bulk: EF, PF",
                     "Global: PA",
@@ -1215,7 +1215,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             if exploration_mode == "dfs_guided_explicit":
                 step_guidance = [
                     "🎯 EXPLICIT MODE: Auto-frontier",
-                    "Leaf: EL, PL, UL",
+                    "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER, UL=UPDATE_LEAF_IN_GEM",
                     "Branch: RB, PB",
                     "Lightning: LF=multi-root lightning strike (default 15 nodes per root; large branches show [STRUCT] preview only), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
@@ -1226,7 +1226,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     step_guidance = [
                         "🎯 BULK MODE",
                         "🛡️ STRICT - PA disabled",
-                        "Leaf: EL, PL",
+                        "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER",
                         "Branch: RB, PB",
                         "Bulk: EF, PF",
                         "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
@@ -1235,7 +1235,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 else:
                     step_guidance = [
                         "🎯 BULK MODE",
-                        "Leaf: EL, PL",
+                        "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER",
                         "Branch: RB, PB",
                         "Bulk: EF, PF",
                         "Global: PA",
