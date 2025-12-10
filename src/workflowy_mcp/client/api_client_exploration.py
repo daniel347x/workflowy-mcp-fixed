@@ -1392,9 +1392,352 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         
         peek_results = []
         
-        # Process actions (implementation continues - see witness stone for full logic)
-        # This is abbreviated for character limit - full implementation ~600 lines
-        # Covers: preserve_all, scratchpad, bulk actions, peek, resume, hints, leaf/branch decisions
+        # Process each action
+        for action in actions:
+            act = action.get("action")
+            
+            # Global actions (no handle required)
+            if act in {"set_scratchpad", "append_scratchpad", "preserve_all_remaining_nodes_in_ether_at_finalization"}:
+                if act == "preserve_all_remaining_nodes_in_ether_at_finalization":
+                    if exploration_mode != "dfs_guided_bulk":
+                        raise NetworkError("preserve_all only in bulk mode")
+                    
+                    strict = session.get("strict_completeness", False)
+                    if strict:
+                        raise NetworkError("PA disabled in strict_completeness mode")
+                    
+                    preserved_count = 0
+                    for h in handles:
+                        h_state = state.get(h, {})
+                        h_status = h_state.get("status")
+                        if h_status in ("unseen", "candidate", "open", None):
+                            h_summary = _summarize_descendants(h)
+                            if h_summary["accepted_leaf_count"] > 0:
+                                f_entry = state.setdefault(h, {"status": "unseen", "selection_type": None})
+                                if f_entry.get("status") not in {"finalized", "closed"}:
+                                    f_entry["status"] = "finalized"
+                                    f_entry["selection_type"] = "path"
+                            else:
+                                state.setdefault(h, {})["status"] = "closed"
+                                state[h]["selection_type"] = "subtree"
+                                preserved_count += 1
+                    logger.info(f"preserve_all: {preserved_count} preserved")
+                    continue
+                
+                if act in {"set_scratchpad", "append_scratchpad"}:
+                    content = action.get("content") or ""
+                    existing = session.get("scratchpad") or ""
+                    if act == "set_scratchpad":
+                        session["scratchpad"] = content
+                    else:
+                        session["scratchpad"] = (existing + "\n" + content) if existing else content
+                    continue
+
+            handle = action.get("handle")
+            max_depth = action.get("max_depth")
+
+            # Bulk frontier actions
+            if act in {"engulf_all_showing_undecided_descendants_into_gem_for_editing", "preserve_all_showing_undecided_descendants_in_ether"}:
+                if exploration_mode != "dfs_guided_bulk":
+                    raise NetworkError(f"{act} only in bulk mode")
+                
+                if handle not in handles:
+                    raise NetworkError(f"Unknown handle: {handle}")
+                
+                def _is_desc(fh: str, branch: str) -> bool:
+                    cur = fh
+                    seen = set()
+                    while cur and cur not in seen:
+                        if cur == branch:
+                            return True
+                        seen.add(cur)
+                        cur = handles.get(cur, {}).get("parent")
+                    return False
+                
+                matching = [e for e in current_step_frontier if _is_desc(e["handle"], handle)]
+                
+                if not matching:
+                    logger.info(f"Bulk on '{handle}': no matches")
+                    continue
+                
+                if act == "engulf_all_showing_undecided_descendants_into_gem_for_editing":
+                    engulfed_leaves = 0
+                    engulfed_branches = 0
+                    for entry in matching:
+                        fh = entry["handle"]
+                        if state.get(fh, {}).get("status") in {"finalized", "closed"}:
+                            continue
+                        if entry["is_leaf"]:
+                            f_entry = state.setdefault(fh, {"status": "unseen", "selection_type": None})
+                            f_entry["status"] = "finalized"
+                            f_entry["selection_type"] = "leaf"
+                            f_entry["max_depth"] = max_depth
+                            _auto_complete_ancestors(fh)
+                            engulfed_leaves += 1
+                        else:
+                            f_entry = state.setdefault(fh, {"status": "unseen", "selection_type": None})
+                            f_entry["status"] = "finalized"
+                            f_entry["selection_type"] = "subtree"
+                            f_entry["max_depth"] = max_depth
+                            f_entry["subtree_mode"] = "shell"
+                            engulfed_branches += 1
+                    logger.info(f"Engulfed {engulfed_leaves} leaves, {engulfed_branches} branches")
+                elif act == "preserve_all_showing_undecided_descendants_in_ether":
+                    preserved = 0
+                    for entry in matching:
+                        fh = entry["handle"]
+                        if state.get(fh, {}).get("status") in {"finalized", "closed"}:
+                            continue
+                        f_entry = state.setdefault(fh, {"status": "unseen", "selection_type": None})
+                        f_entry["status"] = "closed"
+                        _auto_complete_ancestors(fh)
+                        preserved += 1
+                    logger.info(f"Preserved {preserved} nodes")
+                continue
+
+            if handle not in handles:
+                raise NetworkError(f"Unknown handle: {handle}")
+
+            if act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm", "update_tag_and_engulf_in_gemstorm"} and not editable_mode:
+                raise NetworkError("Update actions require editable=True")
+
+            if handle not in state:
+                state[handle] = {"status": "unseen", "max_depth": None, "selection_type": None}
+
+            entry = state[handle]
+            if "selection_type" not in entry:
+                entry["selection_type"] = None
+
+            # PEEK action
+            if act == "peek_descendants_as_frontier":
+                from collections import deque
+                max_nodes = action.get("max_nodes") or 200
+                try:
+                    max_nodes = int(max_nodes)
+                except (TypeError, ValueError):
+                    max_nodes = 200
+                if max_nodes <= 0:
+                    max_nodes = 200
+                
+                queue = deque([handle])
+                visited = set()
+                peek_handles = []
+                
+                while queue and len(peek_handles) < max_nodes:
+                    h = queue.popleft()
+                    if h in visited:
+                        continue
+                    visited.add(h)
+                    peek_handles.append(h)
+                    for ch in handles.get(h, {}).get("children", []) or []:
+                        if ch not in visited:
+                            queue.append(ch)
+                
+                peek_frontier = []
+                MAX_NOTE = None if editable_mode else 1024
+                for h in peek_handles:
+                    meta = handles.get(h, {}) or {}
+                    st = state.get(h, {"status": "unseen"})
+                    child_handles = meta.get("children", []) or []
+                    is_leaf = not child_handles
+                    note_full = meta.get("note") or ""
+                    note_preview = note_full if MAX_NOTE is None else (note_full if len(note_full) <= MAX_NOTE else note_full[:MAX_NOTE])
+                    guidance = "PEEK - leaf: EL, PL" if is_leaf else "PEEK - branch: RB, PB, EF, PF"
+                    peek_frontier.append({
+                        "handle": h,
+                        "parent_handle": meta.get("parent"),
+                        "name_preview": meta.get("name", ""),
+                        "note_preview": note_preview,
+                        "child_count": len(child_handles),
+                        "depth": meta.get("depth", 0),
+                        "status": st.get("status", "candidate"),
+                        "is_leaf": is_leaf,
+                        "guidance": guidance,
+                    })
+                
+                session["_peek_frontier"] = peek_frontier
+                session["_peek_root_handle"] = handle
+                session["_peek_max_nodes"] = max_nodes
+                peek_results.append({
+                    "root_handle": handle,
+                    "max_nodes": max_nodes,
+                    "nodes_returned": len(peek_frontier),
+                    "truncated": len(visited) >= max_nodes,
+                    "frontier": peek_frontier,
+                })
+                continue
+            
+            # RESUME action
+            if act == "resume_guided_frontier":
+                if "_search_frontier" in session:
+                    del session["_search_frontier"]
+                if "_peek_frontier" in session:
+                    del session["_peek_frontier"]
+                    del session["_peek_root_handle"]
+                    del session["_peek_max_nodes"]
+                    logger.info("resume: cleared peek")
+                continue
+
+            # ADD_HINT action
+            if act == "add_hint":
+                hint = action.get("hint")
+                if not isinstance(hint, str) or not hint.strip():
+                    raise NetworkError("add_hint requires non-empty hint")
+                meta = handles.get(handle) or {}
+                existing = meta.get("hints")
+                if not isinstance(existing, list):
+                    existing = []
+                existing.append(hint)
+                meta["hints"] = existing
+                handles[handle] = meta
+                continue
+
+            # LEAF actions
+            if act == "engulf_leaf_into_gem_for_editing":
+                entry["status"] = "finalized"
+                entry["selection_type"] = "leaf"
+                entry["max_depth"] = max_depth
+                _auto_complete_ancestors(handle)
+            elif act == "preserve_leaf_in_ether_untouched":
+                entry["status"] = "closed"
+                entry["selection_type"] = None
+                entry["max_depth"] = None
+                _auto_complete_ancestors(handle)
+            
+            # BRANCH actions
+            elif act == "flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states":
+                summary = _summarize_descendants(handle)
+                desc_count = summary["descendant_count"]
+                has_undecided = summary["has_undecided"]
+                accepted = summary["accepted_leaf_count"]
+
+                if desc_count == 0:
+                    raise NetworkError(f"{handle} has no descendants - use leaf actions")
+
+                if exploration_mode == "dfs_guided_explicit":
+                    if has_undecided or accepted > 0:
+                        raise NetworkError(f"Strict mode: cannot engulf branch '{handle}' with undecided/engulfed descendants")
+
+                if exploration_mode == "dfs_guided_bulk":
+                    entry["status"] = "finalized"
+                    entry["selection_type"] = "subtree"
+                    entry["max_depth"] = max_depth
+                    entry["subtree_mode"] = "shell"
+                    continue
+
+                # All descendants decided: include as shell
+                entry["status"] = "finalized"
+                entry["selection_type"] = "subtree"
+                entry["max_depth"] = max_depth
+                if summary["has_decided"] and not summary["has_undecided"]:
+                    if accepted > 0:
+                        _auto_complete_ancestors(handle)
+                        continue
+                    entry["subtree_mode"] = "shell"
+                else:
+                    entry["subtree_mode"] = "shell"
+                _auto_complete_ancestors(handle)
+
+            elif act == "preserve_branch_node_in_ether_untouched__when_no_engulfed_children":
+                summary = _summarize_descendants(handle)
+                if summary["descendant_count"] == 0:
+                    raise NetworkError(f"{handle} has no descendants - use leaf preserve")
+
+                if exploration_mode == "dfs_guided_explicit" and summary["has_undecided"]:
+                    raise NetworkError("Strict mode: all descendants must be decided first")
+
+                if exploration_mode == "dfs_guided_bulk":
+                    preserved_count = 0
+                    for h in handles:
+                        if not h.startswith(handle + "."):
+                            continue
+                        h_state = state.get(h, {})
+                        if h_state.get("status") == "finalized":
+                            continue
+                        elif h_state.get("status") in ("unseen", "candidate", "open"):
+                            h_sum = _summarize_descendants(h)
+                            if h_sum["accepted_leaf_count"] == 0:
+                                state.setdefault(h, {})["status"] = "closed"
+                                state[h]["selection_type"] = "subtree"
+                                preserved_count += 1
+                    logger.info(f"Smart preserve: {preserved_count} nodes")
+                else:
+                    if summary["accepted_leaf_count"] > 0:
+                        raise NetworkError(f"Cannot preserve '{handle}' - has engulfed leaves")
+                    entry["status"] = "closed"
+                    entry["selection_type"] = "subtree"
+                    entry["max_depth"] = max_depth
+                _auto_complete_ancestors(handle)
+
+            # UPDATE actions (editable mode)
+            elif act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm"}:
+                if not editable_mode:
+                    raise NetworkError("Update actions require editable=True")
+                new_name = action.get("name")
+                new_note = action.get("note")
+                meta = handles.get(handle) or {}
+                node_id = meta.get("id")
+                if not node_id:
+                    raise NetworkError(f"{handle} has no node id")
+                target = node_by_id.get(node_id)
+                if not target:
+                    raise NetworkError(f"Node {node_id} not in tree")
+                if new_name:
+                    target["name"] = new_name
+                    meta["name"] = new_name
+                if new_note:
+                    target["note"] = new_note
+                    meta["note"] = new_note
+                handles[handle] = meta
+                child_handles = handles.get(handle, {}).get("children", []) or []
+                entry = state.setdefault(handle, {"status": "unseen", "selection_type": None})
+                if not child_handles:
+                    entry["status"] = "finalized"
+                    entry["selection_type"] = "leaf"
+                    entry["max_depth"] = max_depth
+                    _auto_complete_ancestors(handle)
+                else:
+                    entry["status"] = "finalized"
+                    if entry.get("selection_type") is None:
+                        entry["selection_type"] = "subtree"
+                    entry["max_depth"] = max_depth
+                    _auto_complete_ancestors(handle)
+
+            elif act == "update_tag_and_engulf_in_gemstorm":
+                if not editable_mode:
+                    raise NetworkError("Update tag requires editable=True")
+                raw_tag = action.get("tag")
+                if not isinstance(raw_tag, str) or not raw_tag.strip():
+                    raise NetworkError("Tag required")
+                tag = raw_tag.strip()
+                if not tag.startswith("#"):
+                    tag = f"#{tag}"
+                meta = handles.get(handle) or {}
+                node_id = meta.get("id")
+                if not node_id:
+                    raise NetworkError(f"{handle} has no node id")
+                target = node_by_id.get(node_id)
+                if not target:
+                    raise NetworkError(f"Node {node_id} not in tree")
+                current_name = target.get("name") or ""
+                if tag not in current_name.split():
+                    new_name = f"{current_name} {tag}".strip()
+                    target["name"] = new_name
+                    meta["name"] = new_name
+                    handles[handle] = meta
+                child_handles = handles.get(handle, {}).get("children", []) or []
+                entry = state.setdefault(handle, {"status": "unseen", "selection_type": None})
+                if not child_handles:
+                    entry["status"] = "finalized"
+                    entry["selection_type"] = "leaf"
+                    _auto_complete_ancestors(handle)
+                else:
+                    entry["status"] = "finalized"
+                    if not entry.get("selection_type"):
+                        entry["selection_type"] = "subtree"
+                    _auto_complete_ancestors(handle)
+            else:
+                raise NetworkError(f"Unsupported action: {act}")
         
         session["handles"] = handles
         session["state"] = state
