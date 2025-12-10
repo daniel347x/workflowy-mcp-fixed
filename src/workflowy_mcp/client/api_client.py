@@ -6509,10 +6509,21 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             else:
                 roots.append(node)
 
-        # Stable ordering by handle for readability
-        roots.sort(key=lambda n: n["handle"])
+        # Natural/numeric ordering by handle (same as flat frontier)
+        def natural_sort_key_for_tree(node):
+            handle = node.get("handle", "")
+            parts = handle.split(".")
+            result = []
+            for part in parts:
+                if part.isdigit():
+                    result.append((0, int(part)))  # Numeric sort
+                else:
+                    result.append((1, part))  # Alphabetic sort
+            return result
+        
+        roots.sort(key=natural_sort_key_for_tree)
         for node in by_handle.values():
-            node["children"].sort(key=lambda n: n["handle"])
+            node["children"].sort(key=natural_sort_key_for_tree)
         
         # Remove empty children arrays (token optimization)
         for node in by_handle.values():
