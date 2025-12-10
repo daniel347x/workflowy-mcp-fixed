@@ -33,6 +33,11 @@ EXPLORATION_ACTION_2LETTER = {
     "SX": "search_descendants_for_text",
     "PA": "preserve_all_remaining_nodes_in_ether_at_finalization",
     "RF": "resume_guided_frontier",
+    "LF": "lightning_flash_into_section",
+    "MSD": "mark_section_for_deletion",
+    "MSM": "mark_section_as_merge_target",
+    "MSP": "mark_section_as_permanent",
+    "ALS": "abandon_lightning_strike",
 }
 
 
@@ -188,6 +193,10 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 is_undecided = st.get("status") in {"unseen", "candidate", "open"}
 
                 if is_leaf and is_undecided:
+                    ancestor_hints = _collect_hints(h)
+                    if "SKELETON_PRUNED" in ancestor_hints:
+                        # Hidden from BFS by Skeleton Walk pruning, but still present in handles/state.
+                        continue
                     bfs_leaves.append(h)
 
                 for ch in child_handles:
@@ -195,7 +204,44 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         queue.append(ch)
 
             if not bfs_leaves:
-                return frontier
+                # Optional pseudo-branch inclusion: if no undecided structural leaves remain,
+                # surface undecided branches whose descendants are all decided as a "last-mile"
+                # frontier, so the agent can explicitly decide them.
+                pseudo_leaves: list[str] = []
+                for h_all, meta_all in handles.items():
+                    if h_all == "R":
+                        continue
+                    child_handles_all = (meta_all or {}).get("children", []) or []
+                    # Only consider structural branches (true leaves already handled above)
+                    if not child_handles_all:
+                        continue
+                    st_all = state.get(h_all, {"status": "unseen"})
+                    if st_all.get("status") not in {"unseen", "candidate", "open"}:
+                        continue
+
+                    # Check descendants for any undecided node
+                    has_undecided_desc = False
+                    stack = list(child_handles_all)
+                    seen_local: set[str] = set()
+                    while stack and not has_undecided_desc:
+                        ch = stack.pop()
+                        if ch in seen_local:
+                            continue
+                        seen_local.add(ch)
+                        st_ch = state.get(ch, {"status": "unseen"})
+                        if st_ch.get("status") in {"unseen", "candidate", "open"}:
+                            has_undecided_desc = True
+                            break
+                        stack.extend((handles.get(ch, {}) or {}).get("children", []) or [])
+
+                    if not has_undecided_desc:
+                        pseudo_leaves.append(h_all)
+
+                # If we found pseudo-leaf branches, use them as our frontier; otherwise bail out
+                if pseudo_leaves:
+                    bfs_leaves = pseudo_leaves
+                else:
+                    return frontier
 
             # Chunk by siblings
             selected = []
@@ -944,6 +990,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "Leaf: EL, PL, UL",
                     "Branch: RB, PB, UB, UN, AB",
                     "Bulk: EF, PF",
+                    "Lightning: LF, MSD, MSM/MSP, ALS",
                 ]
             else:
                 step_guidance = [
@@ -952,6 +999,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "Branch: RB, PB, UB, UN, AB",
                     "Bulk: EF, PF",
                     "Global: PA",
+                    "Lightning: LF, MSD, MSM/MSP, ALS",
                 ]
         else:
             step_guidance = ["🎯 LEGACY MODE: Manual"]
@@ -1088,13 +1136,28 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "🎯 EXPLICIT MODE: Auto-frontier",
                     "Leaf: EL, PL, UL",
                     "Branch: RB, PB",
+                    "Lightning: LF=lightning strike, MSD=delete section, MSM/MSP=merge/keep, ALS=cancel lightning",
                 ]
             elif exploration_mode == "dfs_guided_bulk":
                 strict = session.get("strict_completeness", False)
                 if strict:
-                    step_guidance = ["🎯 BULK MODE", "🛡️ STRICT - PA disabled", "Leaf: EL, PL", "Branch: RB, PB", "Bulk: EF, PF"]
+                    step_guidance = [
+                        "🎯 BULK MODE",
+                        "🛡️ STRICT - PA disabled",
+                        "Leaf: EL, PL",
+                        "Branch: RB, PB",
+                        "Bulk: EF, PF",
+                        "Lightning: LF, MSD, MSM/MSP, ALS",
+                    ]
                 else:
-                    step_guidance = ["🎯 BULK MODE", "Leaf: EL, PL", "Branch: RB, PB", "Bulk: EF, PF", "Global: PA"]
+                    step_guidance = [
+                        "🎯 BULK MODE",
+                        "Leaf: EL, PL",
+                        "Branch: RB, PB",
+                        "Bulk: EF, PF",
+                        "Global: PA",
+                        "Lightning: LF, MSD, MSM/MSP, ALS",
+                    ]
             else:
                 step_guidance = ["🎯 LEGACY MODE"]
 
@@ -1508,8 +1571,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             if "selection_type" not in entry:
                 entry["selection_type"] = None
 
-            # PEEK action
-            if act == "peek_descendants_as_frontier":
+            # PEEK / LIGHTNING FLASH action
+            if act in {"peek_descendants_as_frontier", "lightning_flash_into_section"}:
                 from collections import deque
                 max_nodes = action.get("max_nodes") or 200
                 try:
@@ -1590,6 +1653,104 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 existing.append(hint)
                 meta["hints"] = existing
                 handles[handle] = meta
+                continue
+
+            # ABANDON LIGHTNING STRIKE (ALS) – clear peek-only state
+            if act == "abandon_lightning_strike":
+                session.pop("_peek_frontier", None)
+                session.pop("_peek_root_handle", None)
+                session.pop("_peek_max_nodes", None)
+                logger.info("abandon_lightning_strike: cleared lightning peek state")
+                continue
+
+            # SKELETON WALK: section-level delete/merge operations over lightning strike
+            if act in {
+                "mark_section_for_deletion",
+                "mark_section_as_merge_target",
+                "mark_section_as_permanent",
+            }:
+                peek_frontier = session.get("_peek_frontier")
+                peek_root = session.get("_peek_root_handle")
+                if not peek_frontier or peek_root != handle:
+                    raise NetworkError(f"{act} requires active lightning strike rooted at handle '{handle}'")
+
+                peek_handles = {e.get("handle") for e in peek_frontier}
+
+                if act == "mark_section_for_deletion":
+                    nodes_to_salvage = action.get("nodes_to_salvage_for_move") or []
+                    invalid = [h for h in nodes_to_salvage if h not in peek_handles]
+                    if invalid:
+                        raise NetworkError(f"nodes_to_salvage_for_move not in lightning frontier: {invalid}")
+
+                    # Salvage selected nodes for later move/merge
+                    for h_salvage in nodes_to_salvage:
+                        if h_salvage not in handles:
+                            raise NetworkError(f"Unknown salvage handle: {h_salvage}")
+                        sal_meta = handles.get(h_salvage) or {}
+                        sal_children = sal_meta.get("children", []) or []
+                        sal_entry = state.setdefault(
+                            h_salvage,
+                            {"status": "unseen", "selection_type": None},
+                        )
+                        if not sal_children:
+                            sal_entry["status"] = "finalized"
+                            sal_entry["selection_type"] = "leaf"
+                            sal_entry["max_depth"] = max_depth
+                        else:
+                            sal_entry["status"] = "finalized"
+                            sal_entry["selection_type"] = "subtree"
+                            sal_entry["max_depth"] = max_depth
+                            sal_entry.pop("subtree_mode", None)
+                        _auto_complete_ancestors(h_salvage)
+
+                    # Mark the root section handle as a subtree shell slated for deletion
+                    root_entry = state.setdefault(
+                        handle,
+                        {"status": "unseen", "selection_type": None},
+                    )
+                    root_entry["status"] = "finalized"
+                    root_entry["selection_type"] = "subtree"
+                    root_entry["max_depth"] = max_depth
+                    root_entry["subtree_mode"] = "shell"
+
+                    # Hint to suppress BFS for this branch
+                    root_meta = handles.get(handle) or {}
+                    root_hints = root_meta.get("hints") or []
+                    root_hints.append("SKELETON_PRUNED")
+                    root_meta["hints"] = root_hints
+                    handles[handle] = root_meta
+
+                    # Scratchpad log
+                    scratch = session.get("scratchpad") or ""
+                    salvage_str = ", ".join(nodes_to_salvage) if nodes_to_salvage else ""
+                    line = f"[SKELETON] mark_section_for_deletion: root={handle}, salvaged=[{salvage_str}]"
+                    session["scratchpad"] = (scratch + "\n" + line) if scratch else line
+
+                else:
+                    # mark_section_as_merge_target / mark_section_as_permanent share semantics
+                    target_entry = state.setdefault(
+                        handle,
+                        {"status": "unseen", "selection_type": None},
+                    )
+                    target_entry["status"] = "finalized"
+                    target_entry["selection_type"] = "subtree"
+                    target_entry["max_depth"] = max_depth
+                    # Ensure this is a full editable subtree, not a shell
+                    target_entry.pop("subtree_mode", None)
+
+                    meta = handles.get(handle) or {}
+                    hints = meta.get("hints") or []
+                    hints.append("SKELETON_MERGE_TARGET")
+                    meta["hints"] = hints
+                    handles[handle] = meta
+
+                    scratch = session.get("scratchpad") or ""
+                    line = f"[SKELETON] merge target = {handle}"
+                    session["scratchpad"] = (scratch + "\n" + line) if scratch else line
+
+                # End lightning strike for this section
+                for key in ("_peek_frontier", "_peek_root_handle", "_peek_max_nodes"):
+                    session.pop(key, None)
                 continue
 
             # LEAF actions
