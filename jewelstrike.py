@@ -34,12 +34,129 @@ from pathlib import Path
 INDEX_FILENAME = "jewelstorm_index.json"
 
 
+def build_jewel_map(nodes: list, depth: int = 0) -> dict:
+    """Build indented jewel_map showing tree structure.
+    
+    Returns dict mapping jewel_id to indented name string.
+    Uses bullets (•) and 4-space indentation per level.
+    """
+    jewel_map = {}
+    indent = "    " * depth
+    bullet = "• " if depth == 0 else "• "
+    
+    for node in nodes:
+        jewel_id = node.get("jewel_id")
+        name = node.get("name", "Untitled")
+        
+        # Truncate very long names
+        if len(name) > 80:
+            name = name[:77] + "..."
+        
+        jewel_map[jewel_id] = f"{indent}{bullet}{name}"
+        
+        # Recurse into children
+        children = node.get("children", [])
+        if children:
+            child_map = build_jewel_map(children, depth + 1)
+            jewel_map.update(child_map)
+    
+    return jewel_map
+
+
+def _build_jewel_preview_lines(roots: list, max_note_chars: int = 1024) -> list[str]:
+    """Build human-readable preview of JEWEL tree (JEWELSTRIKE initial state).
+
+    Format:
+        [J-001] ⦿ Node Name [note-preview]
+    with 4-space indentation per depth level and truncated note previews.
+
+    This helper is shared with nexus_json_tools.transform_jewel so both
+    JEWELSTRIKE and transform_jewel produce consistent JEWEL previews.
+    """
+    # PASS 1: Collect all jewel_id / id labels to compute max width
+    all_labels: list[str] = []
+
+    def collect_labels(node: dict) -> None:
+        jewel_id = node.get("jewel_id") or node.get("id") or "?"
+        all_labels.append(str(jewel_id))
+        children = node.get("children") or []
+        for child in children:
+            if isinstance(child, dict):
+                collect_labels(child)
+
+    for root in roots or []:
+        if isinstance(root, dict):
+            collect_labels(root)
+
+    max_id_width = max((len(lbl) for lbl in all_labels), default=0)
+
+    # PASS 2: Build aligned preview lines
+    lines: list[str] = []
+
+    def walk(node: dict, depth: int) -> None:
+        jewel_id = node.get("jewel_id") or node.get("id") or "?"
+        id_label = str(jewel_id).ljust(max_id_width)
+        indent = " " * 4 * depth
+        children = node.get("children") or []
+        has_child_dicts = any(isinstance(c, dict) for c in children)
+        bullet = "•" if not has_child_dicts else "⦿"
+        name = node.get("name") or "Untitled"
+        note = node.get("note") or ""
+
+        # Surface SKELETON role hints in the preview (delete vs merge targets)
+        sk_hint = node.get("skeleton_hint")
+        if not sk_hint and node.get("subtree_mode") == "shell":
+            sk_hint = "DELETE_SECTION"
+        if sk_hint == "DELETE_SECTION":
+            hint_prefix = "[DELETE] "
+        elif sk_hint == "MERGE_TARGET":
+            hint_prefix = "[MERGE] "
+        else:
+            hint_prefix = ""
+
+        if isinstance(note, str) and note:
+            flat = note.replace("\n", "\\n")
+            if len(flat) > max_note_chars:
+                flat = flat[:max_note_chars]
+            name_part = f"{hint_prefix}{name} [{flat}]"
+        else:
+            name_part = f"{hint_prefix}{name}"
+
+        lines.append(f"[{id_label}] {indent}{bullet} {name_part}")
+        for child in children:
+            if isinstance(child, dict):
+                walk(child, depth + 1)
+
+    for root in roots or []:
+        if isinstance(root, dict):
+            walk(root, 0)
+    return lines
+
+
 def add_jewel_ids_recursive(node: dict, counter: list) -> None:
-    """Add jewel_id to node and all descendants recursively."""
+    """Add jewel_id to node and all descendants recursively, stripping noisy fields.
+
+    This prepares the HOT VISIBLE GEM for JEWELSTORM by removing per-node
+    metadata that is not needed for semantic editing (and inflates token
+    usage):
+
+    - completed
+    - data (e.g., {"layoutMode": "bullets"})
+    - createdAt / modifiedAt / completedAt
+
+    The full metadata remains available in phantom_gem.json and, if desired,
+    in witness/guardian copies. The working_gem focuses on structure and
+    content (id, jewel_id, name, note, children).
+    """
     if "jewel_id" not in node:
         node["jewel_id"] = f"J-{counter[0]:03d}"
         counter[0] += 1
-    
+
+    # Strip per-node noise fields for HOT VISIBLE GEM
+    for key in ("completed", "data", "createdAt", "modifiedAt", "completedAt"):
+        if key in node:
+            node.pop(key, None)
+
     children = node.get("children") or []
     for child in children:
         add_jewel_ids_recursive(child, counter)
@@ -141,6 +258,151 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
             "success": False,
             "error": f"Failed to read phantom_gem JSON: {e}"
         }
+
+    # Write full operations reference to separate file in temp directory
+    operations_reference = {
+        "_HELP": "JEWELSTORM Operations Reference - Complete catalog for nexus_transform_jewel",
+        "_NOTE": "This file is AUTO-GENERATED by jewelstrike.py and AUTO-DELETED by jewelmorph.py. Do not edit manually.",
+        "MOVE_NODE": {
+            "description": "Move a node to a new parent or reorder siblings",
+            "required": ["jewel_id"],
+            "optional": ["new_parent_jewel_id", "position", "relative_to_jewel_id"],
+            "position_values": ["FIRST", "LAST", "BEFORE", "AFTER"],
+            "notes": [
+                "Must provide either new_parent_jewel_id OR relative_to_jewel_id (for BEFORE/AFTER)",
+                "Position defaults to LAST if not specified",
+                "BEFORE/AFTER require relative_to_jewel_id to specify anchor sibling"
+            ]
+        },
+        "DELETE_NODE": {
+            "description": "Delete a node and its entire subtree",
+            "required": ["jewel_id"],
+            "optional": ["delete_from_ether", "mode"],
+            "modes": ["SMART (default)", "FAIL_IF_HAS_CHILDREN"],
+            "notes": [
+                "SMART mode: Allows deleting nodes with JEWEL-only children; requires delete_from_ether=true for ETHER-backed children",
+                "Deleted nodes are removed from working_gem; JEWELMORPH preserves deletion in phantom_jewel.json"
+            ]
+        },
+        "DELETE_ALL_CHILDREN": {
+            "description": "Delete all immediate children of a node (keep the node itself)",
+            "required": ["jewel_id"],
+            "optional": ["delete_from_ether", "mode"],
+            "notes": [
+                "Same SMART/FAIL_IF_HAS_CHILDREN semantics as DELETE_NODE",
+                "Use to clear a parent before adding new children"
+            ]
+        },
+        "RENAME_NODE": {
+            "description": "Change the name (title) of a node",
+            "required": ["jewel_id"],
+            "parameter_options": ["name (recommended)", "new_name (legacy)"],
+            "notes": [
+                "Both 'name' and 'new_name' are accepted for backward compatibility",
+                "Use 'name' for consistency with CREATE_NODE"
+            ]
+        },
+        "SET_NOTE": {
+            "description": "Set or update the note field of a node",
+            "required": ["jewel_id"],
+            "parameter_options": ["note (recommended)", "new_note (legacy)"],
+            "notes": [
+                "Both 'note' and 'new_note' are accepted for backward compatibility",
+                "Use 'note' for consistency with CREATE_NODE",
+                "Pass empty string or null to clear the note"
+            ]
+        },
+        "SET_ATTRS": {
+            "description": "Set node attributes (completed, layoutMode, priority, tags)",
+            "required": ["jewel_id", "attrs (dict)"],
+            "allowed_attr_keys": ["completed", "layoutMode", "priority", "tags"],
+            "notes": [
+                "attrs must be a dict mapping allowed keys to values",
+                "Set value to null to remove an attribute",
+                "Example: {'completed': true, 'layoutMode': 'todo'}"
+            ]
+        },
+        "CREATE_NODE": {
+            "description": "Create a new node with optional children (recursive subtree)",
+            "required": ["name"],
+            "optional": ["parent_jewel_id", "position", "relative_to_jewel_id", "note", "attrs", "data", "jewel_id", "children", "node"],
+            "position_values": ["FIRST", "LAST", "BEFORE", "AFTER"],
+            "notes": [
+                "Must provide either parent_jewel_id OR relative_to_jewel_id (for BEFORE/AFTER)",
+                "New nodes are created WITHOUT Workflowy id (JEWELMORPH preserves this so WEAVE treats them as CREATE operations)",
+                "Can provide jewel_id explicitly or let system auto-generate",
+                "Supports nested children array for recursive tree creation",
+                "Two formats: compact (name/note/children at op level) or wrapped (inside 'node' key)"
+            ]
+        },
+        "SEARCH_REPLACE": {
+            "description": "Find and replace text across all nodes in GEM",
+            "required": ["search", "replace", "fields"],
+            "optional": ["case_sensitive", "whole_word", "regex"],
+            "fields_values": ["name", "note", "both"],
+            "notes": [
+                "Operates on working_gem after JEWELSTRIKE",
+                "Returns nodes_renamed and notes_updated counts",
+                "Use dry_run: true to preview changes"
+            ]
+        },
+        "SEARCH_AND_TAG": {
+            "description": "Find text and add #tag to matching nodes",
+            "required": ["search", "tag", "fields"],
+            "optional": ["case_sensitive", "whole_word", "regex"],
+            "fields_values": ["name", "note", "both"],
+            "notes": [
+                "Same search params as SEARCH_REPLACE",
+                "Adds #tag to specified field(s) when match found"
+            ]
+        },
+        "SET_ATTRS_BY_PATH": {
+            "description": "Set attributes on a node by index path (used internally for JEWEL UUID injection after WEAVE CREATE phase)",
+            "required": ["path (list of ints)", "attrs (dict)"],
+            "allowed_attr_keys": ["id (Workflowy UUID)"],
+            "notes": [
+                "Path is list of 0-based indexes into nodes array and nested children",
+                "Example: path=[0, 2, 1] navigates to nodes[0].children[2].children[1]",
+                "Currently only supports setting 'id' attribute (for WEAVE Phase 1 UUID sync)"
+            ]
+        },
+        "WORKFLOW_REMINDER": {
+            "JEWELSTORM_LIFECYCLE": [
+                "1. JEWELSTRIKE <nexus-tag> → Creates working_gem with jewel_ids",
+                "2. JEWELSTORM editing → Use nexus_transform_jewel MCP tool",
+                "3. JEWELMORPH → Strips jewel_ids, reattaches metadata, produces phantom_jewel.json",
+                "4. nexus_anchor_jewels → 3-way fuse (T1 + S0 + S1 → enchanted_terrain.json)",
+                "5. nexus_weave_enchanted_async → Apply enchanted_terrain back to Workflowy ETHER"
+            ],
+            "IDENTITY_NOTES": [
+                "jewel_id: Local handles for JEWELSTORM editing (J-001, J-002, etc.)",
+                "id: Workflowy UUID (preserved for existing nodes, omitted for new nodes)",
+                "New nodes without 'id' field → WEAVE creates them in Workflowy",
+                "Existing nodes with 'id' field → WEAVE updates them in place"
+            ]
+        }
+    }
+    
+    # Write full reference to separate file (same directory as working/witness gems)
+    reference_file = working_gem.with_name(f"{file_prefix}operations_reference.json")
+    try:
+        with open(reference_file, "w", encoding="utf-8") as f:
+            json.dump(operations_reference, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        # Non-fatal - working_gem can still function without external reference
+        pass
+
+    # Strip root-level heavy metadata from HOT VISIBLE GEM (phantom_gem still has it)
+    for key in (
+        "original_ids_seen",
+        "explicitly_preserved_ids",
+        "export_root_id",
+        "export_root_name",
+        "export_root_children_status",
+        "jewel_file",
+    ):
+        if key in gem_data:
+            gem_data.pop(key, None)
     
     # Add jewel_ids to all nodes
     counter = [1]  # Mutable counter for recursion
@@ -148,7 +410,30 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
     for node in nodes:
         add_jewel_ids_recursive(node, counter)
     
-    # Write working_gem (with jewel_ids)
+    # Build JEWEL preview (ephemeral, for agents/humans; never read by algorithms)
+    try:
+        preview_tree = _build_jewel_preview_lines(nodes)
+    except Exception:
+        preview_tree = []
+    
+    # Build jewel_map showing tree structure with indentation
+    jewel_map = build_jewel_map(nodes)
+    
+    # Create minimal inline header (replaces bloated operations catalog)
+    minimal_header = {
+        "__preview_tree__": preview_tree,
+        "_jewelstorm_help": {
+            "operations": "CREATE_NODE, DELETE_NODE, MOVE_NODE, RENAME_NODE, SET_NOTE, SET_ATTRS, SEARCH_REPLACE, SEARCH_AND_TAG",
+            "full_docs": str(reference_file),
+            "jewel_map": jewel_map
+        }
+    }
+    
+    # Inject minimal header at root level if this is an export package
+    if isinstance(gem_data, dict) and "nodes" in gem_data:
+        gem_data = {**minimal_header, **gem_data}
+    
+    # Write working_gem (with jewel_ids + operations help block)
     try:
         with open(working_gem, "w", encoding="utf-8") as f:
             json.dump(gem_data, f, ensure_ascii=False, indent=2)
@@ -187,6 +472,7 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
         "witness_gem": str(witness_gem),
         "hash": hash_value,
         "phantom_gem": str(gem_path),
+        "preview_tree": preview_tree,
     }
 
 

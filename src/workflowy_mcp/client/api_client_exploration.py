@@ -2070,6 +2070,19 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         subtree_shells: set[str] = set()
         true_subtrees: set[str] = set()
 
+        # Capture SKELETON hints so GEM/JEWEL can distinguish delete vs merge targets
+        skeleton_delete_ids: set[str] = set()
+        skeleton_merge_ids: set[str] = set()
+        for handle_key, meta in handles.items():
+            nid = (meta or {}).get("id")
+            if not nid:
+                continue
+            hints = (meta or {}).get("hints") or []
+            if "SKELETON_PRUNED" in hints:
+                skeleton_delete_ids.add(nid)
+            if "SKELETON_MERGE_TARGET" in hints:
+                skeleton_merge_ids.add(nid)
+
         for handle, node_id, sel_type, _max_depth in finalized_entries:
             if sel_type != "subtree":
                 continue
@@ -2138,8 +2151,17 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             if nid not in needed_ids:
                 return None
             new_node = {k: v for k, v in node.items() if k != "children"}
+
+            # Preserve shell marker for delete sections
             if nid in subtree_shells:
                 new_node["subtree_mode"] = "shell"
+
+            # Persist explicit SKELETON role hints for JEWELSTORM consumers
+            if nid in skeleton_delete_ids:
+                new_node["skeleton_hint"] = "DELETE_SECTION"
+            elif nid in skeleton_merge_ids:
+                new_node["skeleton_hint"] = "MERGE_TARGET"
+
             new_children = []
             for child in node.get("children", []) or []:
                 pruned = copy_pruned(child)

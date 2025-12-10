@@ -95,13 +95,26 @@ def _build_jewel_preview_lines(
         bullet = "•" if not has_child_dicts else "⦿"
         name = node.get("name") or "Untitled"
         note = node.get("note") or ""
+
+        # Surface SKELETON role hints in the preview (delete vs merge targets)
+        sk_hint = node.get("skeleton_hint")
+        if not sk_hint and node.get("subtree_mode") == "shell":
+            sk_hint = "DELETE_SECTION"
+        if sk_hint == "DELETE_SECTION":
+            hint_prefix = "[DELETE] "
+        elif sk_hint == "MERGE_TARGET":
+            hint_prefix = "[MERGE] "
+        else:
+            hint_prefix = ""
+
         if isinstance(note, str) and note:
             flat = note.replace("\n", "\\n")
             if len(flat) > max_note_chars:
                 flat = flat[:max_note_chars]
-            name_part = f"{name} [{flat}]"
+            name_part = f"{hint_prefix}{name} [{flat}]"
         else:
-            name_part = name
+            name_part = f"{hint_prefix}{name}"
+
         lines.append(f"[{id_label}] {indent}{bullet} {name_part}")
         for child in children:
             if isinstance(child, dict):
