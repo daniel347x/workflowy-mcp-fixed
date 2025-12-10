@@ -2009,8 +2009,10 @@ async def glimpse(
             original_ids_seen ledger, full NEXUS TERRAIN format)
         
     Returns:
-        When output_file is None: Dictionary with root metadata, children tree, node count, depth, source
-        When output_file is provided: Compact summary with terrain_file, markdown_file, stats
+        When output_file is None: Minimal in-memory preview with only
+            preview_tree + basic stats (no full JSON node tree).
+        When output_file is provided: Compact summary with terrain_file,
+            markdown_file, stats.
     """
     client = get_client()
     ws_conn, ws_queue = get_ws_connection()  # Check if extension is connected
@@ -2020,9 +2022,27 @@ async def glimpse(
     
     try:
         # Pass WebSocket connection, queue, AND output_file to client method
-        result = await client.workflowy_glimpse(node_id, output_file=output_file, _ws_connection=ws_conn, _ws_queue=ws_queue)
+        result = await client.workflowy_glimpse(
+            node_id,
+            output_file=output_file,
+            _ws_connection=ws_conn,
+            _ws_queue=ws_queue,
+        )
         if _rate_limiter:
             _rate_limiter.on_success()
+        
+        # For in-memory GLIMPSE results, return only the MINITREE to the agent.
+        # SCRY-to-disk paths (output_file is not None) continue to carry the
+        # full JSON tree on disk only (coarse_terrain/phantom_gem/etc.).
+        if output_file is None and isinstance(result, dict) and "preview_tree" in result:
+            return {
+                "success": result.get("success", True),
+                "_source": result.get("_source"),
+                "node_count": result.get("node_count"),
+                "depth": result.get("depth"),
+                "preview_tree": result.get("preview_tree"),
+            }
+        
         return result
     except Exception as e:
         if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":

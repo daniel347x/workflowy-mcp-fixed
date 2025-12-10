@@ -53,9 +53,15 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
     @staticmethod
     def _build_frontier_preview_lines(
         frontier: list[dict[str, Any]] | None,
-        max_note_chars: int = 1024,
+        max_note_chars: int | None = None,
     ) -> list[str]:
-        """Build one-line-per-handle preview for frontiers."""
+        """Build one-line-per-handle preview for frontiers.
+
+        Notes are rendered inline on the same line as the entry name. By
+        default (max_note_chars=None) notes are **not clipped**; all
+        newlines are flattened to literal "\\n" so each entry stays on a
+        single line of the preview.
+        """
         if not frontier:
             return []
 
@@ -98,7 +104,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
             if isinstance(note, str) and note:
                 flat = note.replace("\n", "\\n")
-                if len(flat) > max_note_chars:
+                if isinstance(max_note_chars, int) and max_note_chars > 0 and len(flat) > max_note_chars:
                     flat = flat[:max_note_chars]
                 name_part = f"{tag_prefix}{name} [{flat}]"
             else:
@@ -870,7 +876,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "action_key": EXPLORATION_ACTION_2LETTER,
             "scratchpad": session.get("scratchpad", ""),
             "frontier_preview": frontier_preview,
-            "frontier_tree": self._build_frontier_tree_from_flat(frontier),
             "walks": [],
             "skipped_walks": [],
             "decisions_applied": [],
@@ -1095,7 +1100,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "name": root_node.get("name", "Root"),
                 "child_count": len(handles.get("R", {}).get("children", []) or []),
             },
-            "frontier_tree": self._build_frontier_tree_from_flat(frontier),
             "scratchpad": "",
             "stats": {
                 "total_nodes_indexed": glimpse.get("node_count", 0),
@@ -1282,7 +1286,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "action_key": EXPLORATION_ACTION_2LETTER,
                         "step_guidance": step_guidance,
                         "frontier_preview": frontier_preview,
-                        "frontier_tree": frontier_tree,
                         "walks": [],
                         "skipped_walks": [],
                         "decisions_applied": decisions,
@@ -1339,7 +1342,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "action_key": EXPLORATION_ACTION_2LETTER,
                 "step_guidance": step_guidance,
                 "frontier_preview": frontier_preview,
-                "frontier_tree": frontier_tree,
                 "walks": [],
                 "skipped_walks": [],
                 "decisions_applied": decisions,

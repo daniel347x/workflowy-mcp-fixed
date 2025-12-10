@@ -130,9 +130,15 @@ class WorkFlowyClientEtch(WorkFlowyClientCore):
     def _annotate_preview_ids_and_build_tree(
         nodes: list[dict[str, Any]] | None,
         prefix: str,
-        max_note_chars: int = 1024,
+        max_note_chars: int | None = None,
     ) -> list[str]:
-        """Assign preview_id to each node and build a human-readable tree."""
+        """Assign preview_id to each node and build a human-readable tree.
+
+        Notes are rendered inline on the same line as the node name.
+        By default (max_note_chars=None), notes are **not clipped**; all
+        newlines are flattened to literal ``"\\n"`` so each node stays
+        on a single line of the preview tree.
+        """
         if not nodes:
             return []
 
@@ -177,7 +183,7 @@ class WorkFlowyClientEtch(WorkFlowyClientCore):
             note = node.get("note") or ""
             if isinstance(note, str) and note:
                 flat = note.replace("\n", "\\n")
-                if len(flat) > max_note_chars:
+                if isinstance(max_note_chars, int) and max_note_chars > 0 and len(flat) > max_note_chars:
                     flat = flat[:max_note_chars]
                 name_part = f"{name} [{flat}]"
             else:
