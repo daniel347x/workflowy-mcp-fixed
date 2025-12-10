@@ -601,34 +601,39 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
         # Scope filter (undecided only)
         if scope == "undecided":
-            undecided = {h for h, st in state.items() if st.get("status") in {"unseen", "candidate", "open"}}
-            
+            UNDECIDED_STATUSES = {"unseen", "candidate", "open"}
+
+            def is_undecided(handle: str) -> bool:
+                """Treat missing state entries as 'unseen' (undecided)."""
+                st = state.get(handle, {"status": "unseen"})
+                return st.get("status") in UNDECIDED_STATUSES
+
             def has_any_undecided_desc(branch: str) -> bool:
                 """Check if branch has ANY undecided descendants (not just search matches)."""
                 children = (handles.get(branch, {}) or {}).get("children") or []
                 stack = list(children)
-                seen = set()
+                seen: set[str] = set()
                 while stack:
                     ch = stack.pop()
                     if ch in seen:
                         continue
                     seen.add(ch)
                     # Check if THIS descendant is undecided (not whether it matches search)
-                    if ch in undecided:
+                    if is_undecided(ch):
                         return True
                     stack.extend((handles.get(ch, {}) or {}).get("children") or [])
                 return False
 
-            filtered = set()
+            filtered: set[str] = set()
             for h in candidates:
                 is_leaf = not (handles.get(h, {}) or {}).get("children")
                 if is_leaf:
                     # Leaf: include if undecided
-                    if h in undecided:
+                    if is_undecided(h):
                         filtered.add(h)
                 else:
                     # Branch: include if it has ANY undecided descendants OR is itself undecided
-                    if h in undecided or has_any_undecided_desc(h):
+                    if is_undecided(h) or has_any_undecided_desc(h):
                         filtered.add(h)
             candidates = filtered
 
