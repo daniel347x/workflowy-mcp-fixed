@@ -5677,13 +5677,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "RB": "reserve_branch_for_children",
             },
             "action_key": EXPLORATION_ACTION_2LETTER,
+            "scratchpad": session.get("scratchpad", ""),
+            "frontier_preview": frontier_preview,
+            "frontier_tree": self._build_frontier_tree_from_flat(frontier),
             "walks": [],  # Empty - no walks requested, just showing current state
             "skipped_walks": [],
             "decisions_applied": [],
-            "scratchpad": session.get("scratchpad", ""),
-            "frontier_preview": frontier_preview,
             "history_summary": history_summary,
-            "frontier_tree": self._build_frontier_tree_from_flat(frontier),
             "session_meta": {
                 "created_at": session.get("created_at"),
                 "updated_at": session.get("updated_at"),
@@ -6219,21 +6219,20 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # are handled by decision logic rather than this function.
                 return frontier
 
-            # NON-STRICT MODE: Collect undecided branch ancestors for frontier
+            # NON-STRICT MODE: Collect ALL branch ancestors for frontier (enables proper nesting)
             branch_ancestors_for_frontier: list[str] = []
             if include_branch_ancestors:
-                # For each selected leaf, walk ancestors to find undecided branches
+                # For each selected leaf, walk ancestors and collect ALL of them
+                # (both decided and undecided) so frontier_tree can nest properly
                 branch_set: set[str] = set()
                 for leaf_h in selected:
                     ancestor_h = handles.get(leaf_h, {}).get("parent")
                     while ancestor_h and ancestor_h != "R":
-                        # Check if this ancestor is undecided
-                        anc_st = state.get(ancestor_h, {"status": "unseen"})
-                        anc_status = anc_st.get("status")
-                        if anc_status not in {"finalized", "closed"}:
-                            # Undecided branch - add to set
-                            if ancestor_h not in branch_set:
-                                branch_set.add(ancestor_h)
+                        # Include ALL ancestors (decided or undecided)
+                        # This enables _build_frontier_tree_from_flat to properly
+                        # nest children under their parents in frontier_tree
+                        if ancestor_h not in branch_set:
+                            branch_set.add(ancestor_h)
                         # Walk up to next ancestor
                         ancestor_h = handles.get(ancestor_h, {}).get("parent")
                 
@@ -7125,14 +7124,14 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         "action_key_primary_aliases": {"EB": "reserve_branch_for_children"},
                         "action_key": EXPLORATION_ACTION_2LETTER,
                         "step_guidance": step_guidance,
+                        "frontier_preview": frontier_preview,
+                        "frontier_tree": frontier_tree,
                         "walks": [],  # strict DFS guided: no per-ray walks
                         "skipped_walks": [],
                         "decisions_applied": decisions,
                         "skipped_decisions": skipped_decisions,
                         "scratchpad": session.get("scratchpad", ""),
                         "history_summary": history_summary,
-                        "frontier_tree": frontier_tree,
-                        "frontier_preview": frontier_preview,
                     }
 
 
