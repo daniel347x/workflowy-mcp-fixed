@@ -76,13 +76,33 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
             name = entry.get("name_preview") or "Untitled"
             note = entry.get("note_preview") or ""
+
+            # Optional transient skeleton annotations (for lightning/structure previews)
+            tag_prefix = ""
+            sk = entry.get("skeleton_tmp")
+            if sk:
+                tags = []
+                if isinstance(sk, str):
+                    sk = [sk]
+                for t in sk:
+                    if not isinstance(t, str):
+                        continue
+                    if t.startswith("STRUCT:"):
+                        root = t.split(":", 1)[1]
+                        tags.append(f"[STRUCT {root}]")
+                    elif t.startswith("LS:"):
+                        root = t.split(":", 1)[1]
+                        tags.append(f"[LS {root}]")
+                if tags:
+                    tag_prefix = " ".join(tags) + " "
+
             if isinstance(note, str) and note:
                 flat = note.replace("\n", "\\n")
                 if len(flat) > max_note_chars:
                     flat = flat[:max_note_chars]
-                name_part = f"{name} [{flat}]"
+                name_part = f"{tag_prefix}{name} [{flat}]"
             else:
-                name_part = name
+                name_part = f"{tag_prefix}{name}" if tag_prefix else name
 
             lines.append(f"[{label}] {indent}{bullet} {name_part}")
 
@@ -1199,6 +1219,12 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     frontier_tree = self._build_frontier_tree_from_flat(frontier)
                     frontier_preview = self._build_frontier_preview_lines(frontier)
 
+                    # One-shot structure-only lightning: if there are no real lightning roots,
+                    # drop the peek state after returning so MSD/MSM/MSP cannot target it.
+                    if not session.get("_peek_root_handles"):
+                        for key in ("_peek_frontier", "_peek_max_nodes_by_root"):
+                            session.pop(key, None)
+
                     session["last_frontier_flat"] = frontier
                     session["updated_at"] = datetime.utcnow().isoformat() + "Z"
                     with open(session_path, "w", encoding="utf-8") as f:
@@ -1669,13 +1695,18 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             # PEEK / LIGHTNING FLASH action
             if act in {"peek_descendants_as_frontier", "lightning_flash_into_section"}:
                 from collections import deque
-                max_nodes = action.get("max_nodes") or 200
+
+                # Distinct defaults for PEEK vs LIGHTNING
+                if act == "lightning_flash_into_section":
+                    max_nodes = action.get("max_nodes") or 15
+                else:
+                    max_nodes = action.get("max_nodes") or 200
                 try:
                     max_nodes = int(max_nodes)
                 except (TypeError, ValueError):
-                    max_nodes = 200
+                    max_nodes = 15 if act == "lightning_flash_into_section" else 200
                 if max_nodes <= 0:
-                    max_nodes = 200
+                    max_nodes = 15 if act == "lightning_flash_into_section" else 200
 
                 # If this is the first peek in this step, clear any previous multi-peek state
                 if not peek_results:
@@ -1707,28 +1738,97 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     if h == root_handle or h.startswith(root_handle + "."):
                         constrained_peek_handles.append(h)
                 peek_handles = constrained_peek_handles
-                
+
+                # Determine if this strike exceeded the node limit (for LIGHTNING only)
+                over_limit = (
+                    act == "lightning_flash_into_section"
+                    and len(peek_handles) >= max_nodes
+                    and queue  # still nodes left to visit
+                )
+
                 peek_frontier = []
                 MAX_NOTE = None if editable_mode else 1024
-                for h in peek_handles:
-                    meta = handles.get(h, {}) or {}
-                    st = state.get(h, {"status": "unseen"})
-                    child_handles = meta.get("children", []) or []
-                    is_leaf = not child_handles
-                    note_full = meta.get("note") or ""
-                    note_preview = note_full if MAX_NOTE is None else (note_full if len(note_full) <= MAX_NOTE else note_full[:MAX_NOTE])
-                    guidance = "PEEK - leaf: EL, PL" if is_leaf else "PEEK - branch: RB, PB, EF, PF"
-                    peek_frontier.append({
-                        "handle": h,
-                        "parent_handle": meta.get("parent"),
-                        "name_preview": meta.get("name", ""),
-                        "note_preview": note_preview,
-                        "child_count": len(child_handles),
-                        "depth": meta.get("depth", 0),
-                        "status": st.get("status", "candidate"),
-                        "is_leaf": is_leaf,
-                        "guidance": guidance,
-                    })
+
+                # If over limit for LIGHTNING, build a structure-only preview
+                if over_limit and act == "lightning_flash_into_section":
+                    # Build single-child spine from root_handle down
+                    spine: list[str] = [root_handle]
+                    cur = root_handle
+                    while True:
+                        children = (handles.get(cur, {}) or {}).get("children", []) or []
+                        if len(children) != 1:
+                            break
+                        next_h = children[0]
+                        if len(spine) + 1 > max_nodes:
+                            break
+                        spine.append(next_h)
+                        cur = next_h
+                    fan_root = cur
+                    fan_children = (handles.get(fan_root, {}) or {}).get("children", []) or []
+
+                    # Nodes to include: entire spine + as many children of fan_root as fit
+                    nodes_to_include: list[str] = list(dict.fromkeys(spine))  # preserve order
+                    remaining = max_nodes - len(nodes_to_include)
+                    if remaining > 0:
+                        for ch in fan_children:
+                            if remaining <= 0:
+                                break
+                            nodes_to_include.append(ch)
+                            remaining -= 1
+
+                    seen_local: set[str] = set()
+                    for h in nodes_to_include:
+                        if h in seen_local:
+                            continue
+                        seen_local.add(h)
+                        meta = handles.get(h, {}) or {}
+                        st = state.get(h, {"status": "unseen"})
+                        child_handles = meta.get("children", []) or []
+                        is_leaf = not child_handles
+                        note_full = meta.get("note") or ""
+                        note_preview = note_full if MAX_NOTE is None else (
+                            note_full if len(note_full) <= MAX_NOTE else note_full[:MAX_NOTE]
+                        )
+                        guidance = "PEEK - leaf: EL, PL" if is_leaf else "PEEK - branch: RB, PB, EF, PF"
+                        entry = {
+                            "handle": h,
+                            "parent_handle": meta.get("parent"),
+                            "name_preview": meta.get("name", ""),
+                            "note_preview": note_preview,
+                            "child_count": len(child_handles),
+                            "depth": meta.get("depth", 0),
+                            "status": st.get("status", "candidate"),
+                            "is_leaf": is_leaf,
+                            "guidance": guidance,
+                            "skeleton_tmp": [f"STRUCT:{root_handle}", f"LS:{root_handle}"],
+                        }
+                        peek_frontier.append(entry)
+                else:
+                    # Normal PEEK / LIGHTNING frontier
+                    for h in peek_handles:
+                        meta = handles.get(h, {}) or {}
+                        st = state.get(h, {"status": "unseen"})
+                        child_handles = meta.get("children", []) or []
+                        is_leaf = not child_handles
+                        note_full = meta.get("note") or ""
+                        note_preview = note_full if MAX_NOTE is None else (
+                            note_full if len(note_full) <= MAX_NOTE else note_full[:MAX_NOTE]
+                        )
+                        guidance = "PEEK - leaf: EL, PL" if is_leaf else "PEEK - branch: RB, PB, EF, PF"
+                        entry = {
+                            "handle": h,
+                            "parent_handle": meta.get("parent"),
+                            "name_preview": meta.get("name", ""),
+                            "note_preview": note_preview,
+                            "child_count": len(child_handles),
+                            "depth": meta.get("depth", 0),
+                            "status": st.get("status", "candidate"),
+                            "is_leaf": is_leaf,
+                            "guidance": guidance,
+                        }
+                        if act == "lightning_flash_into_section":
+                            entry["skeleton_tmp"] = [f"LS:{root_handle}"]
+                        peek_frontier.append(entry)
 
                 # Merge this root's frontier into aggregated multi-peek frontier
                 existing_frontier = session.get("_peek_frontier") or []
@@ -1739,18 +1839,39 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         combined_by_handle[h_existing] = e
                 for e in peek_frontier:
                     h_new = e.get("handle")
-                    if h_new:
+                    if not h_new:
+                        continue
+                    existing = combined_by_handle.get(h_new)
+                    if existing is not None:
+                        # Merge skeleton_tmp annotations if both exist
+                        sk_old = existing.get("skeleton_tmp")
+                        sk_new = e.get("skeleton_tmp")
+                        merged: list[str] = []
+                        def _to_list(val: Any) -> list[str]:
+                            if not val:
+                                return []
+                            if isinstance(val, str):
+                                return [val]
+                            if isinstance(val, list):
+                                return [v for v in val if isinstance(v, str)]
+                            return []
+                        merged = _to_list(sk_old) + _to_list(sk_new)
+                        if merged:
+                            existing["skeleton_tmp"] = list(dict.fromkeys(merged))
+                        combined_by_handle[h_new] = existing
+                    else:
                         combined_by_handle[h_new] = e
                 session["_peek_frontier"] = list(combined_by_handle.values())
 
-                # Track root handles + per-root max_nodes
-                root_handles = set(session.get("_peek_root_handles") or [])
-                root_handles.add(handle)
-                session["_peek_root_handles"] = sorted(root_handles)
+                # Track root handles + per-root max_nodes ONLY for non-over-limit LIGHTNING
+                if act == "lightning_flash_into_section" and not over_limit:
+                    root_handles = set(session.get("_peek_root_handles") or [])
+                    root_handles.add(handle)
+                    session["_peek_root_handles"] = sorted(root_handles)
 
-                max_map = session.get("_peek_max_nodes_by_root") or {}
-                max_map[handle] = max_nodes
-                session["_peek_max_nodes_by_root"] = max_map
+                    max_map = session.get("_peek_max_nodes_by_root") or {}
+                    max_map[handle] = max_nodes
+                    session["_peek_max_nodes_by_root"] = max_map
 
                 peek_results.append({
                     "root_handle": handle,
