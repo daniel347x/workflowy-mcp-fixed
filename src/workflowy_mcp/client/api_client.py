@@ -285,18 +285,13 @@ EXPLORATION_ACTION_2LETTER = {
     "EF": "engulf_all_showing_undecided_descendants_into_gem_for_editing",
     "PF": "preserve_all_showing_undecided_descendants_in_ether",
     "UT": "update_tag_and_engulf_in_gemstorm",
-    "OP": "open",
-    "CL": "close",
-    "FN": "finalize",
-    "RO": "reopen",
-    "OB": "reopen_branch",
-    "BT": "backtrack",
     "SS": "set_scratchpad",
     "AS": "append_scratchpad",
     "AH": "add_hint",
-    "PD": "peek_descendants",
+    "PD": "peek_descendants_as_frontier",
     "SX": "search_descendants_for_text",
     "PA": "preserve_all_remaining_nodes_in_ether_at_finalization",
+    "RF": "resume_guided_frontier",
 }
 
 
@@ -6913,6 +6908,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         """
         import json as json_module
         from datetime import datetime
+        logger = _ClientLogger()
 
         decisions = decisions or []
         walks = walks or []
@@ -6950,20 +6946,32 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     if act in EXPLORATION_ACTION_2LETTER:
                         decision["action"] = EXPLORATION_ACTION_2LETTER[act]
             
-            # Separate search actions (now that codes are expanded)
+            # Separate PEEK, SEARCH, and other actions (all codes already expanded)
+            peek_actions = [d for d in (decisions or []) if d.get("action") == "peek_descendants_as_frontier"]
             search_actions = [d for d in (decisions or []) if d.get("action") == "search_descendants_for_text"]
-            non_search_decisions = [d for d in (decisions or []) if d.get("action") != "search_descendants_for_text"]
+            resume_actions = [d for d in (decisions or []) if d.get("action") == "resume_guided_frontier"]
+            # Other decisions = everything except peek/search/resume
+            other_decisions = [
+                d for d in (decisions or [])
+                if d.get("action") not in {
+                    "peek_descendants_as_frontier",
+                    "search_descendants_for_text",
+                    "resume_guided_frontier"
+                }
+            ]
             
-            # PRE-COMPUTE the correct frontier for this step (search or normal DFS)
+            # PRE-COMPUTE the correct frontier for this step (search/peek/normal DFS)
             # This frontier will be passed to _nexus_explore_step_internal() so bulk actions
-            # (EF/PF) operate on the correct set when SEARCH is active.
-            # Decide which frontier to use for bulk actions in THIS step.
-            # Priority:
-            #   1) If this step has SX actions → use the SEARCH frontier for bulk.
-            #   2) Else if we have a stored frontier from the previous step →
-            #      use that as the bulk/action frontier.
-            #   3) Else → fall back to a fresh DFS frontier.
+            # (EF/PF) operate on the correct set.
+            #
+            # Precedence:
+            #   1) If this step has SX actions → use SEARCH frontier (PRIMARY)
+            #   2) Else if session has stashed _peek_frontier → use PEEK frontier
+            #   3) Else if we have stored last_frontier_flat → use that
+            #   4) Else → compute fresh DFS frontier
+            
             if search_actions:
+                # SEARCH takes priority
                 effective_search_actions = search_actions
                 correct_frontier_for_bulk = self._compute_search_frontier(
                     session=session,
@@ -6971,15 +6979,23 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     scope="undecided",
                     max_results=global_frontier_limit,
                 )
+            elif session.get("_peek_frontier"):
+                # PEEK frontier stashed from previous step
+                correct_frontier_for_bulk = session.get("_peek_frontier", [])
+                logger.info(
+                    f"Using stashed PEEK frontier from previous step "
+                    f"({len(correct_frontier_for_bulk)} entries)"
+                )
+            elif last_frontier_flat:
+                # Normal frontier from previous step
+                correct_frontier_for_bulk = last_frontier_flat
             else:
-                if last_frontier_flat:
-                    correct_frontier_for_bulk = last_frontier_flat
-                else:
-                    correct_frontier_for_bulk = self._compute_exploration_frontier(
-                        session,
-                        frontier_size=global_frontier_limit,
-                        max_depth_per_frontier=1,
-                    )
+                # Compute fresh DFS frontier
+                correct_frontier_for_bulk = self._compute_exploration_frontier(
+                    session,
+                    frontier_size=global_frontier_limit,
+                    max_depth_per_frontier=1,
+                )
             
             # In strict DFS modes, we must APPLY DECISIONS before computing the
             # next (final) frontier. Delegate decision semantics to the v1 helper,
@@ -6990,7 +7006,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     actions=non_search_decisions,
                     frontier_size=global_frontier_limit,
                     max_depth_per_frontier=1,
-                    include_history_summary=False,
                     _precomputed_frontier=correct_frontier_for_bulk,  # NEW: pass search/normal frontier
                 )
                 skipped_decisions = internal_result.get("skipped_decisions", []) or []
@@ -7001,23 +7016,113 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 root_node = session.get("root_node") or {}
                 editable_mode = bool(session.get("editable", False))
 
+
+
+
+
+
+
+            # PEEK STEP: if this step includes a PEEK action, return the peek frontier now.
+            # The stashed _peek_frontier will then be used for bulk decisions in the next step.
+            if peek_actions:
+                peek_frontier = session.get("_peek_frontier", [])
+                if peek_frontier:
+                    frontier = peek_frontier
+                    frontier_tree = self._build_frontier_tree_from_flat(frontier)
+                    frontier_preview = self._build_frontier_preview_lines(frontier)
+
+                    # Persist for next step
+                    session["last_frontier_flat"] = frontier
+                    session["updated_at"] = _dt.utcnow().isoformat() + "Z"
+                    with open(session_path, "w", encoding="utf-8") as f:
+                        json_module.dump(session, f, indent=2, ensure_ascii=False)
+
+                    # Build history_summary from current state if requested
+                    history_summary = None
+                    if include_history_summary:
+                        history_summary = {
+                            "open": [h for h, st in state.items() if st.get("status") == "open"],
+                            "finalized": [h for h, st in state.items() if st.get("status") == "finalized"],
+                            "closed": [h for h, st in state.items() if st.get("status") == "closed"],
+                        }
+
+                    # Return immediately - do not fall through to search/DFS logic
+                    return {
+                        "success": True,
+                        "session_id": session_id,
+                        "nexus_tag": session.get("nexus_tag"),
+                        "status": "in_progress",
+                        "exploration_mode": exploration_mode,
+                        "action_key_primary_aliases": {"EB": "reserve_branch_for_children"},
+                        "action_key": EXPLORATION_ACTION_2LETTER,
+                        "step_guidance": step_guidance,
+                        "walks": [],  # strict DFS guided: no per-ray walks
+                        "skipped_walks": [],
+                        "decisions_applied": decisions,
+                        "skipped_decisions": skipped_decisions,
+                        "scratchpad": session.get("scratchpad", ""),
+                        "history_summary": history_summary,
+                        "frontier_tree": frontier_tree,
+                        "frontier_preview": frontier_preview,
+                    }
+
+
+
+
+
+
+
+
+
+
+
+
+
             # Re-compute final frontier after decisions applied (state may have changed)
+            #
+            # Precedence for NEXT step's frontier:
+            #   1) If this step had SEARCH → re-compute search frontier
+            #   2) Else if this step had PEEK → keep peeked frontier (already stashed)
+            #   3) Else → re-compute normal DFS frontier
+            
+            # Re-compute final frontier after decisions applied (state may have changed)
+            #
+            # PEEK frontier is ONE-TIME-USE: consumed in the step where decisions are
+            # applied, then cleared. Always return normal DFS frontier for NEXT step.
+
             if search_actions:
-                # SEARCH MODE: Re-compute search frontier with updated state
+                # SEARCH in current step → return search frontier
                 frontier = self._compute_search_frontier(
                     session=session,
                     search_actions=search_actions,
-                    scope="undecided",  # Default: only undecided nodes
-                    max_results=global_frontier_limit,  # Respect same budget as normal DFS
+                    scope="undecided",
+                    max_results=global_frontier_limit,
                 )
-            else:
-                # NORMAL MODE: Re-compute strict DFS frontier with updated state
+            elif session.get("_peek_frontier"):
+                # Stashed peek from PREVIOUS step was consumed for bulk actions
+                # Clear it and return normal DFS frontier with updated state
+                del session["_peek_frontier"]
+                if "_peek_root_handle" in session:
+                    del session["_peek_root_handle"]
+                if "_peek_max_nodes" in session:
+                    del session["_peek_max_nodes"]
+
+                logger.info("Peek frontier consumed by bulk decisions - cleared and returning to DFS")
+
+                # Recompute normal DFS frontier (reflects updated state after bulk decisions)
                 frontier = self._compute_exploration_frontier(
                     session,
                     frontier_size=global_frontier_limit,
                     max_depth_per_frontier=1,
                 )
-            
+            else:
+                # Normal DFS frontier (no peek/search override)
+                frontier = self._compute_exploration_frontier(
+                    session,
+                    frontier_size=global_frontier_limit,
+                    max_depth_per_frontier=1,
+                )
+
             frontier_tree = self._build_frontier_tree_from_flat(frontier)
             frontier_preview = self._build_frontier_preview_lines(frontier)
 
@@ -7126,209 +7231,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 "scratchpad": session.get("scratchpad", ""),
                 "history_summary": history_summary,
                 "frontier_tree": frontier_tree,
-                }
-
-        # --- 2) Apply DECISIONS using existing semantics (thin wrapper) ---
-        if decisions:
-            internal_result = await self._nexus_explore_step_internal(
-                session_id=session_id,
-                actions=decisions,
-                frontier_size=0,
-                max_depth_per_frontier=1,
-                include_history_summary=False,
-            )
-            skipped_decisions = internal_result.get("skipped_decisions", []) or []
-            with open(session_path, "r", encoding="utf-8") as f:
-                session = json_module.load(f)
-            handles = session.get("handles", {}) or {}
-            state = session.get("state", {}) or {}
-            root_node = session.get("root_node") or {}
-            editable_mode = bool(session.get("editable", False))
-
-        # --- 3) Normalize and filter WALK requests ---
-        norm_walks: list[dict[str, Any]] = []
-        for w in walks:
-            origin = w.get("origin")
-            if origin not in handles:
-                raise NetworkError(f"Unknown origin handle in walks: '{origin}'")
-            max_steps = w.get("max_steps", 1)
-            try:
-                max_steps_int = int(max_steps)
-            except (TypeError, ValueError):
-                max_steps_int = 1
-            if max_steps_int <= 0:
-                max_steps_int = 1
-            norm_walks.append(
-                {
-                    "origin": origin,
-                    "max_steps": max_steps_int,
-                    "depth": handles.get(origin, {}).get("depth", 0),
-                    "skipped": False,
-                    "reason": None,
-                    "conflicting_origin": None,
-                }
-            )
-
-        def is_ancestor(ancestor: str, descendant: str) -> bool:
-            cur = handles.get(descendant, {}).get("parent")
-            seen = set()
-            while cur and cur not in seen:
-                if cur == ancestor:
-                    return True
-                seen.add(cur)
-                cur = handles.get(cur, {}).get("parent")
-            return False
-
-        norm_walks.sort(key=lambda w: w["depth"])
-        selected: list[dict[str, Any]] = []
-        for w in norm_walks:
-            if len(selected) >= max_parallel_walks:
-                w["skipped"] = True
-                w["reason"] = "max_parallel_walks_exceeded"
-                continue
-            overlap = False
-            for s in selected:
-                if is_ancestor(s["origin"], w["origin"]) or is_ancestor(w["origin"], s["origin"]):
-                    w["skipped"] = True
-                    w["reason"] = "overlap_with_shallower_origin"
-                    w["conflicting_origin"] = s["origin"]
-                    overlap = True
-                    break
-            if not overlap:
-                selected.append(w)
-
-        remaining_budget = max(global_frontier_limit, 0)
-        walk_results: list[dict[str, Any]] = []
-
-        from collections import deque
-
-        def walk_ray(origin: str, max_steps: int, max_nodes: int) -> dict[str, Any]:
-            queue = deque([(origin, 0)])
-            seen: set[str] = set()
-            nodes_out: list[dict[str, Any]] = []
-
-            while queue and len(nodes_out) < max_nodes:
-                h, steps = queue.popleft()
-                if h in seen:
-                    continue
-                seen.add(h)
-
-                meta = handles.get(h, {}) or {}
-                st = state.get(h, {"status": "unseen"})
-                child_handles = meta.get("children", []) or []
-                is_leaf = not child_handles
-
-                children_hint: list[str] = []
-                for ch in child_handles[:10]:
-                    ch_meta = handles.get(ch, {}) or {}
-                    nm = ch_meta.get("name")
-                    if nm:
-                        children_hint.append(nm)
-
-                # Note preview (token-bounded; no truncation in editable sessions)
-                note_full = meta.get("note") or ""
-                if editable_mode:
-                    note_preview = note_full
-                else:
-                    note_preview = note_full if len(note_full) <= DEFAULT_NOTE_PREVIEW else note_full[:DEFAULT_NOTE_PREVIEW]
-
-                nodes_out.append(
-                    {
-                        "handle": h,
-                        "parent_handle": meta.get("parent"),
-                        "steps_from_origin": steps,
-                        "depth_in_tree": meta.get("depth", 0),
-                        "status": st.get("status", "candidate"),
-                        "name_preview": meta.get("name", "Untitled"),
-                        "note_preview": note_preview,
-                        "child_count": len(child_handles),
-                        "children_hint": children_hint,
-                        "is_leaf": is_leaf,
-                    }
-                )
-
-                if steps < max_steps:
-                    for ch in child_handles:
-                        queue.append((ch, steps + 1))
-
-            return {
-                "origin": origin,
-                "requested_max_steps": max_steps,
-                "complete": False,
-                "nodes": nodes_out,
+                "frontier_preview": frontier_preview,
             }
-
-        for w in selected:
-            if w.get("skipped"):
-                continue
-            if remaining_budget <= 0:
-                break
-            origin = w["origin"]
-            max_steps = w["max_steps"]
-
-            ray = walk_ray(origin, max_steps, remaining_budget)
-            node_count = len(ray["nodes"])
-            remaining_budget -= node_count
-
-            frontier = []
-            for n in ray["nodes"]:
-                frontier.append(
-                    {
-                        "handle": n["handle"],
-                        "parent_handle": n["parent_handle"],
-                        "steps_from_origin": n["steps_from_origin"],
-                        "depth_in_tree": n["depth_in_tree"],
-                        "status": n["status"],
-                        "name_preview": n["name_preview"],
-                        "child_count": n["child_count"],
-                        "children_hint": n["children_hint"],
-                        "is_leaf": n["is_leaf"],
-                    }
-                )
-
-            walk_results.append(
-                {
-                    "origin": ray["origin"],
-                    "requested_max_steps": ray["requested_max_steps"],
-                    "complete": ray["complete"],
-                    "frontier_preview": self._build_frontier_preview_lines(frontier),
-                    "frontier": frontier,
-                }
-            )
-
-        session["handles"] = handles
-        session["state"] = state
-        session["updated_at"] = datetime.utcnow().isoformat() + "Z"
-        with open(session_path, "w", encoding="utf-8") as f:
-            json_module.dump(session, f, indent=2, ensure_ascii=False)
-
-        history_summary = None
-        if include_history_summary:
-            history_summary = {
-                "open": [h for h, st in state.items() if st.get("status") == "open"],
-                "finalized": [h for h, st in state.items() if st.get("status") == "finalized"],
-                "closed": [h for h, st in state.items() if st.get("status") == "closed"],
-            }
-
-        return {
-            "success": True,
-            "session_id": session_id,
-            "action_key": EXPLORATION_ACTION_2LETTER,
-            "walks": walk_results,
-            "skipped_walks": [
-                {
-                    "origin": w["origin"],
-                    "reason": w["reason"],
-                    "conflicting_origin": w.get("conflicting_origin"),
-                }
-                for w in norm_walks
-                if w.get("skipped")
-            ],
-            "decisions_applied": decisions,
-            "skipped_decisions": skipped_decisions,
-            "scratchpad": session.get("scratchpad", ""),
-            "history_summary": history_summary,
-        }
 
     async def nexus_explore_step(
         self,
@@ -7374,7 +7278,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         actions: list[dict[str, Any]] | None = None,
         frontier_size: int = 5,
         max_depth_per_frontier: int = 1,
-        include_history_summary: bool = True,
         _precomputed_frontier: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Internal v1-style exploration (used by v2 for decisions delegation).
@@ -7907,7 +7810,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             preserve_actions_allowed_outside_frontier = {"preserve_leaf_in_ether_untouched", "preserve_branch_node_in_ether_untouched__when_no_engulfed_children"} if exploration_mode == "dfs_guided_bulk" else set()
             
             # Frontier gating disabled: decisions allowed on any known handle; frontier is descriptive only.
-            if False and exploration_mode in {"dfs_guided_explicit", "dfs_guided_bulk"} and act not in ({"reopen_branch", "add_hint", "peek_descendants"} | preserve_actions_allowed_outside_frontier):
+            if False and exploration_mode in {"dfs_guided_explicit", "dfs_guided_bulk"} and act not in ({"add_hint", "peek_descendants_as_frontier", "resume_guided_frontier"} | preserve_actions_allowed_outside_frontier):
                 # Recompute current DFS frontier based on the *current* state
                 # before applying this action. Any handle in the current
                 # leaf-chunk frontier is a valid focus for decisions in this
@@ -7921,7 +7824,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 )
                 allowed_handles = {entry["handle"] for entry in current_frontier}
 
-                # Allow branch-wide corrections from anywhere via reopen_branch,
+                # Allow branch-wide corrections from anywhere via re-decisions,
                 # but require all other decisions to target a handle that is
                 # currently in the strict DFS leaf frontier.
                 if allowed_handles and handle not in allowed_handles:
@@ -7945,9 +7848,20 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             if "selection_type" not in entry:
                 entry["selection_type"] = None
 
-            if act == "peek_descendants":
-                # Read-only peek at descendants of a handle, with a configurable
-                # node cap to keep responses compact. Does not alter state.
+            if act == "peek_descendants_as_frontier":
+                # PEEK DESCENDANTS AS FRONTIER: Build a proper frontier from descendants
+                # of the specified handle, matching SEARCH frontier behavior.
+                #
+                # Behavior:
+                # - BFS from handle root up to max_nodes
+                # - Returns frontier structure (same format as SEARCH)
+                # - Stashes frontier as _peek_frontier in session
+                # - Next step uses peeked frontier (or resume_guided_frontier clears it)
+                #
+                # If SEARCH is also active in same step:
+                # - SEARCH takes priority (constrains peek to search results)
+                # - Peek operates on intersection of: descendants(handle) ∩ search_matches
+                
                 max_nodes = action.get("max_nodes") or 200
                 try:
                     max_nodes_int = int(max_nodes)
@@ -7955,43 +7869,168 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     max_nodes_int = 200
                 if max_nodes_int <= 0:
                     max_nodes_int = 200
-
-                queue: list[str] = [handle]
-                visited = 0
-                nodes_preview: list[dict[str, Any]] = []
-
-                while queue and visited < max_nodes_int:
-                    h = queue.pop(0)
-                    meta = handles.get(h, {}) or {}
-                    st = state.get(h, {"status": "unseen"})
-                    child_handles = meta.get("children", []) or []
-                    is_leaf = not child_handles
-
-                    nodes_preview.append(
-                        {
-                            "handle": h,
-                            "name": meta.get("name", "Untitled"),
-                            "depth": meta.get("depth", 0),
-                            "child_count": len(child_handles),
-                            "is_leaf": is_leaf,
-                            "status": st.get("status", "unseen"),
-                        }
+                
+                # Determine peek root: if SEARCH is active in THIS step, constrain
+                # peek to search results under this handle
+                search_actions = [a for a in actions if a.get("action") == "search_descendants_for_text"]
+                
+                if search_actions:
+                    # SEARCH + PEEK: Constrain peek to search results under handle
+                    # First compute full search frontier
+                    search_frontier_full = self._compute_search_frontier(
+                        session=session,
+                        search_actions=search_actions,
+                        scope="undecided",
+                        max_results=10000,  # High limit - get all matches first
                     )
-                    visited += 1
-
-                    for ch in child_handles:
-                        queue.append(ch)
-
-                truncated = bool(queue)
-                peek_results.append(
-                    {
-                        "root_handle": handle,
-                        "max_nodes": max_nodes_int,
-                        "nodes_returned": len(nodes_preview),
-                        "truncated": truncated,
-                        "nodes": nodes_preview,
-                    }
-                )
+                    
+                    # Filter to descendants of peek handle only
+                    def _is_descendant_of_peek_root(h: str, peek_root: str) -> bool:
+                        if h == peek_root:
+                            return True
+                        cur = handles.get(h, {}).get("parent")
+                        seen: set[str] = set()
+                        while cur and cur not in seen:
+                            if cur == peek_root:
+                                return True
+                            seen.add(cur)
+                            cur = handles.get(cur, {}).get("parent")
+                        return False
+                    
+                    constrained_frontier = [
+                        entry for entry in search_frontier_full
+                        if _is_descendant_of_peek_root(entry["handle"], handle)
+                    ]
+                    
+                    # Limit to max_nodes
+                    peek_frontier = constrained_frontier[:max_nodes_int]
+                    
+                    logger.info(
+                        f"peek_descendants_as_frontier: SEARCH+PEEK mode, "
+                        f"showing {len(peek_frontier)} descendants of '{handle}' that match search"
+                    )
+                else:
+                    # NORMAL PEEK: BFS from handle root
+                    from collections import deque
+                    
+                    queue: deque[str] = deque([handle])
+                    visited: set[str] = set()
+                    peek_handles: list[str] = []
+                    
+                    # BFS accumulation up to max_nodes
+                    while queue and len(peek_handles) < max_nodes_int:
+                        h = queue.popleft()
+                        if h in visited:
+                            continue
+                        visited.add(h)
+                        
+                        # Add this handle to peek results
+                        peek_handles.append(h)
+                        
+                        # Enqueue children for next BFS level
+                        child_handles = handles.get(h, {}).get("children", []) or []
+                        for ch in child_handles:
+                            if ch not in visited:
+                                queue.append(ch)
+                    
+                    # Build frontier entries from peek_handles
+                    # (Same structure as _compute_search_frontier returns)
+                    peek_frontier: list[dict[str, Any]] = []
+                    MAX_NOTE_PREVIEW = None if editable_mode else DEFAULT_NOTE_PREVIEW
+                    
+                    for h in peek_handles:
+                        meta = handles.get(h, {}) or {}
+                        st = state.get(h, {"status": "unseen"})
+                        child_handles = meta.get("children", []) or []
+                        is_leaf = not child_handles
+                        
+                        # Note preview (token-bounded)
+                        note_full = meta.get("note") or ""
+                        if MAX_NOTE_PREVIEW is None:
+                            note_preview = note_full
+                        else:
+                            note_preview = (
+                                note_full
+                                if len(note_full) <= MAX_NOTE_PREVIEW
+                                else note_full[:MAX_NOTE_PREVIEW]
+                            )
+                        
+                        local_hints = meta.get("hints") or []
+                        hints_from_ancestors = []  # Skip ancestor hints for peek
+                        
+                        # Guidance based on leaf vs branch
+                        if is_leaf:
+                            guidance = "PEEK - leaf: EL=engulf, PL=preserve"
+                        else:
+                            guidance = "PEEK - branch: RB=reserve, PB=preserve, EF=engulf_showing, PF=preserve_showing"
+                        
+                        entry = {
+                            "handle": h,
+                            "parent_handle": meta.get("parent"),
+                            "name_preview": meta.get("name", ""),
+                            "note_preview": note_preview,
+                            "child_count": len(child_handles),
+                            "depth": meta.get("depth", 0),
+                            "status": st.get("status", "candidate"),
+                            "is_leaf": is_leaf,
+                            "guidance": guidance,
+                        }
+                        if local_hints:
+                            entry["hints"] = local_hints
+                        if hints_from_ancestors:
+                            entry["hints_from_ancestors"] = hints_from_ancestors
+                        
+                        peek_frontier.append(entry)
+                    
+                    logger.info(
+                        f"peek_descendants_as_frontier: BFS from '{handle}', "
+                        f"showing {len(peek_frontier)} descendants (max_nodes={max_nodes_int})"
+                    )
+                
+                # STASH peek frontier in session for next step
+                # (Matches SEARCH behavior - frontier persists until consumed or cleared)
+                session["_peek_frontier"] = peek_frontier
+                session["_peek_root_handle"] = handle
+                session["_peek_max_nodes"] = max_nodes_int
+                
+                # Also attach as peek_results for THIS step's response
+                # (So agent sees what was peeked immediately)
+                peek_results.append({
+                    "root_handle": handle,
+                    "max_nodes": max_nodes_int,
+                    "nodes_returned": len(peek_frontier),
+                    "truncated": len(visited) >= max_nodes_int if not search_actions else False,
+                    "frontier": peek_frontier,
+                    "note": "Frontier stashed - will be used in next step unless overridden by search or resume_guided_frontier"
+                })
+                
+                continue
+            
+            if act == "resume_guided_frontier":
+                # RESUME GUIDED FRONTIER: Clear any stashed SEARCH/PEEK frontiers
+                # and return to normal DFS leaf-chunk frontier.
+                #
+                # This is a no-op action (no handle required) that explicitly
+                # requests "give me next normal DFS batch".
+                #
+                # Use cases:
+                # - After SEARCH: reviewed matches, want to resume normal DFS
+                # - After PEEK: inspected subtree, want to continue main exploration
+                # - Explicit continue (clearer than empty decisions array)
+                
+                # Clear stashed frontiers (if any)
+                if "_search_frontier" in session:
+                    del session["_search_frontier"]
+                    logger.info("resume_guided_frontier: cleared stashed SEARCH frontier")
+                
+                if "_peek_frontier" in session:
+                    del session["_peek_frontier"]
+                    del session["_peek_root_handle"]
+                    del session["_peek_max_nodes"]
+                    logger.info("resume_guided_frontier: cleared stashed PEEK frontier")
+                
+                # No other state changes - this just clears the frontier override
+                # Next _compute_exploration_frontier call will return normal DFS
                 continue
 
             if act == "add_hint":
@@ -8007,25 +8046,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 handles[handle] = meta
                 continue
 
-            if act == "open":
-                entry["status"] = "open"
-            elif act == "close":
-                entry["status"] = "closed"
-                entry["selection_type"] = None
-                entry["max_depth"] = None
-            elif act == "finalize":
-                # Backwards-compatible: plain finalize means subtree selection
-                entry["status"] = "finalized"
-                entry["max_depth"] = max_depth
-                if entry.get("selection_type") is None:
-                    entry["selection_type"] = "subtree"
-            elif act == "reopen":
-                entry["status"] = "open"
-                entry["selection_type"] = None
-                entry["max_depth"] = None
-
             # Leaf-first enhancements
-            elif act == "engulf_leaf_into_gem_for_editing":
+            if act == "engulf_leaf_into_gem_for_editing":
                 entry["status"] = "finalized"
                 entry["selection_type"] = "leaf"
                 entry["max_depth"] = max_depth
@@ -8138,7 +8160,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         base_msg += (
                             f"\n\nNext DFS node is '{next_handle}' ({next_name!r}). "
                             "Make a leaf-level decision there with 'engulf_leaf_into_gem_for_editing' / 'preserve_leaf_in_ether_untouched', "
-                            "or close/reopen branches as needed."
+                            ""
                         )
                     raise NetworkError(base_msg)
 
@@ -8287,7 +8309,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         base_msg += (
                             f"\n\nNext DFS node is '{next_handle}' ({next_name!r}). "
                             "Make a leaf-level decision there with 'engulf_leaf_into_gem_for_editing' / 'preserve_leaf_in_ether_untouched', "
-                            "or close/reopen branches as needed."
+                            ""
                         )
                     raise NetworkError(base_msg)
 
@@ -8296,7 +8318,7 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     raise NetworkError(
                         f"Cannot preserve_branch_node_in_ether_untouched__when_no_engulfed_children on branch '{handle}' because one or more leaves "
                         "under this branch have already been engulfed in the GEMSTORM. "
-                        "Revisit those leaves with 'preserve_leaf_in_ether_untouched' or use 'reopen_branch' first."
+                        "Revisit those leaves with 'preserve_leaf_in_ether_untouched' (nodes can be re-decided at any time)."
                     )
 
                 # All descendants undecided, or all decided with no accepted leaves:
@@ -8309,37 +8331,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # After any successful subtree reject, attempt ancestor auto-completion
                 # so that fully rejected regions auto-backtrack in all modes.
                 _auto_complete_ancestors_from_decision(handle)
-            elif act == "backtrack":
-                # In this v2 implementation, backtrack behaves like a careful
-                # branch-level close. If the branch is already decided, we
-                # require explicit reopen_branch instead of silently changing
-                # history.
-                if entry.get("status") in {"finalized", "closed"}:
-                    raise NetworkError(
-                        f"Handle '{handle}' has already been decided. Use 'reopen_branch' "
-                        "to re-open this branch for exploration."
-                    )
-                entry["status"] = "closed"
-                entry["selection_type"] = None
-                entry["max_depth"] = None
-            elif act == "reopen_branch":
-                # Re-open this handle and all descendants for re-exploration.
-                # The branch root becomes open; descendants become candidates.
-                queue = [handle]
-                while queue:
-                    h = queue.pop(0)
-                    st = state.get(h, {"status": "unseen", "max_depth": None, "selection_type": None})
-                    if h == handle:
-                        st["status"] = "open"
-                    else:
-                        st["status"] = "candidate"
-                    st["max_depth"] = None
-                    st["selection_type"] = None
-                    state[h] = st
-
-                    child_handles = handles.get(h, {}).get("children", []) or []
-                    for ch in child_handles:
-                        queue.append(ch)
             elif act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm"}:
                 if not editable_mode:
                     raise NetworkError(
@@ -8447,16 +8438,8 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             else:
                 raise NetworkError(f"Unsupported exploration action: '{act}'")
 
-        # Recompute frontier
         session["handles"] = handles
         session["state"] = state
-        frontier = self._compute_exploration_frontier(
-            session,
-            frontier_size=frontier_size,
-            max_depth_per_frontier=max_depth_per_frontier,
-        )
-
-        # Update session state and persist
         session["steps"] = int(session.get("steps", 0)) + 1
         session["updated_at"] = datetime.utcnow().isoformat() + "Z"
 
@@ -8466,16 +8449,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         except Exception as e:
             logger.error(f"Failed to persist exploration session '{session_id}' after step: {e}")
             raise NetworkError(f"Failed to persist exploration session: {e}") from e
-
-        history_summary = None
-        if include_history_summary:
-            history_summary = {
-                "open": [h for h, st in state.items() if st.get("status") == "open"],
-                "finalized": [h for h, st in state.items() if st.get("status") == "finalized"],
-                "closed": [h for h, st in state.items() if st.get("status") == "closed"],
-                "steps": session["steps"],
-            }
-
 
         # Build mode-aware step guidance
         if exploration_mode == "dfs_guided_explicit":
@@ -8552,12 +8525,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             },
             "action_key": EXPLORATION_ACTION_2LETTER,
             "step_guidance": step_guidance,
-            "frontier_tree": self._build_frontier_tree_from_flat(frontier),
             "scratchpad": session.get("scratchpad", ""),
         }
 
-        if history_summary is not None:
-            result["history_summary"] = history_summary
         if peek_results:
             result["peek_results"] = peek_results
         if skipped_decisions:
