@@ -145,6 +145,28 @@ def log_jewel(message: str) -> None:
         pass
 
 
+def _normalize_node_key_order(node: JsonDict) -> JsonDict:
+    """Ensure id / preview_id / jewel_id appear first in each node for readability."""
+    front_keys = ["id", "preview_id", "jewel_id"]
+    ordered: JsonDict = {}
+    for k in front_keys:
+        if k in node:
+            ordered[k] = node[k]
+    for k, v in node.items():
+        if k not in ordered:
+            ordered[k] = v
+    children = ordered.get("children")
+    if isinstance(children, list):
+        new_children: List[JsonDict] = []
+        for ch in children:
+            if isinstance(ch, dict):
+                new_children.append(_normalize_node_key_order(ch))
+            else:
+                new_children.append(ch)
+        ordered["children"] = new_children
+    return ordered
+
+
 def transform_jewel(
     jewel_file: str,
     operations: List[Dict[str, Any]],
@@ -1095,6 +1117,15 @@ def transform_jewel(
             wrapper = {"nodes": roots}
             recalc_all_counts_gem(wrapper)
 
+            # Normalize key order for all nodes before writing
+            normalized_roots = []
+            for r in roots:
+                if isinstance(r, dict):
+                    normalized_roots.append(_normalize_node_key_order(r))
+                else:
+                    normalized_roots.append(r)
+            roots = normalized_roots
+
             # Rebuild data dict but preserve any existing top-level fields
             # (e.g., exploration_scratchpad, future metadata) while updating
             # core NEXUS fields and injecting a fresh preview tree.
@@ -1111,7 +1142,14 @@ def transform_jewel(
             })
             data = new_data
         elif isinstance(data, list):
-            data = roots  # type: ignore[assignment]
+            # For bare list JEWELs, normalize key order as well
+            normalized_roots = []
+            for r in roots:
+                if isinstance(r, dict):
+                    normalized_roots.append(_normalize_node_key_order(r))
+                else:
+                    normalized_roots.append(r)
+            data = normalized_roots  # type: ignore[assignment]
             wrapper = {"nodes": roots}
             recalc_all_counts_gem(wrapper)
 

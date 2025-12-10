@@ -2186,8 +2186,31 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 if isinstance(child, dict):
                     _strip_original_fields(child)
 
-        for n in coarse_nodes:
-            _strip_original_fields(n)
+        def _normalize_node_key_order_local(node: dict[str, Any]) -> dict[str, Any]:
+            """Ensure id / preview_id / jewel_id appear first for readability."""
+            front_keys = ["id", "preview_id", "jewel_id"]
+            ordered: dict[str, Any] = {}
+            for k in front_keys:
+                if k in node:
+                    ordered[k] = node[k]
+            for k, v in node.items():
+                if k not in ordered:
+                    ordered[k] = v
+            children = ordered.get("children")
+            if isinstance(children, list):
+                new_children: list[Any] = []
+                for ch in children:
+                    if isinstance(ch, dict):
+                        new_children.append(_normalize_node_key_order_local(ch))
+                    else:
+                        new_children.append(ch)
+                ordered["children"] = new_children
+            return ordered
+
+        for idx, n in enumerate(coarse_nodes):
+            if isinstance(n, dict):
+                _strip_original_fields(n)
+                coarse_nodes[idx] = _normalize_node_key_order_local(n)
 
         # Initialize NEXUS run dir
         base_dir = Path(

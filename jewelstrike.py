@@ -409,6 +409,30 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
     nodes = gem_data.get("nodes", [])
     for node in nodes:
         add_jewel_ids_recursive(node, counter)
+
+    # Normalize key order so id / preview_id / jewel_id appear at the top of each node
+    def _normalize_node_key_order(node: dict) -> dict:
+        front_keys = ["id", "preview_id", "jewel_id"]
+        ordered: dict = {}
+        for k in front_keys:
+            if k in node:
+                ordered[k] = node[k]
+        for k, v in node.items():
+            if k not in ordered:
+                ordered[k] = v
+        children = ordered.get("children")
+        if isinstance(children, list):
+            new_children = []
+            for ch in children:
+                if isinstance(ch, dict):
+                    new_children.append(_normalize_node_key_order(ch))
+                else:
+                    new_children.append(ch)
+            ordered["children"] = new_children
+        return ordered
+
+    if isinstance(nodes, list):
+        gem_data["nodes"] = [_normalize_node_key_order(n) for n in nodes if isinstance(n, dict)]
     
     # Build JEWEL preview (ephemeral, for agents/humans; never read by algorithms)
     try:
