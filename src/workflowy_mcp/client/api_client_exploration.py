@@ -603,7 +603,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         if scope == "undecided":
             undecided = {h for h, st in state.items() if st.get("status") in {"unseen", "candidate", "open"}}
             
-            def has_undecided_desc(branch: str) -> bool:
+            def has_any_undecided_desc(branch: str) -> bool:
+                """Check if branch has ANY undecided descendants (not just search matches)."""
                 children = (handles.get(branch, {}) or {}).get("children") or []
                 stack = list(children)
                 seen = set()
@@ -612,7 +613,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     if ch in seen:
                         continue
                     seen.add(ch)
-                    if ch in candidates and ch in undecided:
+                    # Check if THIS descendant is undecided (not whether it matches search)
+                    if ch in undecided:
                         return True
                     stack.extend((handles.get(ch, {}) or {}).get("children") or [])
                 return False
@@ -621,10 +623,12 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             for h in candidates:
                 is_leaf = not (handles.get(h, {}) or {}).get("children")
                 if is_leaf:
+                    # Leaf: include if undecided
                     if h in undecided:
                         filtered.add(h)
                 else:
-                    if has_undecided_desc(h):
+                    # Branch: include if it has ANY undecided descendants OR is itself undecided
+                    if h in undecided or has_any_undecided_desc(h):
                         filtered.add(h)
             candidates = filtered
 
