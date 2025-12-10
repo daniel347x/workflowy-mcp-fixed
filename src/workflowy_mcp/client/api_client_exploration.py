@@ -1238,11 +1238,14 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     scope="undecided", max_results=global_frontier_limit
                 )
             elif session.get("_peek_frontier"):
-                del session["_peek_frontier"]
-                if "_peek_root_handle" in session:
-                    del session["_peek_root_handle"]
-                if "_peek_max_nodes" in session:
-                    del session["_peek_max_nodes"]
+                for key in (
+                    "_peek_frontier",
+                    "_peek_root_handle",
+                    "_peek_root_handles",
+                    "_peek_max_nodes",
+                    "_peek_max_nodes_by_root",
+                ):
+                    session.pop(key, None)
                 logger.info("Peek consumed - returning to DFS")
                 frontier = self._compute_exploration_frontier(
                     session, frontier_size=global_frontier_limit, max_depth_per_frontier=1
@@ -1528,9 +1531,14 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
             # Handle-optional global actions (process before handle validation)
             if act == "abandon_lightning_strike":
-                session.pop("_peek_frontier", None)
-                session.pop("_peek_root_handle", None)
-                session.pop("_peek_max_nodes", None)
+                for key in (
+                    "_peek_frontier",
+                    "_peek_root_handle",
+                    "_peek_root_handles",
+                    "_peek_max_nodes",
+                    "_peek_max_nodes_by_root",
+                ):
+                    session.pop(key, None)
                 logger.info("abandon_lightning_strike: cleared lightning peek state")
                 continue
 
@@ -1538,9 +1546,14 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 if "_search_frontier" in session:
                     del session["_search_frontier"]
                 if "_peek_frontier" in session:
-                    del session["_peek_frontier"]
-                    del session["_peek_root_handle"]
-                    del session["_peek_max_nodes"]
+                    for key in (
+                        "_peek_frontier",
+                        "_peek_root_handle",
+                        "_peek_root_handles",
+                        "_peek_max_nodes",
+                        "_peek_max_nodes_by_root",
+                    ):
+                        session.pop(key, None)
                     logger.info("resume: cleared peek")
                 continue
 
@@ -1629,6 +1642,17 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     max_nodes = 200
                 if max_nodes <= 0:
                     max_nodes = 200
+
+                # If this is the first peek in this step, clear any previous multi-peek state
+                if not peek_results:
+                    for key in (
+                        "_peek_frontier",
+                        "_peek_root_handle",
+                        "_peek_root_handles",
+                        "_peek_max_nodes",
+                        "_peek_max_nodes_by_root",
+                    ):
+                        session.pop(key, None)
                 
                 queue = deque([handle])
                 visited = set()
@@ -1673,10 +1697,29 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "is_leaf": is_leaf,
                         "guidance": guidance,
                     })
-                
-                session["_peek_frontier"] = peek_frontier
-                session["_peek_root_handle"] = handle
-                session["_peek_max_nodes"] = max_nodes
+
+                # Merge this root's frontier into aggregated multi-peek frontier
+                existing_frontier = session.get("_peek_frontier") or []
+                combined_by_handle: dict[str, dict[str, Any]] = {}
+                for e in existing_frontier:
+                    h_existing = e.get("handle")
+                    if h_existing:
+                        combined_by_handle[h_existing] = e
+                for e in peek_frontier:
+                    h_new = e.get("handle")
+                    if h_new:
+                        combined_by_handle[h_new] = e
+                session["_peek_frontier"] = list(combined_by_handle.values())
+
+                # Track root handles + per-root max_nodes
+                root_handles = set(session.get("_peek_root_handles") or [])
+                root_handles.add(handle)
+                session["_peek_root_handles"] = sorted(root_handles)
+
+                max_map = session.get("_peek_max_nodes_by_root") or {}
+                max_map[handle] = max_nodes
+                session["_peek_max_nodes_by_root"] = max_map
+
                 peek_results.append({
                     "root_handle": handle,
                     "max_nodes": max_nodes,
@@ -1707,8 +1750,15 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "mark_section_as_permanent",
             }:
                 peek_frontier = session.get("_peek_frontier")
-                peek_root = session.get("_peek_root_handle")
-                if not peek_frontier or peek_root != handle:
+                if not peek_frontier:
+                    raise NetworkError(f"{act} requires active lightning strike rooted at handle '{handle}'")
+
+                peek_roots = session.get("_peek_root_handles")
+                if peek_roots is None:
+                    # Backward-compat: fall back to single-root state if present
+                    single_root = session.get("_peek_root_handle")
+                    peek_roots = [single_root] if single_root else []
+                if handle not in (peek_roots or []):
                     raise NetworkError(f"{act} requires active lightning strike rooted at handle '{handle}'")
 
                 peek_handles = {e.get("handle") for e in peek_frontier}
@@ -1785,9 +1835,39 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     line = f"[SKELETON] merge target = {handle}"
                     session["scratchpad"] = (scratch + "\n" + line) if scratch else line
 
-                # End lightning strike for this section
-                for key in ("_peek_frontier", "_peek_root_handle", "_peek_max_nodes"):
-                    session.pop(key, None)
+                # End lightning strike for THIS section only (support multiple active lightning roots)
+                current_frontier = session.get("_peek_frontier") or []
+                remaining_frontier = [
+                    e for e in current_frontier
+                    if e.get("handle") != handle
+                    and not str(e.get("handle", "")).startswith(handle + ".")
+                ]
+                if remaining_frontier:
+                    session["_peek_frontier"] = remaining_frontier
+                else:
+                    session.pop("_peek_frontier", None)
+
+                root_handles = session.get("_peek_root_handles") or []
+                if handle in root_handles:
+                    new_roots = [h for h in root_handles if h != handle]
+                    if new_roots:
+                        session["_peek_root_handles"] = new_roots
+                    else:
+                        session.pop("_peek_root_handles", None)
+
+                max_map = session.get("_peek_max_nodes_by_root") or {}
+                if handle in max_map:
+                    max_map.pop(handle, None)
+                    if max_map:
+                        session["_peek_max_nodes_by_root"] = max_map
+                    else:
+                        session.pop("_peek_max_nodes_by_root", None)
+
+                # Legacy cleanup if no peek frontier remains
+                if "_peek_frontier" not in session:
+                    for key in ("_peek_root_handle", "_peek_max_nodes"):
+                        session.pop(key, None)
+
                 continue
 
             # LEAF actions
