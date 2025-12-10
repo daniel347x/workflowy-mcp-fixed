@@ -1111,7 +1111,11 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         decision["action"] = EXPLORATION_ACTION_2LETTER[act]
             
             # Separate actions
-            peek_actions = [d for d in (decisions or []) if d.get("action") == "peek_descendants_as_frontier"]
+            # PEEK actions include both explicit peek and lightning flash (both use _peek_frontier)
+            peek_actions = [
+                d for d in (decisions or [])
+                if d.get("action") in {"peek_descendants_as_frontier", "lightning_flash_into_section"}
+            ]
             search_actions = [d for d in (decisions or []) if d.get("action") == "search_descendants_for_text"]
             resume_actions = [d for d in (decisions or []) if d.get("action") == "resume_guided_frontier"]
             other_decisions = [
