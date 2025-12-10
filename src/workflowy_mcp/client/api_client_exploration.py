@@ -1240,9 +1240,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             elif session.get("_peek_frontier"):
                 for key in (
                     "_peek_frontier",
-                    "_peek_root_handle",
                     "_peek_root_handles",
-                    "_peek_max_nodes",
                     "_peek_max_nodes_by_root",
                 ):
                     session.pop(key, None)
@@ -1533,9 +1531,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             if act == "abandon_lightning_strike":
                 for key in (
                     "_peek_frontier",
-                    "_peek_root_handle",
                     "_peek_root_handles",
-                    "_peek_max_nodes",
                     "_peek_max_nodes_by_root",
                 ):
                     session.pop(key, None)
@@ -1548,9 +1544,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 if "_peek_frontier" in session:
                     for key in (
                         "_peek_frontier",
-                        "_peek_root_handle",
                         "_peek_root_handles",
-                        "_peek_max_nodes",
                         "_peek_max_nodes_by_root",
                     ):
                         session.pop(key, None)
@@ -1647,9 +1641,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 if not peek_results:
                     for key in (
                         "_peek_frontier",
-                        "_peek_root_handle",
                         "_peek_root_handles",
-                        "_peek_max_nodes",
                         "_peek_max_nodes_by_root",
                     ):
                         session.pop(key, None)
@@ -1753,12 +1745,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 if not peek_frontier:
                     raise NetworkError(f"{act} requires active lightning strike rooted at handle '{handle}'")
 
-                peek_roots = session.get("_peek_root_handles")
-                if peek_roots is None:
-                    # Backward-compat: fall back to single-root state if present
-                    single_root = session.get("_peek_root_handle")
-                    peek_roots = [single_root] if single_root else []
-                if handle not in (peek_roots or []):
+                peek_roots = session.get("_peek_root_handles") or []
+                if handle not in peek_roots:
                     raise NetworkError(f"{act} requires active lightning strike rooted at handle '{handle}'")
 
                 peek_handles = {e.get("handle") for e in peek_frontier}
@@ -1862,11 +1850,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         session["_peek_max_nodes_by_root"] = max_map
                     else:
                         session.pop("_peek_max_nodes_by_root", None)
-
-                # Legacy cleanup if no peek frontier remains
-                if "_peek_frontier" not in session:
-                    for key in ("_peek_root_handle", "_peek_max_nodes"):
-                        session.pop(key, None)
 
                 continue
 
