@@ -1496,6 +1496,24 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         session["scratchpad"] = (existing + "\n" + content) if existing else content
                     continue
 
+            # Handle-optional global actions (process before handle validation)
+            if act == "abandon_lightning_strike":
+                session.pop("_peek_frontier", None)
+                session.pop("_peek_root_handle", None)
+                session.pop("_peek_max_nodes", None)
+                logger.info("abandon_lightning_strike: cleared lightning peek state")
+                continue
+
+            if act == "resume_guided_frontier":
+                if "_search_frontier" in session:
+                    del session["_search_frontier"]
+                if "_peek_frontier" in session:
+                    del session["_peek_frontier"]
+                    del session["_peek_root_handle"]
+                    del session["_peek_max_nodes"]
+                    logger.info("resume: cleared peek")
+                continue
+
             handle = action.get("handle")
             max_depth = action.get("max_depth")
 
@@ -1629,17 +1647,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "frontier": peek_frontier,
                 })
                 continue
-            
-            # RESUME action
-            if act == "resume_guided_frontier":
-                if "_search_frontier" in session:
-                    del session["_search_frontier"]
-                if "_peek_frontier" in session:
-                    del session["_peek_frontier"]
-                    del session["_peek_root_handle"]
-                    del session["_peek_max_nodes"]
-                    logger.info("resume: cleared peek")
-                continue
 
             # ADD_HINT action
             if act == "add_hint":
@@ -1653,14 +1660,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 existing.append(hint)
                 meta["hints"] = existing
                 handles[handle] = meta
-                continue
-
-            # ABANDON LIGHTNING STRIKE (ALS) – clear peek-only state
-            if act == "abandon_lightning_strike":
-                session.pop("_peek_frontier", None)
-                session.pop("_peek_root_handle", None)
-                session.pop("_peek_max_nodes", None)
-                logger.info("abandon_lightning_strike: cleared lightning peek state")
                 continue
 
             # SKELETON WALK: section-level delete/merge operations over lightning strike
