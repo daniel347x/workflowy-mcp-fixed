@@ -547,10 +547,11 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 parent = handles.get(parent, {}).get("parent")
             return hints
 
-        candidates = set(handles.keys())
-        candidates.discard("R")
+        all_handles = set(handles.keys())
+        all_handles.discard("R")
+        matches_union: set[str] = set()
 
-        # AND logic across searches
+        # OR logic across searches (each search_action contributes matches to the union)
         for search_action in search_actions:
             handle_filter = search_action.get("handle", "R")
             search_text = search_action.get("search_text", "")
@@ -561,17 +562,18 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             if not search_text:
                 continue
 
-            # Filter to descendants
+            # Base candidate set for THIS search action
             if handle_filter != "R":
-                filtered = set()
-                for h in candidates:
-                    if h == handle_filter or h.startswith(handle_filter + "."):
-                        filtered.add(h)
-                candidates = filtered
+                base = {
+                    h for h in all_handles
+                    if h == handle_filter or h.startswith(handle_filter + ".")
+                }
+            else:
+                base = set(all_handles)
 
-            # Match
-            matching = set()
-            for h in candidates:
+            # Match within this base
+            matching_for_action = set()
+            for h in base:
                 meta = handles.get(h, {}) or {}
                 name = meta.get("name", "")
                 note = meta.get("note", "")
@@ -581,23 +583,25 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     try:
                         flags = 0 if case_sensitive else re.IGNORECASE
                         if re.search(search_text, searchable, flags):
-                            matching.add(h)
+                            matching_for_action.add(h)
                     except re.error:
                         pass
                 elif whole_word:
                     pattern = r"\b" + re.escape(search_text) + r"\b"
                     flags = 0 if case_sensitive else re.IGNORECASE
                     if re.search(pattern, searchable, flags):
-                        matching.add(h)
+                        matching_for_action.add(h)
                 else:
                     if case_sensitive:
                         if search_text in searchable:
-                            matching.add(h)
+                            matching_for_action.add(h)
                     else:
                         if search_text.lower() in searchable.lower():
-                            matching.add(h)
+                            matching_for_action.add(h)
 
-            candidates &= matching
+            matches_union |= matching_for_action
+
+        candidates = matches_union
 
         # Scope filter (undecided only)
         if scope == "undecided":
