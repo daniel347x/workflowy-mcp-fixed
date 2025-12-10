@@ -342,9 +342,18 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     has_showing = any(leaf_h.startswith(h + ".") for leaf_h in selected)
                     
                     if exploration_mode == "dfs_guided_bulk" and has_showing:
-                        guidance = "branch: RB=reserve, PB=preserve, UB|UN=update, AB=auto, EF=engulf_showing, PF=preserve_showing"
+                        guidance = (
+                            "branch: RB=reserve (IN GEM shell; editable summary), "
+                            "PB=preserve (ETHER only; NOT in GEM), "
+                            "UB|UN=update (IN GEM), AB=auto, "
+                            "EF=engulf_showing (IN GEM), PF=preserve_showing (ETHER only; NOT in GEM)"
+                        )
                     else:
-                        guidance = "branch: RB=reserve, PB=preserve, UB|UN=update, AB=auto"
+                        guidance = (
+                            "branch: RB=reserve (IN GEM shell; editable summary), "
+                            "PB=preserve (ETHER only; NOT in GEM), "
+                            "UB|UN=update (IN GEM), AB=auto"
+                        )
 
                     entry = {
                         "handle": h,
@@ -389,7 +398,10 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "depth": meta.get("depth", 0),
                     "status": st.get("status", "candidate"),
                     "is_leaf": True,
-                    "guidance": "leaf: EL=engulf, PL=preserve",
+                    "guidance": (
+                        "leaf: EL=engulf (IN GEM; editable, may be deleted in ETHER), "
+                        "PL=preserve (ETHER only; NOT in GEM)"
+                    ),
                 }
                 if local_hints:
                     entry["hints"] = local_hints
@@ -448,7 +460,12 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     grandchildren = child_meta.get("children", []) or []
 
                     is_leaf = not grandchildren
-                    guidance = "leaf: EL=engulf, PL=preserve" if is_leaf else "branch: OP=open, RB=reserve"
+                    guidance = (
+                        "leaf: EL=engulf (IN GEM; editable, may be deleted in ETHER), "
+                        "PL=preserve (ETHER only; NOT in GEM)"
+                    ) if is_leaf else (
+                        "branch: OP=open, RB=reserve (IN GEM shell; editable summary)"
+                    )
 
                     note_full = child_meta.get("note") or ""
                     note_preview = note_full if MAX_NOTE_PREVIEW is None else (
@@ -707,7 +724,17 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             hints_from_ancestors = _collect_hints(h)
 
             if h in matches:
-                guidance = "MATCH - leaf: EL=engulf, PL=preserve" if is_leaf else "MATCH - branch: RB=reserve, PB=preserve, EF=engulf_showing, PF=preserve_showing"
+                if is_leaf:
+                    guidance = (
+                        "MATCH - leaf: EL=engulf (IN GEM; editable, may be deleted in ETHER), "
+                        "PL=preserve (ETHER only; NOT in GEM)"
+                    )
+                else:
+                    guidance = (
+                        "MATCH - branch: RB=reserve (IN GEM shell; editable summary), "
+                        "PB=preserve (ETHER only; NOT in GEM), "
+                        "EF=engulf_showing (IN GEM), PF=preserve_showing (ETHER only; NOT in GEM)"
+                    )
             else:
                 guidance = "ancestor (navigational context)"
 
@@ -1796,7 +1823,12 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         note_preview = note_full if MAX_NOTE is None else (
                             note_full if len(note_full) <= MAX_NOTE else note_full[:MAX_NOTE]
                         )
-                        guidance = "PEEK - leaf: EL, PL" if is_leaf else "PEEK - branch: RB, PB, EF, PF"
+                        guidance = (
+                        "PEEK - leaf: EL (IN GEM; editable, may be deleted in ETHER), "
+                        "PL (ETHER only; NOT in GEM)"
+                    ) if is_leaf else (
+                        "PEEK - branch: RB (IN GEM shell), PB (ETHER only), EF (IN GEM), PF (ETHER only)"
+                    )
                         entry = {
                             "handle": h,
                             "parent_handle": meta.get("parent"),
@@ -1821,7 +1853,12 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         note_preview = note_full if MAX_NOTE is None else (
                             note_full if len(note_full) <= MAX_NOTE else note_full[:MAX_NOTE]
                         )
-                        guidance = "PEEK - leaf: EL, PL" if is_leaf else "PEEK - branch: RB, PB, EF, PF"
+                        guidance = (
+                        "PEEK - leaf: EL (IN GEM; editable, may be deleted in ETHER), "
+                        "PL (ETHER only; NOT in GEM)"
+                    ) if is_leaf else (
+                        "PEEK - branch: RB (IN GEM shell), PB (ETHER only), EF (IN GEM), PF (ETHER only)"
+                    )
                         entry = {
                             "handle": h,
                             "parent_handle": meta.get("parent"),
