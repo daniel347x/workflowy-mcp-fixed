@@ -1639,6 +1639,14 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     for ch in handles.get(h, {}).get("children", []) or []:
                         if ch not in visited:
                             queue.append(ch)
+
+                # Hard constraint: only keep the requested section handle and its descendants
+                root_handle = handle
+                constrained_peek_handles: list[str] = []
+                for h in peek_handles:
+                    if h == root_handle or h.startswith(root_handle + "."):
+                        constrained_peek_handles.append(h)
+                peek_handles = constrained_peek_handles
                 
                 peek_frontier = []
                 MAX_NOTE = None if editable_mode else 1024
