@@ -6343,12 +6343,25 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 
                 frontier.append(entry)
 
-            # SORT frontier lexicographically by handle for consistent ordering
+            # SORT frontier by handle using natural/numeric ordering
+            # Natural sort: B.2 < B.10 (numeric), not B.10 < B.2 (string)
             # This ensures:
-            # - A, A.1, A.2, A.3 (not A, A.3, A.1, A.2)
-            # - B.2, B.2.1, B.2.2 (not B.2.1, B.2, B.2.2)
-            # - Preview tree matches frontier_tree structure
-            frontier.sort(key=lambda e: e.get("handle", ""))
+            # - A, A.1, A.2, ..., A.10, A.11 (not A.1, A.10, A.11, A.2)
+            # - B, B.2, B.3, ..., B.10, B.11 (not B, B.10, B.11, B.2)
+            # - B.2, B.2.1, B.2.2, ..., B.2.10 (children grouped under parent)
+            def natural_sort_key(entry):
+                handle = entry.get("handle", "")
+                parts = handle.split(".")
+                # Convert numeric parts to int for natural ordering
+                result = []
+                for part in parts:
+                    if part.isdigit():
+                        result.append((0, int(part)))  # Numeric sort
+                    else:
+                        result.append((1, part))  # Alphabetic sort
+                return result
+            
+            frontier.sort(key=natural_sort_key)
 
             # SECONDARY SEARCH: Apply persistent search filter (explicit mode only)
             if search_filter is not None and exploration_mode == "dfs_guided_explicit":
