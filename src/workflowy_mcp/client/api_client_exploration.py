@@ -2176,21 +2176,18 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
         gem_nodes = pruned_root.get("children", [])
 
-        # Project to original view
+        # Project to final GEM view: keep edited names/notes, just strip original_* stashes
         coarse_nodes = copy.deepcopy(gem_nodes)
 
-        def _project_original(node: dict) -> None:
-            if "original_name" in node:
-                node["name"] = node.get("original_name")
-            if "original_note" in node:
-                node["note"] = node.get("original_note")
+        def _strip_original_fields(node: dict) -> None:
             node.pop("original_name", None)
             node.pop("original_note", None)
             for child in node.get("children") or []:
-                _project_original(child)
+                if isinstance(child, dict):
+                    _strip_original_fields(child)
 
         for n in coarse_nodes:
-            _project_original(n)
+            _strip_original_fields(n)
 
         # Initialize NEXUS run dir
         base_dir = Path(
