@@ -6960,9 +6960,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 }
             ]
 
-            # All decisions except SEARCH (which v2 handles specially) and PEEK (handled via _peek_frontier)
-            # go to the internal engine, including resume_guided_frontier.
-            non_search_decisions = (resume_actions or []) + (other_decisions or [])
+            # All actions except SEARCH (which v2 handles) go to the internal engine:
+            # - PEEK: to build _peek_frontier and stash it
+            # - RESUME: to clear special frontiers and bump steps
+            # - Other GEMSTORM decisions: engulf/preserve/branch shells, etc.
+            non_search_decisions = (peek_actions or []) + (resume_actions or []) + (other_decisions or [])
 
             # PRE-COMPUTE the correct frontier for this step (search/peek/normal DFS)
             # This frontier will be passed to _nexus_explore_step_internal() so bulk actions
