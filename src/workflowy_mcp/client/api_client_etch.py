@@ -68,6 +68,50 @@ class WorkFlowyClientEtch(WorkFlowyClientCore):
         """Log message to a tag-specific debug file (best-effort)."""
         _log_to_file_helper(message, log_type)
 
+    async def export_nodes(
+        self,
+        node_id: str | None = None,
+        max_retries: int = 10,
+        use_cache: bool = True,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        """Export all nodes or filter to specific node's subtree.
+        
+        Delegates to module-level export_nodes_impl to avoid circular imports.
+        """
+        return await export_nodes_impl(
+            self,
+            node_id=node_id,
+            max_retries=max_retries,
+            use_cache=use_cache,
+            force_refresh=force_refresh,
+        )
+
+    async def bulk_export_to_file(
+        self,
+        node_id: str,
+        output_file: str,
+        include_metadata: bool = True,
+        use_efficient_traversal: bool = False,
+        max_depth: int | None = None,
+        child_count_limit: int | None = None,
+        max_nodes: int | None = None,
+    ) -> dict[str, Any]:
+        """Export node tree to hierarchical JSON + Markdown.
+        
+        Delegates to module-level bulk_export_to_file_impl.
+        """
+        return await bulk_export_to_file_impl(
+            self,
+            node_id=node_id,
+            output_file=output_file,
+            include_metadata=include_metadata,
+            use_efficient_traversal=use_efficient_traversal,
+            max_depth=max_depth,
+            child_count_limit=child_count_limit,
+            max_nodes=max_nodes,
+        )
+
     @staticmethod
     def _infer_preview_prefix_from_path(path: str) -> str | None:
         """Infer preview_id prefix from a known NEXUS JSON filename."""
