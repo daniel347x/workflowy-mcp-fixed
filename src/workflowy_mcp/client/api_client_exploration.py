@@ -1053,7 +1053,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             step_guidance = [
                 "🎯 EXPLICIT MODE: Auto-frontier",
                 "Leaf: EL=ENGULF_TO_GEM (IN GEM; editable, may be deleted in ETHER), PL=PRESERVE_IN_ETHER (ETHER only; NOT in GEM)",
-                "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (RB), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB)",
+                "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
                 "Lightning: LF=multi-root lightning strike (default 15 nodes per root; large branches show [STRUCT] preview only)",
                 "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
             ]
@@ -1063,7 +1063,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "🎯 BULK MODE: Auto-frontier",
                     "🛡️ STRICT COMPLETENESS - PA disabled",
                     "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER, UL=UPDATE_LEAF_IN_GEM",
-                    "Branch: RB, PB, UB, UN, AB",
+                    "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM), UB/UN=UPDATE_BRANCH_IN_GEM, AB=AUTO_DECIDE_BRANCH",
                     "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
                     "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
@@ -1072,7 +1072,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 step_guidance = [
                     "🎯 BULK MODE: Auto-frontier",
                     "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER, UL=UPDATE_LEAF_IN_GEM",
-                    "Branch: RB, PB, UB, UN, AB",
+                    "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM), UB/UN=UPDATE_BRANCH_IN_GEM, AB=AUTO_DECIDE_BRANCH",
                     "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
                     "Global: PA=PRESERVE_ALL_REMAINING_IN_ETHER (ETHER only; NOT in GEM)",
                     "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
@@ -1216,7 +1216,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 step_guidance = [
                     "🎯 EXPLICIT MODE: Auto-frontier",
                     "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER, UL=UPDATE_LEAF_IN_GEM",
-                    "Branch: RB, PB",
+                    "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
                     "Lightning: LF=multi-root lightning strike (default 15 nodes per root; large branches show [STRUCT] preview only), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                 ]
@@ -1227,7 +1227,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "🎯 BULK MODE",
                         "🛡️ STRICT - PA disabled",
                         "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER",
-                        "Branch: RB, PB",
+                        "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
                         "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
                         "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
                         "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
@@ -1236,7 +1236,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     step_guidance = [
                         "🎯 BULK MODE",
                         "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER",
-                        "Branch: RB, PB",
+                        "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
                         "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
                         "Global: PA=PRESERVE_ALL_REMAINING_IN_ETHER (ETHER only; NOT in GEM)",
                         "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
