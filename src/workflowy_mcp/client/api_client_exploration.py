@@ -637,16 +637,16 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         filtered.add(h)
             candidates = filtered
 
-        # Limit matches, include ancestors
+        # Limit matches, include ancestors (including root 'R')
         matches = sorted(candidates)[:max_results]
         final_handles = set(matches)
-        
+
         for h in matches:
             ancestor = handles.get(h, {}).get("parent")
-            while ancestor and ancestor != "R":
+            while ancestor:
                 final_handles.add(ancestor)
                 ancestor = handles.get(ancestor, {}).get("parent")
-        
+
         matches_in_frontier = sorted([h for h in final_handles if h in matches])
         ancestors_in_frontier = sorted([h for h in final_handles if h not in matches])
         final_list = matches_in_frontier + ancestors_in_frontier
