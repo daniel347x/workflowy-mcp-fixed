@@ -7022,6 +7022,74 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 root_node = session.get("root_node") or {}
                 editable_mode = bool(session.get("editable", False))
 
+
+            # Build mode-aware step guidance
+            if exploration_mode == "dfs_guided_explicit":
+                step_guidance = [
+                    "🎯 EXPLICIT MODE: Auto-frontier. No navigation needed.",
+                    "",
+                    "💎 DECISION OUTCOMES:",
+                    "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
+                    "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
+                    "",
+                    "Leaf actions: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                    "Branch actions (when all descendants decided): flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB)",
+                    "No bulk actions available in explicit mode.",
+                    "",
+                    "🔍 SEARCH (not available in explicit mode by default - PRIMARY implementation is bulk mode only)"
+                ]
+            elif exploration_mode == "dfs_guided_bulk":
+                # Check if strict_completeness is active
+                strict_completeness_active = session.get("strict_completeness", False)
+                
+                if strict_completeness_active:
+                    step_guidance = [
+                        "🎯 BULK MODE: Auto-frontier with bulk actions.",
+                        "",
+                        "🛡️ STRICT COMPLETENESS ACTIVE - PA action DISABLED",
+                        "",
+                        "⚠️ COMMON AGENT FAILURE MODE: Agents routinely opt out early with PA after a few frontiers.",
+                        "DON'T BE ONE OF THOSE AGENTS. This mode forces thorough exploration.",
+                        "",
+                        "💎 DECISION OUTCOMES:",
+                        "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
+                        "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
+                        "",
+                        "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                        "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
+                        "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
+                        "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA) - DISABLED in strict_completeness mode",
+                        "",
+                        "🔍 SEARCH: search_descendants_for_text (SX) - Returns frontier of matches + ancestors. Params: handle='R'|branch, search_text='...', case_sensitive=False, whole_word=False, regex=False, scope='undecided'|'all'. Multiple searches use AND logic. Next step without search returns to normal DFS frontier."
+                    ]
+                else:
+                    step_guidance = [
+                        "🎯 BULK MODE: Auto-frontier with bulk actions.",
+                        "",
+                        "💎 DECISION OUTCOMES:",
+                        "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
+                        "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
+                        "",
+                        "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
+                        "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
+                        "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
+                        "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA)",
+                        "",
+                        "🔍 SEARCH: search_descendants_for_text (SX) - Returns frontier of matches + ancestors. Params: handle='R'|branch, search_text='...', case_sensitive=False, whole_word=False, regex=False, scope='undecided'|'all'. Multiple searches use AND logic. Next step without search returns to normal DFS frontier."
+                    ]
+            else:
+                step_guidance = [
+                    "🎯 LEGACY MODE: Manual navigation.",
+                    "",
+                    "💎 DECISION OUTCOMES:",
+                    "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
+                    "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
+                    "",
+                    "Navigate: open (OP), close (CL)",
+                    "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL)",
+                    "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB)"
+                ]
+
             # PEEK STEP: if this step includes a PEEK action, return the peek frontier now.
             # The stashed _peek_frontier will then be used for bulk decisions in the next step.
             if peek_actions:
@@ -7066,17 +7134,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         "frontier_tree": frontier_tree,
                         "frontier_preview": frontier_preview,
                     }
-
-
-
-
-
-
-
-
-
-
-
 
 
             # Re-compute final frontier after decisions applied (state may have changed)
@@ -7146,73 +7203,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     "finalized": [h for h, st in state.items() if st.get("status") == "finalized"],
                     "closed": [h for h, st in state.items() if st.get("status") == "closed"],
                 }
-
-            # Build mode-aware step guidance
-            if exploration_mode == "dfs_guided_explicit":
-                step_guidance = [
-                    "🎯 EXPLICIT MODE: Auto-frontier. No navigation needed.",
-                    "",
-                    "💎 DECISION OUTCOMES:",
-                    "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
-                    "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
-                    "",
-                    "Leaf actions: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
-                    "Branch actions (when all descendants decided): flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB)",
-                    "No bulk actions available in explicit mode.",
-                    "",
-                    "🔍 SEARCH (not available in explicit mode by default - PRIMARY implementation is bulk mode only)"
-                ]
-            elif exploration_mode == "dfs_guided_bulk":
-                # Check if strict_completeness is active
-                strict_completeness_active = session.get("strict_completeness", False)
-                
-                if strict_completeness_active:
-                    step_guidance = [
-                        "🎯 BULK MODE: Auto-frontier with bulk actions.",
-                        "",
-                        "🛡️ STRICT COMPLETENESS ACTIVE - PA action DISABLED",
-                        "",
-                        "⚠️ COMMON AGENT FAILURE MODE: Agents routinely opt out early with PA after a few frontiers.",
-                        "DON'T BE ONE OF THOSE AGENTS. This mode forces thorough exploration.",
-                        "",
-                        "💎 DECISION OUTCOMES:",
-                        "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
-                        "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
-                        "",
-                        "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
-                        "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
-                        "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
-                        "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA) - DISABLED in strict_completeness mode",
-                        "",
-                        "🔍 SEARCH: search_descendants_for_text (SX) - Returns frontier of matches + ancestors. Params: handle='R'|branch, search_text='...', case_sensitive=False, whole_word=False, regex=False, scope='undecided'|'all'. Multiple searches use AND logic. Next step without search returns to normal DFS frontier."
-                    ]
-                else:
-                    step_guidance = [
-                        "🎯 BULK MODE: Auto-frontier with bulk actions.",
-                        "",
-                        "💎 DECISION OUTCOMES:",
-                        "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
-                        "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
-                        "",
-                        "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL), update_leaf_node_and_engulf_in_gemstorm (UL)",
-                        "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB, alias: reserve_branch_for_children), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB), update_branch_node_and_engulf_in_gemstorm__descendants_unaffected (UB), update_branch_note_and_engulf_in_gemstorm__descendants_unaffected (UN), auto_decide_branch_no_change_required (AB)",
-                        "Bulk over current frontier: engulf_all_showing_undecided_descendants_into_gem_for_editing (EF), preserve_all_showing_undecided_descendants_in_ether (PF)",
-                        "Global preserve: preserve_all_remaining_nodes_in_ether_at_finalization (PA)",
-                        "",
-                        "🔍 SEARCH: search_descendants_for_text (SX) - Returns frontier of matches + ancestors. Params: handle='R'|branch, search_text='...', case_sensitive=False, whole_word=False, regex=False, scope='undecided'|'all'. Multiple searches use AND logic. Next step without search returns to normal DFS frontier."
-                    ]
-            else:
-                step_guidance = [
-                    "🎯 LEGACY MODE: Manual navigation.",
-                    "",
-                    "💎 DECISION OUTCOMES:",
-                    "  ENGULF → Node brought into GEM → Editable/deletable in JEWELSTORM → Changes apply to ETHER",
-                    "  PRESERVE → Node stays in ETHER → Protected (will NOT be deleted or modified)",
-                    "",
-                    "Navigate: open (OP), close (CL)",
-                    "Leaf: engulf_leaf_into_gem_for_editing (EL), preserve_leaf_in_ether_untouched (PL)",
-                    "Branch: flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states (EB), preserve_branch_node_in_ether_untouched__when_no_engulfed_children (PB)"
-                ]
 
             return {
                 "success": True,
