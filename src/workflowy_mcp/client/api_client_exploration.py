@@ -1529,13 +1529,53 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
             # Handle-optional global actions (process before handle validation)
             if act == "abandon_lightning_strike":
-                for key in (
-                    "_peek_frontier",
-                    "_peek_root_handles",
-                    "_peek_max_nodes_by_root",
-                ):
-                    session.pop(key, None)
-                logger.info("abandon_lightning_strike: cleared lightning peek state")
+                target_root = action.get("handle")
+                if target_root and session.get("_peek_frontier"):
+                    # Per-root abandon: clear lightning strike ONLY for the specified root
+                    peek_roots = session.get("_peek_root_handles") or []
+                    if target_root not in peek_roots:
+                        raise NetworkError(
+                            f"abandon_lightning_strike with handle '{target_root}' requires an active lightning root"
+                        )
+
+                    current_frontier = session.get("_peek_frontier") or []
+                    remaining_frontier = [
+                        e
+                        for e in current_frontier
+                        if e.get("handle") != target_root
+                        and not str(e.get("handle", "")).startswith(target_root + ".")
+                    ]
+                    if remaining_frontier:
+                        session["_peek_frontier"] = remaining_frontier
+                    else:
+                        session.pop("_peek_frontier", None)
+
+                    new_roots = [h for h in peek_roots if h != target_root]
+                    if new_roots:
+                        session["_peek_root_handles"] = new_roots
+                    else:
+                        session.pop("_peek_root_handles", None)
+
+                    max_map = session.get("_peek_max_nodes_by_root") or {}
+                    if target_root in max_map:
+                        max_map.pop(target_root, None)
+                        if max_map:
+                            session["_peek_max_nodes_by_root"] = max_map
+                        else:
+                            session.pop("_peek_max_nodes_by_root", None)
+
+                    logger.info(
+                        f"abandon_lightning_strike: cleared lightning strike for root {target_root}"
+                    )
+                else:
+                    # Global abandon: clear ALL lightning state
+                    for key in (
+                        "_peek_frontier",
+                        "_peek_root_handles",
+                        "_peek_max_nodes_by_root",
+                    ):
+                        session.pop(key, None)
+                    logger.info("abandon_lightning_strike: cleared all lightning peek state")
                 continue
 
             if act == "resume_guided_frontier":
