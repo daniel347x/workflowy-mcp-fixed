@@ -1719,13 +1719,21 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
 
     affected_ids: Set[str] = set()
 
-    # Determine which roots to process: intersection of root_ids present in both S0 and S1
+    # Determine which roots to process.
+    # Normal case: intersection of root_ids present in both S0 and S1.
+    # Special case: if JEWEL (S1) has no roots at all, interpret that as a
+    # request to delete the entire GEM shard (all S0 roots) from Territory.
     s0_root_ids = [n.get("id") for n in witness_roots if isinstance(n, dict) and n.get("id")]
     s1_root_ids = {n.get("id") for n in morphed_roots if isinstance(n, dict) and n.get("id")}
     root_ids = [rid for rid in s0_root_ids if rid in s1_root_ids]
 
     if not root_ids:
-        die("No overlapping shard roots between witness and morphed shards")
+        # If JEWEL is completely empty (no nodes at all), treat this as
+        # "delete all GEM roots" rather than a structural error.
+        if not morphed_roots:
+            root_ids = s0_root_ids
+        else:
+            die("No overlapping shard roots between witness and morphed shards")
 
     updates = 0
     creates = 0
