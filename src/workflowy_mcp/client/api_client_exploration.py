@@ -2473,7 +2473,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 _auto_complete_ancestors(handle)
 
             # UPDATE actions (editable mode)
-            elif act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm"}:
+            elif act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm", "update_branch_node_and_engulf_in_gemstorm__descendants_unaffected", "update_branch_note_and_engulf_in_gemstorm__descendants_unaffected"}:
                 if not editable_mode:
                     raise NetworkError("Update actions require editable=True")
                 new_name = action.get("name")
