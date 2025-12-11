@@ -464,32 +464,138 @@ class WorkFlowyClientEtch(WorkFlowyClientCore):
         parent_id: str,
         nodes: list[dict[str, Any]] | str,
         replace_all: bool = False,
+        nodes_file: str | None = None,
     ) -> dict[str, Any]:
-        """Create multiple nodes from JSON structure (ETCH command)."""
+        """Create multiple nodes from JSON structure (ETCH command).
+
+        Args:
+            parent_id: Target Workflowy parent id.
+            nodes: Either a parsed list[dict] structure or a JSON string
+                representing that list. Ignored when nodes_file is provided.
+            replace_all: If True, delete all existing children under
+                parent_id first; otherwise additive.
+            nodes_file: Optional path to a file containing ETCH payload.
+                - If the file contains a JSON object with a top-level
+                  "nodes" key, that value is used.
+                - Else, the entire file content is treated as a JSON
+                  string to be parsed the same way as the "nodes" string
+                  parameter (including autofix strategies).
+        """
         import asyncio
 
         logger = _ClientLogger()
+
+        # Optional file-based payload: if nodes_file is provided, it wins
+        # over the inline "nodes" argument.
+        if nodes_file:
+            try:
+                with open(nodes_file, "r", encoding="utf-8") as f:
+                    file_text = f.read()
+                # Try JSON object with top-level "nodes" first
+                try:
+                    maybe_json = json.loads(file_text)
+                    if isinstance(maybe_json, dict) and "nodes" in maybe_json:
+                        nodes = maybe_json["nodes"]
+                    else:
+                        # Not a dict-with-nodes; treat entire file_text as
+                        # the stringified nodes payload
+                        nodes = file_text
+                    logger.info(
+                        f"📄 workflowy_etch: loaded nodes from file '{nodes_file}'"
+                    )
+                except json.JSONDecodeError:
+                    # Not valid JSON as a whole; assume raw JSON string
+                    # payload for nodes and let the normal string handler
+                    # below deal with it (including autofix).
+                    nodes = file_text
+                    logger.info(
+                        f"📄 workflowy_etch: using raw file text from '{nodes_file}'"
+                    )
+            except Exception as e:
+                error_msg = (
+                    f"Failed to read nodes_file '{nodes_file}': {e}"
+                )
+                self._log_to_file(error_msg, "etch")
+                return {
+                    "success": False,
+                    "nodes_created": 0,
+                    "root_node_ids": [],
+                    "errors": [error_msg],
+                }
         
         # Auto-fix stringified JSON
         stringify_strategy_used = None
         if isinstance(nodes, str):
             logger.warning("⚠️ Received stringified JSON - attempting parse strategies")
-            
-            # Try multiple strategies (1-7)
-            # [Full implementation from original - omitted for brevity in this example]
-            # See original api_client.py lines ~1200-1400 for complete logic
-            
+
+            # Strategy 1: direct json.loads() on the full string
             try:
-                nodes = json.loads(nodes)
+                parsed = json.loads(nodes)
+                nodes = parsed
                 stringify_strategy_used = "Strategy 1: Direct json.loads()"
                 logger.info(f"✅ {stringify_strategy_used}")
-            except json.JSONDecodeError:
-                return {
-                    "success": False,
-                    "nodes_created": 0,
-                    "root_node_ids": [],
-                    "errors": ["Failed to parse stringified JSON - see full implementation"]
-                }
+            except json.JSONDecodeError as e:
+                # Dan debug note:
+                # In practice we've seen cases where the string is a valid JSON
+                # array followed by a few stray characters (e.g. the outer '}'
+                # from the request body). json.loads() raises
+                # JSONDecodeError('Extra data', ...).
+                #
+                # Rather than naively stripping N characters, we do a
+                # _structure-aware_ trim:
+                #  - Find the last closing bracket ']' in the string.
+                #  - If it exists, take everything up to and including that
+                #    bracket and try json.loads() again.
+                #  - This preserves the full array and only discards trailing
+                #    junk after a syntactically complete list literal.
+                #
+                # We only apply this once; if it still fails, we surface a
+                # clear error and log to etch_debug.log.
+                last_bracket = nodes.rfind("]")
+                if last_bracket != -1:
+                    candidate = nodes[: last_bracket + 1]
+                    try:
+                        parsed2 = json.loads(candidate)
+                        nodes = parsed2
+                        stringify_strategy_used = "Strategy 2: Trim after last ']' (recover from trailing junk)"
+                        self._log_to_file(
+                            "STRINGIFY AUTOFIX: Strategy 2 used. "
+                            f"Original len={len(nodes)}, trimmed_len={len(candidate)}. "
+                            f"Original JSONDecodeError={repr(e)}",
+                            "etch",
+                        )
+                        logger.info(f"✅ {stringify_strategy_used}")
+                    except json.JSONDecodeError as e2:
+                        # Still not valid JSON even after trimming at the
+                        # last ']'. At this point we give up and return a
+                        # structured error so the caller can see it in the
+                        # MCP tool response.
+                        error_msg = (
+                            "Failed to parse stringified JSON after Strategy 1 "
+                            "and Strategy 2. "
+                            f"Strategy 1 error={repr(e)}, Strategy 2 error={repr(e2)}"
+                        )
+                        self._log_to_file(error_msg, "etch")
+                        return {
+                            "success": False,
+                            "nodes_created": 0,
+                            "root_node_ids": [],
+                            "errors": [error_msg],
+                        }
+                else:
+                    # No closing bracket at all; there's nothing safe to trim
+                    # against. Log and fail clearly.
+                    error_msg = (
+                        "Failed to parse stringified JSON: no closing ']' "
+                        f"found. Original error={repr(e)}"
+                    )
+                    self._log_to_file(error_msg, "etch")
+                    return {
+                        "success": False,
+                        "nodes_created": 0,
+                        "root_node_ids": [],
+                        "errors": [error_msg],
+                    }
         
         # Validate nodes is a list
         if not isinstance(nodes, list):

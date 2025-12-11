@@ -2258,7 +2258,17 @@ async def etch_async(
         }
 
     async def run_etch(job_id: str) -> dict:  # job_id reserved for future logging
-        return await client.workflowy_etch(parent_id, payload_nodes, replace_all=replace_all)
+        # Forward both the resolved payload_nodes and the optional nodes_file
+        # into the client. workflowy_etch itself knows how to handle:
+        #   - list[dict] (already-parsed nodes)
+        #   - stringified JSON
+        #   - nodes_file path (object-with-nodes or raw string)
+        return await client.workflowy_etch(
+            parent_id=parent_id,
+            nodes=payload_nodes,
+            replace_all=replace_all,
+            nodes_file=nodes_file,
+        )
 
     payload = {
         "parent_id": parent_id,
