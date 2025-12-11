@@ -41,6 +41,42 @@ EXPLORATION_ACTION_2LETTER = {
 }
 
 
+def _normalize_scratchpad(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ensure session['scratchpad'] is a list of entry dicts and return it."""
+    scratch = session.get("scratchpad")
+    entries: list[dict[str, Any]] = []
+
+    if isinstance(scratch, list):
+        for item in scratch:
+            if isinstance(item, dict):
+                # Ensure 'note' is a string if present
+                note = item.get("note")
+                if note is not None and not isinstance(note, str):
+                    item = dict(item)
+                    item["note"] = str(note)
+                entries.append(item)
+            else:
+                entries.append({"note": str(item)})
+    elif isinstance(scratch, str):
+        for line in scratch.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            entries.append({"note": line})
+    elif scratch is not None:
+        entries.append({"note": str(scratch)})
+
+    session["scratchpad"] = entries
+    return entries
+
+
+def _append_scratchpad_entry(session: dict[str, Any], entry: dict[str, Any]) -> None:
+    """Append a structured entry to the exploration scratchpad."""
+    scratch_entries = _normalize_scratchpad(session)
+    scratch_entries.append(entry)
+    session["scratchpad"] = scratch_entries
+
+
 class WorkFlowyClientExploration(WorkFlowyClientNexus):
     """Exploration state machine - extends Nexus."""
 
@@ -49,6 +85,47 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         base_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_explore_sessions"
         os.makedirs(base_dir, exist_ok=True)
         return base_dir
+
+    def _write_exploration_output(
+        self,
+        session_id: str,
+        phase: str,
+        payload: dict[str, Any],
+        session: dict[str, Any] | None = None,
+    ) -> None:
+        """Write full exploration call output (plus session tree) to per-session file.
+
+        This is best-effort only; failures are logged but do not affect the tool result.
+        """
+        import json as json_module
+        from pathlib import Path as _Path
+
+        try:
+            base_dir = _Path(self._get_explore_sessions_dir())
+            out_dir = base_dir / session_id
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            pattern = f"{phase}__{session_id}.*.json"
+            max_index = 0
+            for existing in out_dir.glob(pattern):
+                stem_parts = existing.stem.split(".")
+                if len(stem_parts) >= 2:
+                    last = stem_parts[-1]
+                    if last.isdigit():
+                        max_index = max(max_index, int(last))
+            index = max_index + 1
+            out_path = out_dir / f"{phase}__{session_id}.{index}.json"
+
+            full_output = dict(payload or {})
+            if session is not None:
+                _normalize_scratchpad(session)
+                full_output["session"] = session
+
+            with open(out_path, "w", encoding="utf-8") as f:
+                json_module.dump(full_output, f, indent=2, ensure_ascii=False)
+        except Exception:
+            logger = _ClientLogger()
+            logger.error("Failed to write exploration output file", exc_info=True)
 
     @staticmethod
     def _build_frontier_preview_lines(
@@ -846,11 +923,25 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 run_dir = self._get_nexus_dir(tag)
                 phantom = os.path.join(run_dir, "phantom_gem.json")
                 if os.path.exists(phantom):
+                    full_response = {
+                        "success": True,
+                        "session_id": session_id,
+                        "nexus_tag": tag,
+                        "status": "completed",
+                        "message": "Already finalized - phantom_gem exists",
+                        "phantom_gem": phantom,
+                    }
+                    self._write_exploration_output(
+                        session_id=session_id,
+                        phase="resume",
+                        payload=full_response,
+                        session=session,
+                    )
                     return {
                         "success": True,
                         "session_id": session_id,
+                        "nexus_tag": tag,
                         "status": "completed",
-                        "message": f"Already finalized - phantom_gem exists",
                         "phantom_gem": phantom,
                     }
             except NetworkError:
@@ -863,6 +954,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         # Persist flat frontier
         session["last_frontier_flat"] = frontier
         session["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        _normalize_scratchpad(session)
         with open(session_path, "w", encoding="utf-8") as f:
             json_module.dump(session, f, indent=2, ensure_ascii=False)
         
@@ -878,14 +970,14 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "steps": session.get("steps", 0),
             }
         
-        return {
+        full_response = {
             "success": True,
             "session_id": session_id,
             "nexus_tag": tag,
             "status": "in_progress",
             "action_key_primary_aliases": {"RB": "reserve_branch_for_children"},
             "action_key": EXPLORATION_ACTION_2LETTER,
-            "scratchpad": session.get("scratchpad", ""),
+            "scratchpad": session.get("scratchpad", []),
             "frontier_preview": frontier_preview,
             "walks": [],
             "skipped_walks": [],
@@ -897,8 +989,26 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "exploration_mode": session.get("exploration_mode"),
                 "editable": session.get("editable"),
                 "steps": session.get("steps", 0),
-            }
+            },
         }
+
+        self._write_exploration_output(
+            session_id=session_id,
+            phase="resume",
+            payload=full_response,
+            session=session,
+        )
+
+        minimal = {
+            "success": True,
+            "session_id": session_id,
+            "nexus_tag": tag,
+            "status": "in_progress",
+            "action_key_primary_aliases": {"RB": "reserve_branch_for_children"},
+            "action_key": EXPLORATION_ACTION_2LETTER,
+            "frontier_preview": frontier_preview,
+        }
+        return minimal
 
     async def nexus_start_exploration(
         self,
@@ -1041,7 +1151,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "strict_completeness": strict_completeness,
             "handles": handles,
             "state": state,
-            "scratchpad": "",
+            "scratchpad": [],
             "root_node": root_node,
             "steps": 0,
             "search_filter": search_filter,
@@ -1097,7 +1207,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         else:
             step_guidance = ["🎯 LEGACY MODE: Manual"]
 
-        return {
+        full_response = {
             "success": True,
             "session_id": session_id,
             "nexus_tag": nexus_tag,
@@ -1111,12 +1221,31 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "name": root_node.get("name", "Root"),
                 "child_count": len(handles.get("R", {}).get("children", []) or []),
             },
-            "scratchpad": "",
+            "scratchpad": session.get("scratchpad", []),
             "stats": {
                 "total_nodes_indexed": glimpse.get("node_count", 0),
                 "truncated": False,
             },
         }
+
+        self._write_exploration_output(
+            session_id=session_id,
+            phase="start",
+            payload=full_response,
+            session=session,
+        )
+
+        minimal = {
+            "success": True,
+            "session_id": session_id,
+            "nexus_tag": nexus_tag,
+            "exploration_mode": exploration_mode,
+            "action_key_primary_aliases": {"RB": "reserve_branch_for_children"},
+            "action_key": EXPLORATION_ACTION_2LETTER,
+            "step_guidance": step_guidance,
+            "frontier_preview": frontier_preview,
+        }
+        return minimal
 
     async def nexus_explore_step_v2(
         self,
@@ -1162,6 +1291,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         handles = session.get("handles", {}) or {}
         state = session.get("state", {}) or {}
         root_node = session.get("root_node") or {}
+        _normalize_scratchpad(session)
         editable_mode = bool(session.get("editable", False))
         last_frontier_flat = session.get("last_frontier_flat") or []
 
@@ -1276,6 +1406,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
                     session["last_frontier_flat"] = frontier
                     session["updated_at"] = datetime.utcnow().isoformat() + "Z"
+                    _normalize_scratchpad(session)
                     with open(session_path, "w", encoding="utf-8") as f:
                         json_module.dump(session, f, indent=2, ensure_ascii=False)
 
@@ -1287,7 +1418,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                             "closed": [h for h, st in state.items() if st.get("status") == "closed"],
                         }
 
-                    return {
+                    full_response = {
                         "success": True,
                         "session_id": session_id,
                         "nexus_tag": session.get("nexus_tag"),
@@ -1301,9 +1432,32 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "skipped_walks": [],
                         "decisions_applied": decisions,
                         "skipped_decisions": skipped_decisions,
-                        "scratchpad": session.get("scratchpad", ""),
+                        "scratchpad": session.get("scratchpad", []),
                         "history_summary": history_summary,
+                        "peek_results": peek_results,
+                        "frontier_tree": frontier_tree,
                     }
+
+                    self._write_exploration_output(
+                        session_id=session_id,
+                        phase="step",
+                        payload=full_response,
+                        session=session,
+                    )
+
+                    minimal = {
+                        "success": True,
+                        "session_id": session_id,
+                        "nexus_tag": session.get("nexus_tag"),
+                        "status": "in_progress",
+                        "exploration_mode": exploration_mode,
+                        "action_key_primary_aliases": {"EB": "reserve_branch_for_children"},
+                        "action_key": EXPLORATION_ACTION_2LETTER,
+                        "step_guidance": step_guidance,
+                        "frontier_preview": frontier_preview,
+                    }
+
+                    return minimal
 
             # Compute final frontier
             if search_actions:
@@ -1332,6 +1486,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
             session["last_frontier_flat"] = frontier
             session["updated_at"] = datetime.utcnow().isoformat() + "Z"
+            _normalize_scratchpad(session)
             with open(session_path, "w", encoding="utf-8") as f:
                 json_module.dump(session, f, indent=2, ensure_ascii=False)
 
@@ -1343,7 +1498,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "closed": [h for h, st in state.items() if st.get("status") == "closed"],
                 }
 
-            return {
+            full_response = {
                 "success": True,
                 "session_id": session_id,
                 "nexus_tag": session.get("nexus_tag"),
@@ -1357,9 +1512,31 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "skipped_walks": [],
                 "decisions_applied": decisions,
                 "skipped_decisions": skipped_decisions,
-                "scratchpad": session.get("scratchpad", ""),
+                "scratchpad": session.get("scratchpad", []),
                 "history_summary": history_summary,
+                "frontier_tree": frontier_tree,
             }
+
+            self._write_exploration_output(
+                session_id=session_id,
+                phase="step",
+                payload=full_response,
+                session=session,
+            )
+
+            minimal = {
+                "success": True,
+                "session_id": session_id,
+                "nexus_tag": session.get("nexus_tag"),
+                "status": "in_progress",
+                "exploration_mode": exploration_mode,
+                "action_key_primary_aliases": {"EB": "reserve_branch_for_children"},
+                "action_key": EXPLORATION_ACTION_2LETTER,
+                "step_guidance": step_guidance,
+                "frontier_preview": frontier_preview,
+            }
+
+            return minimal
 
     async def nexus_explore_step(
         self,
@@ -1406,6 +1583,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         state = session.get("state", {}) or {}
         exploration_mode = session.get("exploration_mode", "manual")
         root_node = session.get("root_node") or {}
+        _normalize_scratchpad(session)
 
         # Build node index for editable mode
         node_by_id: dict[str, dict[str, Any]] = {}
@@ -1593,11 +1771,20 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 
                 if act in {"set_scratchpad", "append_scratchpad"}:
                     content = action.get("content") or ""
-                    existing = session.get("scratchpad") or ""
                     if act == "set_scratchpad":
-                        session["scratchpad"] = content
-                    else:
-                        session["scratchpad"] = (existing + "\n" + content) if existing else content
+                        session["scratchpad"] = []
+                    # Build entry from all action arguments except 'action'
+                    entry: dict[str, Any] = {}
+                    for k, v in action.items():
+                        if k == "action":
+                            continue
+                        if k == "content":
+                            entry["note"] = v
+                        else:
+                            entry[k] = v
+                    if "note" not in entry:
+                        entry["note"] = content
+                    _append_scratchpad_entry(session, entry)
                     continue
 
             # Handle-optional global actions (process before handle validation)
@@ -2030,10 +2217,17 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     handles[handle] = root_meta
 
                     # Scratchpad log
-                    scratch = session.get("scratchpad") or ""
                     salvage_str = ", ".join(nodes_to_salvage) if nodes_to_salvage else ""
                     line = f"[SKELETON] mark_section_for_deletion: root={handle}, salvaged=[{salvage_str}]"
-                    session["scratchpad"] = (scratch + "\n" + line) if scratch else line
+                    _append_scratchpad_entry(
+                        session,
+                        {
+                            "note": line,
+                            "handle": handle,
+                            "origin": "skeleton_mark_section_for_deletion",
+                            "nodes_to_salvage_for_move": nodes_to_salvage,
+                        },
+                    )
 
                 else:
                     # mark_section_as_merge_target / mark_section_as_permanent share core semantics
@@ -2058,9 +2252,16 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     meta["hints"] = hints
                     handles[handle] = meta
 
-                    scratch = session.get("scratchpad") or ""
                     line = f"[SKELETON] {scratch_suffix} = {handle}"
-                    session["scratchpad"] = (scratch + "\n" + line) if scratch else line
+                    origin = "skeleton_mark_section_as_merge_target" if act == "mark_section_as_merge_target" else "skeleton_mark_section_as_permanent"
+                    _append_scratchpad_entry(
+                        session,
+                        {
+                            "note": line,
+                            "handle": handle,
+                            "origin": origin,
+                        },
+                    )
 
                 # End lightning strike for THIS section only (support multiple active lightning roots)
                 current_frontier = session.get("_peek_frontier") or []
@@ -2243,6 +2444,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         session["state"] = state
         session["steps"] = int(session.get("steps", 0)) + 1
         session["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        _normalize_scratchpad(session)
 
         try:
             with open(session_path, "w", encoding="utf-8") as f:
@@ -2255,7 +2457,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "session_id": session_id,
             "action_key_primary_aliases": {"RB": "reserve_branch_for_children"},
             "action_key": EXPLORATION_ACTION_2LETTER,
-            "scratchpad": session.get("scratchpad", ""),
+            "scratchpad": session.get("scratchpad", []),
             "skipped_decisions": skipped_decisions,
         }
 
@@ -2290,6 +2492,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         handles = session.get("handles", {}) or {}
         state = session.get("state", {}) or {}
         root_node = session.get("root_node") or {}
+        _normalize_scratchpad(session)
 
         # Build indexes
         node_by_id: dict[str, dict[str, Any]] = {}
@@ -2557,7 +2760,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "original_ids_seen": sorted(original_ids_seen),
             "explicitly_preserved_ids": sorted(explicitly_preserved_ids),
             # Persist exploration scratchpad so JEWELSTORM can materialize it into new sections later
-            "exploration_scratchpad": session.get("scratchpad", ""),
+            "exploration_scratchpad": session.get("scratchpad", []),
         }
 
         with open(phantom_path, "w", encoding="utf-8") as f:
@@ -2569,7 +2772,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         with open(shimmering_path, "w", encoding="utf-8") as f:
             json_module.dump(gem_wrapper, f, indent=2, ensure_ascii=False)
 
-        return {
+        full_response = {
             "success": True,
             "session_id": session_id,
             "nexus_tag": nexus_tag,
@@ -2579,3 +2782,14 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "node_count": len(needed_ids),
             "mode": mode,
         }
+
+        full_payload_for_file = dict(full_response)
+        full_payload_for_file["gem_wrapper"] = gem_wrapper
+        self._write_exploration_output(
+            session_id=session_id,
+            phase="finalize",
+            payload=full_payload_for_file,
+            session=session,
+        )
+
+        return full_response
