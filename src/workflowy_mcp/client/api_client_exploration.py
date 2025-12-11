@@ -99,6 +99,17 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     elif t.startswith("LS:"):
                         root = t.split(":", 1)[1]
                         tags.append(f"[LS {root}]")
+                    elif t.startswith("LEAFSIB:"):
+                        # Format: LEAFSIB:X/Y where X,Y are integers
+                        payload = t.split(":", 1)[1]
+                        try:
+                            pos_str, total_str = payload.split("/", 1)
+                            pos = int(pos_str)
+                            total = int(total_str)
+                            tags.append(f"[LEAF {pos}/{total} siblings]")
+                        except Exception:
+                            # Best-effort only; ignore malformed LEAFSIB tags
+                            continue
                 if tags:
                     tag_prefix = " ".join(tags) + " "
 
@@ -1831,6 +1842,22 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     ) if is_leaf else (
                         "PEEK - branch: RB (IN GEM shell), PB (ETHER only), EF (IN GEM), PF (ETHER only)"
                     )
+
+                        # Build skeleton tags for this lightning strike
+                        skeleton_tags: list[str] = [f"STRUCT:{root_handle}", f"LS:{root_handle}"]
+                        if is_leaf:
+                            parent_handle = meta.get("parent")
+                            if isinstance(parent_handle, str):
+                                siblings = (handles.get(parent_handle, {}) or {}).get("children", []) or []
+                                try:
+                                    idx = siblings.index(h)
+                                    total = len(siblings)
+                                    # 1-based leaf position among siblings
+                                    skeleton_tags.append(f"LEAFSIB:{idx + 1}/{total}")
+                                except ValueError:
+                                    # If handle not found among siblings (shouldn't happen), skip LEAFSIB
+                                    pass
+
                         entry = {
                             "handle": h,
                             "parent_handle": meta.get("parent"),
@@ -1841,7 +1868,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                             "status": st.get("status", "candidate"),
                             "is_leaf": is_leaf,
                             "guidance": guidance,
-                            "skeleton_tmp": [f"STRUCT:{root_handle}", f"LS:{root_handle}"],
+                            "skeleton_tmp": skeleton_tags,
                         }
                         peek_frontier.append(entry)
                 else:
@@ -2009,7 +2036,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     session["scratchpad"] = (scratch + "\n" + line) if scratch else line
 
                 else:
-                    # mark_section_as_merge_target / mark_section_as_permanent share semantics
+                    # mark_section_as_merge_target / mark_section_as_permanent share core semantics
                     target_entry = state.setdefault(
                         handle,
                         {"status": "unseen", "selection_type": None},
@@ -2022,12 +2049,17 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
                     meta = handles.get(handle) or {}
                     hints = meta.get("hints") or []
-                    hints.append("SKELETON_MERGE_TARGET")
+                    if act == "mark_section_as_merge_target":
+                        hints.append("SKELETON_MERGE_TARGET")
+                        scratch_suffix = "merge target"
+                    else:  # mark_section_as_permanent
+                        hints.append("SKELETON_PERMANENT_TARGET")
+                        scratch_suffix = "permanent target"
                     meta["hints"] = hints
                     handles[handle] = meta
 
                     scratch = session.get("scratchpad") or ""
-                    line = f"[SKELETON] merge target = {handle}"
+                    line = f"[SKELETON] {scratch_suffix} = {handle}"
                     session["scratchpad"] = (scratch + "\n" + line) if scratch else line
 
                 # End lightning strike for THIS section only (support multiple active lightning roots)
@@ -2343,6 +2375,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         # Capture SKELETON hints so GEM/JEWEL can distinguish delete vs merge targets
         skeleton_delete_ids: set[str] = set()
         skeleton_merge_ids: set[str] = set()
+        skeleton_permanent_ids: set[str] = set()
         for handle_key, meta in handles.items():
             nid = (meta or {}).get("id")
             if not nid:
@@ -2352,6 +2385,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 skeleton_delete_ids.add(nid)
             if "SKELETON_MERGE_TARGET" in hints:
                 skeleton_merge_ids.add(nid)
+            if "SKELETON_PERMANENT_TARGET" in hints:
+                skeleton_permanent_ids.add(nid)
 
         for handle, node_id, sel_type, _max_depth in finalized_entries:
             if sel_type != "subtree":
@@ -2431,6 +2466,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 new_node["skeleton_hint"] = "DELETE_SECTION"
             elif nid in skeleton_merge_ids:
                 new_node["skeleton_hint"] = "MERGE_TARGET"
+            elif nid in skeleton_permanent_ids:
+                new_node["skeleton_hint"] = "PERMANENT_SECTION"
 
             new_children = []
             for child in node.get("children", []) or []:

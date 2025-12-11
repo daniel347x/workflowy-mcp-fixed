@@ -104,6 +104,8 @@ def _build_jewel_preview_lines(
             hint_prefix = "[DELETE] "
         elif sk_hint == "MERGE_TARGET":
             hint_prefix = "[MERGE] "
+        elif sk_hint == "PERMANENT_SECTION":
+            hint_prefix = "[KEEP] "
         else:
             hint_prefix = ""
 
