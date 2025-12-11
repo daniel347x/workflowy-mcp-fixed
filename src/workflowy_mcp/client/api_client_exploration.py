@@ -26,7 +26,7 @@ EXPLORATION_ACTION_2LETTER = {
     "EF": "engulf_all_showing_undecided_descendants_into_gem_for_editing",
     "PF": "preserve_all_showing_undecided_descendants_in_ether",
     "UT": "update_tag_and_engulf_in_gemstorm",
-    "SS": "set_scratchpad",
+    "SS": "append_scratchpad",  # DEPRECATED: SS now aliases to append_scratchpad
     "AS": "append_scratchpad",
     "AH": "add_hint",
     "PD": "peek_descendants_as_frontier",
