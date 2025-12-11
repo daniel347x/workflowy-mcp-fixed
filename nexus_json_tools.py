@@ -1115,7 +1115,7 @@ def transform_jewel(
     if not dry_run and (not stop_on_error or not errors):
         # Attach modified roots back to original structure
         if isinstance(data, dict) and isinstance(data.get("nodes"), list):
-            # Recalculate counts FIRST
+            # Recalculate counts FIRST (operates in-place on `roots`)
             wrapper = {"nodes": roots}
             recalc_all_counts_gem(wrapper)
 
@@ -1128,20 +1128,14 @@ def transform_jewel(
                     normalized_roots.append(r)
             roots = normalized_roots
 
-            # Rebuild data dict but preserve any existing top-level fields
-            # (e.g., exploration_scratchpad, future metadata) while updating
-            # core NEXUS fields and injecting a fresh preview tree.
+            # Rebuild data dict but only update JEWEL-local fields.
+            # We intentionally avoid touching NEXUS metadata such as
+            # export_root_id/export_root_name/original_ids_seen/etc.,
+            # because JEWELMORPH re-attaches the authoritative values
+            # from phantom_gem.json.
             new_data = dict(data)
-            new_data.update({
-                "export_root_id": data.get("export_root_id"),
-                "export_root_name": data.get("export_root_name"),
-                "export_timestamp": data.get("export_timestamp"),
-                "export_root_children_status": data.get("export_root_children_status"),
-                "__preview_tree__": preview_tree,
-                "nodes": roots,
-                "original_ids_seen": data.get("original_ids_seen"),
-                "explicitly_preserved_ids": data.get("explicitly_preserved_ids"),
-            })
+            new_data["nodes"] = roots
+            new_data["__preview_tree__"] = preview_tree
             data = new_data
         elif isinstance(data, list):
             # For bare list JEWELs, normalize key order as well
