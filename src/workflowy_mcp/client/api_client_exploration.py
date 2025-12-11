@@ -120,6 +120,15 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             if session is not None:
                 _normalize_scratchpad(session)
                 full_output["session"] = session
+                try:
+                    sp = session.get("scratchpad") or []
+                    handles = session.get("handles") or {}
+                    sp_preview = self._build_scratchpad_preview_lines(sp, handles)
+                    if sp_preview:
+                        full_output["scratchpad_preview"] = sp_preview
+                except Exception:
+                    # Preview is best-effort only
+                    pass
 
             with open(out_path, "w", encoding="utf-8") as f:
                 json_module.dump(full_output, f, indent=2, ensure_ascii=False)
@@ -197,6 +206,79 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 name_part = f"{tag_prefix}{name} [{flat}]"
             else:
                 name_part = f"{tag_prefix}{name}" if tag_prefix else name
+
+            lines.append(f"[{label}] {indent}{bullet} {name_part}")
+
+        return lines
+
+    @staticmethod
+    def _build_scratchpad_preview_lines(
+        scratchpad: list[dict[str, Any]] | None,
+        handles: dict[str, dict[str, Any]] | None = None,
+        max_note_chars: int | None = None,
+    ) -> list[str]:
+        """Build aligned one-line preview for scratchpad entries with handles.
+
+        This mirrors _build_frontier_preview_lines but operates over the
+        exploration scratchpad. It is best-effort and ignores entries that
+        do not have a dot-delimited 'handle' and string 'note'.
+        """
+        import re
+
+        if not scratchpad:
+            return []
+
+        typed_entries: list[tuple[str, str]] = []
+        handle_re = re.compile(r"^[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*$")
+
+        for entry in scratchpad:
+            if not isinstance(entry, dict):
+                continue
+            handle = entry.get("handle")
+            note = entry.get("note")
+            if not isinstance(handle, str) or not isinstance(note, str):
+                continue
+            if not handle_re.match(handle):
+                continue
+            typed_entries.append((handle, note))
+
+        if not typed_entries:
+            return []
+
+        def natural_handle_key(handle: str) -> list[tuple[int, object]]:
+            parts = handle.split(".")
+            result: list[tuple[int, object]] = []
+            for part in parts:
+                if part.isdigit():
+                    result.append((0, int(part)))
+                else:
+                    result.append((1, part))
+            return result
+
+        typed_entries.sort(key=lambda hn: natural_handle_key(hn[0]))
+
+        max_len = max(len(h) for h, _ in typed_entries)
+        lines: list[str] = []
+
+        handles_map = handles or {}
+        DEFAULT_MAX_NOTE = 1024 if max_note_chars is None else max_note_chars
+
+        for handle, note in typed_entries:
+            label = handle.ljust(max_len)
+            depth = max(1, len(handle.split(".")))
+            indent = " " * 4 * (depth - 1)
+
+            meta = handles_map.get(handle) or {}
+            children = meta.get("children") or []
+            is_leaf = not children
+            bullet = "•" if is_leaf else "⦿"
+
+            name = meta.get("name") or "Untitled"
+
+            flat = note.replace("\n", "\\n")
+            if isinstance(DEFAULT_MAX_NOTE, int) and DEFAULT_MAX_NOTE > 0 and len(flat) > DEFAULT_MAX_NOTE:
+                flat = flat[:DEFAULT_MAX_NOTE]
+            name_part = f"{name} [{flat}]"
 
             lines.append(f"[{label}] {indent}{bullet} {name_part}")
 
@@ -2751,6 +2833,15 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         except Exception:
             pass
         
+        scratchpad_list = session.get("scratchpad", [])
+        try:
+            sp_preview = self._build_scratchpad_preview_lines(
+                scratchpad_list,
+                handles=handles,
+            )
+        except Exception:
+            sp_preview = []
+
         gem_wrapper = {
             "export_timestamp": None,
             "export_root_children_status": "complete",
@@ -2761,8 +2852,10 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "original_ids_seen": sorted(original_ids_seen),
             "explicitly_preserved_ids": sorted(explicitly_preserved_ids),
             # Persist exploration scratchpad so JEWELSTORM can materialize it into new sections later
-            "exploration_scratchpad": session.get("scratchpad", []),
+            "exploration_scratchpad": scratchpad_list,
         }
+        if sp_preview:
+            gem_wrapper["exploration_scratchpad_preview"] = sp_preview
 
         with open(phantom_path, "w", encoding="utf-8") as f:
             json_module.dump(gem_wrapper, f, indent=2, ensure_ascii=False)
