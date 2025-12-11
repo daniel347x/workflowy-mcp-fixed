@@ -1218,9 +1218,11 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             state[ch] = {"status": "candidate", "max_depth": None}
 
         # Create session
+        # Persist exploration-wide frontier_size so subsequent steps can reuse it
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         session_id = f"{timestamp}__{nexus_tag}-{uuid.uuid4().hex[:8]}"
         session = {
+            "frontier_size": int(frontier_size) if isinstance(frontier_size, int) and frontier_size > 0 else 25,
             "session_id": session_id,
             "nexus_tag": nexus_tag,
             "root_id": root_node["id"],
@@ -1245,7 +1247,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         }
 
         # Compute frontier
-        frontier = self._compute_exploration_frontier(session, frontier_size, max_depth_per_frontier)
+        # Use the normalized session-wide frontier_size for initial frontier
+        session_frontier_size = session.get("frontier_size", frontier_size)
+        frontier = self._compute_exploration_frontier(session, session_frontier_size, max_depth_per_frontier)
         frontier_preview = self._build_frontier_preview_lines(frontier)
 
         # Persist
@@ -1335,7 +1339,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         decisions: list[dict[str, Any]] | None = None,
         walks: list[dict[str, Any]] | None = None,
         max_parallel_walks: int = 4,
-        global_frontier_limit: int = 80,
+        global_frontier_limit: int | None = None,
         include_history_summary: bool = True,
     ) -> dict[str, Any]:
         """Exploration step with GEMSTORM action vocabulary.
@@ -1369,6 +1373,12 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
         with open(session_path, "r", encoding="utf-8") as f:
             session = json_module.load(f)
+
+        # Determine effective leaf budget for this step
+        session_frontier_size = int(session.get("frontier_size", 25))
+        if not isinstance(session_frontier_size, int) or session_frontier_size <= 0:
+            session_frontier_size = 25
+        effective_limit = global_frontier_limit if isinstance(global_frontier_limit, int) and global_frontier_limit > 0 else session_frontier_size
 
         handles = session.get("handles", {}) or {}
         state = session.get("state", {}) or {}
@@ -1409,7 +1419,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     session=session,
                     search_actions=search_actions,
                     scope="undecided",
-                    max_results=global_frontier_limit,
+                    max_results=effective_limit,
                 )
             elif session.get("_peek_frontier"):
                 correct_frontier_for_bulk = session.get("_peek_frontier", [])
@@ -1418,7 +1428,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 correct_frontier_for_bulk = last_frontier_flat
             else:
                 correct_frontier_for_bulk = self._compute_exploration_frontier(
-                    session, frontier_size=global_frontier_limit, max_depth_per_frontier=1
+                    session, frontier_size=effective_limit, max_depth_per_frontier=1
                 )
             
             # Apply non-search decisions
@@ -1426,7 +1436,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 internal_result = await self._nexus_explore_step_internal(
                     session_id=session_id,
                     actions=non_search_decisions,
-                    frontier_size=global_frontier_limit,
+                    frontier_size=effective_limit,
                     max_depth_per_frontier=1,
                     _precomputed_frontier=correct_frontier_for_bulk,
                 )
@@ -1545,7 +1555,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             if search_actions:
                 frontier = self._compute_search_frontier(
                     session=session, search_actions=search_actions,
-                    scope="undecided", max_results=global_frontier_limit
+                    scope="undecided", max_results=effective_limit
                 )
             elif session.get("_peek_frontier"):
                 for key in (
@@ -1556,11 +1566,11 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     session.pop(key, None)
                 logger.info("Peek consumed - returning to DFS")
                 frontier = self._compute_exploration_frontier(
-                    session, frontier_size=global_frontier_limit, max_depth_per_frontier=1
+                    session, frontier_size=effective_limit, max_depth_per_frontier=1
                 )
             else:
                 frontier = self._compute_exploration_frontier(
-                    session, frontier_size=global_frontier_limit, max_depth_per_frontier=1
+                    session, frontier_size=effective_limit, max_depth_per_frontier=1
                 )
 
             frontier_tree = self._build_frontier_tree_from_flat(frontier)
@@ -1626,7 +1636,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         decisions: list[dict[str, Any]] | None = None,
         walks: list[dict[str, Any]] | None = None,
         max_parallel_walks: int = 4,
-        global_frontier_limit: int = 80,
+        global_frontier_limit: int | None = None,
         include_history_summary: bool = True,
     ) -> dict[str, Any]:
         """Exploration step - delegates to v2."""
@@ -1773,16 +1783,26 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         # Apply actions (abbreviated version - see witness stone for full ~800 lines)
         actions = actions or []
         
-        # 2-letter expander
+        # 2-letter expander + long-name normalizer
         for action in actions:
             act = action.get("action")
+            if not act:
+                continue
+            # If caller used 2-letter code (EL/PL/UB/...), expand to canonical long name
             if act in EXPLORATION_ACTION_2LETTER:
                 action["action"] = EXPLORATION_ACTION_2LETTER[act]
+                continue
+            # Otherwise, if caller used canonical long name directly, keep it as-is.
+            # If they used a legacy/alias name, normalize it below via ACTION_ALIASES.
         
-        # Aliases
-        ACTION_ALIASES = {"reserve_branch_for_children": "flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states"}
+        # Aliases (long-form convenience names)
+        ACTION_ALIASES = {
+            "reserve_branch_for_children": "flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states",
+        }
         for action in actions:
             act = action.get("action")
+            if not act:
+                continue
             if act in ACTION_ALIASES:
                 action["action"] = ACTION_ALIASES[act]
         
