@@ -2018,7 +2018,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             if handle not in handles:
                 raise NetworkError(f"Unknown handle: {handle}")
 
-            if act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm", "update_tag_and_engulf_in_gemstorm"} and not editable_mode:
+            if act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm", "update_leaf_node_and_engulf_in_gemstorm", "update_branch_node_and_engulf_in_gemstorm__descendants_unaffected", "update_branch_note_and_engulf_in_gemstorm__descendants_unaffected", "update_tag_and_engulf_in_gemstorm"} and not editable_mode:
                 raise NetworkError("Update actions require editable=True")
 
             if handle not in state:
@@ -2473,7 +2473,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 _auto_complete_ancestors(handle)
 
             # UPDATE actions (editable mode)
-            elif act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm", "update_branch_node_and_engulf_in_gemstorm__descendants_unaffected", "update_branch_note_and_engulf_in_gemstorm__descendants_unaffected"}:
+            elif act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm", "update_leaf_node_and_engulf_in_gemstorm", "update_branch_node_and_engulf_in_gemstorm__descendants_unaffected", "update_branch_note_and_engulf_in_gemstorm__descendants_unaffected"}:
                 if not editable_mode:
                     raise NetworkError("Update actions require editable=True")
                 new_name = action.get("name")
