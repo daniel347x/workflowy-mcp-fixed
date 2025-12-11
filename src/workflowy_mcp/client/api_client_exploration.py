@@ -2561,10 +2561,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             max_depth = st.get("max_depth")
             finalized_entries.append((handle, node_id, selection_type, max_depth))
 
-        if not finalized_entries:
-            raise NetworkError("No finalized paths - must accept at least one leaf or branch")
-
-        # Build needed IDs from finalized entries
+        # Build needed IDs from finalized entries (may be empty for PF-only runs)
         handle_by_node_id = {}
         for h, meta in handles.items():
             nid = meta.get("id")
@@ -2638,11 +2635,15 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 needed_ids.add(cur)
                 cur = parent_by_id.get(cur)
 
+        # PF-only runs: allow degenerate GEM with no children by including just the exploration root
+        root_explore_id = root_node.get("id")
+        if not needed_ids and root_explore_id:
+            needed_ids.add(root_explore_id)
+
         if not needed_ids:
             raise NetworkError("Empty minimal covering tree")
 
         # Ensure connected to root
-        root_explore_id = root_node.get("id")
         if root_explore_id:
             needed_ids.add(root_explore_id)
         for nid in list(needed_ids):
