@@ -188,7 +188,11 @@ class WorkFlowyClientEtch(WorkFlowyClientCore):
                 name_part = f"{name} [{flat}]"
             else:
                 name_part = name
-            lines.append(f"[{padded_id}] {indent}{bullet} {name_part}")
+
+            # Include Workflowy UUID first, then local preview_id for cross-referencing
+            node_uuid = node.get("id") or ""
+            uuid_label = str(node_uuid)
+            lines.append(f"[{uuid_label}] [{padded_id}] {indent}{bullet} {name_part}")
 
             # Recurse into children with extended path
             for idx, child in enumerate(children, start=1):

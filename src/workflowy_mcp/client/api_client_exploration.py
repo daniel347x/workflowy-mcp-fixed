@@ -86,6 +86,12 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         os.makedirs(base_dir, exist_ok=True)
         return base_dir
 
+    def _get_explore_scratchpad_dir(self) -> str:
+        """Return permanent scratchpad snapshots directory."""
+        base_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_explore_scratchpads"
+        os.makedirs(base_dir, exist_ok=True)
+        return base_dir
+
     def _write_exploration_output(
         self,
         session_id: str,
@@ -2756,7 +2762,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 needed_ids.add(cur)
                 cur = parent_by_id.get(cur)
 
-        # Copy pruned tree
+        # Copy pruned tree and project into GEM (S0) and JEWEL (S1) views
+        editable_mode = bool(session.get("editable", False))
+
         def copy_pruned(node: dict[str, Any]) -> dict[str, Any] | None:
             nid = node.get("id")
             if nid not in needed_ids:
@@ -2787,10 +2795,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         if not pruned_root:
             raise NetworkError("Root pruned - no nodes available")
 
-        gem_nodes = pruned_root.get("children", [])
-
-        # Project to final GEM view: keep edited names/notes, just strip original_* stashes
-        coarse_nodes = copy.deepcopy(gem_nodes)
+        pruned_children = pruned_root.get("children", [])
 
         def _strip_original_fields(node: dict) -> None:
             node.pop("original_name", None)
@@ -2820,10 +2825,53 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 ordered["children"] = new_children
             return ordered
 
-        for idx, n in enumerate(coarse_nodes):
-            if isinstance(n, dict):
-                _strip_original_fields(n)
-                coarse_nodes[idx] = _normalize_node_key_order_local(n)
+        def _build_nodes_from_pruned(
+            source_nodes: list[dict[str, Any]],
+            use_original_fields: bool,
+        ) -> list[dict[str, Any]]:
+            """Deep-copy pruned children and normalize name/note + key order.
+
+            - If use_original_fields=True: name/note come from original_name/original_note
+              (falling back to current name/note if originals missing).
+            - If use_original_fields=False: name/note remain as-is (edited), helpers stripped.
+            """
+            nodes = copy.deepcopy(source_nodes)
+
+            def _mutate(n: dict[str, Any]) -> None:
+                if use_original_fields:
+                    # S0 witness: use original_* if present
+                    name = n.get("original_name", n.get("name"))
+                    note = n.get("original_note", n.get("note"))
+                    n["name"] = name
+                    n["note"] = note
+                # Helpers are never persisted in final NEXUS artifacts
+                n.pop("original_name", None)
+                n.pop("original_note", None)
+                for ch in n.get("children") or []:
+                    if isinstance(ch, dict):
+                        _mutate(ch)
+
+            for node in nodes:
+                if isinstance(node, dict):
+                    _mutate(node)
+
+            return [
+                _normalize_node_key_order_local(node) if isinstance(node, dict) else node
+                for node in nodes
+            ]
+
+        # S0 (GEM witness) vs S1 (JEWEL edits)
+        if editable_mode:
+            # GEM should reflect ORIGINAL values; JEWEL reflects EDITED values
+            gem_nodes_s0 = _build_nodes_from_pruned(pruned_children, use_original_fields=True)
+            jewel_nodes_s1 = _build_nodes_from_pruned(pruned_children, use_original_fields=False)
+        else:
+            # Non-edit mode: single tree (current behavior preserved)
+            gem_nodes_s0 = _build_nodes_from_pruned(pruned_children, use_original_fields=False)
+            jewel_nodes_s1 = []
+
+        # T0 (coarse_terrain) always mirrors S0 (GEM)
+        coarse_nodes = gem_nodes_s0
 
         # Initialize NEXUS run dir
         base_dir = Path(
@@ -2842,17 +2890,19 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         phantom_path = run_dir / "phantom_gem.json"
         coarse_path = run_dir / "coarse_terrain.json"
         shimmering_path = run_dir / "shimmering_terrain.json"
+        phantom_jewel_path = run_dir / "phantom_jewel.json"
+        enchanted_path: Path | None = None
 
         export_root_id = session.get("root_id")
         export_root_name = session.get("root_name") or root_node.get("name", "Root")
 
-        # Compute preview
+        # Compute preview from T0/S0
         exploration_preview = None
         try:
             exploration_preview = self._annotate_preview_ids_and_build_tree(coarse_nodes, "CT")
         except Exception:
             pass
-        
+
         scratchpad_list = session.get("scratchpad", [])
         try:
             sp_preview = self._build_scratchpad_preview_lines(
@@ -2862,6 +2912,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         except Exception:
             sp_preview = []
 
+        # S0 wrapper (witness GEM + T0/T1)
         gem_wrapper = {
             "export_timestamp": None,
             "export_root_children_status": "complete",
@@ -2886,6 +2937,25 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         with open(shimmering_path, "w", encoding="utf-8") as f:
             json_module.dump(gem_wrapper, f, indent=2, ensure_ascii=False)
 
+        jewel_wrapper = None
+        if editable_mode and jewel_nodes_s1:
+            # S1 wrapper (edited JEWEL)
+            jewel_wrapper = dict(gem_wrapper)
+            jewel_wrapper["nodes"] = jewel_nodes_s1
+
+            with open(phantom_jewel_path, "w", encoding="utf-8") as f:
+                json_module.dump(jewel_wrapper, f, indent=2, ensure_ascii=False)
+
+            # Auto-ANCHOR_JEWELS to produce enchanted_terrain.json (T2)
+            try:
+                anchor_result = await self.nexus_anchor_jewels(nexus_tag)
+                enchanted_str = anchor_result.get("enchanted_terrain")
+                if enchanted_str:
+                    enchanted_path = Path(enchanted_str)
+            except Exception:
+                logger.error("nexus_anchor_jewels failed during finalize", exc_info=True)
+                enchanted_path = None
+
         full_response = {
             "success": True,
             "session_id": session_id,
@@ -2896,14 +2966,61 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "node_count": len(needed_ids),
             "mode": mode,
         }
+        if editable_mode:
+            full_response["phantom_jewel"] = str(phantom_jewel_path) if jewel_wrapper else None
+            full_response["enchanted_terrain"] = str(enchanted_path) if enchanted_path else None
 
         full_payload_for_file = dict(full_response)
         full_payload_for_file["gem_wrapper"] = gem_wrapper
+        if jewel_wrapper is not None:
+            full_payload_for_file["jewel_wrapper"] = jewel_wrapper
         self._write_exploration_output(
             session_id=session_id,
             phase="finalize",
             payload=full_payload_for_file,
             session=session,
         )
+
+        # Persist scratchpad snapshot to permanent directory if any entries exist
+        if scratchpad_list:
+            try:
+                scratchpad_dir = self._get_explore_scratchpad_dir()
+                scratchpad_path = os.path.join(
+                    scratchpad_dir,
+                    f"{session_id}.explore_scratchpad.json",
+                )
+
+                # Enrich scratchpad entries with node_id where possible
+                scratchpad_snapshot: list[dict[str, Any]] = []
+                for entry in scratchpad_list:
+                    e = dict(entry)
+                    h = e.get("handle")
+                    if isinstance(h, str):
+                        meta = handles.get(h) or {}
+                        nid = meta.get("id")
+                        if nid:
+                            e["node_id"] = nid
+                    scratchpad_snapshot.append(e)
+
+                scratchpad_payload: dict[str, Any] = {
+                    "nexus_tag": nexus_tag,
+                    "session_id": session_id,
+                    "created_at": session.get("created_at"),
+                    "finalized_at": datetime.utcnow().isoformat() + "Z",
+                    "exploration_mode": session.get("exploration_mode"),
+                    "editable": bool(session.get("editable")),
+                    "scratchpad": scratchpad_snapshot,
+                }
+                if sp_preview:
+                    scratchpad_payload["scratchpad_preview"] = sp_preview
+
+                scratchpad_payload["gem"] = gem_wrapper
+                if jewel_wrapper is not None:
+                    scratchpad_payload["jewel"] = jewel_wrapper
+
+                with open(scratchpad_path, "w", encoding="utf-8") as f:
+                    json_module.dump(scratchpad_payload, f, indent=2, ensure_ascii=False)
+            except Exception:
+                logger.error("Failed to write exploration scratchpad snapshot", exc_info=True)
 
         return full_response
