@@ -1316,6 +1316,50 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "steps": session.get("steps", 0),
             }
         
+        # Build step guidance (resume should provide the same driver instructions as start/step)
+        exploration_mode = session.get("exploration_mode")
+        strict = bool(session.get("strict_completeness", False))
+
+        if exploration_mode == "dfs_guided_explicit":
+            step_guidance = [
+                "🎯 EXPLICIT MODE: Auto-frontier",
+                "🪵 = BRANCH",
+                "🍃 = LEAF",
+                "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER, UL=UPDATE_LEAF_IN_GEM",
+                "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
+                "Lightning: LF=multi-root lightning strike (default 15 nodes per root; large branches show [STRUCT] preview only), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
+                "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
+            ]
+        elif exploration_mode == "dfs_guided_bulk":
+            if strict:
+                step_guidance = [
+                    "🎯 BULK MODE",
+                    "🪵 = BRANCH",
+                    "🍃 = LEAF",
+                    "🛡️ STRICT - PA disabled",
+                    "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER",
+                    "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
+                    "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
+                    "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
+                    "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
+                    "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
+                ]
+            else:
+                step_guidance = [
+                    "🎯 BULK MODE",
+                    "🪵 = BRANCH",
+                    "🍃 = LEAF",
+                    "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER",
+                    "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
+                    "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
+                    "Global: PA=PRESERVE_ALL_REMAINING_IN_ETHER (ETHER only; NOT in GEM)",
+                    "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
+                    "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
+                    "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
+                ]
+        else:
+            step_guidance = ["🎯 LEGACY MODE: Manual"]
+
         full_response = {
             "success": True,
             "session_id": session_id,
@@ -1323,6 +1367,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "status": "in_progress",
             "action_key_primary_aliases": {"RB": "reserve_branch_for_children"},
             "action_key": EXPLORATION_ACTION_2LETTER,
+            "step_guidance": step_guidance,
             "scratchpad": session.get("scratchpad", []),
             "frontier_preview": frontier_preview,
             "walks": [],
@@ -1352,6 +1397,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "status": "in_progress",
             "action_key_primary_aliases": {"RB": "reserve_branch_for_children"},
             "action_key": EXPLORATION_ACTION_2LETTER,
+            "step_guidance": step_guidance,
             "frontier_preview": frontier_preview,
         }
         return minimal
