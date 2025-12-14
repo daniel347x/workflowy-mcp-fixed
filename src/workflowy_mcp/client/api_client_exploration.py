@@ -354,6 +354,16 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
             lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
 
+        # 4) Append unbound notes (not tied to exactly one handle)
+        if unbound_notes:
+            lines.append("[UNBOUND]")
+            lines.append("    • 📝 UNBOUND SCRATCHPAD NOTES")
+            for note in unbound_notes:
+                flat = str(note).replace("\n", "\\n")
+                if isinstance(DEFAULT_MAX_NOTE, int) and DEFAULT_MAX_NOTE > 0 and len(flat) > DEFAULT_MAX_NOTE:
+                    flat = flat[:DEFAULT_MAX_NOTE]
+                lines.append(f"        • {flat}")
+
         return lines
 
     @staticmethod
@@ -380,6 +390,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
         handles_map = handles or {}
         DEFAULT_MAX_NOTE = 1024 if max_note_chars is None else max_note_chars
+        # max_note_chars=None means "do not clip" (full text).
+        if max_note_chars is None:
+            DEFAULT_MAX_NOTE = None
 
         handle_re = re.compile(r"^[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*$")
         handle_anywhere_re = re.compile(r"\b[A-Za-z]+(?:\.[A-Za-z0-9]+)+\b")
@@ -396,6 +409,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
         # 1) Extract handle + note from scratchpad entries (best-effort)
         notes_by_handle: dict[str, list[str]] = {}
+        unbound_notes: list[str] = []  # notes that cannot be tied to exactly one handle
 
         HANDLE_KEYS = (
             "handle",
@@ -437,11 +451,12 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     handle = next(iter(candidates))
 
             if handle is None:
+                unbound_notes.append(note)
                 continue
 
             notes_by_handle.setdefault(handle, []).append(note)
 
-        if not notes_by_handle:
+        if not notes_by_handle and not unbound_notes:
             return []
 
         # 2) Expand to include ancestors up to R (stub lines)
@@ -463,7 +478,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             ordered_handles = ["R"] + [h for h in ordered_handles if h != "R"]
 
         # 3) Render
-        max_len = max(len(h) for h in ordered_handles)
+        # If there are no handle-bound entries, ordered_handles may be empty.
+        max_len = max((len(h) for h in ordered_handles), default=1)
         lines: list[str] = []
 
         for h in ordered_handles:
@@ -495,6 +511,16 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 prefix = "" if idx == 0 else "↳ "
                 name_part = f"{name} [{prefix}{flat}]"
                 lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
+
+        # 4) Append unbound notes (not tied to exactly one handle)
+        if unbound_notes:
+            lines.append("[UNBOUND]")
+            lines.append("    • 📝 UNBOUND SCRATCHPAD NOTES")
+            for note in unbound_notes:
+                flat = str(note).replace("\n", "\\n")
+                if isinstance(DEFAULT_MAX_NOTE, int) and DEFAULT_MAX_NOTE > 0 and len(flat) > DEFAULT_MAX_NOTE:
+                    flat = flat[:DEFAULT_MAX_NOTE]
+                lines.append(f"        • {flat}")
 
         return lines
 
