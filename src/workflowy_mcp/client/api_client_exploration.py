@@ -1429,7 +1429,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "action_key_primary_aliases": {"RB": "reserve_branch_for_children"},
             "action_key": EXPLORATION_ACTION_2LETTER,
             "step_guidance": step_guidance,
-            "scratchpad": session.get("scratchpad", []),
             "scratchpad_preview": self._build_scratchpad_preview_lines(
                 session.get("scratchpad", []),
                 handles=session.get("handles", {}) or {},
@@ -1464,7 +1463,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "action_key": EXPLORATION_ACTION_2LETTER,
             "step_guidance": step_guidance,
             "frontier_preview": frontier_preview,
-            "scratchpad": session.get("scratchpad", []),
             "scratchpad_preview": self._build_scratchpad_preview_lines(
                 session.get("scratchpad", []),
                 handles=session.get("handles", {}) or {},
