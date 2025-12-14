@@ -483,8 +483,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             return result
 
         # 1) Extract handle + note from scratchpad entries (best-effort)
-        notes_by_handle: dict[str, list[str]] = {}
-        unbound_notes: list[str] = []  # notes that cannot be tied to exactly one handle
+        # We also track scratch_id per note line so previews can display stable IDs.
+        notes_by_handle: dict[str, list[dict[str, Any]]] = {}
+        unbound_notes: list[dict[str, Any]] = []  # notes that cannot be tied to exactly one handle
 
         for entry in scratchpad:
             if not isinstance(entry, dict):
@@ -498,13 +499,18 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 continue
             note = raw_note if isinstance(raw_note, str) else str(raw_note)
 
+            scratch_id = entry.get("scratch_id")
+            scratch_id = scratch_id if isinstance(scratch_id, str) else None
+
             handle = self._extract_handle_from_scratchpad_entry(entry)
 
+            record = {"note": note, "scratch_id": scratch_id, "done": bool(entry.get("done") is True)}
+
             if handle is None:
-                unbound_notes.append(note)
+                unbound_notes.append(record)
                 continue
 
-            notes_by_handle.setdefault(handle, []).append(note)
+            notes_by_handle.setdefault(handle, []).append(record)
 
 
         if not notes_by_handle and not unbound_notes:
@@ -523,6 +529,19 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 cur = (handles_map.get(cur) or {}).get("parent")
                 if cur is None:
                     break
+
+        # Compute scratch_id padding width for this preview.
+        all_ids: list[str] = []
+        for recs in notes_by_handle.values():
+            for rec in recs:
+                sid = rec.get("scratch_id")
+                if isinstance(sid, str):
+                    all_ids.append(sid)
+        for rec in unbound_notes:
+            sid = rec.get("scratch_id")
+            if isinstance(sid, str):
+                all_ids.append(sid)
+        max_id_len = max((len(x) for x in all_ids), default=len("SP-000000"))
 
         ordered_handles = sorted(expanded_handles, key=_natural_handle_key)
         if "R" in expanded_handles:
@@ -555,61 +574,42 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 lines.append(f"[{label}] {indent}{bullet} {kind} {name}")
                 continue
 
-            for idx, note in enumerate(notes):
+            for idx, rec in enumerate(notes):
+                note = rec.get("note")
+                note = note if isinstance(note, str) else str(note)
                 flat = note.replace("\n", "\\n")
                 if isinstance(DEFAULT_MAX_NOTE, int) and DEFAULT_MAX_NOTE > 0 and len(flat) > DEFAULT_MAX_NOTE:
                     flat = flat[:DEFAULT_MAX_NOTE]
                 prefix = "" if idx == 0 else "↳ "
 
-                # Find the original scratchpad entry dict for this handle+note so we can show completion status.
-                done_prefix = ""
-                try:
-                    for entry_sp in (scratchpad or []):
-                        if not isinstance(entry_sp, dict):
-                            continue
-                        raw_note = entry_sp.get("note")
-                        if raw_note is None:
-                            raw_note = entry_sp.get("content")
-                        if raw_note is None:
-                            continue
-                        if entry_sp.get("handle") == h and str(raw_note) == note:
-                            if entry_sp.get("done") is True:
-                                done_prefix = "✅ "
-                            break
-                except Exception:
-                    done_prefix = ""
+                done_prefix = "✅ " if (rec.get("done") is True) else ""
+
+                sid = rec.get("scratch_id")
+                sid = sid if isinstance(sid, str) else "SP-??????"
+                sid_label = sid.ljust(max_id_len)
 
                 name_part = f"{name} [{done_prefix}{prefix}{flat}]"
-                lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
+                lines.append(f"[{sid_label}] [{label}] {indent}{bullet} {kind} {name_part}")
 
         # 4) Render UNBOUND (global) entries (no handle)
         # These must appear in scratchpad_preview so baton handoff notes are visible on resume/finalize.
         if unbound_notes:
             lines.append("")
             lines.append("[UNBOUND]")
-            for note in unbound_notes:
+            for rec in unbound_notes:
+                note = rec.get("note")
+                note = note if isinstance(note, str) else str(note)
                 flat = note.replace("\n", "\\n")
                 if isinstance(DEFAULT_MAX_NOTE, int) and DEFAULT_MAX_NOTE > 0 and len(flat) > DEFAULT_MAX_NOTE:
                     flat = flat[:DEFAULT_MAX_NOTE]
 
-                done_prefix = ""
-                try:
-                    for entry_sp in (scratchpad or []):
-                        if not isinstance(entry_sp, dict):
-                            continue
-                        raw_note = entry_sp.get("note")
-                        if raw_note is None:
-                            raw_note = entry_sp.get("content")
-                        if raw_note is None:
-                            continue
-                        if entry_sp.get("handle") in (None, "") and str(raw_note) == note:
-                            if entry_sp.get("done") is True:
-                                done_prefix = "✅ "
-                            break
-                except Exception:
-                    done_prefix = ""
+                done_prefix = "✅ " if (rec.get("done") is True) else ""
 
-                lines.append(f"    • {done_prefix}{flat}")
+                sid = rec.get("scratch_id")
+                sid = sid if isinstance(sid, str) else "SP-??????"
+                sid_label = sid.ljust(max_id_len)
+
+                lines.append(f"    • [{sid_label}] {done_prefix}{flat}")
 
         # NOTE: scratchpad_preview (UNBOUND) is a scratchpad-only concept.
         # Frontier previews should never reference scratchpad variables.
