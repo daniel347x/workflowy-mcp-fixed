@@ -2037,6 +2037,17 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 except Exception:
                     session = session
 
+                # Persist the session again AFTER internal step so any one-shot flags that were
+                # set in-memory inside _nexus_explore_step_internal() (SP filters, include preview)
+                # actually make it to disk. Without this, LF+SP can show full scratchpad because
+                # _sp_filter was never written.
+                try:
+                    session["updated_at"] = datetime.utcnow().isoformat() + "Z"
+                    with open(session_path, "w", encoding="utf-8") as f:
+                        json_module.dump(session, f, indent=2, ensure_ascii=False)
+                except Exception:
+                    pass
+
                 # New behavior: internal step may return success=False with an action report.
                 # In that case, DO NOT compute a new frontier. Return a clear, human-readable
                 # failure summary + structured details.
