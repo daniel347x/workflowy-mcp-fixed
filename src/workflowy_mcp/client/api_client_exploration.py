@@ -2230,7 +2230,18 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
                     # IMPORTANT (Dec 2025): SP must work in the SAME CALL as LF/PEEK.
                     # If SP was requested, attach scratchpad_preview to this early-return payload.
+                    #
+                    # NOTE: In same-call LF+SP, the SP action runs inside _nexus_explore_step_internal().
+                    # That internal step persists the updated session (including _sp_filter) to disk.
+                    # Therefore, we must RELOAD the session from disk before reading _sp_filter,
+                    # otherwise we will always see sp_filter=None and incorrectly include FULL scratchpad.
                     if bool(include_scratchpad_actions) or bool(session.get("_include_scratchpad_preview_next")):
+                        try:
+                            with open(session_path, "r", encoding="utf-8") as f:
+                                session = json_module.load(f)
+                        except Exception:
+                            pass
+
                         handles_map = session.get("handles", {}) or {}
                         scratch_entries = session.get("scratchpad", [])
 
