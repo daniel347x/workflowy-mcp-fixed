@@ -2465,6 +2465,42 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     _report_fail(i, act, handle, f"Unknown handle: {handle}")
                     continue
 
+                # Special-case UX (Dan): EF/PF targeted at a LEAF should still "just work".
+                # In that situation, EF behaves equivalently to EL (engulf leaf) and PF behaves
+                # equivalently to PL (preserve leaf). We emit an explicit warning so callers can
+                # see the coercion in the returned JSON.
+                target_children = (handles.get(handle, {}) or {}).get("children", []) or []
+                is_leaf_target = (len(target_children) == 0)
+                if is_leaf_target:
+                    st_here = state.get(handle, {"status": "unseen"})
+                    if st_here.get("status") in {"finalized", "closed"}:
+                        # Already decided: treat as ok (nothing to do), but still warn for clarity.
+                        _report_warn(
+                            i,
+                            act,
+                            handle,
+                            f"{act} targeted a leaf; node already decided (no-op). This action is equivalent to {'EL' if act == 'engulf_all_showing_undecided_descendants_into_gem_for_editing' else 'PL'} for leaves.",
+                        )
+                        continue
+
+                    if act == "engulf_all_showing_undecided_descendants_into_gem_for_editing":
+                        entry_leaf = state.setdefault(handle, {"status": "unseen", "selection_type": None})
+                        entry_leaf["status"] = "finalized"
+                        entry_leaf["selection_type"] = "leaf"
+                        entry_leaf["max_depth"] = max_depth
+                        _auto_complete_ancestors(handle)
+                        _report_warn(i, act, handle, "EF targeted a leaf; coerced to EL semantics (engulf leaf).")
+                        continue
+
+                    if act == "preserve_all_showing_undecided_descendants_in_ether":
+                        entry_leaf = state.setdefault(handle, {"status": "unseen", "selection_type": None})
+                        entry_leaf["status"] = "closed"
+                        entry_leaf["selection_type"] = None
+                        entry_leaf["max_depth"] = None
+                        _auto_complete_ancestors(handle)
+                        _report_warn(i, act, handle, "PF targeted a leaf; coerced to PL semantics (preserve leaf).")
+                        continue
+
                 def _is_desc(fh: str, branch: str) -> bool:
                     cur = fh
                     seen = set()
