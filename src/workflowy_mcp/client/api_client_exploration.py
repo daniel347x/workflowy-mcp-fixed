@@ -47,6 +47,10 @@ EXPLORATION_ACTION_2LETTER = {
     # WARNING: This only mutates the exploration session state machine; it does NOT undo any edits
     # made to Workflowy ETHER (those happen only at finalize/weave).
     "UR": "reopen_node_to_undecided",
+
+    # Scratchpad enhancements
+    "SP": "include_scratchpad_in_step_output",
+    "SC": "scratchpad_complete_by_id",
 }
 
 
@@ -80,8 +84,26 @@ def _normalize_scratchpad(session: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _append_scratchpad_entry(session: dict[str, Any], entry: dict[str, Any]) -> None:
-    """Append a structured entry to the exploration scratchpad."""
+    """Append a structured entry to the exploration scratchpad.
+
+    Adds stable scratchpad IDs (SP-000001, ...) to enable completion / targeting.
+    """
     scratch_entries = _normalize_scratchpad(session)
+
+    # Assign stable scratchpad id if missing
+    if isinstance(entry, dict) and "scratch_id" not in entry:
+        counter = session.get("scratchpad_counter", 0)
+        try:
+            counter = int(counter)
+        except (TypeError, ValueError):
+            counter = 0
+        counter += 1
+        session["scratchpad_counter"] = counter
+        entry = dict(entry)
+        entry["scratch_id"] = f"SP-{counter:06d}"
+        entry.setdefault("done", False)
+        entry.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
+
     scratch_entries.append(entry)
     session["scratchpad"] = scratch_entries
 
@@ -513,7 +535,26 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 if isinstance(DEFAULT_MAX_NOTE, int) and DEFAULT_MAX_NOTE > 0 and len(flat) > DEFAULT_MAX_NOTE:
                     flat = flat[:DEFAULT_MAX_NOTE]
                 prefix = "" if idx == 0 else "↳ "
-                name_part = f"{name} [{prefix}{flat}]"
+
+                # Find the original scratchpad entry dict for this handle+note so we can show completion status.
+                done_prefix = ""
+                try:
+                    for entry_sp in (scratchpad or []):
+                        if not isinstance(entry_sp, dict):
+                            continue
+                        raw_note = entry_sp.get("note")
+                        if raw_note is None:
+                            raw_note = entry_sp.get("content")
+                        if raw_note is None:
+                            continue
+                        if entry_sp.get("handle") == h and str(raw_note) == note:
+                            if entry_sp.get("done") is True:
+                                done_prefix = "✅ "
+                            break
+                except Exception:
+                    done_prefix = ""
+
+                name_part = f"{name} [{done_prefix}{prefix}{flat}]"
                 lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
 
         # 4) Render UNBOUND (global) entries (no handle)
@@ -525,7 +566,25 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 flat = note.replace("\n", "\\n")
                 if isinstance(DEFAULT_MAX_NOTE, int) and DEFAULT_MAX_NOTE > 0 and len(flat) > DEFAULT_MAX_NOTE:
                     flat = flat[:DEFAULT_MAX_NOTE]
-                lines.append(f"    • {flat}")
+
+                done_prefix = ""
+                try:
+                    for entry_sp in (scratchpad or []):
+                        if not isinstance(entry_sp, dict):
+                            continue
+                        raw_note = entry_sp.get("note")
+                        if raw_note is None:
+                            raw_note = entry_sp.get("content")
+                        if raw_note is None:
+                            continue
+                        if entry_sp.get("handle") in (None, "") and str(raw_note) == note:
+                            if entry_sp.get("done") is True:
+                                done_prefix = "✅ "
+                            break
+                except Exception:
+                    done_prefix = ""
+
+                lines.append(f"    • {done_prefix}{flat}")
 
         # NOTE: scratchpad_preview (UNBOUND) is a scratchpad-only concept.
         # Frontier previews should never reference scratchpad variables.
@@ -1840,6 +1899,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             # Default: no internal warnings/action reports unless we ran internal step.
             internal_warnings: list[str] = []
             internal_action_reports: list[dict[str, Any]] = []
+            include_scratchpad = False
 
             # Expand 2-letter codes
             if decisions:
@@ -1854,6 +1914,14 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 d for d in (decisions or [])
                 if d.get("action") in {"peek_descendants_as_frontier", "lightning_flash_into_section"}
             ]
+
+            # Scratchpad output toggle
+            include_scratchpad_actions = [
+                d for d in (decisions or [])
+                if d.get("action") == "include_scratchpad_in_step_output"
+            ]
+            include_scratchpad = bool(include_scratchpad_actions) or bool(session.get("_include_scratchpad_preview_next"))
+            session.pop("_include_scratchpad_preview_next", None)
 
             # LF FRESH-START SEMANTICS (Dan): Lightning flashes are ephemeral.
             # If there are NO peek/LF actions in this step, we must NOT reuse a stashed _peek_frontier
@@ -2151,6 +2219,12 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "step_guidance": step_guidance,
                 "frontier_preview": frontier_preview,
             }
+
+            if include_scratchpad:
+                minimal["scratchpad_preview"] = self._build_scratchpad_preview_lines(
+                    session.get("scratchpad", []),
+                    handles=session.get("handles", {}) or {},
+                )
 
             if internal_warnings:
                 minimal["warnings"] = internal_warnings
@@ -2479,6 +2553,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                             "action": act,
                             "i": i,
                             "field": label,
+                            # scratch_id assigned by _append_scratchpad_entry
                         },
                     )
 
@@ -2513,7 +2588,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     continue
 
             # Global actions (no handle required)
-            if act in {"set_scratchpad", "append_scratchpad", "preserve_all_remaining_nodes_in_ether_at_finalization"}:
+            if act in {"set_scratchpad", "append_scratchpad", "preserve_all_remaining_nodes_in_ether_at_finalization", "include_scratchpad_in_step_output", "scratchpad_complete_by_id"}:
                 if act == "preserve_all_remaining_nodes_in_ether_at_finalization":
                     if exploration_mode != "dfs_guided_bulk":
                         _report_fail(i, act, None, "preserve_all only in bulk mode")
@@ -2594,6 +2669,40 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         entry["handle"] = h.strip()
 
                     _append_scratchpad_entry(session, entry)
+                    _report_ok(i, act, None)
+                    continue
+
+                if act == "include_scratchpad_in_step_output":
+                    # Set a one-step flag; v2 layer will include scratchpad_preview in the tool output.
+                    session["_include_scratchpad_preview_next"] = True
+                    _report_ok(i, act, None)
+                    continue
+
+                if act == "scratchpad_complete_by_id":
+                    # Mark an existing scratchpad entry as done (does not delete it).
+                    # Required param: scratch_id (e.g., "SP-000123")
+                    raw_id = action.get("scratch_id")
+                    if not isinstance(raw_id, str) or not raw_id.strip():
+                        _report_fail(i, act, None, "scratchpad_complete_by_id requires scratch_id")
+                        continue
+                    scratch_id = raw_id.strip()
+
+                    scratch_entries = _normalize_scratchpad(session)
+                    matched = False
+                    for entry_sp in scratch_entries:
+                        if not isinstance(entry_sp, dict):
+                            continue
+                        if entry_sp.get("scratch_id") == scratch_id:
+                            entry_sp["done"] = True
+                            entry_sp["done_at"] = datetime.utcnow().isoformat() + "Z"
+                            matched = True
+                            break
+
+                    if not matched:
+                        _report_fail(i, act, None, f"scratch_id not found: {scratch_id}")
+                        continue
+
+                    session["scratchpad"] = scratch_entries
                     _report_ok(i, act, None)
                     continue
 
