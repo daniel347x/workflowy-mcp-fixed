@@ -301,6 +301,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     elif t.startswith("LS:"):
                         root = t.split(":", 1)[1]
                         tags.append(f"[LS {root}]")
+                    elif t.startswith("DTARGETSELF:"):
+                        root = t.split(":", 1)[1]
+                        tags.append(f"[DECIDED TARGET {root}]")
                     elif t.startswith("DTARGETDESC:"):
                         root = t.split(":", 1)[1]
                         tags.append(f"[DESCENDANT OF DECIDED TARGET {root}]")
@@ -327,13 +330,15 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 def _tag_priority(tag: str) -> tuple[int, str]:
                     if tag.startswith("[LEAF "):
                         return (0, tag)
-                    if tag.startswith("[DESCENDANT OF DECIDED TARGET "):
+                    if tag.startswith("[DECIDED TARGET "):
                         return (1, tag)
-                    if tag.startswith("[STRUCT "):
+                    if tag.startswith("[DESCENDANT OF DECIDED TARGET "):
                         return (2, tag)
-                    if tag.startswith("[LS "):
+                    if tag.startswith("[STRUCT "):
                         return (3, tag)
-                    return (4, tag)
+                    if tag.startswith("[LS "):
+                        return (4, tag)
+                    return (5, tag)
 
                 tags.sort(key=_tag_priority)
                 if tags:
@@ -746,10 +751,18 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "_frontier_role": "branch_ancestor",
                     }
 
-                    # Visibility: mark descendants of already-decided targets
+                    # Visibility: mark decided targets and their descendants
+                    local_hints_for_visibility = meta.get("hints") or []
+                    tags_tmp: list[str] = []
+                    if "SKELETON_MERGE_TARGET" in local_hints_for_visibility or "SKELETON_PERMANENT_TARGET" in local_hints_for_visibility:
+                        tags_tmp.append(f"DTARGETSELF:{h}")
+
                     nearest_target = _nearest_decided_target_ancestor(h)
                     if nearest_target:
-                        entry["skeleton_tmp"] = [f"DTARGETDESC:{nearest_target}"]
+                        tags_tmp.append(f"DTARGETDESC:{nearest_target}")
+
+                    if tags_tmp:
+                        entry["skeleton_tmp"] = tags_tmp
 
                     if local_hints:
                         entry["hints"] = local_hints
@@ -791,10 +804,18 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     ),
                 }
 
-                # Visibility: mark descendants of already-decided targets
+                # Visibility: mark decided targets and their descendants
+                local_hints_for_visibility = meta.get("hints") or []
+                tags_tmp: list[str] = []
+                if "SKELETON_MERGE_TARGET" in local_hints_for_visibility or "SKELETON_PERMANENT_TARGET" in local_hints_for_visibility:
+                    tags_tmp.append(f"DTARGETSELF:{h}")
+
                 nearest_target = _nearest_decided_target_ancestor(h)
                 if nearest_target:
-                    entry["skeleton_tmp"] = [f"DTARGETDESC:{nearest_target}"]
+                    tags_tmp.append(f"DTARGETDESC:{nearest_target}")
+
+                if tags_tmp:
+                    entry["skeleton_tmp"] = tags_tmp
                 if local_hints:
                     entry["hints"] = local_hints
                 if hints_from_ancestors:
