@@ -2257,9 +2257,24 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         scratch_entries = session.get("scratchpad", [])
 
                         # Read one-shot filter (if any) produced by SP action.
+                        # In stashed-peek workflows, SP is often called repeatedly while peek state is reused.
+                        # Use the in-memory session first (it includes SP mutations in this same call), and only
+                        # fall back to disk if missing.
                         sp_filter = session.get("_sp_filter")
                         if not isinstance(sp_filter, dict):
+                            try:
+                                with open(session_path, "r", encoding="utf-8") as f:
+                                    session_disk = json_module.load(f)
+                                sp_filter = session_disk.get("_sp_filter")
+                            except Exception:
+                                sp_filter = None
+                        if not isinstance(sp_filter, dict):
                             sp_filter = None
+
+                        try:
+                            log_event(f"[SP_DEBUG_RETURN] peek-return sp_filter={sp_filter}", component="EXPLORATION")
+                        except Exception:
+                            pass
 
                         # Consume one-shot flags.
                         session.pop("_include_scratchpad_preview_next", None)
