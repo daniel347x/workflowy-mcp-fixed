@@ -1388,7 +1388,30 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 pass
         
         # Compute frontier
-        frontier = self._compute_exploration_frontier(session, frontier_size, 1)
+        # IMPORTANT: resume should default to the session's saved leaf budget (session['frontier_size']).
+        # The 'frontier_size' parameter acts as an explicit override only.
+        session_frontier_size = session.get("frontier_size", 25)
+        try:
+            session_frontier_size = int(session_frontier_size)
+        except (TypeError, ValueError):
+            session_frontier_size = 25
+        if session_frontier_size <= 0:
+            session_frontier_size = 25
+
+        effective_frontier_size = frontier_size
+        try:
+            effective_frontier_size = int(effective_frontier_size)
+        except (TypeError, ValueError):
+            effective_frontier_size = session_frontier_size
+        if effective_frontier_size <= 0:
+            effective_frontier_size = session_frontier_size
+
+        # If caller did not explicitly override (i.e., left default=25), prefer session budget.
+        # This preserves stable resume behavior for long-running explorations.
+        if frontier_size == 25 and session_frontier_size != 25:
+            effective_frontier_size = session_frontier_size
+
+        frontier = self._compute_exploration_frontier(session, effective_frontier_size, 1)
         frontier_preview = self._build_frontier_preview_lines(frontier)
 
         # Persist flat frontier
