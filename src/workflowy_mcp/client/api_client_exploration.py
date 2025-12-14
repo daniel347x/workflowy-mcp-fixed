@@ -14,6 +14,10 @@ from .api_client_core import _ClientLogger, log_event
 from .api_client_nexus import WorkFlowyClientNexus
 
 # 2-LETTER ACTION CODE MAPPING (module-level constant)
+
+# Step guidance constants (we are beginning migration toward shared guidance blocks)
+UNDO_STEP_GUIDANCE_UR = "↩️ UNDO (SESSION ONLY): UR = reopen_node_to_undecided — resets a decided handle (finalized/closed) back to undecided (unseen) so it reappears in frontiers; clears local skeleton/prune hints; best-effort reopens auto-completed ancestors; does NOT change Workflowy ETHER (only session state)."
+
 EXPLORATION_ACTION_2LETTER = {
     "EL": "engulf_leaf_into_gem_for_editing",
     "PL": "preserve_leaf_in_ether_untouched",
@@ -38,6 +42,11 @@ EXPLORATION_ACTION_2LETTER = {
     "MSM": "mark_section_as_merge_target",
     "MSP": "mark_section_as_permanent",
     "ALS": "abandon_lightning_strike",
+
+    # Undo (session-only): reopen a previously decided handle back to undecided.
+    # WARNING: This only mutates the exploration session state machine; it does NOT undo any edits
+    # made to Workflowy ETHER (those happen only at finalize/weave).
+    "UR": "reopen_node_to_undecided",
 }
 
 
@@ -1414,6 +1423,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
                 "Lightning: LF=multi-root lightning strike (default 15 nodes per root; large branches show [STRUCT] preview only), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
                 "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
+                UNDO_STEP_GUIDANCE_UR,
             ]
         elif exploration_mode == "dfs_guided_bulk":
             if strict:
@@ -1428,6 +1438,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
                     "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
+                    UNDO_STEP_GUIDANCE_UR,
                 ]
             else:
                 step_guidance = [
@@ -1441,6 +1452,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
                     "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
+                    UNDO_STEP_GUIDANCE_UR,
                 ]
         else:
             step_guidance = ["🎯 LEGACY MODE: Manual"]
@@ -1674,6 +1686,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "Lightning: LF=multi-root lightning strike (default 15 nodes per root; large branches show [STRUCT] preview only)",
                 "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                 "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
+                UNDO_STEP_GUIDANCE_UR,
             ]
         elif exploration_mode == "dfs_guided_bulk":
             if strict_completeness:
@@ -1953,6 +1966,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
                         "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                         "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
+                        UNDO_STEP_GUIDANCE_UR,
                     ]
                 else:
                     step_guidance = [
@@ -1967,7 +1981,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
                         "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                         "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
+                        UNDO_STEP_GUIDANCE_UR,
                     ]
+
             else:
                 step_guidance = ["🎯 LEGACY MODE"]
 
@@ -3383,6 +3399,60 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
                 continue
 
+            # UNDO action: reopen previously decided handle back to undecided
+            if act == "reopen_node_to_undecided":
+                # NOTE: This is session-state-only undo. It does not affect Workflowy ETHER.
+                # It is meant for recovering from accidental bulk decisions during long explorations.
+                #
+                # Default behavior:
+                # - If the handle is finalized/closed, set it back to unseen.
+                # - Clear decision metadata that can constrain later behavior.
+                # - Clear skeleton pruning hints that hide descendants.
+                # - Clear auto-completion artifacts on ancestors (best-effort).
+
+                prior_status = entry.get("status")
+                if prior_status not in {"finalized", "closed"}:
+                    _report_warn(i, act, handle, f"UR is a no-op: node status is '{prior_status}' (already undecided)")
+                    continue
+
+                # Reopen this node
+                entry["status"] = "unseen"
+                entry["selection_type"] = None
+                entry["max_depth"] = None
+                entry.pop("subtree_mode", None)
+
+                # Clear skeleton-related hints that can prevent the node/subtree from reappearing
+                meta = handles.get(handle) or {}
+                hints = meta.get("hints") or []
+                if isinstance(hints, list) and hints:
+                    blocked = {
+                        "SKELETON_PRUNED",
+                        "SKELETON_PERMANENT_PRUNED",
+                        "SKELETON_MERGE_TARGET",
+                        "SKELETON_PERMANENT_TARGET",
+                    }
+                    new_hints = [h for h in hints if h not in blocked]
+                    if new_hints != hints:
+                        meta["hints"] = new_hints
+                        handles[handle] = meta
+
+                # Best-effort: reopen ancestors that were auto-completed solely due to descendant decisions.
+                # We only reset ancestors if they are in a decided state.
+                cur = (handles.get(handle) or {}).get("parent")
+                seen: set[str] = set()
+                while isinstance(cur, str) and cur and cur not in seen and cur != "R":
+                    seen.add(cur)
+                    st_parent = state.get(cur) or {}
+                    if st_parent.get("status") in {"finalized", "closed"}:
+                        st_parent["status"] = "unseen"
+                        st_parent["selection_type"] = None
+                        st_parent["max_depth"] = None
+                        st_parent.pop("subtree_mode", None)
+                    cur = (handles.get(cur) or {}).get("parent")
+
+                _report_ok(i, act, handle)
+                continue
+
             # LEAF actions
             if act == "engulf_leaf_into_gem_for_editing":
                 entry["status"] = "finalized"
@@ -3590,6 +3660,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "❌ One or more actions failed. No frontier returned.",
                 "Fix the failed action(s) and re-run the step.",
                 "Note: LF/peek/search state has been cleared to prevent acting-without-seeing.",
+                UNDO_STEP_GUIDANCE_UR,
             ]
             # Human-readable output (primary) + structured details for inspection.
             # TypingMind renders tool outputs as JSON; embedding the human summary as multiline text
