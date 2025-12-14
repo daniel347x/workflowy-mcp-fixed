@@ -2027,6 +2027,16 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     _precomputed_frontier=correct_frontier_for_bulk,
                 )
 
+                # After internal step runs, it may have set one-shot flags for this SAME call
+                # (notably SP: include scratchpad preview in output). We must reload the session
+                # BEFORE handling peek_actions early-return, otherwise LF+SP in same call will
+                # return a peek frontier without the requested scratchpad_preview.
+                try:
+                    with open(session_path, "r", encoding="utf-8") as f:
+                        session = json_module.load(f)
+                except Exception:
+                    session = session
+
                 # New behavior: internal step may return success=False with an action report.
                 # In that case, DO NOT compute a new frontier. Return a clear, human-readable
                 # failure summary + structured details.
@@ -2217,6 +2227,85 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "step_guidance": step_guidance,
                         "frontier_preview": frontier_preview,
                     }
+
+                    # IMPORTANT (Dec 2025): SP must work in the SAME CALL as LF/PEEK.
+                    # If SP was requested, attach scratchpad_preview to this early-return payload.
+                    if bool(include_scratchpad_actions) or bool(session.get("_include_scratchpad_preview_next")):
+                        handles_map = session.get("handles", {}) or {}
+                        scratch_entries = session.get("scratchpad", [])
+
+                        # Read one-shot filter (if any) produced by SP action.
+                        sp_filter = session.get("_sp_filter")
+                        if not isinstance(sp_filter, dict):
+                            sp_filter = None
+
+                        # Consume one-shot flags.
+                        session.pop("_include_scratchpad_preview_next", None)
+                        session.pop("_sp_filter", None)
+                        try:
+                            session["updated_at"] = datetime.utcnow().isoformat() + "Z"
+                            with open(session_path, "w", encoding="utf-8") as f:
+                                json_module.dump(session, f, indent=2, ensure_ascii=False)
+                        except Exception:
+                            pass
+
+                        # Apply optional SP filtering by handle.
+                        if sp_filter and isinstance(sp_filter, dict) and sp_filter.get("handles"):
+                            target_handles = [h for h in (sp_filter.get("handles") or []) if isinstance(h, str)]
+                            include_anc = bool(sp_filter.get("include_ancestors", False))
+                            include_desc = bool(sp_filter.get("include_descendants", False))
+
+                            allowed: set[str] = set()
+
+                            def _add_ancestors(h: str) -> None:
+                                cur = h
+                                seen = set()
+                                while isinstance(cur, str) and cur and cur not in seen and cur != "R":
+                                    seen.add(cur)
+                                    allowed.add(cur)
+                                    cur = (handles_map.get(cur) or {}).get("parent")
+
+                            def _add_descendants(h: str) -> None:
+                                allowed.add(h)
+                                stack = list((handles_map.get(h) or {}).get("children") or [])
+                                seen = set()
+                                while stack:
+                                    ch = stack.pop()
+                                    if ch in seen:
+                                        continue
+                                    seen.add(ch)
+                                    allowed.add(ch)
+                                    stack.extend((handles_map.get(ch) or {}).get("children") or [])
+
+                            for h in target_handles:
+                                if h not in handles_map:
+                                    continue
+                                allowed.add(h)
+                                if include_anc:
+                                    _add_ancestors(h)
+                                if include_desc:
+                                    _add_descendants(h)
+
+                            filtered_scratch = []
+                            for e in scratch_entries or []:
+                                if not isinstance(e, dict):
+                                    continue
+                                hh = self._extract_handle_from_scratchpad_entry(e)
+                                if hh is None:
+                                    # unbound entries excluded from filtered view
+                                    continue
+                                if hh in allowed:
+                                    filtered_scratch.append(e)
+
+                            minimal["scratchpad_preview"] = self._build_scratchpad_preview_lines(
+                                filtered_scratch,
+                                handles=handles_map,
+                            )
+                        else:
+                            minimal["scratchpad_preview"] = self._build_scratchpad_preview_lines(
+                                scratch_entries,
+                                handles=handles_map,
+                            )
 
                     return minimal
 
