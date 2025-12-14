@@ -392,7 +392,57 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         return lines
 
     @staticmethod
+    @staticmethod
+    def _extract_handle_from_scratchpad_entry(entry: dict[str, Any]) -> str | None:
+        """Best-effort: extract a single handle from a scratchpad entry.
+
+        Single-source-of-truth for scratchpad handle binding.
+
+        Rules:
+        - Prefer explicit handle keys (handle, branch_handle, etc.).
+        - Fallback: scan all string fields for handle-like tokens; only return if EXACTLY ONE unique
+          candidate is found.
+        - Return None if ambiguous or not found.
+        """
+        import re
+
+        if not isinstance(entry, dict):
+            return None
+
+        handle_re = re.compile(r"^[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*$")
+        handle_anywhere_re = re.compile(r"\b[A-Za-z]+(?:\.[A-Za-z0-9]+)+\b")
+
+        HANDLE_KEYS = (
+            "handle",
+            "root_handle",
+            "target_handle",
+            "branch_handle",
+            "node_handle",
+            "leaf_handle",
+        )
+
+        for k in HANDLE_KEYS:
+            v = entry.get(k)
+            if isinstance(v, str):
+                v2 = v.strip()
+                if v2 and handle_re.match(v2):
+                    return v2
+
+        candidates: set[str] = set()
+        for v in entry.values():
+            if not isinstance(v, str):
+                continue
+            for m in handle_anywhere_re.findall(v):
+                if handle_re.match(m):
+                    candidates.add(m)
+
+        if len(candidates) == 1:
+            return next(iter(candidates))
+
+        return None
+
     def _build_scratchpad_preview_lines(
+        self,
         scratchpad: list[dict[str, Any]] | None,
         handles: dict[str, dict[str, Any]] | None = None,
         max_note_chars: int | None = None,
@@ -436,15 +486,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         notes_by_handle: dict[str, list[str]] = {}
         unbound_notes: list[str] = []  # notes that cannot be tied to exactly one handle
 
-        HANDLE_KEYS = (
-            "handle",
-            "root_handle",
-            "target_handle",
-            "branch_handle",
-            "node_handle",
-            "leaf_handle",
-        )
-
         for entry in scratchpad:
             if not isinstance(entry, dict):
                 continue
@@ -457,32 +498,14 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 continue
             note = raw_note if isinstance(raw_note, str) else str(raw_note)
 
-            handle: str | None = None
-
-            # Direct handle keys
-            for k in HANDLE_KEYS:
-                v = entry.get(k)
-                if isinstance(v, str) and handle_re.match(v):
-                    handle = v
-                    break
-
-            # Fallback: scan all string fields for a SINGLE handle-like token
-            if handle is None:
-                candidates: set[str] = set()
-                for v in entry.values():
-                    if not isinstance(v, str):
-                        continue
-                    for m in handle_anywhere_re.findall(v):
-                        if handle_re.match(m):
-                            candidates.add(m)
-                if len(candidates) == 1:
-                    handle = next(iter(candidates))
+            handle = self._extract_handle_from_scratchpad_entry(entry)
 
             if handle is None:
                 unbound_notes.append(note)
                 continue
 
             notes_by_handle.setdefault(handle, []).append(note)
+
 
         if not notes_by_handle and not unbound_notes:
             return []
@@ -2314,8 +2337,10 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                             _add_descendants(h)
 
                     def _entry_handle(e: dict) -> str | None:
-                        hh = e.get("handle")
-                        return hh if isinstance(hh, str) else None
+                        # Single-source-of-truth: reuse the SAME handle extraction logic as
+                        # _build_scratchpad_preview_lines() so future enhancements stay in sync.
+                        # This returns a handle only when it can be tied to exactly one handle.
+                        return self._extract_handle_from_scratchpad_entry(e)
 
                     filtered_scratch = []
                     for e in scratch_entries or []:
