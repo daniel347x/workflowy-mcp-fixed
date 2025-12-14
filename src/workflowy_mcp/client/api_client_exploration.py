@@ -2966,6 +2966,28 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         filt["include_descendants"] = bool(filt.get("include_descendants")) or include_desc
                         session["_sp_filter"] = filt
 
+                    # --- DEBUG INSTRUMENTATION (Dec 2025): verify SP handler execution + flag values.
+                    # This should show up in scratchpad_preview and in stderr log_event output.
+                    try:
+                        log_event(
+                            f"[SP_DEBUG] SP handler ran: handle={h} include_ancestors={include_anc} include_descendants={include_desc} filt={session.get('_sp_filter')}",
+                            component="EXPLORATION",
+                        )
+                    except Exception:
+                        pass
+
+                    try:
+                        _append_scratchpad_entry(
+                            session,
+                            {
+                                "note": f"[DEBUG] SP_SET: handle={h} include_ancestors={include_anc} include_descendants={include_desc} filt={session.get('_sp_filter')}",
+                                "branch_handle": (h.strip() if isinstance(h, str) and h.strip() else None),
+                                "origin": "debug_sp",
+                            },
+                        )
+                    except Exception:
+                        pass
+
                     _report_ok(i, act, h)
                     continue
 
