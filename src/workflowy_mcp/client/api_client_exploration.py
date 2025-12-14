@@ -2218,6 +2218,11 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "history_summary": history_summary,
                         "peek_results": peek_results,
                         "frontier_tree": frontier_tree,
+                        # When SP is requested, also persist the rendered preview into the step output file
+                        # via _write_exploration_output() (it embeds full_response). This makes debugging and
+                        # baton relay easier without requiring re-running steps.
+                        "scratchpad_preview": minimal.get("scratchpad_preview"),
+                        "sp_filter": sp_filter,
                     }
 
                     self._write_exploration_output(
@@ -2950,27 +2955,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         filt["include_descendants"] = bool(filt.get("include_descendants")) or include_desc
                         session["_sp_filter"] = filt
 
-                    # --- DEBUG INSTRUMENTATION (Dec 2025): verify SP handler execution + flag values.
-                    # This should show up in scratchpad_preview and in stderr log_event output.
-                    try:
-                        log_event(
-                            f"[SP_DEBUG] SP handler ran: handle={h} include_ancestors={include_anc} include_descendants={include_desc} filt={session.get('_sp_filter')}",
-                            component="EXPLORATION",
-                        )
-                    except Exception:
-                        pass
-
-                    try:
-                        _append_scratchpad_entry(
-                            session,
-                            {
-                                "note": f"[DEBUG] SP_SET: handle={h} include_ancestors={include_anc} include_descendants={include_desc} filt={session.get('_sp_filter')}",
-                                "branch_handle": (h.strip() if isinstance(h, str) and h.strip() else None),
-                                "origin": "debug_sp",
-                            },
-                        )
-                    except Exception:
-                        pass
+                    # NOTE: (Dec 2025) SP debug instrumentation removed after stabilizing LF+SP filtering.
+                    # If needed again, re-add as temporary log_event() calls only (avoid scratchpad spam).
 
                     _report_ok(i, act, h)
                     continue
