@@ -417,6 +417,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 continue
 
             raw_note = entry.get("note")
+            # Accept both 'note' and 'content' (AS/SS payload) as the note text.
+            if raw_note is None:
+                raw_note = entry.get("content")
             if raw_note is None:
                 continue
             note = raw_note if isinstance(raw_note, str) else str(raw_note)
