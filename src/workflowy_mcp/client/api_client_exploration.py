@@ -385,8 +385,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             else:
                 name_part = f"{tag_prefix}{name}" if tag_prefix else name
 
-            id_blank = " " * max_id_len
-            lines.append(f"[{id_blank}] [{label}] {indent}{bullet} {kind} {name_part}")
+            # Frontier previews do not include scratchpad IDs; keep alignment stable without relying
+            # on scratchpad-only variables.
+            lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
 
         # NOTE: scratchpad_preview (UNBOUND) is a scratchpad-only concept.
         # Frontier previews should never reference scratchpad variables.
