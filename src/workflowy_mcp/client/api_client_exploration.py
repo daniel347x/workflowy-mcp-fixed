@@ -362,35 +362,29 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         handles: dict[str, dict[str, Any]] | None = None,
         max_note_chars: int | None = None,
     ) -> list[str]:
-        """Build aligned one-line preview for scratchpad entries with handles.
+        """Build a "true" mini-tree preview from scratchpad entries.
 
-        This mirrors _build_frontier_preview_lines but operates over the
-        exploration scratchpad. It is best-effort and ignores entries that
-        do not have a dot-delimited 'handle' and string 'note'.
+        Goals (resume baton handoff UX):
+        - Include ANY scratchpad entry that can be tied to exactly one handle.
+        - Include ALL ancestors up to R (stub lines if no note) so the mini-tree is complete.
+        - Natural-handle order, with proper indentation.
+        - Multiple notes per handle => multiple lines at same indentation.
+
+        Notes are rendered inline on the same line as the entry name. Newlines are flattened to
+        literal "\\n" so each preview entry stays one line.
         """
         import re
 
         if not scratchpad:
             return []
 
-        typed_entries: list[tuple[str, str]] = []
+        handles_map = handles or {}
+        DEFAULT_MAX_NOTE = 1024 if max_note_chars is None else max_note_chars
+
         handle_re = re.compile(r"^[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*$")
+        handle_anywhere_re = re.compile(r"\b[A-Za-z]+(?:\.[A-Za-z0-9]+)+\b")
 
-        for entry in scratchpad:
-            if not isinstance(entry, dict):
-                continue
-            handle = entry.get("handle")
-            note = entry.get("note")
-            if not isinstance(handle, str) or not isinstance(note, str):
-                continue
-            if not handle_re.match(handle):
-                continue
-            typed_entries.append((handle, note))
-
-        if not typed_entries:
-            return []
-
-        def natural_handle_key(handle: str) -> list[tuple[int, object]]:
+        def _natural_handle_key(handle: str) -> list[tuple[int, object]]:
             parts = handle.split(".")
             result: list[tuple[int, object]] = []
             for part in parts:
@@ -400,40 +394,107 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     result.append((1, part))
             return result
 
-        typed_entries.sort(key=lambda hn: natural_handle_key(hn[0]))
+        # 1) Extract handle + note from scratchpad entries (best-effort)
+        notes_by_handle: dict[str, list[str]] = {}
 
-        max_len = max(len(h) for h, _ in typed_entries)
+        HANDLE_KEYS = (
+            "handle",
+            "root_handle",
+            "target_handle",
+            "branch_handle",
+            "node_handle",
+            "leaf_handle",
+        )
+
+        for entry in scratchpad:
+            if not isinstance(entry, dict):
+                continue
+
+            raw_note = entry.get("note")
+            if raw_note is None:
+                continue
+            note = raw_note if isinstance(raw_note, str) else str(raw_note)
+
+            handle: str | None = None
+
+            # Direct handle keys
+            for k in HANDLE_KEYS:
+                v = entry.get(k)
+                if isinstance(v, str) and handle_re.match(v):
+                    handle = v
+                    break
+
+            # Fallback: scan all string fields for a SINGLE handle-like token
+            if handle is None:
+                candidates: set[str] = set()
+                for v in entry.values():
+                    if not isinstance(v, str):
+                        continue
+                    for m in handle_anywhere_re.findall(v):
+                        if handle_re.match(m):
+                            candidates.add(m)
+                if len(candidates) == 1:
+                    handle = next(iter(candidates))
+
+            if handle is None:
+                continue
+
+            notes_by_handle.setdefault(handle, []).append(note)
+
+        if not notes_by_handle:
+            return []
+
+        # 2) Expand to include ancestors up to R (stub lines)
+        expanded_handles: set[str] = set()
+        for h in notes_by_handle.keys():
+            cur = h
+            seen: set[str] = set()
+            while isinstance(cur, str) and cur and cur not in seen:
+                seen.add(cur)
+                expanded_handles.add(cur)
+                if cur == "R":
+                    break
+                cur = (handles_map.get(cur) or {}).get("parent")
+                if cur is None:
+                    break
+
+        ordered_handles = sorted(expanded_handles, key=_natural_handle_key)
+        if "R" in expanded_handles:
+            ordered_handles = ["R"] + [h for h in ordered_handles if h != "R"]
+
+        # 3) Render
+        max_len = max(len(h) for h in ordered_handles)
         lines: list[str] = []
 
-        handles_map = handles or {}
-        DEFAULT_MAX_NOTE = 1024 if max_note_chars is None else max_note_chars
-
-        for handle, note in typed_entries:
-            label = handle.ljust(max_len)
-            depth = max(1, len(handle.split(".")))
-
-            # In some previews we include the synthetic root handle 'R' for context.
-            # When 'R' is shown, all other nodes should appear visually nested beneath it.
-            # We do this by adding one extra indent level for non-root handles.
-            base_indent_level = (depth - 1)
-            if handle and handle != "R":
-                base_indent_level += 1
-            indent = " " * 4 * base_indent_level
-
-            meta = handles_map.get(handle) or {}
+        for h in ordered_handles:
+            meta = handles_map.get(h) or {}
             children = meta.get("children") or []
             is_leaf = not children
             bullet = "•" if is_leaf else "⦿"
-            kind = "🍃" if is_leaf else "🪵"  # Scratchpad preview has no pseudo-leaf concept
-
+            kind = "🍃" if is_leaf else "🪵"
             name = meta.get("name") or "Untitled"
 
-            flat = note.replace("\n", "\\n")
-            if isinstance(DEFAULT_MAX_NOTE, int) and DEFAULT_MAX_NOTE > 0 and len(flat) > DEFAULT_MAX_NOTE:
-                flat = flat[:DEFAULT_MAX_NOTE]
-            name_part = f"{name} [{flat}]"
+            label = h.ljust(max_len)
+            depth = max(1, len(h.split(".")))
+            base_indent_level = (depth - 1)
+            if h and h != "R":
+                base_indent_level += 1
+            indent = " " * 4 * base_indent_level
 
-            lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
+            notes = notes_by_handle.get(h)
+
+            if not notes:
+                # Stub ancestor line (no note)
+                lines.append(f"[{label}] {indent}{bullet} {kind} {name}")
+                continue
+
+            for idx, note in enumerate(notes):
+                flat = note.replace("\n", "\\n")
+                if isinstance(DEFAULT_MAX_NOTE, int) and DEFAULT_MAX_NOTE > 0 and len(flat) > DEFAULT_MAX_NOTE:
+                    flat = flat[:DEFAULT_MAX_NOTE]
+                prefix = "" if idx == 0 else "↳ "
+                name_part = f"{name} [{prefix}{flat}]"
+                lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
 
         return lines
 
@@ -1369,6 +1430,10 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "action_key": EXPLORATION_ACTION_2LETTER,
             "step_guidance": step_guidance,
             "scratchpad": session.get("scratchpad", []),
+            "scratchpad_preview": self._build_scratchpad_preview_lines(
+                session.get("scratchpad", []),
+                handles=session.get("handles", {}) or {},
+            ),
             "frontier_preview": frontier_preview,
             "walks": [],
             "skipped_walks": [],
@@ -1399,6 +1464,11 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "action_key": EXPLORATION_ACTION_2LETTER,
             "step_guidance": step_guidance,
             "frontier_preview": frontier_preview,
+            "scratchpad": session.get("scratchpad", []),
+            "scratchpad_preview": self._build_scratchpad_preview_lines(
+                session.get("scratchpad", []),
+                handles=session.get("handles", {}) or {},
+            ),
         }
         return minimal
 
