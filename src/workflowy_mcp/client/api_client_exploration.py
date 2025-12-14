@@ -354,16 +354,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
             lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
 
-        # 4) Append unbound notes (not tied to exactly one handle)
-        if unbound_notes:
-            lines.append("[UNBOUND]")
-            lines.append("    • 📝 UNBOUND SCRATCHPAD NOTES")
-            for note in unbound_notes:
-                flat = str(note).replace("\n", "\\n")
-                if isinstance(DEFAULT_MAX_NOTE, int) and DEFAULT_MAX_NOTE > 0 and len(flat) > DEFAULT_MAX_NOTE:
-                    flat = flat[:DEFAULT_MAX_NOTE]
-                lines.append(f"        • {flat}")
-
+        # NOTE: scratchpad_preview (UNBOUND) is a scratchpad-only concept.
+        # Frontier previews should never reference scratchpad variables.
         return lines
 
     @staticmethod
@@ -512,16 +504,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 name_part = f"{name} [{prefix}{flat}]"
                 lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
 
-        # 4) Append unbound notes (not tied to exactly one handle)
-        if unbound_notes:
-            lines.append("[UNBOUND]")
-            lines.append("    • 📝 UNBOUND SCRATCHPAD NOTES")
-            for note in unbound_notes:
-                flat = str(note).replace("\n", "\\n")
-                if isinstance(DEFAULT_MAX_NOTE, int) and DEFAULT_MAX_NOTE > 0 and len(flat) > DEFAULT_MAX_NOTE:
-                    flat = flat[:DEFAULT_MAX_NOTE]
-                lines.append(f"        • {flat}")
-
+        # NOTE: scratchpad_preview (UNBOUND) is a scratchpad-only concept.
+        # Frontier previews should never reference scratchpad variables.
         return lines
 
     def _build_frontier_tree_from_flat(self, frontier: list[dict[str, Any]]) -> list[dict[str, Any]]:
