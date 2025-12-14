@@ -2242,47 +2242,16 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     # IMPORTANT (Dec 2025): SP must work in the SAME CALL as LF/PEEK.
                     # If SP was requested, attach scratchpad_preview to this early-return payload.
                     #
-                    # NOTE: In same-call LF+SP, the SP action runs inside _nexus_explore_step_internal().
-                    # That internal step persists the updated session (including _sp_filter) to disk.
-                    # Therefore, we must RELOAD the session from disk before reading _sp_filter,
-                    # otherwise we will always see sp_filter=None and incorrectly include FULL scratchpad.
-                    if bool(include_scratchpad_actions) or bool(session.get("_include_scratchpad_preview_next")):
-                        try:
-                            with open(session_path, "r", encoding="utf-8") as f:
-                                session = json_module.load(f)
-                        except Exception:
-                            pass
-
+                    # CRITICAL FIX: In the main v2 flow, _sp_filter is explicitly treated as ONE-SHOT.
+                    # It is read into a LOCAL variable (sp_filter) and then popped from session and
+                    # written back to disk. Therefore, this peek-return path must use the LOCAL sp_filter
+                    # computed earlier in this call, NOT re-read session['_sp_filter'] from disk.
+                    if include_scratchpad:
                         handles_map = session.get("handles", {}) or {}
                         scratch_entries = session.get("scratchpad", [])
 
-                        # Read one-shot filter (if any) produced by SP action.
-                        # In stashed-peek workflows, SP is often called repeatedly while peek state is reused.
-                        # Use the in-memory session first (it includes SP mutations in this same call), and only
-                        # fall back to disk if missing.
-                        sp_filter = session.get("_sp_filter")
-                        if not isinstance(sp_filter, dict):
-                            try:
-                                with open(session_path, "r", encoding="utf-8") as f:
-                                    session_disk = json_module.load(f)
-                                sp_filter = session_disk.get("_sp_filter")
-                            except Exception:
-                                sp_filter = None
-                        if not isinstance(sp_filter, dict):
-                            sp_filter = None
-
                         try:
-                            log_event(f"[SP_DEBUG_RETURN] peek-return sp_filter={sp_filter}", component="EXPLORATION")
-                        except Exception:
-                            pass
-
-                        # Consume one-shot flags.
-                        session.pop("_include_scratchpad_preview_next", None)
-                        session.pop("_sp_filter", None)
-                        try:
-                            session["updated_at"] = datetime.utcnow().isoformat() + "Z"
-                            with open(session_path, "w", encoding="utf-8") as f:
-                                json_module.dump(session, f, indent=2, ensure_ascii=False)
+                            log_event(f"[SP_DEBUG_RETURN] peek-return using local sp_filter={sp_filter}", component="EXPLORATION")
                         except Exception:
                             pass
 
