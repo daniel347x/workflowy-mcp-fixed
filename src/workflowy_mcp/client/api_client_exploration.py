@@ -1932,19 +1932,18 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             ]
 
             # Scratchpad output toggle
+            # NOTE (Dec 2025): SP MUST work in the SAME CALL as LF/PEEK.
+            # The SP action itself is processed inside _nexus_explore_step_internal() (it sets
+            # session['_include_scratchpad_preview_next'] and session['_sp_filter']).
+            # Therefore, we must NOT consume these flags before internal step runs.
+            # We detect SP requests up-front (for strict arg validation inside internal step),
+            # but we compute include_scratchpad/sp_filter AFTER internal step has persisted changes.
             include_scratchpad_actions = [
                 d for d in (decisions or [])
                 if d.get("action") == "include_scratchpad_in_step_output"
             ]
-            include_scratchpad = bool(include_scratchpad_actions) or bool(session.get("_include_scratchpad_preview_next"))
-            session.pop("_include_scratchpad_preview_next", None)
-
-            # Carry scratchpad filtering directives (if any)
-            sp_filter = session.get("_sp_filter")
-            if not isinstance(sp_filter, dict):
-                sp_filter = None
-            # One-shot: filters apply to this step output only
-            session.pop("_sp_filter", None)
+            include_scratchpad = False
+            sp_filter = None
 
             # LF FRESH-START SEMANTICS (Dan): Lightning flashes are ephemeral.
             # If there are NO peek/LF actions in this step, we must NOT reuse a stashed _peek_frontier
@@ -2033,6 +2032,29 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 state = session.get("state", {}) or {}
                 root_node = session.get("root_node") or {}
                 editable_mode = bool(session.get("editable", False))
+
+                # IMPORTANT (Dec 2025): SP must work in the SAME CALL as LF/PEEK.
+                # SP action processing happens inside _nexus_explore_step_internal(), which sets
+                # session['_include_scratchpad_preview_next'] and optionally session['_sp_filter'].
+                # We must read these AFTER internal step has persisted changes.
+                if bool(include_scratchpad_actions) or bool(session.get("_include_scratchpad_preview_next")):
+                    include_scratchpad = True
+
+                sp_filter = session.get("_sp_filter")
+                if not isinstance(sp_filter, dict):
+                    sp_filter = None
+
+                # One-shot semantics: consume these flags after reading them.
+                session.pop("_include_scratchpad_preview_next", None)
+                session.pop("_sp_filter", None)
+
+                # Persist session again so one-shot flags do not leak across steps.
+                try:
+                    session["updated_at"] = datetime.utcnow().isoformat() + "Z"
+                    with open(session_path, "w", encoding="utf-8") as f:
+                        json_module.dump(session, f, indent=2, ensure_ascii=False)
+                except Exception:
+                    pass
 
             # Build step guidance
             lf_status_lines: list[str] = []
