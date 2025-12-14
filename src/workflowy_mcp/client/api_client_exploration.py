@@ -17,6 +17,8 @@ from .api_client_nexus import WorkFlowyClientNexus
 
 # Step guidance constants (we are beginning migration toward shared guidance blocks)
 UNDO_STEP_GUIDANCE_UR = "↩️ UNDO (SESSION ONLY): UR = reopen_node_to_undecided — resets a decided handle (finalized/closed) back to undecided (unseen) so it reappears in frontiers; clears local skeleton/prune hints; best-effort reopens auto-completed ancestors; does NOT change Workflowy ETHER (only session state)."
+SP_STEP_GUIDANCE = "📝 SCRATCHPAD PREVIEW: SP = include scratchpad_preview in step output (optionally filter) — args: handle=<HANDLE>, include_ancestors=<bool>, include_descendants=<bool>. Multiple SP actions union filters. Unknown args rejected."
+SC_STEP_GUIDANCE = "✅ SCRATCHPAD COMPLETE: SC = scratchpad_complete_by_id — args: scratch_id=SP-000123 (marks entry done=true; shows ✅ in scratchpad_preview; does not delete)."
 
 EXPLORATION_ACTION_2LETTER = {
     "EL": "engulf_leaf_into_gem_for_editing",
@@ -1506,6 +1508,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "Lightning: LF=multi-root lightning strike (default 15 nodes per root; large branches show [STRUCT] preview only), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
                 "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                 UNDO_STEP_GUIDANCE_UR,
+                SP_STEP_GUIDANCE,
+                SC_STEP_GUIDANCE,
             ]
         elif exploration_mode == "dfs_guided_bulk":
             if strict:
@@ -1521,6 +1525,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                     UNDO_STEP_GUIDANCE_UR,
+                    SP_STEP_GUIDANCE,
+                    SC_STEP_GUIDANCE,
                 ]
             else:
                 step_guidance = [
@@ -1535,6 +1541,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                     UNDO_STEP_GUIDANCE_UR,
+                    SP_STEP_GUIDANCE,
+                    SC_STEP_GUIDANCE,
                 ]
         else:
             step_guidance = ["🎯 LEGACY MODE: Manual"]
@@ -1769,6 +1777,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                 "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                 UNDO_STEP_GUIDANCE_UR,
+                SP_STEP_GUIDANCE,
+                SC_STEP_GUIDANCE,
             ]
         elif exploration_mode == "dfs_guided_bulk":
             if strict_completeness:
@@ -1783,6 +1793,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
                     "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
+                    UNDO_STEP_GUIDANCE_UR,
+                    SP_STEP_GUIDANCE,
+                    SC_STEP_GUIDANCE,
                 ]
             else:
                 step_guidance = [
@@ -1796,6 +1809,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
                     "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
+                    UNDO_STEP_GUIDANCE_UR,
+                    SP_STEP_GUIDANCE,
+                    SC_STEP_GUIDANCE,
                 ]
         else:
             step_guidance = ["🎯 LEGACY MODE: Manual"]
@@ -2048,6 +2064,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
                     "Lightning: LF=multi-root lightning strike (default 15 nodes per root; large branches show [STRUCT] preview only), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
+                    UNDO_STEP_GUIDANCE_UR,
+                    SP_STEP_GUIDANCE,
+                    SC_STEP_GUIDANCE,
                 ]
             elif exploration_mode == "dfs_guided_bulk":
                 strict = session.get("strict_completeness", False)
@@ -2065,6 +2084,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                         "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                         UNDO_STEP_GUIDANCE_UR,
+                        SP_STEP_GUIDANCE,
+                        SC_STEP_GUIDANCE,
                     ]
                 else:
                     step_guidance = [
@@ -2080,6 +2101,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                         "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                         UNDO_STEP_GUIDANCE_UR,
+                        SP_STEP_GUIDANCE,
+                        SC_STEP_GUIDANCE,
                     ]
 
             else:
@@ -3903,6 +3926,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "Fix the failed action(s) and re-run the step.",
                 "Note: LF/peek/search state has been cleared to prevent acting-without-seeing.",
                 UNDO_STEP_GUIDANCE_UR,
+                SP_STEP_GUIDANCE,
+                SC_STEP_GUIDANCE,
             ]
             # Human-readable output (primary) + structured details for inspection.
             # TypingMind renders tool outputs as JSON; embedding the human summary as multiline text
