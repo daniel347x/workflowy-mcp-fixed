@@ -1923,6 +1923,13 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             include_scratchpad = bool(include_scratchpad_actions) or bool(session.get("_include_scratchpad_preview_next"))
             session.pop("_include_scratchpad_preview_next", None)
 
+            # Carry scratchpad filtering directives (if any)
+            sp_filter = session.get("_sp_filter")
+            if not isinstance(sp_filter, dict):
+                sp_filter = None
+            # One-shot: filters apply to this step output only
+            session.pop("_sp_filter", None)
+
             # LF FRESH-START SEMANTICS (Dan): Lightning flashes are ephemeral.
             # If there are NO peek/LF actions in this step, we must NOT reuse a stashed _peek_frontier
             # from a prior step.
@@ -2221,10 +2228,70 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             }
 
             if include_scratchpad:
-                minimal["scratchpad_preview"] = self._build_scratchpad_preview_lines(
-                    session.get("scratchpad", []),
-                    handles=session.get("handles", {}) or {},
-                )
+                scratch_entries = session.get("scratchpad", [])
+                handles_map = session.get("handles", {}) or {}
+
+                # Optional SP filtering by handle
+                if sp_filter and isinstance(sp_filter, dict) and sp_filter.get("handles"):
+                    target_handles = [h for h in (sp_filter.get("handles") or []) if isinstance(h, str)]
+                    include_anc = bool(sp_filter.get("include_ancestors", False))
+                    include_desc = bool(sp_filter.get("include_descendants", False))
+
+                    allowed: set[str] = set()
+
+                    def _add_ancestors(h: str) -> None:
+                        cur = h
+                        seen = set()
+                        while isinstance(cur, str) and cur and cur not in seen and cur != "R":
+                            seen.add(cur)
+                            allowed.add(cur)
+                            cur = (handles_map.get(cur) or {}).get("parent")
+
+                    def _add_descendants(h: str) -> None:
+                        allowed.add(h)
+                        stack = list((handles_map.get(h) or {}).get("children") or [])
+                        seen = set()
+                        while stack:
+                            ch = stack.pop()
+                            if ch in seen:
+                                continue
+                            seen.add(ch)
+                            allowed.add(ch)
+                            stack.extend((handles_map.get(ch) or {}).get("children") or [])
+
+                    for h in target_handles:
+                        if h not in handles_map:
+                            continue
+                        allowed.add(h)
+                        if include_anc:
+                            _add_ancestors(h)
+                        if include_desc:
+                            _add_descendants(h)
+
+                    def _entry_handle(e: dict) -> str | None:
+                        hh = e.get("handle")
+                        return hh if isinstance(hh, str) else None
+
+                    filtered_scratch = []
+                    for e in scratch_entries or []:
+                        if not isinstance(e, dict):
+                            continue
+                        hh = _entry_handle(e)
+                        if hh is None:
+                            # unbound entries are excluded from filtered view
+                            continue
+                        if hh in allowed:
+                            filtered_scratch.append(e)
+
+                    minimal["scratchpad_preview"] = self._build_scratchpad_preview_lines(
+                        filtered_scratch,
+                        handles=handles_map,
+                    )
+                else:
+                    minimal["scratchpad_preview"] = self._build_scratchpad_preview_lines(
+                        scratch_entries,
+                        handles=handles_map,
+                    )
 
             if internal_warnings:
                 minimal["warnings"] = internal_warnings
@@ -2673,9 +2740,52 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     continue
 
                 if act == "include_scratchpad_in_step_output":
-                    # Set a one-step flag; v2 layer will include scratchpad_preview in the tool output.
+                    # SP (Scratchpad Preview) action.
+                    # Default: include full scratchpad_preview in the step output.
+                    # Optional filtering:
+                    #   - handle: restrict to scratchpad entries tied to handle
+                    #   - include_ancestors: include ancestors of handle
+                    #   - include_descendants: include descendants of handle
+                    # Multiple SP actions in one call union their filters.
+
+                    allowed_keys = {"action", "handle", "include_ancestors", "include_descendants"}
+                    extra_keys = (set(action.keys()) - allowed_keys) - {"__action_index"}
+                    if extra_keys:
+                        _report_fail(i, act, None, f"SP has unexpected keys: {sorted(extra_keys)}")
+                        continue
+
+                    h = action.get("handle")
+                    if h is not None and (not isinstance(h, str) or not h.strip()):
+                        _report_fail(i, act, None, "SP handle must be a non-empty string when provided")
+                        continue
+
+                    if h is not None and h not in handles:
+                        _report_fail(i, act, h, f"SP unknown handle: {h}")
+                        continue
+
+                    include_anc = bool(action.get("include_ancestors", False))
+                    include_desc = bool(action.get("include_descendants", False))
+
+                    # Ensure preview is included
                     session["_include_scratchpad_preview_next"] = True
-                    _report_ok(i, act, None)
+
+                    # Accumulate filters
+                    if h is not None:
+                        filt = session.get("_sp_filter")
+                        if not isinstance(filt, dict):
+                            filt = {"handles": [], "include_ancestors": False, "include_descendants": False}
+                        handles_list = filt.get("handles")
+                        if not isinstance(handles_list, list):
+                            handles_list = []
+                        if h not in handles_list:
+                            handles_list.append(h)
+                        filt["handles"] = handles_list
+                        # OR semantics across SP actions
+                        filt["include_ancestors"] = bool(filt.get("include_ancestors")) or include_anc
+                        filt["include_descendants"] = bool(filt.get("include_descendants")) or include_desc
+                        session["_sp_filter"] = filt
+
+                    _report_ok(i, act, h)
                     continue
 
                 if act == "scratchpad_complete_by_id":
