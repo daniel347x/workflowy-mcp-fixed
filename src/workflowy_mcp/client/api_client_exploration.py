@@ -507,6 +507,17 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 name_part = f"{name} [{prefix}{flat}]"
                 lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
 
+        # 4) Render UNBOUND (global) entries (no handle)
+        # These must appear in scratchpad_preview so baton handoff notes are visible on resume/finalize.
+        if unbound_notes:
+            lines.append("")
+            lines.append("[UNBOUND]")
+            for note in unbound_notes:
+                flat = note.replace("\n", "\\n")
+                if isinstance(DEFAULT_MAX_NOTE, int) and DEFAULT_MAX_NOTE > 0 and len(flat) > DEFAULT_MAX_NOTE:
+                    flat = flat[:DEFAULT_MAX_NOTE]
+                lines.append(f"    • {flat}")
+
         # NOTE: scratchpad_preview (UNBOUND) is a scratchpad-only concept.
         # Frontier previews should never reference scratchpad variables.
         return lines
