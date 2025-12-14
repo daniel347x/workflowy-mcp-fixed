@@ -2487,20 +2487,55 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     continue
 
                 if act in {"set_scratchpad", "append_scratchpad"}:
-                    content = action.get("content") or ""
+                    # Strict scratchpad semantics (Dan): do NOT allow implicit clearing.
+                    # Require either 'note' or 'content' (content accepted as alias) and treat
+                    # missing/empty payload as a step failure with full per-action reporting.
+
+                    allowed_keys = {"action", "note", "content", "handle"}
+                    extra_keys = (set(action.keys()) - allowed_keys) - {"__action_index"}
+                    if extra_keys:
+                        _report_fail(
+                            i,
+                            act,
+                            None,
+                            f"{act} has unexpected keys: {sorted(extra_keys)}. Allowed: note|content (+ optional handle)",
+                        )
+                        continue
+
+                    raw_note = action.get("note")
+                    raw_content = action.get("content")
+
+                    payload = None
+                    if isinstance(raw_note, str) and raw_note.strip():
+                        payload = raw_note.strip()
+                    elif isinstance(raw_content, str) and raw_content.strip():
+                        payload = raw_content.strip()
+
+                    if not payload:
+                        _report_fail(
+                            i,
+                            act,
+                            None,
+                            f"{act} requires non-empty 'note' or 'content' (clearing scratchpad is not allowed)",
+                        )
+                        continue
+
                     if act == "set_scratchpad":
-                        session["scratchpad"] = []
-                    # Build entry from all action arguments except 'action'
-                    entry: dict[str, Any] = {}
-                    for k, v in action.items():
-                        if k == "action":
-                            continue
-                        if k == "content":
-                            entry["note"] = v
-                        else:
-                            entry[k] = v
-                    if "note" not in entry:
-                        entry["note"] = content
+                        _report_fail(
+                            i,
+                            act,
+                            None,
+                            "set_scratchpad is disabled (do not clear scratchpad). Use append_scratchpad.",
+                            recommended_action_instead="AS (append_scratchpad)",
+                        )
+                        continue
+
+                    # append_scratchpad: store as normalized entry with note + optional handle
+                    entry: dict[str, Any] = {"note": payload}
+                    h = action.get("handle")
+                    if isinstance(h, str) and h.strip():
+                        entry["handle"] = h.strip()
+
                     _append_scratchpad_entry(session, entry)
                     _report_ok(i, act, None)
                     continue
