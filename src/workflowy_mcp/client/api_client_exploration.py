@@ -80,6 +80,96 @@ def _append_scratchpad_entry(session: dict[str, Any], entry: dict[str, Any]) -> 
 class WorkFlowyClientExploration(WorkFlowyClientNexus):
     """Exploration state machine - extends Nexus."""
 
+    # ---
+    # Exploration UX: Multi-action error reporting
+    #
+    # Exploration steps often bundle many semantically decoupled actions (PL/EL + MSM/MSD/MSP + LF, etc.).
+    # Historically, a single invalid action raised NetworkError and made it unclear which prior actions
+    # succeeded. We now prefer a "best-effort" execution model: attempt all safe actions, return a clear
+    # per-action status report, and (if any failures occurred) DO NOT compute a new frontier/peek result.
+    # This prevents "invisible lightning flashes" (LF state changing without output).
+    # ---
+
+    @staticmethod
+    def _format_action_report_plain_text(
+        action_reports: list[dict[str, Any]],
+        note_max_chars: int = 240,
+    ) -> str:
+        """Render a human-readable plain-text report for partial failures.
+
+        This is intended to be shown directly to the caller (TypingMind). We still optionally return
+        structured action_reports for programmatic consumption.
+        """
+
+        total = len(action_reports)
+        failed = [r for r in action_reports if r.get("status") == "failed"]
+        ok = [r for r in action_reports if r.get("status") == "ok"]
+        skipped = [r for r in action_reports if r.get("status") == "skipped_due_to_errors"]
+        warned = [r for r in action_reports if r.get("status") == "ok_with_warning"]
+
+        lines: list[str] = []
+        lines.append(f"❌ ERROR: {len(failed)}/{total} actions failed. No new frontier computed. Ephemeral LF/peek/search state cleared.")
+        lines.append(f"✅ {len(ok) + len(warned)}/{total} actions succeeded." + (f" ({len(warned)} with warnings)" if warned else ""))
+        if skipped:
+            lines.append(f"⏭️ {len(skipped)}/{total} actions skipped due to earlier error(s).")
+        lines.append("")
+
+        if failed:
+            lines.append("ERRORS")
+            for r in failed:
+                i = r.get("i")
+                act = r.get("action")
+                handle = r.get("handle")
+                msg = r.get("error") or "Unknown error"
+                lines.append(f"- Step [{i}]: {act} handle={handle}")
+                lines.append(f"  Reason: {msg}")
+                rec = r.get("recommended_action_instead")
+                if rec:
+                    lines.append(f"  Recommended instead: {rec}")
+                rec2 = r.get("recommended_handle_instead")
+                if rec2:
+                    lines.append(f"  Recommended handle: {rec2}")
+                note = r.get("note")
+                if isinstance(note, str) and note.strip():
+                    n = note.strip().replace("\n", " ")
+                    if len(n) > note_max_chars:
+                        n = n[:note_max_chars] + "…"
+                    lines.append(f"  Note: {n}")
+            lines.append("")
+
+        if warned:
+            lines.append("WARNINGS")
+            for r in warned:
+                i = r.get("i")
+                act = r.get("action")
+                handle = r.get("handle")
+                w = r.get("warning") or "(warning)"
+                lines.append(f"- Step [{i}]: {act} handle={handle}")
+                lines.append(f"  Warning: {w}")
+            lines.append("")
+
+        if ok:
+            lines.append("SUCCEEDED")
+            for r in ok:
+                i = r.get("i")
+                act = r.get("action")
+                handle = r.get("handle")
+                lines.append(f"- Step [{i}]: {act} handle={handle}")
+            lines.append("")
+
+        if skipped:
+            lines.append("SKIPPED")
+            for r in skipped:
+                i = r.get("i")
+                act = r.get("action")
+                handle = r.get("handle")
+                reason = r.get("skip_reason") or "Skipped due to earlier error(s)"
+                lines.append(f"- Step [{i}]: {act} handle={handle}")
+                lines.append(f"  Reason: {reason}")
+            lines.append("")
+
+        return "\n".join(lines).rstrip() + "\n"
+
     def _get_explore_sessions_dir(self) -> str:
         """Return exploration sessions directory."""
         base_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_explore_sessions"
@@ -167,10 +257,30 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             handle = str(entry.get("handle", ""))
             label = handle.ljust(max_len)
             depth = max(1, len(handle.split(".")))
-            indent = " " * 4 * (depth - 1)
+
+            # In some previews we include the synthetic root handle 'R' for context.
+            # When 'R' is shown, all other nodes should appear visually nested beneath it.
+            # We do this by adding one extra indent level for non-root handles.
+            base_indent_level = (depth - 1)
+            if handle and handle != "R":
+                base_indent_level += 1
+            indent = " " * 4 * base_indent_level
 
             is_leaf = bool(entry.get("is_leaf"))
-            bullet = "•" if is_leaf else "⦿"
+            is_pseudo_leaf = bool(entry.get("is_pseudo_leaf"))
+
+            # Bullet semantics:
+            # - True leaf: "•"
+            # - True branch: "⦿"
+            # - Pseudo-leaf branch (branch surfaced as a leaf candidate): "◦"
+            if is_leaf:
+                bullet = "•"
+            elif is_pseudo_leaf:
+                bullet = "◦"
+            else:
+                bullet = "⦿"
+
+            kind = "🍃" if is_leaf else "🪵"
 
             name = entry.get("name_preview") or "Untitled"
             note = entry.get("note_preview") or ""
@@ -191,6 +301,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     elif t.startswith("LS:"):
                         root = t.split(":", 1)[1]
                         tags.append(f"[LS {root}]")
+                    elif t.startswith("DTARGETDESC:"):
+                        root = t.split(":", 1)[1]
+                        tags.append(f"[DESCENDANT OF DECIDED TARGET {root}]")
                     elif t.startswith("LEAFSIB:"):
                         # Format: LEAFSIB:X/Y where X,Y are integers
                         payload = t.split(":", 1)[1]
@@ -198,10 +311,31 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                             pos_str, total_str = payload.split("/", 1)
                             pos = int(pos_str)
                             total = int(total_str)
-                            tags.append(f"[LEAF {pos}/{total} siblings]")
+
+                            # UX: if this preview line is part of a STRUCT-mode lightning strike,
+                            # reflect that in the first (leaf-sibling) prefix itself.
+                            has_struct = any(isinstance(x, str) and x.startswith("STRUCT:") for x in sk)
+                            if has_struct:
+                                tags.append(f"[LEAF STRUCT {pos}/{total} siblings]")
+                            else:
+                                tags.append(f"[LEAF {pos}/{total} siblings]")
                         except Exception:
                             # Best-effort only; ignore malformed LEAFSIB tags
                             continue
+
+                # Ensure LEAF sibling marker appears FIRST (best UX for STRUCT-mode previews)
+                def _tag_priority(tag: str) -> tuple[int, str]:
+                    if tag.startswith("[LEAF "):
+                        return (0, tag)
+                    if tag.startswith("[DESCENDANT OF DECIDED TARGET "):
+                        return (1, tag)
+                    if tag.startswith("[STRUCT "):
+                        return (2, tag)
+                    if tag.startswith("[LS "):
+                        return (3, tag)
+                    return (4, tag)
+
+                tags.sort(key=_tag_priority)
                 if tags:
                     tag_prefix = " ".join(tags) + " "
 
@@ -213,7 +347,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             else:
                 name_part = f"{tag_prefix}{name}" if tag_prefix else name
 
-            lines.append(f"[{label}] {indent}{bullet} {name_part}")
+            lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
 
         return lines
 
@@ -272,12 +406,20 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         for handle, note in typed_entries:
             label = handle.ljust(max_len)
             depth = max(1, len(handle.split(".")))
-            indent = " " * 4 * (depth - 1)
+
+            # In some previews we include the synthetic root handle 'R' for context.
+            # When 'R' is shown, all other nodes should appear visually nested beneath it.
+            # We do this by adding one extra indent level for non-root handles.
+            base_indent_level = (depth - 1)
+            if handle and handle != "R":
+                base_indent_level += 1
+            indent = " " * 4 * base_indent_level
 
             meta = handles_map.get(handle) or {}
             children = meta.get("children") or []
             is_leaf = not children
             bullet = "•" if is_leaf else "⦿"
+            kind = "🍃" if is_leaf else "🪵"  # Scratchpad preview has no pseudo-leaf concept
 
             name = meta.get("name") or "Untitled"
 
@@ -286,7 +428,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 flat = flat[:DEFAULT_MAX_NOTE]
             name_part = f"{name} [{flat}]"
 
-            lines.append(f"[{label}] {indent}{bullet} {name_part}")
+            lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
 
         return lines
 
@@ -359,6 +501,33 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 parent = handles.get(parent, {}).get("parent")
             return hints
 
+        def _has_ancestor_hint(handle: str, hint_name: str) -> bool:
+            """Return True if any ancestor of handle carries hint_name.
+
+            Used to prune whole preserved/deleted subtrees from frontier generation.
+            """
+            if not handle or handle == "R":
+                return False
+            return hint_name in _collect_hints(handle)
+
+        def _nearest_decided_target_ancestor(handle: str) -> str | None:
+            """Return nearest ancestor handle that is a decided target (merge/permanent).
+
+            This is purely for preview visibility: helps both human+agent understand why a node
+            is showing up in the frontier even though an ancestor section has already been
+            marked as a target.
+            """
+            cur = (handles.get(handle, {}) or {}).get("parent")
+            seen: set[str] = set()
+            while isinstance(cur, str) and cur and cur not in seen and cur != "R":
+                seen.add(cur)
+                meta = handles.get(cur, {}) or {}
+                hints_here = (meta.get("hints") or [])
+                if "SKELETON_MERGE_TARGET" in hints_here or "SKELETON_PERMANENT_TARGET" in hints_here:
+                    return cur
+                cur = meta.get("parent")
+            return None
+
         frontier = []
 
         # DFS GUIDED MODES
@@ -397,8 +566,12 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 if is_leaf and is_undecided:
                     ancestor_hints = _collect_hints(h)
                     if "SKELETON_PRUNED" in ancestor_hints:
-                        # Hidden from BFS by Skeleton Walk pruning, but still present in handles/state.
+                        # Hidden from BFS by Skeleton Walk pruning (delete section), but still present in handles/state.
                         continue
+                    if "SKELETON_PERMANENT_PRUNED" in ancestor_hints:
+                        # Hidden from BFS by Skeleton Walk permanent pruning (preserve section), but still present in handles/state.
+                        continue
+
                     bfs_leaves.append(h)
 
                 for ch in child_handles:
@@ -489,6 +662,28 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             if not selected:
                 return frontier
 
+            # Usability rule (Dan): In NORMAL frontier mode, if any effective leaf is shown under a parent,
+            # then show ALL sibling UNDECIDED branch nodes as well (do NOT include decided branches).
+            # This provides crucial local context without affecting the leaf budget.
+            parents_with_selected_leaf: set[str] = set()
+            for leaf_h in selected:
+                p = (handles.get(leaf_h, {}) or {}).get("parent")
+                if isinstance(p, str):
+                    parents_with_selected_leaf.add(p)
+
+            for p in parents_with_selected_leaf:
+                for sib in (handles.get(p, {}) or {}).get("children", []) or []:
+                    if sib in selected_set:
+                        continue
+                    sib_children = (handles.get(sib, {}) or {}).get("children", []) or []
+                    if not sib_children:
+                        continue  # only branches
+                    st_sib = state.get(sib, {"status": "unseen"})
+                    if st_sib.get("status") in {"finalized", "closed"}:
+                        continue  # skip decided branches
+                    selected_set.add(sib)
+                    selected.append(sib)
+
             # Collect branch ancestors
             include_branches = True
             branches = []
@@ -546,9 +741,16 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "depth": meta.get("depth", 0),
                         "status": st.get("status", "candidate"),
                         "is_leaf": False,
+                        "is_pseudo_leaf": False,
                         "guidance": guidance,
                         "_frontier_role": "branch_ancestor",
                     }
+
+                    # Visibility: mark descendants of already-decided targets
+                    nearest_target = _nearest_decided_target_ancestor(h)
+                    if nearest_target:
+                        entry["skeleton_tmp"] = [f"DTARGETDESC:{nearest_target}"]
+
                     if local_hints:
                         entry["hints"] = local_hints
                     if hints_from_ancestors:
@@ -579,12 +781,20 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     "child_count": len(child_handles),
                     "depth": meta.get("depth", 0),
                     "status": st.get("status", "candidate"),
-                    "is_leaf": True,
+                    "is_leaf": (not child_handles),
+                    "is_pseudo_leaf": bool(child_handles),
                     "guidance": (
                         "leaf: EL=engulf (IN GEM; editable, may be deleted in ETHER), "
                         "PL=preserve (ETHER only; NOT in GEM)"
+                    ) if (not child_handles) else (
+                        "pseudo-leaf branch: decide this node (branch) now; descendants already decided"
                     ),
                 }
+
+                # Visibility: mark descendants of already-decided targets
+                nearest_target = _nearest_decided_target_ancestor(h)
+                if nearest_target:
+                    entry["skeleton_tmp"] = [f"DTARGETDESC:{nearest_target}"]
                 if local_hints:
                     entry["hints"] = local_hints
                 if hints_from_ancestors:
@@ -765,6 +975,33 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 hints.extend(parent_hints)
                 parent = handles.get(parent, {}).get("parent")
             return hints
+
+        def _has_ancestor_hint(handle: str, hint_name: str) -> bool:
+            """Return True if any ancestor of handle carries hint_name.
+
+            Used to prune whole preserved/deleted subtrees from frontier generation.
+            """
+            if not handle or handle == "R":
+                return False
+            return hint_name in _collect_hints(handle)
+
+        def _nearest_decided_target_ancestor(handle: str) -> str | None:
+            """Return nearest ancestor handle that is a decided target (merge/permanent).
+
+            This is purely for preview visibility: helps both human+agent understand why a node
+            is showing up in the frontier even though an ancestor section has already been
+            marked as a target.
+            """
+            cur = (handles.get(handle, {}) or {}).get("parent")
+            seen: set[str] = set()
+            while isinstance(cur, str) and cur and cur not in seen and cur != "R":
+                seen.add(cur)
+                meta = handles.get(cur, {}) or {}
+                hints_here = (meta.get("hints") or [])
+                if "SKELETON_MERGE_TARGET" in hints_here or "SKELETON_PERMANENT_TARGET" in hints_here:
+                    return cur
+                cur = meta.get("parent")
+            return None
 
         all_handles = set(handles.keys())
         all_handles.discard("R")
@@ -1102,7 +1339,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         self,
         nexus_tag: str,
         root_id: str,
-        source_mode: str = "glimpse_full",
+        source_mode: str = "scry",
         max_nodes: int = 200000,
         session_hint: str | None = None,
         frontier_size: int = 25,
@@ -1132,7 +1369,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 raise NetworkError(f"nexus_tag '{nexus_tag}' has existing sessions")
 
         # Determine mode
-        exploration_mode = "dfs_guided_explicit"
+        # Default to BULK mode (safer/faster for real exploration work; explicit mode still available via session_hint)
+        exploration_mode = "dfs_guided_bulk"
         strict_completeness = False
         
         if session_hint:
@@ -1270,30 +1508,39 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         if exploration_mode == "dfs_guided_explicit":
             step_guidance = [
                 "🎯 EXPLICIT MODE: Auto-frontier",
+                "🪵 = BRANCH",
+                "🍃 = LEAF",
                 "Leaf: EL=ENGULF_TO_GEM (IN GEM; editable, may be deleted in ETHER), PL=PRESERVE_IN_ETHER (ETHER only; NOT in GEM)",
                 "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
                 "Lightning: LF=multi-root lightning strike (default 15 nodes per root; large branches show [STRUCT] preview only)",
+                "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                 "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
             ]
         elif exploration_mode == "dfs_guided_bulk":
             if strict_completeness:
                 step_guidance = [
                     "🎯 BULK MODE: Auto-frontier",
+                    "🪵 = BRANCH",
+                    "🍃 = LEAF",
                     "🛡️ STRICT COMPLETENESS - PA disabled",
                     "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER, UL=UPDATE_LEAF_IN_GEM",
                     "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM), UB/UN=UPDATE_BRANCH_IN_GEM, AB=AUTO_DECIDE_BRANCH",
                     "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
                     "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
+                    "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                 ]
             else:
                 step_guidance = [
                     "🎯 BULK MODE: Auto-frontier",
+                    "🪵 = BRANCH",
+                    "🍃 = LEAF",
                     "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER, UL=UPDATE_LEAF_IN_GEM",
                     "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM), UB/UN=UPDATE_BRANCH_IN_GEM, AB=AUTO_DECIDE_BRANCH",
                     "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
                     "Global: PA=PRESERVE_ALL_REMAINING_IN_ETHER (ETHER only; NOT in GEM)",
                     "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
+                    "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                     "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                 ]
         else:
@@ -1343,8 +1590,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         self,
         session_id: str,
         decisions: list[dict[str, Any]] | None = None,
-        walks: list[dict[str, Any]] | None = None,
-        max_parallel_walks: int = 4,
         global_frontier_limit: int | None = None,
         include_history_summary: bool = True,
     ) -> dict[str, Any]:
@@ -1357,19 +1602,19 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 - 'preserve_leaf_in_ether_untouched' = Preserve leaf in ETHER
                 - 'flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states' = Branch shell
                 - 'preserve_branch_node_in_ether_untouched__when_no_engulfed_children' = Preserve branch
-            - walks: IGNORED in guided modes
             - global_frontier_limit: leaf budget per step (default 80)
 
-        LEGACY / MANUAL MODES:
-            - walks: list of { origin, max_steps }
-            - max_parallel_walks: hard cap on origins
+        NOTE: The legacy 'walks' concept has been removed. All traversal/peek/lightning/search behavior
+        is expressed via decisions (e.g., LF/PD/SX/RF) in guided modes.
         """
         import json as json_module
 
         logger = _ClientLogger()
 
         decisions = decisions or []
-        walks = walks or []
+
+        # Collect PEEK/LIGHTNING results during this step (used for response/debugging)
+        peek_results: list[dict[str, Any]] = []
 
         # Load session
         sessions_dir = self._get_explore_sessions_dir()
@@ -1403,13 +1648,21 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     act = decision.get("action")
                     if act in EXPLORATION_ACTION_2LETTER:
                         decision["action"] = EXPLORATION_ACTION_2LETTER[act]
-            
+
             # Separate actions
             # PEEK actions include both explicit peek and lightning flash (both use _peek_frontier)
             peek_actions = [
                 d for d in (decisions or [])
                 if d.get("action") in {"peek_descendants_as_frontier", "lightning_flash_into_section"}
             ]
+
+            # LF FRESH-START SEMANTICS (Dan): Lightning flashes are ephemeral.
+            # If there are NO peek/LF actions in this step, we must NOT reuse a stashed _peek_frontier
+            # from a prior step.
+            if not peek_actions and session.get("_peek_frontier"):
+                for key in ("_peek_frontier", "_peek_root_handles", "_peek_max_nodes_by_root"):
+                    session.pop(key, None)
+                logger.info("Cleared stale peek frontier (fresh-start semantics)")
             search_actions = [d for d in (decisions or []) if d.get("action") == "search_descendants_for_text"]
             resume_actions = [d for d in (decisions or []) if d.get("action") == "resume_guided_frontier"]
             other_decisions = [
@@ -1428,8 +1681,23 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     max_results=effective_limit,
                 )
             elif session.get("_peek_frontier"):
-                correct_frontier_for_bulk = session.get("_peek_frontier", [])
-                logger.info(f"Using stashed PEEK frontier ({len(correct_frontier_for_bulk)} entries)")
+                # Fresh-start semantics: do not reuse stashed peek frontier if it was marked ephemeral-only
+                if session.get("_peek_ephemeral_only"):
+                    for key in (
+                        "_peek_frontier",
+                        "_peek_root_handles",
+                        "_peek_max_nodes_by_root",
+                        "_peek_over_limit_by_root",
+                        "_peek_ephemeral_only",
+                    ):
+                        session.pop(key, None)
+                    correct_frontier_for_bulk = self._compute_exploration_frontier(
+                        session, frontier_size=effective_limit, max_depth_per_frontier=1
+                    )
+                    logger.info("Ephemeral STRUCT peek consumed/cleared; returning to DFS")
+                else:
+                    correct_frontier_for_bulk = session.get("_peek_frontier", [])
+                    logger.info(f"Using stashed PEEK frontier ({len(correct_frontier_for_bulk)} entries)")
             elif last_frontier_flat:
                 correct_frontier_for_bulk = last_frontier_flat
             else:
@@ -1446,7 +1714,29 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     max_depth_per_frontier=1,
                     _precomputed_frontier=correct_frontier_for_bulk,
                 )
+
+                # New behavior: internal step may return success=False with an action report.
+                # In that case, DO NOT compute a new frontier. Return a clear, human-readable
+                # failure summary + structured details.
+                if internal_result and not internal_result.get("success", True):
+                    return {
+                        "success": False,
+                        "session_id": session_id,
+                        "nexus_tag": session.get("nexus_tag"),
+                        "status": "in_progress",
+                        "exploration_mode": exploration_mode,
+                        "error_summary": internal_result.get("error_summary"),
+                        "action_reports": internal_result.get("action_reports") or [],
+                        "step_guidance": internal_result.get("step_guidance") or [],
+                    }
+
                 skipped_decisions = internal_result.get("skipped_decisions", []) or []
+
+                # Propagate internal success warnings (e.g., MSM→EL coercions) upward to the caller.
+                # Otherwise they are lost when v2 returns the minimal frontier payload.
+                internal_warnings = (internal_result or {}).get("warnings") or []
+                internal_action_reports = (internal_result or {}).get("action_reports") or []
+
                 with open(session_path, "r", encoding="utf-8") as f:
                     session = json_module.load(f)
                 handles = session.get("handles", {}) or {}
@@ -1455,9 +1745,31 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 editable_mode = bool(session.get("editable", False))
 
             # Build step guidance
+            lf_status_lines: list[str] = []
+            if peek_results:
+                for pr in peek_results:
+                    root_h = pr.get("root_handle")
+                    if not root_h:
+                        continue
+                    is_struct = bool(pr.get("over_limit"))
+                    show_dec = bool(pr.get("show_decided_descendants"))
+                    if is_struct:
+                        suffix = "(decided descendants WILL be shown)" if show_dec else "(decided descendants will NOT be shown)"
+                        lf_status_lines.append(
+                            f"LF {root_h}: NAVIGATION GUIDE ONLY (STRUCT) — too high for budget; LF deeper or increase budget, or abandon. {suffix}"
+                        )
+                    else:
+                        suffix = "(decided descendants included)" if show_dec else "(decided descendants hidden)"
+                        lf_status_lines.append(
+                            f"LF {root_h}: FULL PREVIEW (subtree fits within budget). {suffix}"
+                        )
+
             if exploration_mode == "dfs_guided_explicit":
                 step_guidance = [
                     "🎯 EXPLICIT MODE: Auto-frontier",
+                    *lf_status_lines,
+                    "🪵 = BRANCH",
+                    "🍃 = LEAF",
                     "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER, UL=UPDATE_LEAF_IN_GEM",
                     "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
                     "Lightning: LF=multi-root lightning strike (default 15 nodes per root; large branches show [STRUCT] preview only), MSD=delete section, MSM/MSP=merge/keep, ALS=abandon (per-root/global)",
@@ -1468,21 +1780,29 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 if strict:
                     step_guidance = [
                         "🎯 BULK MODE",
+                        *lf_status_lines,
+                        "🪵 = BRANCH",
+                        "🍃 = LEAF",
                         "🛡️ STRICT - PA disabled",
                         "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER",
                         "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
                         "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
                         "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
+                        "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                         "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                     ]
                 else:
                     step_guidance = [
                         "🎯 BULK MODE",
+                        *lf_status_lines,
+                        "🪵 = BRANCH",
+                        "🍃 = LEAF",
                         "Leaf: EL=ENGULF_TO_GEM, PL=PRESERVE_IN_ETHER",
                         "Branch: RB=RESERVE_BRANCH_SHELL_IN_GEM (IN GEM shell; resolved at finalization with child ENGULF/PRESERVE decisions), PB=PRESERVE_BRANCH_IN_ETHER (ETHER only; NOT in GEM)",
                         "Bulk: EF=ENGULF_SHOWING_TO_GEM (IN GEM), PF=PRESERVE_SHOWING_IN_ETHER (ETHER only; NOT in GEM)",
                         "Global: PA=PRESERVE_ALL_REMAINING_IN_ETHER (ETHER only; NOT in GEM)",
                         "Lightning: LF (multi-root, default 15 nodes; [STRUCT] for large branches), MSD, MSM/MSP, ALS",
+                        "MSD salvage: MSD may include nodes_to_salvage_for_move=[...handles in LF frontier] to keep/move specific descendants before deleting the section",
                         "Skeleton Walk with Lightning Strikes: BFS across branches, flash (LF) into each (limited, [STRUCT] when large), then for each strike choose MERGE (MSM/MSP, with salvage) or DELETE (MSD, with salvage)",
                     ]
             else:
@@ -1526,8 +1846,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "action_key": EXPLORATION_ACTION_2LETTER,
                         "step_guidance": step_guidance,
                         "frontier_preview": frontier_preview,
-                        "walks": [],
-                        "skipped_walks": [],
                         "decisions_applied": decisions,
                         "skipped_decisions": skipped_decisions,
                         "scratchpad": session.get("scratchpad", []),
@@ -1606,8 +1924,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "action_key": EXPLORATION_ACTION_2LETTER,
                 "step_guidance": step_guidance,
                 "frontier_preview": frontier_preview,
-                "walks": [],
-                "skipped_walks": [],
                 "decisions_applied": decisions,
                 "skipped_decisions": skipped_decisions,
                 "scratchpad": session.get("scratchpad", []),
@@ -1634,21 +1950,33 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "frontier_preview": frontier_preview,
             }
 
+            if internal_warnings:
+                minimal["warnings"] = internal_warnings
+                minimal["action_reports"] = internal_action_reports
+
             return minimal
 
     async def nexus_explore_step(
         self,
         session_id: str,
         decisions: list[dict[str, Any]] | None = None,
-        walks: list[dict[str, Any]] | None = None,
-        max_parallel_walks: int = 4,
         global_frontier_limit: int | None = None,
         include_history_summary: bool = True,
     ) -> dict[str, Any]:
-        """Exploration step - delegates to v2."""
+        """Exploration step (compat shim).
+
+        NOTE: The legacy 'walks' concept has been removed. All exploration traversal is
+        expressed via 'decisions' (LF/PD/SX/RF/etc.).
+        """
+
+        # NOTE: This wrapper exists only so server.py can continue to call
+        # client.nexus_explore_step(...) without referencing v2 internals.
+
         return await self.nexus_explore_step_v2(
-            session_id, decisions, walks, max_parallel_walks,
-            global_frontier_limit, include_history_summary
+            session_id=session_id,
+            decisions=decisions,
+            global_frontier_limit=global_frontier_limit,
+            include_history_summary=include_history_summary,
         )
 
     async def _nexus_explore_step_internal(
@@ -1786,21 +2114,60 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
                 current = parent_handle
 
-        # Apply actions (abbreviated version - see witness stone for full ~800 lines)
+        # Apply actions (best-effort, multi-action reporting)
         actions = actions or []
-        
+
+        # Track per-action outcomes so the caller always knows what succeeded.
+        action_reports: list[dict[str, Any]] = []
+        any_failures = False
+        success_warnings: list[str] = []
+
+        def _report_ok(i: int, act: str, handle: str | None) -> None:
+            action_reports.append({"i": i, "action": act, "handle": handle, "status": "ok"})
+
+        def _report_warn(i: int, act: str, handle: str | None, warning: str) -> None:
+            action_reports.append(
+                {"i": i, "action": act, "handle": handle, "status": "ok_with_warning", "warning": warning}
+            )
+            # Also capture a top-level warning list so successful steps can surface warnings
+            # without forcing callers to inspect action_reports.
+            success_warnings.append(f"Step [{i}]: {act} handle={handle} — {warning}")
+
+        def _report_fail(
+            i: int,
+            act: str,
+            handle: str | None,
+            error: str,
+            *,
+            note: str | None = None,
+            recommended_action_instead: str | None = None,
+            recommended_handle_instead: str | None = None,
+        ) -> None:
+            nonlocal any_failures
+            any_failures = True
+            payload: dict[str, Any] = {"i": i, "action": act, "handle": handle, "status": "failed", "error": error}
+            if note:
+                payload["note"] = note
+            if recommended_action_instead:
+                payload["recommended_action_instead"] = recommended_action_instead
+            if recommended_handle_instead:
+                payload["recommended_handle_instead"] = recommended_handle_instead
+            action_reports.append(payload)
+
+        def _report_skipped(i: int, act: str, handle: str | None, reason: str) -> None:
+            action_reports.append(
+                {"i": i, "action": act, "handle": handle, "status": "skipped_due_to_errors", "skip_reason": reason}
+            )
+
         # 2-letter expander + long-name normalizer
         for action in actions:
             act = action.get("action")
             if not act:
                 continue
-            # If caller used 2-letter code (EL/PL/UB/...), expand to canonical long name
             if act in EXPLORATION_ACTION_2LETTER:
                 action["action"] = EXPLORATION_ACTION_2LETTER[act]
                 continue
-            # Otherwise, if caller used canonical long name directly, keep it as-is.
-            # If they used a legacy/alias name, normalize it below via ACTION_ALIASES.
-        
+
         # Aliases (long-form convenience names)
         ACTION_ALIASES = {
             "reserve_branch_for_children": "flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states",
@@ -1816,7 +2183,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         def action_sort_key(action: dict[str, Any]) -> tuple[int, int]:
             act = action.get("action", "")
             handle = action.get("handle", "")
-            
+
             if act in {"engulf_leaf_into_gem_for_editing", "engulf_shell_in_gemstorm"}:
                 category = 0
             elif act in {"preserve_leaf_in_ether_untouched", "preserve_branch_node_in_ether_untouched__when_no_engulfed_children"}:
@@ -1827,11 +2194,16 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 category = 4
             else:
                 category = 2
-            
+
             depth = -handle.count(".")
             return (category, depth)
-        
+
         actions.sort(key=action_sort_key)
+
+        # Remember original order for reporting
+        for idx, a in enumerate(actions):
+            if "__action_index" not in a:
+                a["__action_index"] = idx + 1
         
         # Use precomputed frontier
         session["handles"] = handles
@@ -1844,21 +2216,112 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             )
         
         peek_results = []
+
+        # ---
+        # ACTION ORDERING GUARDRAIL (Dan): Allow MSP/MSM/MSD + LF in the SAME call.
+        # We must ensure skeleton decisions apply to the *previous* lightning frontier
+        # before any new LF clears/overwrites peek state.
+        #
+        # Phase 1: apply skeleton mark actions (MSD/MSM/MSP) first
+        # Phase 2: apply all remaining actions in their existing (sorted) order
+        # ---
+        skeleton_mark_actions = {
+            "mark_section_for_deletion",
+            "mark_section_as_merge_target",
+            "mark_section_as_permanent",
+        }
+        phase1 = [a for a in actions if a.get("action") in skeleton_mark_actions]
+        phase2 = [a for a in actions if a.get("action") not in skeleton_mark_actions]
+        actions = phase1 + phase2
         
         # Process each action
+        # Default behavior: if caller provides a freeform "note" on an action, capture it in scratchpad.
+        # Exception: actions where "note" is the payload for updating the node note field.
+        NOTE_TO_SCRATCHPAD_EXCLUSIONS = {
+            "update_node_and_engulf_in_gemstorm",
+            "update_note_and_engulf_in_gemstorm",
+            "update_leaf_node_and_engulf_in_gemstorm",
+            "update_branch_node_and_engulf_in_gemstorm__descendants_unaffected",
+            "update_branch_note_and_engulf_in_gemstorm__descendants_unaffected",
+        }
+
         for action in actions:
             act = action.get("action")
-            
+            i = int(action.get("__action_index") or 0) or (len(action_reports) + 1)
+
+            # Auto-capture freeform action notes (unless excluded).
+            # We capture:
+            # - note
+            # - *_note (e.g., salvage_note)
+            # - note_* (e.g., note_salvage)
+            #
+            # This is crucial during live runs: notes become part of the scratchpad minitree.
+            if act not in NOTE_TO_SCRATCHPAD_EXCLUSIONS:
+                handle_for_note = action.get("handle")
+
+                def _capture_note_field(field: str, val: Any) -> None:
+                    if not isinstance(val, str) or not val.strip():
+                        return
+                    text = val.strip()
+                    label = field
+                    # Use a single-line prefix for quick scan; note body remains as provided.
+                    # We keep the full text as the entry note to preserve multi-line content.
+                    if field != "note":
+                        text = f"[{field}] {text}"
+                    _append_scratchpad_entry(
+                        session,
+                        {
+                            "note": text,
+                            "handle": handle_for_note,
+                            "origin": "action_note",
+                            "action": act,
+                            "i": i,
+                            "field": label,
+                        },
+                    )
+
+                for k, v in action.items():
+                    if k == "note" or k.endswith("_note") or k.startswith("note_"):
+                        _capture_note_field(k, v)
+
+            # If any earlier action failed, we still allow "safe" actions to run,
+            # but we SKIP context-dependent actions that would compute or depend on
+            # a new visibility slice (LF/PD/SX/RF + skeleton marks + EF/PF).
+            # This prevents invisible state changes when we return an error with no frontier.
+            #
+            # Also avoid double-reporting the SAME step as both failed and skipped.
+            if any_failures:
+                # If this step already has a report entry, do not add another.
+                if any(r.get("i") == i for r in action_reports):
+                    continue
+
+                context_dependent = {
+                    "peek_descendants_as_frontier",
+                    "lightning_flash_into_section",
+                    "search_descendants_for_text",
+                    "resume_guided_frontier",
+                    "mark_section_for_deletion",
+                    "mark_section_as_merge_target",
+                    "mark_section_as_permanent",
+                    "engulf_all_showing_undecided_descendants_into_gem_for_editing",
+                    "preserve_all_showing_undecided_descendants_in_ether",
+                }
+                if act in context_dependent:
+                    _report_skipped(i, act, action.get("handle"), "Skipped because a prior action failed (no-frontier error mode)")
+                    continue
+
             # Global actions (no handle required)
             if act in {"set_scratchpad", "append_scratchpad", "preserve_all_remaining_nodes_in_ether_at_finalization"}:
                 if act == "preserve_all_remaining_nodes_in_ether_at_finalization":
                     if exploration_mode != "dfs_guided_bulk":
-                        raise NetworkError("preserve_all only in bulk mode")
-                    
+                        _report_fail(i, act, None, "preserve_all only in bulk mode")
+                        continue
+
                     strict = session.get("strict_completeness", False)
                     if strict:
-                        raise NetworkError("PA disabled in strict_completeness mode")
-                    
+                        _report_fail(i, act, None, "PA disabled in strict_completeness mode")
+                        continue
+
                     preserved_count = 0
                     for h in handles:
                         h_state = state.get(h, {})
@@ -1875,8 +2338,9 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                                 state[h]["selection_type"] = "subtree"
                                 preserved_count += 1
                     logger.info(f"preserve_all: {preserved_count} preserved")
+                    _report_ok(i, act, None)
                     continue
-                
+
                 if act in {"set_scratchpad", "append_scratchpad"}:
                     content = action.get("content") or ""
                     if act == "set_scratchpad":
@@ -1893,6 +2357,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     if "note" not in entry:
                         entry["note"] = content
                     _append_scratchpad_entry(session, entry)
+                    _report_ok(i, act, None)
                     continue
 
             # Handle-optional global actions (process before handle validation)
@@ -1902,9 +2367,13 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     # Per-root abandon: clear lightning strike ONLY for the specified root
                     peek_roots = session.get("_peek_root_handles") or []
                     if target_root not in peek_roots:
-                        raise NetworkError(
-                            f"abandon_lightning_strike with handle '{target_root}' requires an active lightning root"
+                        _report_fail(
+                            i,
+                            act,
+                            target_root,
+                            f"abandon_lightning_strike with handle '{target_root}' requires an active lightning root",
                         )
+                        continue
 
                     current_frontier = session.get("_peek_frontier") or []
                     remaining_frontier = [
@@ -1935,6 +2404,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     logger.info(
                         f"abandon_lightning_strike: cleared lightning strike for root {target_root}"
                     )
+                    _report_ok(i, act, target_root)
                 else:
                     # Global abandon: clear ALL lightning state
                     for key in (
@@ -1944,6 +2414,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     ):
                         session.pop(key, None)
                     logger.info("abandon_lightning_strike: cleared all lightning peek state")
+                    _report_ok(i, act, None)
                 continue
 
             if act == "resume_guided_frontier":
@@ -1957,19 +2428,22 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     ):
                         session.pop(key, None)
                     logger.info("resume: cleared peek")
+                _report_ok(i, act, action.get("handle"))
                 continue
 
             handle = action.get("handle")
             max_depth = action.get("max_depth")
 
-            # Bulk frontier actions
+            # Bulk frontier actions (EF/PF) - apply to the CURRENT STEP FRONTIER (or SEARCH frontier)
             if act in {"engulf_all_showing_undecided_descendants_into_gem_for_editing", "preserve_all_showing_undecided_descendants_in_ether"}:
                 if exploration_mode != "dfs_guided_bulk":
-                    raise NetworkError(f"{act} only in bulk mode")
-                
+                    _report_fail(i, act, handle, f"{act} only in bulk mode")
+                    continue
+
                 if handle not in handles:
-                    raise NetworkError(f"Unknown handle: {handle}")
-                
+                    _report_fail(i, act, handle, f"Unknown handle: {handle}")
+                    continue
+
                 def _is_desc(fh: str, branch: str) -> bool:
                     cur = fh
                     seen = set()
@@ -1979,13 +2453,14 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         seen.add(cur)
                         cur = handles.get(cur, {}).get("parent")
                     return False
-                
+
                 matching = [e for e in current_step_frontier if _is_desc(e["handle"], handle)]
-                
+
                 if not matching:
                     logger.info(f"Bulk on '{handle}': no matches")
+                    _report_ok(i, act, handle)
                     continue
-                
+
                 if act == "engulf_all_showing_undecided_descendants_into_gem_for_editing":
                     engulfed_leaves = 0
                     engulfed_branches = 0
@@ -1993,7 +2468,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         fh = entry["handle"]
                         if state.get(fh, {}).get("status") in {"finalized", "closed"}:
                             continue
-                        if entry["is_leaf"]:
+                        if entry.get("is_leaf"):
                             f_entry = state.setdefault(fh, {"status": "unseen", "selection_type": None})
                             f_entry["status"] = "finalized"
                             f_entry["selection_type"] = "leaf"
@@ -2019,13 +2494,22 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         _auto_complete_ancestors(fh)
                         preserved += 1
                     logger.info(f"Preserved {preserved} nodes")
+
+                _report_ok(i, act, handle)
                 continue
 
             if handle not in handles:
-                raise NetworkError(f"Unknown handle: {handle}")
+                _report_fail(i, act, handle, f"Unknown handle: {handle}")
+                continue
 
             if act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm", "update_leaf_node_and_engulf_in_gemstorm", "update_branch_node_and_engulf_in_gemstorm__descendants_unaffected", "update_branch_note_and_engulf_in_gemstorm__descendants_unaffected", "update_tag_and_engulf_in_gemstorm"} and not editable_mode:
-                raise NetworkError("Update actions require editable=True")
+                _report_fail(
+                    i,
+                    act,
+                    handle,
+                    "Update actions require editable=True",
+                )
+                continue
 
             if handle not in state:
                 state[handle] = {"status": "unseen", "max_depth": None, "selection_type": None}
@@ -2039,10 +2523,32 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 from collections import deque
 
                 # Distinct defaults for PEEK vs LIGHTNING
+                # Accept 'budget' as alias for max_nodes (Dan usability)
                 if act == "lightning_flash_into_section":
-                    max_nodes = action.get("max_nodes") or 15
+                    max_nodes = action.get("max_nodes") or action.get("budget") or 15
                 else:
-                    max_nodes = action.get("max_nodes") or 200
+                    max_nodes = action.get("max_nodes") or action.get("budget") or 200
+
+                # Guardrail: reject unexpected keys for LF/PEEK to avoid silent no-ops.
+                # (We intentionally keep this narrow: only validate when the action is LF/PD.)
+                allowed_keys = {
+                    "action",
+                    "handle",
+                    "max_nodes",
+                    "budget",  # alias
+                    "max_depth",
+                    "show_decided_descendants",
+                }
+                # Internal instrumentation keys should not trip strict LF/PEEK validation.
+                extra_keys = (set(action.keys()) - allowed_keys) - {"__action_index"}
+                if extra_keys:
+                    _report_fail(
+                        i,
+                        act,
+                        handle,
+                        f"Unexpected keys for {act} action: {sorted(extra_keys)}",
+                    )
+                    continue
                 try:
                     max_nodes = int(max_nodes)
                 except (TypeError, ValueError):
@@ -2088,6 +2594,62 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     and queue  # still nodes left to visit
                 )
 
+                # Decided-descendant visibility is a REQUIRED choice for LF.
+                # Rationale (Dan): there is no universally sensible default; forcing explicitness
+                # prevents accidental acting-without-seeing.
+                show_decided_descendants = action.get("show_decided_descendants")
+                if show_decided_descendants is None:
+                    _report_fail(
+                        i,
+                        act,
+                        handle,
+                        "LF requires explicit show_decided_descendants: true|false",
+                    )
+                    continue
+                show_decided_descendants = bool(show_decided_descendants)
+
+                # Usability rule (Dan): If NOT STRUCT-mode, and we have a complete set of leaf siblings
+                # under a parent, also include ALL sibling BRANCHES (no limit for now).
+                if act == "lightning_flash_into_section" and not over_limit:
+                    peek_set = set(peek_handles)
+
+                    # Find parents for which at least one leaf child is currently included.
+                    parents_with_leaf: set[str] = set()
+                    for h in peek_handles:
+                        meta_h = handles.get(h, {}) or {}
+                        child_h = meta_h.get("children", []) or []
+                        is_leaf_h = not child_h
+                        if not is_leaf_h:
+                            continue
+                        p = meta_h.get("parent")
+                        if isinstance(p, str):
+                            parents_with_leaf.add(p)
+
+                    # For those parents, include any sibling branches.
+                    for p in parents_with_leaf:
+                        for sib in (handles.get(p, {}) or {}).get("children", []) or []:
+                            if sib in peek_set:
+                                continue
+                            sib_children = (handles.get(sib, {}) or {}).get("children", []) or []
+                            if not sib_children:
+                                continue  # only add BRANCH siblings
+                            # Ensure sibling is still within the lightning root subtree.
+                            if sib == root_handle or sib.startswith(root_handle + "."):
+                                peek_set.add(sib)
+
+                    # Deterministic natural-handle sort
+                    def _natural_key_handle(h: str) -> list[tuple[int, object]]:
+                        parts = h.split(".")
+                        result: list[tuple[int, object]] = []
+                        for part in parts:
+                            if part.isdigit():
+                                result.append((0, int(part)))
+                            else:
+                                result.append((1, part))
+                        return result
+
+                    peek_handles = sorted(peek_set, key=_natural_key_handle)
+
                 peek_frontier = []
                 MAX_NOTE = None if editable_mode else 1024
 
@@ -2108,6 +2670,12 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     fan_root = cur
                     fan_children = (handles.get(fan_root, {}) or {}).get("children", []) or []
 
+                    if not show_decided_descendants:
+                        fan_children = [
+                            ch for ch in fan_children
+                            if (state.get(ch, {"status": "unseen"}).get("status") not in {"finalized", "closed"})
+                        ]
+
                     # Nodes to include: entire spine + as many children of fan_root as fit
                     nodes_to_include: list[str] = list(dict.fromkeys(spine))  # preserve order
                     remaining = max_nodes - len(nodes_to_include)
@@ -2117,6 +2685,20 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                                 break
                             nodes_to_include.append(ch)
                             remaining -= 1
+
+                    # STRUCT usability: include the ancestor chain from root (R) down to the lightning root_handle
+                    # so the preview has full path context like normal frontiers.
+                    ancestor_chain: list[str] = []
+                    cur = root_handle
+                    seen_chain: set[str] = set()
+                    while cur and cur not in seen_chain and cur != "R":
+                        seen_chain.add(cur)
+                        ancestor_chain.append(cur)
+                        cur = (handles.get(cur, {}) or {}).get("parent")
+                    ancestor_chain.append("R")
+                    ancestor_chain.reverse()
+
+                    nodes_to_include = list(dict.fromkeys(ancestor_chain + nodes_to_include))
 
                     seen_local: set[str] = set()
                     for h in nodes_to_include:
@@ -2168,7 +2750,20 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         peek_frontier.append(entry)
                 else:
                     # Normal PEEK / LIGHTNING frontier
-                    for h in peek_handles:
+                    # Usability: include full ancestor path from R -> root_handle for context.
+                    ancestor_chain: list[str] = []
+                    cur = root_handle
+                    seen_chain: set[str] = set()
+                    while cur and cur not in seen_chain and cur != "R":
+                        seen_chain.add(cur)
+                        ancestor_chain.append(cur)
+                        cur = (handles.get(cur, {}) or {}).get("parent")
+                    ancestor_chain.append("R")
+                    ancestor_chain.reverse()
+
+                    ordered_handles = list(dict.fromkeys(ancestor_chain + list(peek_handles)))
+
+                    for h in ordered_handles:
                         meta = handles.get(h, {}) or {}
                         st = state.get(h, {"status": "unseen"})
                         child_handles = meta.get("children", []) or []
@@ -2177,12 +2772,19 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         note_preview = note_full if MAX_NOTE is None else (
                             note_full if len(note_full) <= MAX_NOTE else note_full[:MAX_NOTE]
                         )
+
+                        # Context ancestors should always display as branches.
+                        is_context_ancestor = h in ancestor_chain and h != root_handle
+                        if is_context_ancestor:
+                            is_leaf = False
+
                         guidance = (
                         "PEEK - leaf: EL (IN GEM; editable, may be deleted in ETHER), "
                         "PL (ETHER only; NOT in GEM)"
                     ) if is_leaf else (
                         "PEEK - branch: RB (IN GEM shell), PB (ETHER only), EF (IN GEM), PF (ETHER only)"
                     )
+
                         entry = {
                             "handle": h,
                             "parent_handle": meta.get("parent"),
@@ -2192,6 +2794,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                             "depth": meta.get("depth", 0),
                             "status": st.get("status", "candidate"),
                             "is_leaf": is_leaf,
+                            "is_pseudo_leaf": False,
                             "guidance": guidance,
                         }
                         if act == "lightning_flash_into_section":
@@ -2231,8 +2834,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         combined_by_handle[h_new] = e
                 session["_peek_frontier"] = list(combined_by_handle.values())
 
-                # Track root handles + per-root max_nodes ONLY for non-over-limit LIGHTNING
-                if act == "lightning_flash_into_section" and not over_limit:
+                # Track root handles + per-root max_nodes for LIGHTNING.
+                if act == "lightning_flash_into_section":
                     root_handles = set(session.get("_peek_root_handles") or [])
                     root_handles.add(handle)
                     session["_peek_root_handles"] = sorted(root_handles)
@@ -2241,20 +2844,34 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     max_map[handle] = max_nodes
                     session["_peek_max_nodes_by_root"] = max_map
 
+                    over_map = session.get("_peek_over_limit_by_root") or {}
+                    over_map[handle] = bool(over_limit)
+                    session["_peek_over_limit_by_root"] = over_map
+
+                    # Fresh-start semantics: if this LF root was STRUCT-truncated, do NOT allow
+                    # the lightning state to persist into subsequent steps (agents must re-LF deeper).
+                    if bool(over_limit):
+                        session["_peek_ephemeral_only"] = True
+
                 peek_results.append({
                     "root_handle": handle,
                     "max_nodes": max_nodes,
                     "nodes_returned": len(peek_frontier),
                     "truncated": len(visited) >= max_nodes,
+                    "over_limit": bool(over_limit),
+                    "show_decided_descendants": bool(show_decided_descendants),
                     "frontier": peek_frontier,
                 })
+
+                _report_ok(i, act, handle)
                 continue
 
             # ADD_HINT action
             if act == "add_hint":
                 hint = action.get("hint")
                 if not isinstance(hint, str) or not hint.strip():
-                    raise NetworkError("add_hint requires non-empty hint")
+                    _report_fail(i, act, handle, "add_hint requires non-empty hint")
+                    continue
                 meta = handles.get(handle) or {}
                 existing = meta.get("hints")
                 if not isinstance(existing, list):
@@ -2262,6 +2879,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 existing.append(hint)
                 meta["hints"] = existing
                 handles[handle] = meta
+                _report_ok(i, act, handle)
                 continue
 
             # SKELETON WALK: section-level delete/merge operations over lightning strike
@@ -2270,26 +2888,108 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 "mark_section_as_merge_target",
                 "mark_section_as_permanent",
             }:
+                child_handles_tmp = (handles.get(handle, {}) or {}).get("children", []) or []
+                is_leaf_tmp = not child_handles_tmp
+
+                # Special-case (Dan): MSM on a LEAF is often the agent's intent to "take" the leaf.
+                # Treat as EL with a warning instead of hard-failing.
+                if act == "mark_section_as_merge_target" and is_leaf_tmp:
+                    # Apply EL semantics
+                    entry_leaf = state.setdefault(handle, {"status": "unseen", "selection_type": None})
+                    entry_leaf["status"] = "finalized"
+                    entry_leaf["selection_type"] = "leaf"
+                    entry_leaf["max_depth"] = max_depth
+                    _auto_complete_ancestors(handle)
+                    _report_warn(
+                        i,
+                        act,
+                        handle,
+                        "MSM requires active lightning on a branch root; target is a leaf. Coerced MSM → EL (engulf leaf).",
+                    )
+                    continue
+
+                # Guardrail: MSD/MSP on a leaf should NOT suggest lightning on the leaf.
+                if act in {"mark_section_for_deletion", "mark_section_as_permanent"} and is_leaf_tmp:
+                    _report_fail(
+                        i,
+                        act,
+                        handle,
+                        f"{act} requires a lightning-rooted BRANCH handle; got leaf '{handle}'.",
+                        recommended_action_instead="EL (engulf_leaf_into_gem_for_editing)",
+                        note="If you intended the parent branch, target the parent (e.g., A.7) and LF that branch, then apply MSD/MSP to the branch root.",
+                    )
+                    continue
+
                 peek_frontier = session.get("_peek_frontier")
                 if not peek_frontier:
-                    raise NetworkError(f"{act} requires active lightning strike rooted at handle '{handle}'")
+                    _report_fail(
+                        i,
+                        act,
+                        handle,
+                        f"{act} requires active lightning strike rooted at handle '{handle}'",
+                        recommended_action_instead="EL (engulf_leaf_into_gem_for_editing)" if act == "mark_section_as_merge_target" else None,
+                    )
+                    continue
 
                 peek_roots = session.get("_peek_root_handles") or []
                 if handle not in peek_roots:
-                    raise NetworkError(f"{act} requires active lightning strike rooted at handle '{handle}'")
+                    _report_fail(
+                        i,
+                        act,
+                        handle,
+                        f"{act} requires active lightning strike rooted at handle '{handle}'",
+                        recommended_action_instead="EL (engulf_leaf_into_gem_for_editing)" if act == "mark_section_as_merge_target" else None,
+                        recommended_handle_instead=(peek_roots[0] if len(peek_roots) == 1 else None),
+                    )
+                    continue
+
+                # STRUCT gate (Dan): if the strike for this root was STRUCT-truncated, do NOT allow
+                # MSP/MSM/MSD decisions. User must LF deeper (or increase budget) to see real nodes.
+                over_map = session.get("_peek_over_limit_by_root") or {}
+                if bool(over_map.get(handle)):
+                    _report_fail(
+                        i,
+                        act,
+                        handle,
+                        (
+                            f"{act} is not allowed on STRUCT-mode lightning results for root '{handle}'. "
+                            "LF deeper (choose a child) or increase budget first."
+                        ),
+                    )
+                    continue
 
                 peek_handles = {e.get("handle") for e in peek_frontier}
+
+                # Optional freeform note provided by caller (very useful during live runs)
+                skeleton_note = action.get("note")
+                if isinstance(skeleton_note, str) and skeleton_note.strip():
+                    _append_scratchpad_entry(
+                        session,
+                        {
+                            "note": skeleton_note.strip(),
+                            "handle": handle,
+                            "origin": "skeleton_action_note",
+                            "action": act,
+                        },
+                    )
 
                 if act == "mark_section_for_deletion":
                     nodes_to_salvage = action.get("nodes_to_salvage_for_move") or []
                     invalid = [h for h in nodes_to_salvage if h not in peek_handles]
                     if invalid:
-                        raise NetworkError(f"nodes_to_salvage_for_move not in lightning frontier: {invalid}")
+                        _report_fail(
+                            i,
+                            act,
+                            handle,
+                            f"nodes_to_salvage_for_move not in lightning frontier: {invalid}",
+                        )
+                        continue
 
                     # Salvage selected nodes for later move/merge
                     for h_salvage in nodes_to_salvage:
                         if h_salvage not in handles:
-                            raise NetworkError(f"Unknown salvage handle: {h_salvage}")
+                            _report_fail(i, act, handle, f"Unknown salvage handle: {h_salvage}")
+                            continue
                         sal_meta = handles.get(h_salvage) or {}
                         sal_children = sal_meta.get("children", []) or []
                         sal_entry = state.setdefault(
@@ -2355,8 +3055,54 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         hints.append("SKELETON_MERGE_TARGET")
                         scratch_suffix = "merge target"
                     else:  # mark_section_as_permanent
+                        # MSP semantics (Dan): "preserve this entire section unchanged and hide its descendants"
+                        # Implementation:
+                        # 1) Mark this root as a PRESERVED SUBTREE ROOT (closed + selection_type=subtree)
+                        # 2) Mark ALL undecided descendants as closed as well
+                        # 3) Add a pruning hint so frontier generation skips descendants by default
                         hints.append("SKELETON_PERMANENT_TARGET")
+                        hints.append("SKELETON_PERMANENT_PRUNED")
                         scratch_suffix = "permanent target"
+
+                        # Mark the root as a preserved subtree root
+                        target_entry["status"] = "closed"
+                        target_entry["selection_type"] = "subtree"
+                        target_entry["max_depth"] = None
+
+                        # Mark descendants as preserved (closed) so finalization can proceed smoothly.
+                        # Only touch undecided nodes (avoid clobbering already-decided/finalized edits).
+                        def _mark_descendants_closed(root_h: str) -> int:
+                            preserved = 0
+                            stack = list((handles.get(root_h, {}) or {}).get("children", []) or [])
+                            seen: set[str] = set()
+                            while stack:
+                                ch = stack.pop()
+                                if ch in seen:
+                                    continue
+                                seen.add(ch)
+
+                                st_ch = state.get(ch)
+                                status = (st_ch or {}).get("status") if isinstance(st_ch, dict) else None
+                                if status in {None, "unseen", "candidate", "open"}:
+                                    st_new = state.setdefault(ch, {"status": "unseen", "selection_type": None})
+                                    st_new["status"] = "closed"
+                                    st_new["selection_type"] = "subtree" if (handles.get(ch, {}) or {}).get("children") else None
+                                    st_new["max_depth"] = None
+                                    preserved += 1
+
+                                stack.extend((handles.get(ch, {}) or {}).get("children", []) or [])
+                            return preserved
+
+                        preserved_desc_count = _mark_descendants_closed(handle)
+                        _append_scratchpad_entry(
+                            session,
+                            {
+                                "note": f"[SKELETON] MSP preserved+pruned descendants: root={handle}, descendants_closed={preserved_desc_count}",
+                                "handle": handle,
+                                "origin": "skeleton_mark_section_as_permanent",
+                            },
+                        )
+
                     meta["hints"] = hints
                     handles[handle] = meta
 
@@ -2370,6 +3116,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                             "origin": origin,
                         },
                     )
+
+                _report_ok(i, act, handle)
 
                 # End lightning strike for THIS section only (support multiple active lightning roots)
                 current_frontier = session.get("_peek_frontier") or []
@@ -2407,11 +3155,13 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 entry["selection_type"] = "leaf"
                 entry["max_depth"] = max_depth
                 _auto_complete_ancestors(handle)
+                _report_ok(i, act, handle)
             elif act == "preserve_leaf_in_ether_untouched":
                 entry["status"] = "closed"
                 entry["selection_type"] = None
                 entry["max_depth"] = None
                 _auto_complete_ancestors(handle)
+                _report_ok(i, act, handle)
             
             # BRANCH actions
             elif act == "flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states":
@@ -2421,17 +3171,26 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 accepted = summary["accepted_leaf_count"]
 
                 if desc_count == 0:
-                    raise NetworkError(f"{handle} has no descendants - use leaf actions")
+                    _report_fail(i, act, handle, f"{handle} has no descendants - use leaf actions")
+                    continue
 
                 if exploration_mode == "dfs_guided_explicit":
                     if has_undecided or accepted > 0:
-                        raise NetworkError(f"Strict mode: cannot engulf branch '{handle}' with undecided/engulfed descendants")
+                        _report_fail(
+                            i,
+                            act,
+                            handle,
+                            f"Strict mode: cannot engulf branch '{handle}' with undecided/engulfed descendants",
+                            recommended_action_instead="EL/PL on remaining leaves, then RB",
+                        )
+                        continue
 
                 if exploration_mode == "dfs_guided_bulk":
                     entry["status"] = "finalized"
                     entry["selection_type"] = "subtree"
                     entry["max_depth"] = max_depth
                     entry["subtree_mode"] = "shell"
+                    _report_ok(i, act, handle)
                     continue
 
                 # All descendants decided: include as shell
@@ -2441,19 +3200,23 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                 if summary["has_decided"] and not summary["has_undecided"]:
                     if accepted > 0:
                         _auto_complete_ancestors(handle)
+                        _report_ok(i, act, handle)
                         continue
                     entry["subtree_mode"] = "shell"
                 else:
                     entry["subtree_mode"] = "shell"
                 _auto_complete_ancestors(handle)
+                _report_ok(i, act, handle)
 
             elif act == "preserve_branch_node_in_ether_untouched__when_no_engulfed_children":
                 summary = _summarize_descendants(handle)
                 if summary["descendant_count"] == 0:
-                    raise NetworkError(f"{handle} has no descendants - use leaf preserve")
+                    _report_fail(i, act, handle, f"{handle} has no descendants - use leaf preserve")
+                    continue
 
                 if exploration_mode == "dfs_guided_explicit" and summary["has_undecided"]:
-                    raise NetworkError("Strict mode: all descendants must be decided first")
+                    _report_fail(i, act, handle, "Strict mode: all descendants must be decided first")
+                    continue
 
                 if exploration_mode == "dfs_guided_bulk":
                     preserved_count = 0
@@ -2470,27 +3233,33 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                                 state[h]["selection_type"] = "subtree"
                                 preserved_count += 1
                     logger.info(f"Smart preserve: {preserved_count} nodes")
+                    _report_ok(i, act, handle)
                 else:
                     if summary["accepted_leaf_count"] > 0:
-                        raise NetworkError(f"Cannot preserve '{handle}' - has engulfed leaves")
+                        _report_fail(i, act, handle, f"Cannot preserve '{handle}' - has engulfed leaves")
+                        continue
                     entry["status"] = "closed"
                     entry["selection_type"] = "subtree"
                     entry["max_depth"] = max_depth
+                    _report_ok(i, act, handle)
                 _auto_complete_ancestors(handle)
 
             # UPDATE actions (editable mode)
             elif act in {"update_node_and_engulf_in_gemstorm", "update_note_and_engulf_in_gemstorm", "update_leaf_node_and_engulf_in_gemstorm", "update_branch_node_and_engulf_in_gemstorm__descendants_unaffected", "update_branch_note_and_engulf_in_gemstorm__descendants_unaffected"}:
                 if not editable_mode:
-                    raise NetworkError("Update actions require editable=True")
+                    _report_fail(i, act, handle, "Update actions require editable=True")
+                    continue
                 new_name = action.get("name")
                 new_note = action.get("note")
                 meta = handles.get(handle) or {}
                 node_id = meta.get("id")
                 if not node_id:
-                    raise NetworkError(f"{handle} has no node id")
+                    _report_fail(i, act, handle, f"{handle} has no node id")
+                    continue
                 target = node_by_id.get(node_id)
                 if not target:
-                    raise NetworkError(f"Node {node_id} not in tree")
+                    _report_fail(i, act, handle, f"Node {node_id} not in tree")
+                    continue
                 if new_name:
                     target["name"] = new_name
                     meta["name"] = new_name
@@ -2511,23 +3280,28 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         entry["selection_type"] = "subtree"
                     entry["max_depth"] = max_depth
                     _auto_complete_ancestors(handle)
+                _report_ok(i, act, handle)
 
             elif act == "update_tag_and_engulf_in_gemstorm":
                 if not editable_mode:
-                    raise NetworkError("Update tag requires editable=True")
+                    _report_fail(i, act, handle, "Update tag requires editable=True")
+                    continue
                 raw_tag = action.get("tag")
                 if not isinstance(raw_tag, str) or not raw_tag.strip():
-                    raise NetworkError("Tag required")
+                    _report_fail(i, act, handle, "Tag required")
+                    continue
                 tag = raw_tag.strip()
                 if not tag.startswith("#"):
                     tag = f"#{tag}"
                 meta = handles.get(handle) or {}
                 node_id = meta.get("id")
                 if not node_id:
-                    raise NetworkError(f"{handle} has no node id")
+                    _report_fail(i, act, handle, f"{handle} has no node id")
+                    continue
                 target = node_by_id.get(node_id)
                 if not target:
-                    raise NetworkError(f"Node {node_id} not in tree")
+                    _report_fail(i, act, handle, f"Node {node_id} not in tree")
+                    continue
                 current_name = target.get("name") or ""
                 if tag not in current_name.split():
                     new_name = f"{current_name} {tag}".strip()
@@ -2545,9 +3319,25 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                     if not entry.get("selection_type"):
                         entry["selection_type"] = "subtree"
                     _auto_complete_ancestors(handle)
+                _report_ok(i, act, handle)
+                continue
             else:
-                raise NetworkError(f"Unsupported action: {act}")
+                _report_fail(i, act, handle, f"Unsupported action: {act}")
+                continue
         
+        # If any failures occurred, we intentionally do NOT compute a new frontier in this call.
+        # We also clear ephemeral peek/LF/search state to avoid "invisible flashes".
+        if any_failures:
+            for key in (
+                "_peek_frontier",
+                "_peek_root_handles",
+                "_peek_max_nodes_by_root",
+                "_peek_over_limit_by_root",
+                "_peek_ephemeral_only",
+                "_search_frontier",
+            ):
+                session.pop(key, None)
+
         session["handles"] = handles
         session["state"] = state
         session["steps"] = int(session.get("steps", 0)) + 1
@@ -2560,7 +3350,41 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         except Exception as e:
             raise NetworkError(f"Failed to persist session: {e}") from e
 
-        return {
+        if any_failures:
+            # Provide compact guidance: fix invalid steps, then rerun LF/SEARCH if desired.
+            step_guidance = [
+                "❌ One or more actions failed. No frontier returned.",
+                "Fix the failed action(s) and re-run the step.",
+                "Note: LF/peek/search state has been cleared to prevent acting-without-seeing.",
+            ]
+            # Human-readable output (primary) + structured details for inspection.
+            # TypingMind renders tool outputs as JSON; embedding the human summary as multiline text
+            # avoids painful "\\n" copy/paste workflows.
+            error_summary_text = self._format_action_report_plain_text(action_reports)
+            try:
+                action_report_json = json_module.dumps(action_reports, indent=2, ensure_ascii=False)
+            except Exception:
+                action_report_json = json_module.dumps(action_reports)
+
+            combined_text = (
+                error_summary_text
+                + "\n---\n"
+                + "ACTION_REPORT (JSON)\n"
+                + action_report_json
+            )
+
+            return {
+                "success": False,
+                "session_id": session_id,
+                "action_key_primary_aliases": {"RB": "reserve_branch_for_children"},
+                "action_key": EXPLORATION_ACTION_2LETTER,
+                "error_summary": combined_text,
+                "action_reports": action_reports,
+                "step_guidance": step_guidance,
+                "skipped_decisions": skipped_decisions,
+            }
+
+        result = {
             "success": True,
             "session_id": session_id,
             "action_key_primary_aliases": {"RB": "reserve_branch_for_children"},
@@ -2568,6 +3392,10 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "scratchpad": session.get("scratchpad", []),
             "skipped_decisions": skipped_decisions,
         }
+        if success_warnings:
+            result["warnings"] = success_warnings
+            result["action_reports"] = action_reports
+        return result
 
     async def nexus_finalize_exploration(
         self,

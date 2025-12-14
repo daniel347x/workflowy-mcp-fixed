@@ -1668,7 +1668,7 @@ async def nexus_weave_enchanted_async(
 async def nexus_start_exploration(
     nexus_tag: str,
     root_id: str,
-    source_mode: str = "glimpse_full",
+    source_mode: str = "scry",
     max_nodes: int = 200000,
     session_hint: str | None = None,
     frontier_size: int = 25,
@@ -1701,7 +1701,7 @@ async def nexus_start_exploration(
     Args:
         nexus_tag: Tag name for this NEXUS run (directory under temp/nexus_runs).
         root_id: Workflowy UUID to treat as exploration root.
-        source_mode: Currently decorative; source is always a GLIMPSE_FULL SCRY.
+        source_mode: Currently decorative; source is always an API SCRY (workflowy_scry).
         max_nodes: Safety cap for SCRY (size_limit).
         session_hint: Controls exploration_mode and strict_completeness:
             - Contains "bulk" or "guided_bulk" → dfs_guided_bulk mode
@@ -1763,9 +1763,7 @@ async def nexus_start_exploration(
 async def nexus_explore_step(
     session_id: str,
     decisions: list[dict[str, Any]] | None = None,
-    walks: list[dict[str, Any]] | None = None,
-    max_parallel_walks: int = 4,
-    global_frontier_limit: int = 80,
+    global_frontier_limit: int | None = None,
     include_history_summary: bool = True,
 ) -> dict:
     """Apply a single exploration step: label nodes and advance the frontier.
@@ -1777,7 +1775,6 @@ async def nexus_explore_step(
 
     In dfs_guided_explicit:
 
-    - "walks" is ignored.
     - You are expected to explicitly decide every leaf using leaf actions and
       branch-node actions.
     - Bulk descendant actions are generally not used in this mode.
@@ -1836,8 +1833,6 @@ async def nexus_explore_step(
     Args:
         session_id: Exploration session id.
         decisions: Optional list of decision dicts.
-        walks: Optional list of walk dicts (ignored in dfs_guided_explicit).
-        max_parallel_walks: Upper bound on concurrent rays (dfs_guided_bulk / legacy).
         global_frontier_limit: Leaf-budget limit for this step when batching frontiers.
         include_history_summary: If True, include a compact status summary.
 
@@ -1853,8 +1848,6 @@ async def nexus_explore_step(
         result = await client.nexus_explore_step_v2(
             session_id=session_id,
             decisions=decisions,
-            walks=walks,
-            max_parallel_walks=max_parallel_walks,
             global_frontier_limit=global_frontier_limit,
             include_history_summary=include_history_summary,
         )
