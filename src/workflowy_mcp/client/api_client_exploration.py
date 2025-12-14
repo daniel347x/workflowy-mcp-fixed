@@ -385,7 +385,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             else:
                 name_part = f"{tag_prefix}{name}" if tag_prefix else name
 
-            lines.append(f"[{label}] {indent}{bullet} {kind} {name_part}")
+            id_blank = " " * max_id_len
+            lines.append(f"[{id_blank}] [{label}] {indent}{bullet} {kind} {name_part}")
 
         # NOTE: scratchpad_preview (UNBOUND) is a scratchpad-only concept.
         # Frontier previews should never reference scratchpad variables.
@@ -571,7 +572,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
             if not notes:
                 # Stub ancestor line (no note)
-                lines.append(f"[{label}] {indent}{bullet} {kind} {name}")
+                id_blank = " " * max_id_len
+                lines.append(f"[{id_blank}] [{label}] {indent}{bullet} {kind} {name}")
                 continue
 
             for idx, rec in enumerate(notes):
