@@ -2202,6 +2202,14 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                             "closed": [h for h, st in state.items() if st.get("status") == "closed"],
                         }
 
+                    # Ensure the step output file always has a stable scratchpad_preview field.
+                    # NOTE: In LF-only calls (no SP), 'minimal' may not exist yet in this branch.
+                    scratchpad_preview_for_file = None
+                    try:
+                        scratchpad_preview_for_file = minimal.get("scratchpad_preview")  # type: ignore[name-defined]
+                    except Exception:
+                        scratchpad_preview_for_file = None
+
                     full_response = {
                         "success": True,
                         "session_id": session_id,
@@ -2218,10 +2226,8 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
                         "history_summary": history_summary,
                         "peek_results": peek_results,
                         "frontier_tree": frontier_tree,
-                        # When SP is requested, also persist the rendered preview into the step output file
-                        # via _write_exploration_output() (it embeds full_response). This makes debugging and
-                        # baton relay easier without requiring re-running steps.
-                        "scratchpad_preview": minimal.get("scratchpad_preview"),
+                        # When SP is requested, also persist the rendered preview into the step output file.
+                        "scratchpad_preview": scratchpad_preview_for_file,
                         "sp_filter": sp_filter,
                     }
 
