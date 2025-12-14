@@ -1801,6 +1801,10 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         skipped_decisions: list[dict[str, Any]] = []
         
         if exploration_mode in {"dfs_guided_explicit", "dfs_guided_bulk"}:
+            # Default: no internal warnings/action reports unless we ran internal step.
+            internal_warnings: list[str] = []
+            internal_action_reports: list[dict[str, Any]] = []
+
             # Expand 2-letter codes
             if decisions:
                 for decision in decisions:
