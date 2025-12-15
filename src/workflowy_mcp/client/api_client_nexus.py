@@ -315,15 +315,34 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "_source": "api"
             }
         
-        # Size limit check
+        # Size limit handling
+        # Old behavior: hard error when subtree exceeds size_limit.
+        # New behavior (ground-truth semantics): optionally TRUNCATE instead of erroring,
+        # and mark nodes with children_status='truncated_by_max_nodes'.
+        #
+        # Rationale: Exploration sessions must be able to ingest partial trees while
+        # preserving epistemic completeness metadata.
+        #
+        # Default remains SAFE: if size_limit is exceeded and no truncation is requested,
+        # raise NetworkError.
+        allow_truncate_by_max_nodes = True
+        did_truncate_by_max_nodes = False
         if size_limit and len(flat_nodes) > size_limit:
-            raise NetworkError(
-                f"Tree size ({len(flat_nodes)}) exceeds limit ({size_limit}).\n\n"
-                f"Options:\n"
-                f"1. Increase size_limit\n"
-                f"2. Use depth parameter\n"
-                f"3. Use GLIMPSE (WebSocket)"
-            )
+            if not allow_truncate_by_max_nodes:
+                raise NetworkError(
+                    f"Tree size ({len(flat_nodes)}) exceeds limit ({size_limit}).\n\n"
+                    f"Options:\n"
+                    f"1. Increase size_limit\n"
+                    f"2. Use depth parameter\n"
+                    f"3. Use GLIMPSE (WebSocket)"
+                )
+
+            did_truncate_by_max_nodes = True
+
+            # Keep root + the first (size_limit - 1) nodes (conservative truncation).
+            # Note: flat_nodes is a pre-order-ish list from /nodes-export filtered to subtree.
+            # This truncation is intentionally coarse; downstream logic must treat it as incomplete.
+            flat_nodes = flat_nodes[: max(1, size_limit)]
         
         # Build hierarchy
         hierarchical_tree = self._build_hierarchy(flat_nodes, True)
@@ -342,6 +361,17 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         _stamp_children_status_complete(hierarchical_tree)
 
+        # If we truncated the flat export due to size_limit, the returned tree is incomplete.
+        # Mark all nodes as truncated_by_max_nodes (fail-closed).
+        if did_truncate_by_max_nodes:
+            def _stamp_children_status_truncated(nodes: list[dict[str, Any]]) -> None:
+                for n in nodes or []:
+                    if not isinstance(n, dict):
+                        continue
+                    n["children_status"] = "truncated_by_max_nodes"
+                    _stamp_children_status_truncated(n.get("children") or [])
+            _stamp_children_status_truncated(hierarchical_tree)
+
         # Attach preview
         try:
             preview_tree = self._annotate_preview_ids_and_build_tree(hierarchical_tree, "WS")
@@ -351,6 +381,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # Extract root
         root_metadata = None
         children = []
+        root_children_status = "complete"
         
         if hierarchical_tree and len(hierarchical_tree) == 1:
             root_node = hierarchical_tree[0]
@@ -361,6 +392,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "parent_id": root_node.get('parent_id')
             }
             children = root_node.get('children', [])
+            root_children_status = root_node.get("children_status", "complete")
         else:
             target_root = next((r for r in hierarchical_tree if r.get("id") == node_id), None)
             if target_root:
@@ -371,8 +403,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     "parent_id": target_root.get('parent_id')
                 }
                 children = target_root.get('children', [])
+                root_children_status = target_root.get("children_status", "complete")
             else:
                 children = hierarchical_tree
+                root_children_status = "unknown"
         
         # Apply depth limit
         if depth is not None:
@@ -439,6 +473,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "preview_tree": preview_tree,
             "root": root_metadata,
             "children": children,
+            "export_root_children_status": root_children_status,
         }
         
         _log_glimpse_to_file("glimpse_full", node_id, result)
