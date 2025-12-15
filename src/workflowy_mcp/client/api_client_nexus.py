@@ -328,6 +328,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # Build hierarchy
         hierarchical_tree = self._build_hierarchy(flat_nodes, True)
 
+        # Ground truth completeness semantics:
+        # workflowy_scry() (API) returns a full subtree (subject only to explicit size_limit/depth).
+        # Therefore, we can safely mark children_status='complete' for all nodes we actually have.
+        # NOTE: If a depth limit is applied below, those nodes will be truncated structurally
+        # and must NOT remain marked complete (handled after depth limiting).
+        def _stamp_children_status_complete(nodes: list[dict[str, Any]]) -> None:
+            for n in nodes or []:
+                if not isinstance(n, dict):
+                    continue
+                n["children_status"] = "complete"
+                _stamp_children_status_complete(n.get("children") or [])
+
+        _stamp_children_status_complete(hierarchical_tree)
+
         # Attach preview
         try:
             preview_tree = self._annotate_preview_ids_and_build_tree(hierarchical_tree, "WS")
@@ -363,6 +377,57 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # Apply depth limit
         if depth is not None:
             children = self._limit_depth(children, depth)
+
+            # After limiting depth, mark any nodes that were truncated by depth.
+            # Rule: if a node has children in the ORIGINAL tree but now has children=[], it was truncated.
+            def _mark_truncated_by_depth(nodes: list[dict[str, Any]], current_depth: int = 1) -> None:
+                if not nodes:
+                    return
+                for n in nodes:
+                    if not isinstance(n, dict):
+                        continue
+                    # At the cutoff depth, we forced children=[].
+                    if current_depth >= depth:
+                        # If this node originally had children, it is truncated.
+                        # We cannot reliably know "original had children" after _limit_depth,
+                        # so we conservatively mark branches at cutoff depth as truncated when
+                        # they are not leaves in the flat export.
+                        # Easiest reliable signal: use child_count computed from flat_nodes.
+                        pass
+                    for ch in (n.get("children") or []):
+                        _mark_truncated_by_depth([ch], current_depth + 1)
+
+            # Conservative but safe: any node at depth==depth that is NOT a leaf in the flat export
+            # should be marked truncated_by_depth. We can detect that via a set of ids that had
+            # children in the original hierarchy.
+            ids_with_children: set[str] = set()
+            try:
+                # Build from hierarchical_tree (pre-limit) which still exists in local scope above.
+                def _collect_ids_with_children(nodes0: list[dict[str, Any]]) -> None:
+                    for nn in nodes0 or []:
+                        if not isinstance(nn, dict):
+                            continue
+                        cid = nn.get("id")
+                        ch0 = nn.get("children") or []
+                        if cid and isinstance(ch0, list) and len(ch0) > 0:
+                            ids_with_children.add(str(cid))
+                        _collect_ids_with_children(ch0)
+
+                _collect_ids_with_children(hierarchical_tree)
+            except Exception:
+                ids_with_children = set()
+
+            def _stamp_depth_status(nodes1: list[dict[str, Any]], current_depth: int = 1) -> None:
+                for nn in nodes1 or []:
+                    if not isinstance(nn, dict):
+                        continue
+                    nid = nn.get("id")
+                    if current_depth >= depth:
+                        if nid and str(nid) in ids_with_children:
+                            nn["children_status"] = "truncated_by_depth"
+                    _stamp_depth_status(nn.get("children") or [], current_depth + 1)
+
+            _stamp_depth_status(children, current_depth=1)
         
         max_depth = self._calculate_max_depth(children)
         

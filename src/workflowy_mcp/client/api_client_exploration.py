@@ -1743,6 +1743,33 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
         walk(root_node, "R", None, 0, top=True)
 
+        # Ground truth completeness propagation:
+        # The exploration session is built from workflowy_scry() (API) which returns a full subtree.
+        # Therefore each handle can safely inherit children_status from the source tree.
+        # (This is critical so exploration→finalize preserves epistemic completeness.)
+        def _index_children_status_by_id(node: dict[str, Any], out: dict[str, str]) -> None:
+            if not isinstance(node, dict):
+                return
+            nid = node.get("id")
+            status = node.get("children_status")
+            if nid and isinstance(status, str) and status:
+                out[str(nid)] = status
+            for ch in node.get("children") or []:
+                if isinstance(ch, dict):
+                    _index_children_status_by_id(ch, out)
+
+        children_status_by_id: dict[str, str] = {}
+        _index_children_status_by_id(root_node, children_status_by_id)
+
+        for h, meta in handles.items():
+            nid = (meta or {}).get("id")
+            if nid and str(nid) in children_status_by_id:
+                meta["children_status"] = children_status_by_id[str(nid)]
+            else:
+                # Fail-closed: if missing, treat as unknown so downstream WEAVE never assumes completeness.
+                meta["children_status"] = "unknown"
+            handles[h] = meta
+
         # Initial state
         state = {"R": {"status": "open", "max_depth": None}}
         for ch in handles.get("R", {}).get("children", []) or []:
@@ -1764,6 +1791,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "max_nodes": max_nodes,
             "editable": bool(editable),
             "strict_completeness": strict_completeness,
+            "export_root_children_status": "complete",  # API-derived full subtree (ground truth)
             "handles": handles,
             "state": state,
             "scratchpad": [],
@@ -4472,9 +4500,19 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             sp_preview = []
 
         # S0 wrapper (witness GEM + T0/T1)
+        # IMPORTANT (Ground truth semantics): exploration sessions must propagate export_root_children_status
+        # derived from their source tree. Do NOT hardcode 'complete'.
+        #
+        # Current exploration implementation sources its tree from workflowy_scry() (API) and fails
+        # before session creation if max_nodes is exceeded; therefore the exploration root is
+        # ground-truth complete.
+        export_root_children_status = session.get("export_root_children_status")
+        if not isinstance(export_root_children_status, str) or not export_root_children_status:
+            export_root_children_status = "complete"
+
         gem_wrapper = {
             "export_timestamp": None,
-            "export_root_children_status": "complete",
+            "export_root_children_status": export_root_children_status,
             "__preview_tree__": exploration_preview,
             "export_root_id": export_root_id,
             "export_root_name": export_root_name,
