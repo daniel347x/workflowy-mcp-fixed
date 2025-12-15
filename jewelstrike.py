@@ -417,6 +417,17 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
         # Non-fatal - working_gem can still function without external reference
         pass
 
+    # Capture deletion-semantics ledger BEFORE we strip metadata from the HOT VISIBLE GEM.
+    #
+    # ⚠️ CRITICAL: delete_semantics_hint relies on original_ids_seen; if we pop it first,
+    # the hint (🧨/🪵 markers + counts) becomes empty even though phantom_gem.json contains it.
+    original_ids_seen_list = []
+    try:
+        if isinstance(gem_data, dict):
+            original_ids_seen_list = gem_data.get("original_ids_seen") or []
+    except Exception:
+        original_ids_seen_list = []
+
     # Strip root-level heavy metadata from HOT VISIBLE GEM (phantom_gem still has it)
     for key in (
         "original_ids_seen",
@@ -470,13 +481,6 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
     #
     # Here, we can at least expose ledger presence/count and a coarse list of
     # "candidate deletable" nodes based on children_status/subtree_mode.
-    original_ids_seen_list = []
-    try:
-        if isinstance(gem_data, dict):
-            original_ids_seen_list = gem_data.get("original_ids_seen") or []
-    except Exception:
-        original_ids_seen_list = []
-
     weave_would_delete_ids = []
     local_only_ids = []
 
