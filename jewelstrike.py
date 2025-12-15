@@ -616,6 +616,14 @@ def resolve_phantom_gem_from_nexus_tag(nexus_tag: str) -> Path:
 
 
 if __name__ == "__main__":
+    # Force UTF-8 stdout so unicode preview_tree (⦿, 🧨, emojis) never crashes under cp1252.
+    # errors='replace' ensures we never throw UnicodeEncodeError in hostile terminals.
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     if len(sys.argv) < 2:
         print(json.dumps({
             "success": False,
