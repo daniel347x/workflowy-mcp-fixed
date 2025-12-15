@@ -1779,6 +1779,14 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         # Persist exploration-wide frontier_size so subsequent steps can reuse it
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         session_id = f"{timestamp}__{nexus_tag}-{uuid.uuid4().hex[:8]}"
+        # Ground-truth completeness propagation (critical for WEAVE safety):
+        # workflowy_scry() now supports truncation by max_nodes/depth and returns
+        # export_root_children_status. Exploration must carry this through to
+        # finalize → gem_wrapper → WEAVE.
+        export_root_children_status = glimpse.get("export_root_children_status")
+        if not isinstance(export_root_children_status, str) or not export_root_children_status:
+            export_root_children_status = "unknown"  # fail-closed
+
         session = {
             "frontier_size": int(frontier_size) if isinstance(frontier_size, int) and frontier_size > 0 else 25,
             "session_id": session_id,
@@ -1791,7 +1799,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "max_nodes": max_nodes,
             "editable": bool(editable),
             "strict_completeness": strict_completeness,
-            "export_root_children_status": "complete",  # API-derived full subtree (ground truth)
+            "export_root_children_status": export_root_children_status,
             "handles": handles,
             "state": state,
             "scratchpad": [],
@@ -4508,7 +4516,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         # ground-truth complete.
         export_root_children_status = session.get("export_root_children_status")
         if not isinstance(export_root_children_status, str) or not export_root_children_status:
-            export_root_children_status = "complete"
+            export_root_children_status = "unknown"  # fail-closed
 
         gem_wrapper = {
             "export_timestamp": None,

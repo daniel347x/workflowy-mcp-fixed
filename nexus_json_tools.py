@@ -1470,11 +1470,13 @@ def find_node_and_parent(data: JsonDict, target_id: str) -> Tuple[Optional[JsonD
 
 
 def recalc_counts_for_node(node: JsonDict) -> int:
-    """Recalculate child/descendant counts for TERRAIN files (human-focused).
+    """Recalculate child/descendant counts (human-focused) WITHOUT breaking children_status.
 
-    Writes *_human_readable_only counters alongside children_status. These
-    counts are intended for human inspection and debugging, not for core
-    WEAVE semantics.
+    IMPORTANT DESIGN RULE (Dec 2025): children_status is an *epistemic* flag
+    used for WEAVE safety (complete vs truncated/unknown). It must NEVER be
+    overwritten by count-recalc utilities.
+
+    This helper updates only the *_human_readable_only counters.
 
     Returns this node's total_descendant_count__human_readable_only.
     """
@@ -1486,21 +1488,34 @@ def recalc_counts_for_node(node: JsonDict) -> int:
     immediate = len(children)
     total_desc = 0
     for child in children:
-        child_total = recalc_counts_for_node(child)
-        total_desc += 1 + child_total
+        if isinstance(child, dict):
+            child_total = recalc_counts_for_node(child)
+            total_desc += 1 + child_total
 
     node["immediate_child_count__human_readable_only"] = immediate
     node["total_descendant_count__human_readable_only"] = total_desc
-    node["children_status"] = "complete"
+
+    # Fail-closed normalization: if children_status is missing, stamp "unknown".
+    # WEAVE already treats missing as truncated, but stamping makes the invariant
+    # explicit and prevents other tooling from assuming completeness.
+    if "children_status" not in node or not node.get("children_status"):
+        node["children_status"] = "unknown"
+
     return total_desc
 
 
 def recalc_all_counts(data: JsonDict) -> None:
+    """Recalculate *_human_readable_only counters for TERRAIN-like files.
+
+    NOTE: This function name is kept for backward compatibility with existing
+    CLI commands, but it is now children_status-safe.
+    """
     nodes = data.get("nodes") or []
     if not isinstance(nodes, list):
         return
     for node in nodes:
-        recalc_counts_for_node(node)
+        if isinstance(node, dict):
+            recalc_counts_for_node(node)
 
 
 def recalc_counts_for_node_gem(node: JsonDict) -> int:
