@@ -173,7 +173,7 @@ def transform_jewel(
     jewel_file: str,
     operations: List[Dict[str, Any]],
     dry_run: bool = False,
-    stop_on_error: bool = True,
+    stop_on_error: bool = False,
 ) -> Dict[str, Any]:
     """Apply JEWELSTORM semantic operations to a NEXUS working_gem JSON file.
 
@@ -241,6 +241,10 @@ def transform_jewel(
         }
 
     # Determine editable roots list (supports both export-package dict and bare list)
+    nexus_tag_in_file: Optional[str] = None
+    if isinstance(data, dict):
+        nexus_tag_in_file = data.get("nexus_tag")
+
     if isinstance(data, dict) and isinstance(data.get("nodes"), list):
         original_roots = data["nodes"]
     elif isinstance(data, list):
@@ -268,6 +272,64 @@ def transform_jewel(
 
     # Work on a deep copy so we never mutate the original unless we succeed
     roots: List[JsonDict] = copy.deepcopy(original_roots)
+
+    # ------- Managed NEXUS witness context (optional) -------
+    # If this working_gem came from JEWELSTRIKE, it may carry nexus_tag.
+    # When present, we can locate the witness GEM (S0) for this run and use it
+    # to compute ancestry relationships for additional safety checks.
+    witness_parent_by_id: Optional[Dict[str, Optional[str]]] = None
+    if nexus_tag_in_file:
+        try:
+            # Resolve nexus_tag -> phantom_gem.json (best-effort).
+            # We avoid importing jewelstrike.py here because nexus_json_tools.py is often
+            # imported from non-project CWDs. Instead, replicate the minimal resolution logic.
+            from pathlib import Path
+
+            base_dir = Path(
+                r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_runs"
+            )
+            suffix = f"__{nexus_tag_in_file}"
+            candidates = [
+                child
+                for child in base_dir.iterdir()
+                if child.is_dir() and (child.name == nexus_tag_in_file or child.name.endswith(suffix))
+            ]
+            if candidates:
+                run_dir = sorted(candidates, key=lambda p: p.name)[-1]
+                phantom_path = run_dir / "phantom_gem.json"
+                if phantom_path.exists():
+                    witness_data = load_json(str(phantom_path))
+                else:
+                    witness_data = None
+            else:
+                witness_data = None
+
+            if witness_data is not None:
+                witness_roots = []
+                if isinstance(witness_data, dict) and isinstance(witness_data.get("nodes"), list):
+                    witness_roots = witness_data.get("nodes") or []
+                elif isinstance(witness_data, list):
+                    witness_roots = witness_data
+
+                # Build parent map (by real Workflowy id) from witness tree
+                w_parent: Dict[str, Optional[str]] = {}
+
+                def _walk_w(node: JsonDict, parent_id: Optional[str]) -> None:
+                    nid = node.get("id")
+                    if nid:
+                        w_parent[str(nid)] = parent_id
+                    for ch in node.get("children") or []:
+                        if isinstance(ch, dict):
+                            _walk_w(ch, str(nid) if nid else parent_id)
+
+                for r in witness_roots:
+                    if isinstance(r, dict):
+                        _walk_w(r, None)
+
+                witness_parent_by_id = w_parent
+        except Exception:
+            # Managed witness context is best-effort; never block transform_jewel.
+            witness_parent_by_id = None
 
     # ------- Indexing: jewel_id-based identity -------
     by_jewel_id: Dict[str, JsonDict] = {}
@@ -426,6 +488,31 @@ def transform_jewel(
             if isinstance(child, dict):
                 _remove_subtree_from_index(child)
 
+    def _has_any_witness_descendant(node_workflowy_id: Optional[str]) -> Optional[bool]:
+        """Return True if witness ledger implies this node has at least one known descendant.
+
+        Uses witness_parent_by_id (built from phantom_gem.json for nexus_tag) if available.
+
+        - Returns None if witness context is unavailable.
+        - Returns False if no witness descendants are found.
+
+        Note: This is an epistemic test: "known descendants", not "all descendants in ETHER".
+        """
+        if not node_workflowy_id:
+            return False
+        if witness_parent_by_id is None:
+            return None
+
+        target = str(node_workflowy_id)
+        # Any node in witness_parent_by_id whose ancestor chain includes target counts as a descendant.
+        for nid, parent in witness_parent_by_id.items():
+            cur = parent
+            while cur is not None:
+                if cur == target:
+                    return True
+                cur = witness_parent_by_id.get(cur)
+        return False
+
     def _build_subtree_from_spec(spec: Dict[str, Any]) -> JsonDict:
         """Build a new subtree from a CREATE_NODE spec (Pattern A).
 
@@ -472,6 +559,10 @@ def transform_jewel(
     def _classify_children_for_destructive_ops(node: JsonDict) -> Dict[str, Any]:
         """Classify immediate children for destructive JEWELSTORM ops.
 
+        IMPORTANT:
+        - This classification is about what is present/known in the local JSON.
+        - "truncated" means the child set may be incomplete/unknown in ETHER.
+
         Returns a dict with:
             children: list of child dict nodes
             children_status: str
@@ -483,7 +574,7 @@ def transform_jewel(
         children_raw = node.get("children") or []
         children = [c for c in children_raw if isinstance(c, dict)]
         children_status = node.get("children_status") or "complete"
-        truncated = children_status in {"truncated_by_depth", "truncated_by_count"}
+        truncated = children_status != "complete"
         has_loaded_ether_children = any(c.get("id") is not None for c in children)
         has_new_children = any(c.get("id") is None for c in children)
 
@@ -534,8 +625,8 @@ def transform_jewel(
         # VALIDATION: Reject unknown fields in operation to prevent hallucinations
         VALID_FIELDS_BY_OP = {
             "MOVE_NODE": {"op", "operation", "jewel_id", "new_parent_jewel_id", "position", "relative_to_jewel_id"},
-            "DELETE_NODE": {"op", "operation", "jewel_id", "delete_from_ether", "mode"},
-            "DELETE_ALL_CHILDREN": {"op", "operation", "jewel_id", "delete_from_ether", "mode"},
+            "DELETE_NODE": {"op", "operation", "jewel_id", "confirm_delete_known_descendants_from_ether", "delete_from_ether", "mode"},
+            "DELETE_ALL_CHILDREN": {"op", "operation", "jewel_id", "confirm_delete_known_descendants_from_ether", "delete_from_ether", "mode"},
             "RENAME_NODE": {"op", "operation", "jewel_id", "new_name", "name"},
             "SET_NOTE": {"op", "operation", "jewel_id", "new_note", "note"},
             "SET_ATTRS": {"op", "operation", "jewel_id", "attrs"},
@@ -645,7 +736,12 @@ def transform_jewel(
                 if not jid:
                     raise ValueError("DELETE_NODE requires 'jewel_id'")
 
-                delete_from_ether = bool(op.get("delete_from_ether"))
+                # Acknowledgement flag (alias): prefer the newer, explicit name.
+                delete_from_ether = bool(
+                    op.get("confirm_delete_known_descendants_from_ether")
+                    if "confirm_delete_known_descendants_from_ether" in op
+                    else op.get("delete_from_ether")
+                )
                 mode_raw = op.get("mode")
                 mode = str(mode_raw).upper() if mode_raw is not None else "SMART"
 
@@ -653,6 +749,7 @@ def transform_jewel(
                 info = _classify_children_for_destructive_ops(node)
                 children = info["children"]
                 category = info["category"]
+                truncated = bool(info.get("truncated"))
 
                 # Legacy strict mode: preserve original FAIL_IF_HAS_CHILDREN semantics
                 if mode == "FAIL_IF_HAS_CHILDREN":
@@ -667,12 +764,33 @@ def transform_jewel(
                             f"DELETE_NODE {jid!r} refused: mixed new/ETHER/truncated children not supported; "
                             "delete or move children individually first"
                         )
+
+                    # If the child set is truncated/unknown, require explicit acknowledgement.
+                    # Rationale: an EMPTY children list may simply mean "not loaded".
+                    if truncated and not delete_from_ether:
+                        raise ValueError(
+                            f"DELETE_NODE {jid!r} refused: children_status != 'complete' (opaque/unknown subtree). "
+                            "Set delete_from_ether=True to acknowledge this deletion may impact ETHER-backed descendants during WEAVE."
+                        )
+
+                    # Managed witness refinement: if this node has ANY known descendants in the
+                    # witness GEM (S0), then deleting it is a subtree-impacting delete and must be
+                    # explicitly acknowledged.
+                    witness_has_desc = _has_any_witness_descendant(node.get("id"))
+                    if witness_has_desc is True and not delete_from_ether:
+                        raise ValueError(
+                            f"DELETE_NODE {jid!r} refused: node has known descendants in witness GEM (S0); "
+                            "set delete_from_ether=True to acknowledge subtree deletion impact"
+                        )
+
+                    # ETHER-backed children always require explicit acknowledgement.
                     if category == "ETHER_ONLY" and not delete_from_ether:
                         raise ValueError(
                             f"DELETE_NODE {jid!r} refused: node has ETHER-backed children; "
-                            "set delete_from_ether=True to delete subtree in Workflowy"
+                            "set delete_from_ether=True to acknowledge deletion impact in Workflowy"
                         )
-                    # EMPTY and JEWEL_ONLY are always allowed.
+                    # EMPTY and JEWEL_ONLY are allowed when not truncated and (if witness context is available)
+                    # no witness descendants exist.
 
                 # Remove from siblings and index
                 if node in siblings:
@@ -686,7 +804,12 @@ def transform_jewel(
                 if not jid:
                     raise ValueError("DELETE_ALL_CHILDREN requires 'jewel_id'")
 
-                delete_from_ether = bool(op.get("delete_from_ether"))
+                # Acknowledgement flag (alias): prefer the newer, explicit name.
+                delete_from_ether = bool(
+                    op.get("confirm_delete_known_descendants_from_ether")
+                    if "confirm_delete_known_descendants_from_ether" in op
+                    else op.get("delete_from_ether")
+                )
                 mode_raw = op.get("mode")
                 mode = str(mode_raw).upper() if mode_raw is not None else "SMART"
 
@@ -697,17 +820,19 @@ def transform_jewel(
                 info = _classify_children_for_destructive_ops(node)
                 children = info["children"]
                 category = info["category"]
-                truncated = info["truncated"]
+                truncated = bool(info.get("truncated"))
 
                 # Nothing to do
                 if not children and not truncated:
                     pass
                 else:
-                    # For DELETE_ALL_CHILDREN we do not support truncated children sets in v1
+                    # For DELETE_ALL_CHILDREN: if child set is truncated/unknown, require explicit acknowledgement.
+                    # We still refuse to proceed because this operation is inherently "surgical" and unsafe
+                    # when we cannot prove the full child set is loaded.
                     if truncated:
                         raise ValueError(
-                            f"DELETE_ALL_CHILDREN {jid!r} refused: children set is truncated; "
-                            "re-GLIMPSE with full children or delete the node instead"
+                            f"DELETE_ALL_CHILDREN {jid!r} refused: children_status != 'complete' (opaque/unknown children). "
+                            "Re-GLIMPSE / re-SCRY to load full children first, or delete the whole node with delete_from_ether=True."
                         )
 
                     if mode == "FAIL_IF_HAS_CHILDREN":
@@ -725,7 +850,7 @@ def transform_jewel(
                         if category == "ETHER_ONLY" and not delete_from_ether:
                             raise ValueError(
                                 f"DELETE_ALL_CHILDREN {jid!r} refused: children are ETHER-backed; "
-                                "set delete_from_ether=True to delete them in Workflowy"
+                                "set delete_from_ether=True to acknowledge deletion impact in Workflowy"
                             )
                         # EMPTY and JEWEL_ONLY are always allowed here.
 

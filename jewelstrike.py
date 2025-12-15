@@ -454,8 +454,9 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
     }
     
     # Inject minimal header at root level if this is an export package
+    # Also persist nexus_tag for downstream managed JEWELSTORM tooling.
     if isinstance(gem_data, dict) and "nodes" in gem_data:
-        gem_data = {**minimal_header, **gem_data}
+        gem_data = {**minimal_header, "nexus_tag": nexus_tag, **gem_data}
     
     # Write working_gem (with jewel_ids + operations help block)
     try:

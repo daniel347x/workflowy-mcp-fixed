@@ -1067,37 +1067,24 @@ async def reconcile_tree(
     def can_delete_candidate(tid: str) -> bool:
         """Decide whether a candidate ID is eligible for automatic deletion.
 
-        Option A (default, conservative):
-          - parent_all_children_known == True
-          - and not is_hidden_descendant (no truncated ancestors)
+        SAFETY-HARDENED RULE (Option B ALWAYS):
 
-        Option B (enabled when original_ids_seen is non-empty):
-          - allow deletion of nodes that were present in the *original* source JSON
-            and later removed, even when their parent is truncated, while still
-            protecting nodes that were never loaded at all.
+        ✅ Delete ONLY if the node ID was explicitly seen in the witness snapshot
+        ledger (`original_ids_seen`).
+
+        Rationale:
+        - Any ID not in `original_ids_seen` is treated as "unknown" for deletion
+          purposes, even if it exists in the current ETHER snapshot. This
+          fail-closed posture prevents accidental deletion of nodes that were
+          never in scope for the NEXUS run (e.g., hidden children under collapsed
+          branches, depth/size-limited exports, etc.).
+
+        Notes:
+        - This makes `original_ids_seen` the single authority for deletion.
+        - If `original_ids_seen` is empty, NO deletions are permitted (appropriate
+          when the target subtree is empty / create-only runs).
         """
-        base_parent_known = parent_all_children_known(tid, Parent_T2, Map_S)
-        hidden = is_hidden_descendant(tid, truncated_parents, Parent_T2)
-        was_seen = tid in original_ids_seen
-
-        if not option_b_enabled:
-            return base_parent_known and not hidden
-
-        # If this node lives under a truncated parent and was NEVER seen in the
-        # original source JSON, we must not treat its absence as a delete – it
-        # may simply be a hidden child we never loaded.
-        hidden_protected = hidden and (not was_seen)
-
-        # For nodes that *were* originally seen, we treat removal from the JSON
-        # as an explicit delete, even if their parent is truncated. This is the
-        # "visible-then-removed" case.
-        parent_known_or_seen = base_parent_known or was_seen
-
-        if hidden_protected:
-            return False
-        if not parent_known_or_seen:
-            return False
-        return True
+        return tid in original_ids_seen
 
     to_delete_before_protection = {tid for tid in raw_delete_candidates if can_delete_candidate(tid)}
     
