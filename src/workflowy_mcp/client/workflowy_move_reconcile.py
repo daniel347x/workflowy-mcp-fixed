@@ -567,10 +567,11 @@ async def reconcile_tree(
         if nid is None:
             continue
 
+        # children_status is an epistemic flag: if missing, we FAIL-CLOSE and treat as truncated.
         status = node.get('children_status')
         children = node.get('children') or []
 
-        if status is not None and status != 'complete':
+        if status is None or status != 'complete':
             truncated_parents.add(nid)
             continue
 
@@ -1067,24 +1068,23 @@ async def reconcile_tree(
     def can_delete_candidate(tid: str) -> bool:
         """Decide whether a candidate ID is eligible for automatic deletion.
 
-        SAFETY-HARDENED RULE (Option B ALWAYS):
+        SAFETY-HARDENED RULE (Option B ALWAYS, now WITH TRUNCATION ENFORCEMENT):
 
-        ✅ Delete ONLY if the node ID was explicitly seen in the witness snapshot
-        ledger (`original_ids_seen`).
+        ✅ A node may be deleted ONLY if:
+          1) tid ∈ original_ids_seen   (witness ledger allowlist)
+          2) tid ∉ truncated_parents   (subtree is known-complete; safe subtree delete)
 
         Rationale:
-        - Any ID not in `original_ids_seen` is treated as "unknown" for deletion
-          purposes, even if it exists in the current ETHER snapshot. This
-          fail-closed posture prevents accidental deletion of nodes that were
-          never in scope for the NEXUS run (e.g., hidden children under collapsed
-          branches, depth/size-limited exports, etc.).
+        - `original_ids_seen` prevents deleting IDs we never explicitly saw.
+        - `truncated_parents` prevents deleting a node whose subtree may contain
+          unseen descendants (Workflowy subtree delete would wipe them).
 
-        Notes:
-        - This makes `original_ids_seen` the single authority for deletion.
-        - If `original_ids_seen` is empty, NO deletions are permitted (appropriate
-          when the target subtree is empty / create-only runs).
+        Fail-closed:
+        - If `original_ids_seen` is empty ⇒ no deletes.
+        - If `children_status` is missing for a node, we treat it as TRUNCATED
+          (handled when building truncated_parents).
         """
-        return tid in original_ids_seen
+        return (tid in original_ids_seen) and (tid not in truncated_parents)
 
     to_delete_before_protection = {tid for tid in raw_delete_candidates if can_delete_candidate(tid)}
     
