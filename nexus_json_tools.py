@@ -606,6 +606,122 @@ def transform_jewel(
     attrs_updated = 0
     errors: List[Dict[str, Any]] = []
 
+    # -------------------------------------------------------------------------
+    # Usability: normalize operation ordering + skip invalid ops
+    #
+    # Goal:
+    # - Apply DELETEs before MOVE/RENAME/etc. (avoid moving nodes that will be deleted)
+    # - When multiple DELETE_NODE ops are provided, order deepest-first so descendant
+    #   deletes happen before ancestor deletes (and optionally become redundant).
+    # - Skip MOVE_NODE ops if the source node is deleted or is inside a deleted subtree.
+    #
+    # Notes:
+    # - This is purely an offline JSON transform convenience layer.
+    # - We keep non-delete ops in relative order after deletes.
+    # -------------------------------------------------------------------------
+
+    ops_in = list(operations or [])
+
+    def _op_type(op: Dict[str, Any]) -> str:
+        return str(op.get("op") or op.get("operation") or "").upper()
+
+    delete_ops: List[Dict[str, Any]] = []
+    other_ops: List[Dict[str, Any]] = []
+    for op in ops_in:
+        if _op_type(op) == "DELETE_NODE":
+            delete_ops.append(op)
+        else:
+            other_ops.append(op)
+
+    # Build a depth lookup for delete targets (deeper-first)
+    def _resolve_jid_maybe(jid: Any) -> Optional[str]:
+        if not jid:
+            return None
+        try:
+            return _resolve_to_jewel_id(str(jid))
+        except Exception:
+            return str(jid)
+
+    def _depth_of(jid: str) -> int:
+        d = 0
+        cur = parent_by_jewel_id.get(jid)
+        while cur is not None:
+            d += 1
+            cur = parent_by_jewel_id.get(cur)
+        return d
+
+    delete_targets: List[str] = []
+    for op in delete_ops:
+        jid_raw = op.get("jewel_id")
+        jid = _resolve_jid_maybe(jid_raw)
+        if jid:
+            delete_targets.append(jid)
+
+    delete_targets_set = set(delete_targets)
+
+    # Compute redundant deletes: if an ancestor is also being deleted, the child delete is redundant.
+    redundant_deletes: set[str] = set()
+    for jid in delete_targets_set:
+        cur = parent_by_jewel_id.get(jid)
+        while cur is not None:
+            if cur in delete_targets_set:
+                redundant_deletes.add(jid)
+                break
+            cur = parent_by_jewel_id.get(cur)
+
+    # Filter + sort delete ops
+    filtered_delete_ops: List[Dict[str, Any]] = []
+    for op in delete_ops:
+        jid = _resolve_jid_maybe(op.get("jewel_id"))
+        if jid and jid in redundant_deletes:
+            # Best-effort: record as a non-fatal "skipped" error so user sees it.
+            errors.append({
+                "index": -1,
+                "op": op,
+                "code": "SKIP_REDUNDANT_DELETE",
+                "message": f"Skipping DELETE_NODE for {jid}: ancestor also deleted in same operation batch",
+            })
+            continue
+        filtered_delete_ops.append(op)
+
+    filtered_delete_ops.sort(
+        key=lambda op: _depth_of(_resolve_jid_maybe(op.get("jewel_id")) or ""),
+        reverse=True,
+    )
+
+    # Build deleted-subtree guard for MOVE_NODE skipping
+    deleted_subtree_roots = {
+        _resolve_jid_maybe(op.get("jewel_id"))
+        for op in filtered_delete_ops
+        if _resolve_jid_maybe(op.get("jewel_id"))
+    }
+
+    def _is_in_deleted_subtree(jid: str) -> bool:
+        if jid in deleted_subtree_roots:
+            return True
+        cur = parent_by_jewel_id.get(jid)
+        while cur is not None:
+            if cur in deleted_subtree_roots:
+                return True
+            cur = parent_by_jewel_id.get(cur)
+        return False
+
+    filtered_other_ops: List[Dict[str, Any]] = []
+    for op in other_ops:
+        if _op_type(op) == "MOVE_NODE":
+            jid = _resolve_jid_maybe(op.get("jewel_id"))
+            if jid and _is_in_deleted_subtree(jid):
+                errors.append({
+                    "index": -1,
+                    "op": op,
+                    "code": "SKIP_MOVE_DELETED_SUBTREE",
+                    "message": f"Skipping MOVE_NODE for {jid}: node is deleted or inside a deleted subtree",
+                })
+                continue
+        filtered_other_ops.append(op)
+
+    operations = filtered_delete_ops + filtered_other_ops
+
     for idx, op in enumerate(operations or []):
         op_type_raw = op.get("op") or op.get("operation")
         if not op_type_raw:
