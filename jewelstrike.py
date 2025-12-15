@@ -66,8 +66,10 @@ def build_jewel_map(nodes: list, depth: int = 0) -> dict:
 def _build_jewel_preview_lines(
     roots: list,
     max_note_chars: int = 1024,
-    weave_delete_candidate_ids: set[str] | None = None,
-    weave_delete_emoji: str = "🧨",
+    weave_would_delete_ids: set[str] | None = None,
+    weave_would_delete_emoji: str = "🧨",
+    local_only_delete_ids: set[str] | None = None,
+    local_only_delete_emoji: str = "🪵",
 ) -> list[str]:
     """Build human-readable preview of JEWEL tree (JEWELSTRIKE initial state).
 
@@ -115,12 +117,18 @@ def _build_jewel_preview_lines(
 
         hint_parts = []
 
-        # Best-effort: mark nodes that appear eligible for actual WEAVE deletion.
-        # (This is a heuristic based on local flags + original_ids_seen membership.)
+        # Best-effort: mark nodes by "what deletion would actually do" in WEAVE.
+        #
+        # 🧨 = WEAVE-WOULD-DELETE (if you delete this node in JEWEL, it can delete in ETHER)
+        # 🪵 = LOCAL-ONLY (don't be fooled: deleting this node in JEWEL won't delete in ETHER)
         try:
             wf_id = node.get("id")
-            if weave_delete_candidate_ids is not None and wf_id and str(wf_id) in weave_delete_candidate_ids:
-                hint_parts.append(f"{weave_delete_emoji}[WEAVE-WILL-DELETE]")
+            if wf_id:
+                wf_id_str = str(wf_id)
+                if weave_would_delete_ids is not None and wf_id_str in weave_would_delete_ids:
+                    hint_parts.append(f"{weave_would_delete_emoji}[WEAVE-WOULD-DELETE]")
+                elif local_only_delete_ids is not None and wf_id_str in local_only_delete_ids:
+                    hint_parts.append(f"{local_only_delete_emoji}[LOCAL-ONLY]")
         except Exception:
             pass
 
@@ -469,9 +477,13 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
     except Exception:
         original_ids_seen_list = []
 
-    candidate_deletable_ids = []
+    weave_would_delete_ids = []
+    local_only_ids = []
+
     if isinstance(original_ids_seen_list, list) and original_ids_seen_list:
-        # Walk nodes and collect ids that look non-truncated locally.
+        # Walk nodes and partition IDs into:
+        # - weave_would_delete_ids: satisfies WEAVE deletion gates (best-effort heuristic)
+        # - local_only_ids: has real id + in original_ids_seen, but is locally truncated/opaque
         def _is_node_locally_truncated(n: dict) -> bool:
             status = n.get("children_status")
             if status is None or status != "complete":
@@ -484,8 +496,11 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
 
         def _walk_collect(n: dict) -> None:
             nid = n.get("id")
-            if nid and (str(nid) in original_ids_seen_list) and (not _is_node_locally_truncated(n)):
-                candidate_deletable_ids.append(str(nid))
+            if nid and (str(nid) in original_ids_seen_list):
+                if _is_node_locally_truncated(n):
+                    local_only_ids.append(str(nid))
+                else:
+                    weave_would_delete_ids.append(str(nid))
             for ch in n.get("children") or []:
                 if isinstance(ch, dict):
                     _walk_collect(ch)
@@ -494,12 +509,14 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
             if isinstance(r, dict):
                 _walk_collect(r)
 
-    # Now we can render the preview with per-node WEAVE delete markers.
+    # Now we can render the preview with per-node WEAVE outcome markers.
     try:
         preview_tree = _build_jewel_preview_lines(
             nodes,
-            weave_delete_candidate_ids=set(candidate_deletable_ids),
-            weave_delete_emoji="🧨",
+            weave_would_delete_ids=set(weave_would_delete_ids),
+            weave_would_delete_emoji="🧨",
+            local_only_delete_ids=set(local_only_ids),
+            local_only_delete_emoji="🪵",
         )
     except Exception:
         preview_tree = []
@@ -564,10 +581,15 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
         "preview_tree": preview_tree,
         "delete_semantics_hint": {
             "rule": "WEAVE deletes only if (tid ∈ original_ids_seen) AND (tid is NOT truncated)",
-            "weave_delete_marker": "🧨[WEAVE-WILL-DELETE] (best-effort heuristic)",
+            "weave_markers": {
+                "🧨": "[WEAVE-WOULD-DELETE] (best-effort heuristic)",
+                "🪵": "[LOCAL-ONLY] Don't be fooled: deleting this node in JEWEL will NOT delete it in ETHER (best-effort heuristic)",
+            },
             "original_ids_seen_count": len(original_ids_seen_list) if isinstance(original_ids_seen_list, list) else 0,
-            "candidate_deletable_ids_count": len(candidate_deletable_ids),
-            "candidate_deletable_ids": candidate_deletable_ids[:50],
+            "weave_would_delete_ids_count": len(weave_would_delete_ids),
+            "weave_would_delete_ids": weave_would_delete_ids[:50],
+            "local_only_ids_count": len(local_only_ids),
+            "local_only_ids": local_only_ids[:50],
             "note": "If you intend to delete any subtree that could reach ETHER during WEAVE, include confirm_delete_known_descendants_from_ether=True in the DELETE operation."
         },
     }
