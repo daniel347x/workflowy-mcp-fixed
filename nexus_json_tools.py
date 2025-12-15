@@ -98,8 +98,8 @@ def _build_jewel_preview_lines(
 
         # Surface SKELETON role hints in the preview (delete vs merge targets)
         sk_hint = node.get("skeleton_hint")
-        if not sk_hint and node.get("subtree_mode") == "shell":
-            sk_hint = "DELETE_SECTION"
+        # NOTE (Dec 2025): subtree_mode='shell' is an editing-scope marker, not a
+        # deletion-intent marker. Do NOT infer DELETE_SECTION from shell.
         if sk_hint == "DELETE_SECTION":
             hint_prefix = "[DELETE] "
         elif sk_hint == "MERGE_TARGET":
