@@ -439,6 +439,45 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
         preview_tree = _build_jewel_preview_lines(nodes)
     except Exception:
         preview_tree = []
+
+    # Usability: surface WEAVE deletion semantics (fail-closed)
+    #
+    # After our WEAVE hardening, a node is eligible for deletion in ETHER only if:
+    #   tid ∈ original_ids_seen  AND  tid ∉ truncated_parents
+    #
+    # Here, we can at least expose ledger presence/count and a coarse list of
+    # "candidate deletable" nodes based on children_status/subtree_mode.
+    original_ids_seen_list = []
+    try:
+        if isinstance(gem_data, dict):
+            original_ids_seen_list = gem_data.get("original_ids_seen") or []
+    except Exception:
+        original_ids_seen_list = []
+
+    candidate_deletable_ids = []
+    if isinstance(original_ids_seen_list, list) and original_ids_seen_list:
+        # Walk nodes and collect ids that look non-truncated locally.
+        def _is_node_locally_truncated(n: dict) -> bool:
+            status = n.get("children_status")
+            if status is None or status != "complete":
+                return True
+            if n.get("subtree_mode") == "shell":
+                return True
+            if n.get("has_hidden_children") is True:
+                return True
+            return False
+
+        def _walk_collect(n: dict) -> None:
+            nid = n.get("id")
+            if nid and (str(nid) in original_ids_seen_list) and (not _is_node_locally_truncated(n)):
+                candidate_deletable_ids.append(str(nid))
+            for ch in n.get("children") or []:
+                if isinstance(ch, dict):
+                    _walk_collect(ch)
+
+        for r in nodes or []:
+            if isinstance(r, dict):
+                _walk_collect(r)
     
     # Build jewel_map showing tree structure with indentation
     jewel_map = build_jewel_map(nodes)
@@ -498,6 +537,13 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
         "hash": hash_value,
         "phantom_gem": str(gem_path),
         "preview_tree": preview_tree,
+        "delete_semantics_hint": {
+            "rule": "WEAVE deletes only if (tid ∈ original_ids_seen) AND (tid is NOT truncated)",
+            "original_ids_seen_count": len(original_ids_seen_list) if isinstance(original_ids_seen_list, list) else 0,
+            "candidate_deletable_ids_count": len(candidate_deletable_ids),
+            "candidate_deletable_ids": candidate_deletable_ids[:50],
+            "note": "If you intend to delete any subtree that could reach ETHER during WEAVE, include confirm_delete_known_descendants_from_ether=True in the DELETE operation."
+        },
     }
 
 
@@ -611,7 +657,8 @@ if __name__ == "__main__":
             sys.exit(1)
 
     result = jewelstrike(str(phantom_gem_path), prefix)
-    print(json.dumps(result, indent=2))
+    # Ensure unicode (emoji/bullets) render as actual characters in console/tool output.
+    print(json.dumps(result, indent=2, ensure_ascii=False))
 
     if not result.get("success"):
         sys.exit(1)
