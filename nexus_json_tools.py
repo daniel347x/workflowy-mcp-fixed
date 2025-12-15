@@ -573,7 +573,10 @@ def transform_jewel(
         """
         children_raw = node.get("children") or []
         children = [c for c in children_raw if isinstance(c, dict)]
-        children_status = node.get("children_status") or "complete"
+        # children_status is epistemic metadata used for WEAVE safety.
+        # NEVER default missing to 'complete' (that can cause unsafe deletes).
+        # Fail-closed: missing => unknown.
+        children_status = node.get("children_status") or "unknown"
         truncated = children_status != "complete"
         has_loaded_ether_children = any(c.get("id") is not None for c in children)
         has_new_children = any(c.get("id") is None for c in children)
