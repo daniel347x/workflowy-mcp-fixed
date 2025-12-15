@@ -591,9 +591,7 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
             },
             "original_ids_seen_count": len(original_ids_seen_list) if isinstance(original_ids_seen_list, list) else 0,
             "weave_would_delete_ids_count": len(weave_would_delete_ids),
-            "weave_would_delete_ids": weave_would_delete_ids[:50],
             "local_only_ids_count": len(local_only_ids),
-            "local_only_ids": local_only_ids[:50],
             "note": "If you intend to delete any subtree that could reach ETHER during WEAVE, include confirm_delete_known_descendants_from_ether=True in the DELETE operation."
         },
     }
