@@ -63,7 +63,12 @@ def build_jewel_map(nodes: list, depth: int = 0) -> dict:
     return jewel_map
 
 
-def _build_jewel_preview_lines(roots: list, max_note_chars: int = 1024) -> list[str]:
+def _build_jewel_preview_lines(
+    roots: list,
+    max_note_chars: int = 1024,
+    weave_delete_candidate_ids: set[str] | None = None,
+    weave_delete_emoji: str = "🧨",
+) -> list[str]:
     """Build human-readable preview of JEWEL tree (JEWELSTRIKE initial state).
 
     Format:
@@ -107,12 +112,24 @@ def _build_jewel_preview_lines(roots: list, max_note_chars: int = 1024) -> list[
         sk_hint = node.get("skeleton_hint")
         if not sk_hint and node.get("subtree_mode") == "shell":
             sk_hint = "DELETE_SECTION"
+
+        hint_parts = []
+
+        # Best-effort: mark nodes that appear eligible for actual WEAVE deletion.
+        # (This is a heuristic based on local flags + original_ids_seen membership.)
+        try:
+            wf_id = node.get("id")
+            if weave_delete_candidate_ids is not None and wf_id and str(wf_id) in weave_delete_candidate_ids:
+                hint_parts.append(f"{weave_delete_emoji}[WEAVE-WILL-DELETE]")
+        except Exception:
+            pass
+
         if sk_hint == "DELETE_SECTION":
-            hint_prefix = "[DELETE] "
+            hint_parts.append("[DELETE]")
         elif sk_hint == "MERGE_TARGET":
-            hint_prefix = "[MERGE] "
-        else:
-            hint_prefix = ""
+            hint_parts.append("[MERGE]")
+
+        hint_prefix = (" ".join(hint_parts) + " ") if hint_parts else ""
 
         if isinstance(note, str) and note:
             flat = note.replace("\n", "\\n")
@@ -435,10 +452,8 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
         gem_data["nodes"] = [_normalize_node_key_order(n) for n in nodes if isinstance(n, dict)]
     
     # Build JEWEL preview (ephemeral, for agents/humans; never read by algorithms)
-    try:
-        preview_tree = _build_jewel_preview_lines(nodes)
-    except Exception:
-        preview_tree = []
+    # NOTE: We compute candidate_deletable_ids first so we can annotate preview lines.
+    preview_tree = []
 
     # Usability: surface WEAVE deletion semantics (fail-closed)
     #
@@ -478,6 +493,16 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
         for r in nodes or []:
             if isinstance(r, dict):
                 _walk_collect(r)
+
+    # Now we can render the preview with per-node WEAVE delete markers.
+    try:
+        preview_tree = _build_jewel_preview_lines(
+            nodes,
+            weave_delete_candidate_ids=set(candidate_deletable_ids),
+            weave_delete_emoji="🧨",
+        )
+    except Exception:
+        preview_tree = []
     
     # Build jewel_map showing tree structure with indentation
     jewel_map = build_jewel_map(nodes)
@@ -539,6 +564,7 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
         "preview_tree": preview_tree,
         "delete_semantics_hint": {
             "rule": "WEAVE deletes only if (tid ∈ original_ids_seen) AND (tid is NOT truncated)",
+            "weave_delete_marker": "🧨[WEAVE-WILL-DELETE] (best-effort heuristic)",
             "original_ids_seen_count": len(original_ids_seen_list) if isinstance(original_ids_seen_list, list) else 0,
             "candidate_deletable_ids_count": len(candidate_deletable_ids),
             "candidate_deletable_ids": candidate_deletable_ids[:50],
