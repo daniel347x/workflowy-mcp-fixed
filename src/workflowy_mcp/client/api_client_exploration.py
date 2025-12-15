@@ -4346,6 +4346,157 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         if not needed_ids:
             raise NetworkError("Empty minimal covering tree")
 
+        # ============================================================================
+        # COMPLETENESS CHECK: Ensure every handle is explicitly decided or covered
+        # ============================================================================
+        # Helper: summarize descendants for completeness validation
+        def _summarize_descendants_for_handle(branch_handle: str) -> dict[str, Any]:
+            """Summarize descendant decisions for completeness validation.
+            
+            Mirrors _summarize_descendants from _nexus_explore_step_internal but
+            local to nexus_finalize_exploration for validation purposes.
+            """
+            queue: list[str] = list(handles.get(branch_handle, {}).get("children", []) or [])
+            descendants: list[str] = []
+            while queue:
+                h = queue.pop(0)
+                descendants.append(h)
+                child_handles = handles.get(h, {}).get("children", []) or []
+                if child_handles:
+                    queue.extend(child_handles)
+
+            if not descendants:
+                return {
+                    "descendant_count": 0,
+                    "has_decided": False,
+                    "has_undecided": False,
+                    "accepted_leaf_count": 0,
+                    "rejected_leaf_count": 0,
+                }
+
+            accepted_leaves = 0
+            rejected_leaves = 0
+            has_decided = False
+            has_undecided = False
+
+            for h in descendants:
+                st = state.get(h, {"status": "unseen"})
+                status = st.get("status")
+
+                if status in {"finalized", "closed"}:
+                    has_decided = True
+                else:
+                    has_undecided = True
+
+                # Leaf = no children in the cached tree
+                child_handles = handles.get(h, {}).get("children", []) or []
+                is_leaf = not child_handles
+                if not is_leaf:
+                    continue
+
+                if status == "finalized":
+                    accepted_leaves += 1
+                elif status == "closed":
+                    rejected_leaves += 1
+
+            return {
+                "descendant_count": len(descendants),
+                "has_decided": has_decided,
+                "has_undecided": has_undecided,
+                "accepted_leaf_count": accepted_leaves,
+                "rejected_leaf_count": rejected_leaves,
+            }
+
+        # Validate completeness: every handle must be decided or covered
+        uncovered_handles: list[str] = []
+
+        for handle, meta in handles.items():
+            # Skip synthetic root
+            if handle == "R":
+                continue
+
+            st = state.get(handle, {"status": "unseen"})
+            status = st.get("status")
+            sel_type = st.get("selection_type")
+
+            # Validate finalized/path elements (must anchor engulfed leaves)
+            if status == "finalized" and sel_type == "path":
+                summary = _summarize_descendants_for_handle(handle)
+                if summary["accepted_leaf_count"] == 0:
+                    # Bogus path element - treat as undecided
+                    status = "unseen"
+                else:
+                    # Valid path element
+                    continue
+
+            # Normal decided cases
+            if status in {"finalized", "closed"}:
+                continue
+
+            # Check ancestor chain for subtree coverage
+            ancestor_handle = meta.get("parent")
+            covered_by_subtree = False
+            while ancestor_handle:
+                anc_state = state.get(ancestor_handle, {})
+                if (
+                    anc_state.get("status") in {"finalized", "closed"}
+                    and anc_state.get("selection_type") == "subtree"
+                ):
+                    covered_by_subtree = True
+                    break
+                ancestor_handle = handles.get(ancestor_handle, {}).get("parent")
+
+            if not covered_by_subtree:
+                uncovered_handles.append(handle)
+
+        if uncovered_handles:
+            # Build human-readable summary
+            details_lines: list[str] = []
+            for h in uncovered_handles[:50]:  # cap at 50 to avoid overwhelming output
+                meta = handles.get(h, {})
+                name = meta.get("name", "Untitled")
+                parent_handle = meta.get("parent") or "<root>"
+                details_lines.append(f"- {h} (name='{name}', parent='{parent_handle}')")
+
+            more_note = "" if len(uncovered_handles) <= 50 else f"\n…and {len(uncovered_handles) - 50} more handles."
+
+            # Mode-specific hints
+            exploration_mode = session.get("exploration_mode", "manual")
+            mode_hints = ""
+            if exploration_mode == "dfs_guided_bulk":
+                mode_hints = (
+                    "\n\n💡 BULK MODE OPTIONS:\n"
+                    "\n1. For branch nodes you want to add children under:\n"
+                    "     {'handle': 'A.4.2', 'action': 'flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states'}\n"
+                    "   (Alias: 'RB' or 'reserve_branch_for_children')\n"
+                    "\n2. To preserve all remaining undecided nodes in ETHER:\n"
+                    "     {'action': 'preserve_all_remaining_nodes_in_ether_at_finalization'}\n"
+                    "   (Alias: 'PA')\n"
+                    "   This will:\n"
+                    "     • Preserve all non-engulfed descendants in ETHER\n"
+                    "     • Structurally include branches with engulfed descendants\n"
+                    "     • Then you can finalize successfully"
+                )
+
+            raise NetworkError(
+                "Incomplete exploration detected during nexus_finalize_exploration.\n\n"
+                "You attempted to finalize without accounting for all branches.\n\n"
+                "Handles that are neither explicitly decided (engulfed/preserved) nor covered "
+                "by an engulfed/preserved subtree decision:\n"
+                + "\n".join(details_lines)
+                + more_note
+                + "\n\nTo proceed safely, either:\n"
+                "• Visit these handles and decide with 'engulf_leaf_into_gem_for_editing' / 'preserve_leaf_in_ether_untouched', OR\n"
+                "• Use 'flag_branch_node_for_editing_by_engulfment_into_gem__preserve_all_descendant_protection_states' / 'preserve_branch_node_in_ether_untouched__when_no_engulfed_children' on an ancestor branch to cover them."
+                + mode_hints
+                + "\n\nOnce every handle is accounted for, nexus_finalize_exploration will succeed "
+                "and the phantom gem will be a true minimal covering tree."
+            )
+
+        # ============================================================================
+        # END COMPLETENESS CHECK
+        # ============================================================================
+
         # Ensure connected to root
         if root_explore_id:
             needed_ids.add(root_explore_id)
