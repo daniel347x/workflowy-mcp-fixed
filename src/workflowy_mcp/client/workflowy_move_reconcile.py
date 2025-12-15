@@ -575,14 +575,18 @@ async def reconcile_tree(
             truncated_parents.add(nid)
             continue
 
-        # Explicit NEXUS subtree shells: subtree_mode='shell' marks a branch-only
-        # node whose children are intentionally opaque (even after JEWELSTORM
-        # adds new children under this parent). Its children must never be
-        # compared for deletes/reorders, so we always treat it as a truncated
-        # parent regardless of status/child list.
-        if node.get('subtree_mode') == 'shell':
-            truncated_parents.add(nid)
-            continue
+        # NOTE (Dec 2025): subtree_mode='shell' is an EDITING-SCOPE marker, not an
+        # epistemic completeness marker.
+        #
+        # Deletion safety MUST be governed by children_status + original_ids_seen
+        # (Option B) + explicit preservation guardrails.
+        #
+        # Therefore, WE DO NOT treat subtree_mode='shell' as truncated for deletion
+        # gating. If a shell is actually epistemically incomplete, it must carry
+        # children_status != 'complete' (or be missing => fail-closed).
+        #
+        # (Shell may still be used by upstream tooling to render/preview node-only
+        # editing slices; WEAVE should not infer completeness from it.)
 
     # Treat the reconciliation root as truncated when its export_root_children_status
     # is non-'complete', so its direct children obey the same Option B semantics

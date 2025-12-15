@@ -489,11 +489,13 @@ def jewelstrike(phantom_gem_file: str, human_prefix: str | None = None) -> dict:
         # - weave_would_delete_ids: satisfies WEAVE deletion gates (best-effort heuristic)
         # - local_only_ids: has real id + in original_ids_seen, but is locally truncated/opaque
         def _is_node_locally_truncated(n: dict) -> bool:
+            # Match WEAVE semantics (Dec 2025): subtree_mode='shell' is editing-scope,
+            # not a deletion-safety gate.
             status = n.get("children_status")
             if status is None or status != "complete":
                 return True
-            if n.get("subtree_mode") == "shell":
-                return True
+            # has_hidden_children remains a valid local truncation hint
+            # (used by some exporters/previews)
             if n.get("has_hidden_children") is True:
                 return True
             return False
