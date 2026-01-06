@@ -407,12 +407,14 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
 def _guess_line_number_from_name(file_path: str, node_name: str | None) -> int:
     """Best-effort line-number guess for non-beacon nodes.
 
-    Heuristic (kept intentionally simple and cheap):
+    Heuristic:
     - Start from the plain-text Workflowy node name provided by the extension.
-    - Trim off trailing beacon/hashtag decorations (everything at and after
-      the first "🔱" or "#").
-    - Prefer the function-like head (up to and including "(") when present;
-      otherwise fall back to the first whitespace-delimited token.
+    - Strip everything from the start up to (but not including) the first
+      alphabetic character (tolerates multiple emojis, bullets, arrows, etc.).
+    - Strip trailing tag decorations starting at the first '#'.
+    - If the remaining text starts with "class" or "def", prefer a head like
+      "class Name" / "def name(" when possible; otherwise fall back to the
+      first identifier-like token.
     - If the resulting head is very short (<3 chars) bail out and return 1.
     - Scan the file line-by-line and return the first 1-based line index that
       contains the head as a substring. If nothing matches, return 1.
@@ -424,27 +426,60 @@ def _guess_line_number_from_name(file_path: str, node_name: str | None) -> int:
     if not candidate:
         return 1
 
-    # Strip trailing decorations like "🔱 model:forward@1 #model-forward".
-    for sep in ("🔱", "#"):
-        idx = candidate.find(sep)
-        if idx != -1:
-            candidate = candidate[:idx].strip()
+    # 1) Strip leading non-alpha characters (emoji, bullets, arrows, punctuation).
+    first_alpha_idx = None
+    for idx, ch in enumerate(candidate):
+        if ch.isalpha():
+            first_alpha_idx = idx
             break
+    if first_alpha_idx is not None:
+        candidate = candidate[first_alpha_idx:].lstrip()
+    else:
+        # No alphabetic characters at all — nothing sensible to search for.
+        return 1
+
+    # 2) Strip trailing tag decorations starting at the first '#'.
+    hash_idx = candidate.find("#")
+    if hash_idx != -1:
+        candidate = candidate[:hash_idx].rstrip()
 
     if not candidate:
         return 1
 
-    head = candidate
-    paren_idx = candidate.find("(")
-    if paren_idx != -1:
-        # Keep the callable-looking prefix (e.g. "forward(")
-        head = candidate[: paren_idx + 1]
-    else:
-        parts = candidate.split()
-        if parts:
-            head = parts[0]
+    # 3) Choose a search head based on the remaining candidate.
+    head = None
+    tokens = candidate.split()
 
-    head = head.strip()
+    if not tokens:
+        return 1
+
+    # Special-case "class" / "def" constructs.
+    if tokens[0] in ("class", "def"):
+        if len(tokens) >= 2:
+            if tokens[0] == "class":
+                # e.g. "class ASTModel" → search for the class line.
+                head = f"class {tokens[1]}"
+            else:  # def
+                # Prefer "def name(" pattern if present, otherwise "def name".
+                name_token = tokens[1]
+                if "(" in candidate:
+                    head = f"def {name_token}("
+                else:
+                    head = f"def {name_token}"
+        else:
+            # Fallback: just use the keyword.
+            head = tokens[0]
+    else:
+        # Generic case: use the first identifier-like token (letters/underscore, len>=3).
+        for tok in tokens:
+            if len(tok) >= 3 and any(c.isalpha() or c == "_" for c in tok):
+                head = tok
+                break
+        # Fallback: first token if nothing matched the heuristic.
+        if head is None:
+            head = tokens[0]
+
+    head = (head or "").strip()
     if len(head) < 3:
         return 1
 
@@ -462,31 +497,37 @@ def _guess_line_number_from_name(file_path: str, node_name: str | None) -> int:
 def _launch_windsurf(file_path: str, line: int | None = None) -> None:
     """Launch WindSurf for the given file/line on Windows.
 
-    Uses the same executable path and CLI flags as the Conversation Continuity
-    Agent's run_command helpers, but invoked directly via subprocess.Popen so
-    no additional shell quoting is required.
+    Uses PowerShell Start-Process so that Windows treats this like a normal
+    app activation, while still allowing Windsurf itself to reuse the
+    existing window (no explicit "new window" flag is used here).
     """
     import subprocess
 
     exe = r"C:\\Users\\danie\\AppData\\Local\\Programs\\Windsurf\\Windsurf.exe"
-    args = [exe]
 
     if line is not None and isinstance(line, int) and line > 0:
-        args.extend(["-g", f"{file_path}:{line}"])
+        # -g file:line (reuse existing window semantics left to Windsurf)
+        arglist = f"-g \"{file_path}:{line}\""
     else:
         # Reuse existing window and just open the file
-        args.extend(["-r", file_path])
+        arglist = f"-r \"{file_path}\""
+
+    ps_cmd = (
+        "Start-Process -FilePath '" + exe + "' "
+        "-ArgumentList '" + arglist + "' "
+        "-WindowStyle Normal"
+    )
 
     try:
         subprocess.Popen(
-            args,
+            ["powershell.exe", "-Command", ps_cmd],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        log_event(f"Launched WindSurf for {file_path} (line={line})", "WS_HANDLER")
+        log_event(f"Launched WindSurf for {file_path} (line={line}) via PowerShell", "WS_HANDLER")
     except Exception as e:  # noqa: BLE001
         # Let callers surface a structured error if needed
-        log_event(f"Failed to launch WindSurf for {file_path}: {e}", "WS_HANDLER")
+        log_event(f"Failed to launch WindSurf for {file_path} via PowerShell: {e}", "WS_HANDLER")
         raise
 
 
