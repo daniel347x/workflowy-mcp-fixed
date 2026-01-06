@@ -2305,6 +2305,50 @@ def nexus_purge_keystones(keystone_ids: list[str]) -> dict:
     return client.nexus_purge_keystones(keystone_ids)
 
 
+@mcp.tool(
+    name="beacon_refresh_file_refresh_node",
+    description=(
+        "Per-file beacon-aware refresh of a Cartographer-mapped FILE node from its "
+        "source file. Uses a SHA1 guard to skip unchanged files, rebuilds the "
+        "AST+beacon subtree under the file node, and salvages/re-attaches Notes[...] "
+        "subtrees keyed by beacon id."
+    ),
+)
+async def beacon_refresh_file_refresh_node(
+    file_node_id: str,
+    dry_run: bool = False,
+) -> dict:
+    """MCP wrapper for WorkFlowyClient.refresh_file_node_beacons.
+
+    Args:
+        file_node_id: Workflowy UUID of the Cartographer-mapped FILE node whose
+            subtree should be refreshed.
+        dry_run: If True, compute the plan and counts only (no Workflowy writes).
+
+    Returns:
+        Summary dict with structural_nodes_deleted/created, notes_salvaged,
+        notes_orphaned, and hash information.
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.refresh_file_node_beacons(
+            file_node_id=file_node_id,
+            dry_run=dry_run,
+        )
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        # Surface as a structured MCP error response
+        return {"success": False, "error": str(e)}
+
+
 # Resource: WorkFlowy Outline
 @mcp.resource(
     uri="workflowy://outline",

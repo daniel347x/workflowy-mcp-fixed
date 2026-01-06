@@ -7,7 +7,7 @@ from typing import Any
 from datetime import datetime
 from pathlib import Path
 
-from ..models import NetworkError
+from ..models import NetworkError, NodeCreateRequest, NodeUpdateRequest
 
 from .api_client_core import (
     WorkFlowyClientCore,
@@ -1749,7 +1749,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
     def nexus_purge_keystones(self, keystone_ids: list[str]) -> dict[str, Any]:
         """Delete Keystone backups."""
-        backup_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_backups"
+        backup_dir = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_backups"
         purged = []
         errors = []
 
@@ -1772,4 +1772,431 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "purged_count": len(purged),
             "purged_files": purged,
             "errors": errors
+        }
+
+    async def refresh_file_node_beacons(
+        self,
+        file_node_id: str,
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Per-file beacon-aware refresh of a Cartographer-mapped FILE node.
+
+        - Uses a SHA1 guard to skip work when the underlying source file has not
+          changed.
+        - Rebuilds ONLY the structural subtree under the given file node using
+          Cartographer in single-file mode.
+        - Salvages Notes[...] subtrees whose beacon `id:` is unchanged and
+          reattaches them under the new beacon nodes.
+
+        This method intentionally DOES NOT touch siblings of the file node, and
+        it preserves top-level "Notes" manual roots under the file.
+        """
+        logger = _ClientLogger()
+        log_event(
+            f"refresh_file_node_beacons start (file_node_id={file_node_id}, dry_run={dry_run})",
+            "BEACON",
+        )
+
+        # 4.1 Resolve file node & source path
+        try:
+            raw = await export_nodes_impl(self, file_node_id)
+        except Exception as e:  # noqa: BLE001
+            raise NetworkError(f"export_nodes failed for {file_node_id}: {e}") from e
+
+        flat_nodes = raw.get("nodes") or []
+        if not flat_nodes:
+            return {
+                "success": False,
+                "error": f"File node {file_node_id} not found or has empty subtree",
+            }
+
+        file_node = None
+        for n in flat_nodes:
+            if str(n.get("id")) == str(file_node_id):
+                file_node = n
+                break
+
+        if not file_node:
+            return {
+                "success": False,
+                "error": f"File node {file_node_id} not present in exported subtree",
+            }
+
+        note_text = str(file_node.get("note") or "")
+        source_path: str | None = None
+        existing_sha1: str | None = None
+        for line in note_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Path:"):
+                source_path = stripped.split(":", 1)[1].strip() or None
+            elif stripped.startswith("Source-SHA1:"):
+                existing_sha1 = stripped.split(":", 1)[1].strip() or None
+
+        if not source_path:
+            raise NetworkError(
+                f"File node {file_node_id} note is missing 'Path:' line; cannot refresh",
+            )
+
+        if not os.path.isfile(source_path):
+            raise NetworkError(f"Source file not found at Path: {source_path}")
+
+        # 4.2 Hash guard
+        def _compute_sha1(path: str) -> str:
+            import hashlib
+
+            h = hashlib.sha1()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+
+        file_sha1 = _compute_sha1(source_path)
+
+        if existing_sha1 and existing_sha1 == file_sha1:
+            log_event(
+                f"refresh_file_node_beacons: unchanged (hash match) for {source_path}",
+                "BEACON",
+            )
+            return {
+                "success": True,
+                "file_node_id": file_node_id,
+                "source_path": source_path,
+                "previous_sha1": existing_sha1,
+                "file_sha1": file_sha1,
+                "changed": False,
+                "structural_nodes_deleted": 0,
+                "structural_nodes_created": 0,
+                "notes_salvaged": 0,
+                "notes_orphaned": 0,
+            }
+
+        # Build parent->children index for current subtree
+        children_by_parent: dict[str, list[dict[str, Any]]] = {}
+        for n in flat_nodes:
+            nid = n.get("id")
+            if not nid:
+                continue
+            parent_id = n.get("parent_id") or n.get("parentId")
+            if parent_id:
+                children_by_parent.setdefault(str(parent_id), []).append(n)
+
+        def _is_notes_name(raw_name: str) -> bool:
+            name = (raw_name or "").strip()
+            if not name:
+                return False
+            # Strip a single leading non-alphanumeric symbol (emoji, bullet, etc.)
+            if name and not name[0].isalnum():
+                name = name[1:].lstrip()
+            return name.lower().startswith("notes")
+
+        # 4.3 Salvage Notes under existing beacon nodes
+        saved_notes: dict[str, list[str]] = {}
+        total_notes_to_salvage = 0
+
+        for n in flat_nodes:
+            nid = n.get("id")
+            if not nid:
+                continue
+            note = n.get("note") or ""
+            if "BEACON (" not in str(note):
+                continue
+            beacon_id_val: str | None = None
+            for line in str(note).splitlines():
+                stripped = line.strip()
+                if stripped.startswith("id:"):
+                    beacon_id_val = stripped.split(":", 1)[1].strip()
+                    break
+            if not beacon_id_val:
+                continue
+
+            sid = str(nid)
+            children = children_by_parent.get(sid, [])
+            for child in children:
+                cid = child.get("id")
+                if not cid:
+                    continue
+                cname = str(child.get("name") or "")
+                if _is_notes_name(cname):
+                    saved_notes.setdefault(beacon_id_val, []).append(str(cid))
+                    total_notes_to_salvage += 1
+
+        # Create or locate 'Notes (parking)' under the file node
+        parking_node_id: str | None = None
+        parking_created_here = False
+
+        file_children = children_by_parent.get(str(file_node_id), [])
+        for child in file_children:
+            cid = child.get("id")
+            if not cid:
+                continue
+            cname = str(child.get("name") or "")
+            if _is_notes_name(cname) and "parking" in cname.lower():
+                parking_node_id = str(cid)
+                break
+
+        if total_notes_to_salvage and parking_node_id is None and not dry_run:
+            req = NodeCreateRequest(
+                name="🅿️ Notes (parking)",
+                parent_id=str(file_node_id),
+                note=None,
+                layoutMode=None,
+                position="bottom",
+            )
+            try:
+                created = await self.create_node(req, _internal_call=True)
+                parking_node_id = created.id
+                parking_created_here = True
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(f"Failed to create 'Notes (parking)' node: {e}") from e
+
+        notes_moved_to_parking = 0
+        if not dry_run and parking_node_id and saved_notes:
+            for notes_list in saved_notes.values():
+                for nid in notes_list:
+                    try:
+                        await self.move_node(nid, parking_node_id, "bottom")
+                        notes_moved_to_parking += 1
+                    except Exception as e:  # noqa: BLE001
+                        log_event(
+                            f"Failed to move notes node {nid} to parking: {e}",
+                            "BEACON",
+                        )
+
+        # 4.4 Delete structural subtree under file node (non-Notes and non-parking)
+        structural_deleted = 0
+        if file_children:
+            for child in file_children:
+                cid = child.get("id")
+                if not cid:
+                    continue
+                sid = str(cid)
+                if parking_node_id and sid == parking_node_id:
+                    continue
+                cname = str(child.get("name") or "")
+                if _is_notes_name(cname):
+                    # Manual Notes root – preserve
+                    continue
+                structural_deleted += 1
+                if not dry_run:
+                    try:
+                        await self.delete_node(sid)
+                    except Exception as e:  # noqa: BLE001
+                        log_event(
+                            f"Failed to delete child {sid} under file node {file_node_id}: {e}",
+                            "BEACON",
+                        )
+
+        # 4.4 (cont.) Rebuild structural subtree from Cartographer single-file map
+        # Import nexus_map_codebase dynamically from project root
+        try:
+            import importlib
+
+            client_dir = os.path.dirname(os.path.abspath(__file__))
+            wf_mcp_dir = os.path.dirname(client_dir)
+            mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+            project_root = os.path.dirname(mcp_servers_dir)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+            cartographer = importlib.import_module("nexus_map_codebase")
+        except Exception as e:  # noqa: BLE001
+            raise NetworkError(f"Failed to import nexus_map_codebase: {e}") from e
+
+        try:
+            file_map = cartographer.map_codebase(source_path)  # type: ignore[attr-defined]
+        except Exception as e:  # noqa: BLE001
+            raise NetworkError(
+                f"Cartographer map_codebase failed for {source_path}: {e}",
+            ) from e
+
+        new_children = file_map.get("children") or []
+        structural_created = 0
+
+        # Collect beacon ids present in new map (used by dry_run and by reattachment)
+        def _collect_beacon_ids(nodes: list[dict[str, Any]]) -> set[str]:
+            ids: set[str] = set()
+            for node in nodes or []:
+                note = node.get("note") or ""
+                if "BEACON (" in str(note):
+                    for line in str(note).splitlines():
+                        stripped = line.strip()
+                        if stripped.startswith("id:"):
+                            val = stripped.split(":", 1)[1].strip()
+                            if val:
+                                ids.add(val)
+                            break
+                children = node.get("children") or []
+                if children:
+                    ids.update(_collect_beacon_ids(children))
+            return ids
+
+        new_beacon_ids = _collect_beacon_ids(new_children)
+
+        new_beacon_nodes: dict[str, str] = {}
+
+        if not dry_run:
+            async def _create_subtree(parent_uuid: str, node: dict[str, Any]) -> None:
+                nonlocal structural_created
+                name = str(node.get("name") or "").strip() or "..."
+                note = node.get("note")
+                data = node.get("data") or {}
+                layout_mode = data.get("layoutMode")
+
+                req = NodeCreateRequest(
+                    name=name,
+                    parent_id=parent_uuid,
+                    note=note,
+                    layoutMode=layout_mode,
+                    position="bottom",
+                )
+                wf_node = await self.create_node(req, _internal_call=True)
+                structural_created += 1
+
+                # Capture beacon id mapping for reattachment
+                beacon_id_val: str | None = None
+                note_text_new = str(note or "")
+                if "BEACON (" in note_text_new:
+                    for line in note_text_new.splitlines():
+                        stripped = line.strip()
+                        if stripped.startswith("id:"):
+                            beacon_id_val = stripped.split(":", 1)[1].strip()
+                            break
+                if beacon_id_val:
+                    new_beacon_nodes[beacon_id_val] = wf_node.id
+
+                for child in node.get("children") or []:
+                    await _create_subtree(wf_node.id, child)
+
+            for child in new_children:
+                await _create_subtree(str(file_node_id), child)
+        else:
+            # Dry run: only count structural nodes that would be created
+            def _count_nodes(nodes: list[dict[str, Any]]) -> int:
+                total = 0
+                for node in nodes or []:
+                    total += 1
+                    total += _count_nodes(node.get("children") or [])
+                return total
+
+            structural_created = _count_nodes(new_children)
+
+        # 4.5 Reattach Notes based on beacon id
+        notes_salvaged = 0
+        notes_orphaned = 0
+        salvaged_root_id: str | None = None
+
+        if saved_notes:
+            if dry_run:
+                for beacon_id, ids_list in saved_notes.items():
+                    if beacon_id in new_beacon_ids:
+                        notes_salvaged += len(ids_list)
+                    else:
+                        notes_orphaned += len(ids_list)
+            else:
+                # Non-dry-run: reattach under new beacons or 'Notes (salvaged)'
+                if new_beacon_nodes:
+                    for beacon_id, ids_list in saved_notes.items():
+                        target_parent = new_beacon_nodes.get(beacon_id)
+                        if target_parent:
+                            for nid in ids_list:
+                                try:
+                                    await self.move_node(nid, target_parent, "bottom")
+                                    notes_salvaged += 1
+                                except Exception as e:  # noqa: BLE001
+                                    log_event(
+                                        f"Failed to reattach notes node {nid} to beacon {beacon_id}: {e}",
+                                        "BEACON",
+                                    )
+                        else:
+                            # Orphaned – move under 'Notes (salvaged)'
+                            if not ids_list:
+                                continue
+                            if salvaged_root_id is None:
+                                req = NodeCreateRequest(
+                                    name="🧩 Notes (salvaged)",
+                                    parent_id=str(file_node_id),
+                                    note=None,
+                                    layoutMode=None,
+                                    position="bottom",
+                                )
+                                try:
+                                    created = await self.create_node(
+                                        req,
+                                        _internal_call=True,
+                                    )
+                                    salvaged_root_id = created.id
+                                except Exception as e:  # noqa: BLE001
+                                    raise NetworkError(
+                                        f"Failed to create 'Notes (salvaged)' node: {e}",
+                                    ) from e
+                            for nid in ids_list:
+                                try:
+                                    await self.move_node(nid, salvaged_root_id, "bottom")
+                                    notes_orphaned += 1
+                                except Exception as e:  # noqa: BLE001
+                                    log_event(
+                                        f"Failed to move notes node {nid} to salvaged root: {e}",
+                                        "BEACON",
+                                    )
+
+        # If we created a fresh parking node and successfully moved notes off it, delete it
+        if not dry_run and parking_created_here and parking_node_id:
+            try:
+                await self.delete_node(parking_node_id)
+            except Exception:
+                # Non-fatal
+                pass
+
+        # 4.6 Update hash in file node note (append or replace Source-SHA1 line)
+        previous_sha1 = existing_sha1
+        if not dry_run:
+            lines = note_text.splitlines() if note_text else []
+            new_line = f"Source-SHA1: {file_sha1}"
+            replaced = False
+            for idx, line in enumerate(lines):
+                if line.strip().startswith("Source-SHA1:"):
+                    lines[idx] = new_line
+                    replaced = True
+                    break
+            if not replaced:
+                if lines and lines[-1].strip():
+                    lines.append("")
+                lines.append(new_line)
+            new_note = "\n".join(lines)
+            try:
+                update_req = NodeUpdateRequest(
+                    name=file_node.get("name"),
+                    note=new_note,
+                    layoutMode=(file_node.get("data") or {}).get("layoutMode"),
+                )
+                await self.update_node(str(file_node_id), update_req)
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(f"Failed to update file node hash note: {e}") from e
+
+            # Mark nodes-export cache dirty for this subtree
+            try:
+                self._mark_nodes_export_dirty([str(file_node_id)])
+            except Exception:
+                pass
+
+        log_event(
+            "refresh_file_node_beacons complete for "
+            f"{source_path} (deleted={structural_deleted}, created={structural_created}, "
+            f"notes_salvaged={notes_salvaged}, notes_orphaned={notes_orphaned})",
+            "BEACON",
+        )
+
+        return {
+            "success": True,
+            "file_node_id": file_node_id,
+            "source_path": source_path,
+            "previous_sha1": previous_sha1,
+            "file_sha1": file_sha1,
+            "changed": True,
+            "dry_run": dry_run,
+            "structural_nodes_deleted": structural_deleted,
+            "structural_nodes_created": structural_created,
+            "notes_identified_for_salvage": total_notes_to_salvage,
+            "notes_salvaged": notes_salvaged,
+            "notes_orphaned": notes_orphaned,
         }
