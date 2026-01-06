@@ -670,11 +670,23 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         # Step 4: Delegate to beacon_obtain_code_snippet.get_snippet_data
         try:
-            import beacon_obtain_code_snippet as bos  # type: ignore[import]
+            import importlib
+
+            # Resolve project_root similarly to refresh_file_node_beacons so that
+            # beacon_obtain_code_snippet.py can live at the project root alongside
+            # nexus_map_codebase.py.
+            client_dir = os.path.dirname(os.path.abspath(__file__))
+            wf_mcp_dir = os.path.dirname(client_dir)
+            mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+            project_root = os.path.dirname(mcp_servers_dir)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+
+            bos = importlib.import_module("beacon_obtain_code_snippet")
         except Exception as e:  # noqa: BLE001
             raise NetworkError(
                 "Could not import beacon_obtain_code_snippet module; "
-                "ensure it is on PYTHONPATH for the MCP server. "
+                "ensure it resides at the project root alongside nexus_map_codebase.py. "
                 f"Underlying error: {e}"
             ) from e
 
