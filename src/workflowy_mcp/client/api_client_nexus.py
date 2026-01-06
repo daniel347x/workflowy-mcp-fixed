@@ -1947,12 +1947,57 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         This method intentionally DOES NOT touch siblings of the file node, and
         it preserves top-level "Notes" manual roots under the file.
+
+        NOTE: file_node_id may point to any descendant under a Cartographer-mapped
+        FILE node (e.g. a beacon node). In that case we walk the ancestor chain
+        via the cached /nodes-export snapshot to locate the nearest ancestor whose
+        note contains a 'Path:' line and treat THAT node as the file node to
+        refresh.
         """
         logger = _ClientLogger()
         log_event(
             f"refresh_file_node_beacons start (file_node_id={file_node_id}, dry_run={dry_run})",
             "BEACON",
         )
+
+        # 4.0 Optional: resolve arbitrary descendant UUID → enclosing FILE node UUID.
+        # This mirrors beacon_get_code_snippet semantics so callers can pass a
+        # beacon or child node UUID and still refresh the correct FILE node.
+        try:
+            raw_cache = await export_nodes_impl(self, node_id=None, use_cache=True, force_refresh=False)
+            all_nodes_cache = raw_cache.get("nodes", []) or []
+            nodes_by_id_cache: dict[str, dict[str, Any]] = {
+                str(n.get("id")): n for n in all_nodes_cache if n.get("id")
+            }
+        except Exception:
+            nodes_by_id_cache = {}
+
+        if nodes_by_id_cache and str(file_node_id) in nodes_by_id_cache:
+            current_id: str | None = str(file_node_id)
+            visited_ids: set[str] = set()
+            resolved_file_node_id: str | None = None
+
+            while current_id and current_id not in visited_ids:
+                visited_ids.add(current_id)
+                node = nodes_by_id_cache.get(current_id)
+                if not node:
+                    break
+
+                n_note = node.get("note") or node.get("no") or ""
+                if isinstance(n_note, str) and "Path:" in n_note:
+                    resolved_file_node_id = current_id
+                    break
+
+                parent_id_val = node.get("parent_id") or node.get("parentId")
+                current_id = str(parent_id_val) if parent_id_val else None
+
+            if resolved_file_node_id and resolved_file_node_id != file_node_id:
+                log_event(
+                    "refresh_file_node_beacons: resolved descendant UUID "
+                    f"{file_node_id} → FILE node {resolved_file_node_id}",
+                    "BEACON",
+                )
+                file_node_id = resolved_file_node_id
 
         # 4.1 Resolve file node & source path
         try:
