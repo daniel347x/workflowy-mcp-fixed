@@ -554,6 +554,150 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "_api_merge_performed": api_merge_performed,
         }
 
+    async def beacon_get_code_snippet(
+        self,
+        beacon_node_id: str,
+        context: int = 10,
+    ) -> dict[str, Any]:
+        """Resolve a beacon UUID to (file_path, beacon_id, kind) and snippet.
+
+        This uses the cached /nodes-export snapshot to locate:
+        - the beacon node (note contains BEACON (AST|SPAN) with id: ... and kind: ...), and
+        - the ancestor FILE node whose note starts with "Path: ...".
+
+        Once (file_path, beacon_id) are known, it delegates to the
+        beacon_obtain_code_snippet.get_snippet_data(...) helper to
+        compute (start_line, end_line, lines) and returns a raw snippet
+        (no prepended line numbers) plus line bounds.
+
+        Returns a dict:
+            {
+              "success": True,
+              "file_path": str,
+              "beacon_node_id": str,
+              "beacon_id": str,
+              "kind": "ast" | "span" | None,
+              "start_line": int,
+              "end_line": int,
+              "snippet": str,
+            }
+
+        If any step fails (missing beacon, missing Path:, import error,
+        snippet failure), a NetworkError is raised with a descriptive
+        message for the MCP tool layer to surface.
+        """
+        logger = _ClientLogger()
+
+        # Step 1: Load /nodes-export snapshot (cached if available)
+        raw = await export_nodes_impl(self, node_id=None, use_cache=True, force_refresh=False)
+        all_nodes = raw.get("nodes", []) or []
+        nodes_by_id: dict[str, dict[str, Any]] = {
+            str(n.get("id")): n for n in all_nodes if n.get("id")
+        }
+
+        # If beacon not found, try one forced refresh before failing
+        if beacon_node_id not in nodes_by_id:
+            logger.info(
+                f"beacon_get_code_snippet: {beacon_node_id} not in cache; refreshing /nodes-export"
+            )
+            raw = await export_nodes_impl(self, node_id=None, use_cache=False, force_refresh=True)
+            all_nodes = raw.get("nodes", []) or []
+            nodes_by_id = {str(n.get("id")): n for n in all_nodes if n.get("id")}
+
+        beacon_node = nodes_by_id.get(beacon_node_id)
+        if not beacon_node:
+            raise NetworkError(
+                f"Beacon node {beacon_node_id!r} not found in /nodes-export snapshot"
+            )
+
+        # Step 2: Parse beacon note for id and kind
+        note = beacon_node.get("note") or beacon_node.get("no") or ""
+        beacon_id: str | None = None
+        kind: str | None = None
+        if isinstance(note, str):
+            for line in note.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("id:"):
+                    beacon_id = stripped.split(":", 1)[1].strip()
+                elif stripped.startswith("kind:"):
+                    kind = stripped.split(":", 1)[1].strip()
+
+        if not beacon_id:
+            raise NetworkError(
+                f"Beacon node {beacon_node_id!r} has no 'id:' line in note; "
+                "cannot determine beacon id"
+            )
+
+        # Step 3: Walk ancestors to find FILE node with Path: ... in its note
+        current_id = beacon_node_id
+        visited: set[str] = set()
+        file_node: dict[str, Any] | None = None
+
+        while current_id and current_id not in visited:
+            visited.add(current_id)
+            node = nodes_by_id.get(current_id)
+            if not node:
+                break
+
+            n_note = node.get("note") or node.get("no") or ""
+            if isinstance(n_note, str) and "Path:" in n_note:
+                # Heuristic: FILE nodes created by Cartographer store the
+                # local path on the first line as "Path: E:\...".
+                file_node = node
+                break
+
+            parent_id = node.get("parent_id") or node.get("parentId")
+            current_id = str(parent_id) if parent_id else None
+
+        if not file_node:
+            raise NetworkError(
+                f"Could not find ancestor FILE node with 'Path:' note for beacon {beacon_node_id!r}"
+            )
+
+        file_note = file_node.get("note") or file_node.get("no") or ""
+        file_path: str | None = None
+        if isinstance(file_note, str):
+            for line in file_note.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("Path:"):
+                    file_path = stripped[len("Path:") :].strip()
+                    break
+
+        if not file_path:
+            raise NetworkError(
+                f"Ancestor FILE node for {beacon_node_id!r} is missing a 'Path:' line"
+            )
+
+        # Step 4: Delegate to beacon_obtain_code_snippet.get_snippet_data
+        try:
+            import beacon_obtain_code_snippet as bos  # type: ignore[import]
+        except Exception as e:  # noqa: BLE001
+            raise NetworkError(
+                "Could not import beacon_obtain_code_snippet module; "
+                "ensure it is on PYTHONPATH for the MCP server. "
+                f"Underlying error: {e}"
+            ) from e
+
+        try:
+            start, end, lines = bos.get_snippet_data(file_path, beacon_id, context)  # type: ignore[attr-defined]
+        except Exception as e:  # noqa: BLE001
+            raise NetworkError(
+                f"Failed to obtain snippet for beacon id {beacon_id!r} in file {file_path!r}: {e}"
+            ) from e
+
+        snippet_text = "\n".join(lines[start - 1 : end]) if lines else ""
+
+        return {
+            "success": True,
+            "file_path": file_path,
+            "beacon_node_id": beacon_node_id,
+            "beacon_id": beacon_id,
+            "kind": kind,
+            "start_line": start,
+            "end_line": end,
+            "snippet": snippet_text,
+        }
+
     async def nexus_scry(
         self,
         nexus_tag: str,

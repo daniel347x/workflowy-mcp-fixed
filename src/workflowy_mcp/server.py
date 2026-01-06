@@ -2272,6 +2272,59 @@ async def etch_async(
     return await _start_background_job("etch", payload, run_etch)
 
 
+# Tool: Beacon Snippet by UUID
+@mcp.tool(
+    name="beacon_get_code_snippet",
+    description="Get raw code/doc snippet for a beacon node UUID (via Cartographer beacons)."
+)
+async def beacon_get_code_snippet(
+    beacon_node_id: str,
+    context: int = 10,
+) -> dict:
+    """Return snippet around a beacon, given the beacon node's Workflowy UUID.
+
+    This wraps WorkFlowyClientNexus.beacon_get_code_snippet and returns a
+    JSON-friendly dict with:
+
+        {
+          "success": True,
+          "file_path": str,
+          "beacon_node_id": str,
+          "beacon_id": str,
+          "kind": "ast" | "span" | None,
+          "start_line": int,
+          "end_line": int,
+          "snippet": str,
+        }
+
+    Notes:
+    - beacon_node_id must be the UUID of the beacon node whose NOTE contains
+      a BEACON (AST|SPAN) block with an `id: ...` line.
+    - The underlying client method walks ancestors via the cached /nodes-export
+      snapshot to find the FILE node with a `Path: ...` note (Cartographer
+      projection), then calls the local beacon_obtain_code_snippet helper to
+      extract the snippet without line numbers.
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.beacon_get_code_snippet(
+            beacon_node_id=beacon_node_id,
+            context=context,
+        )
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        # Surface as a structured MCP error response
+        return {"success": False, "error": str(e)}
+
+
 # Tool: List Nexus Keystones
 @mcp.tool(
     name="nexus_list_keystones",
