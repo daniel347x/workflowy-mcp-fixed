@@ -2359,7 +2359,7 @@ def nexus_purge_keystones(keystone_ids: list[str]) -> dict:
 
 
 @mcp.tool(
-    name="beacon_refresh_file_refresh_node",
+    name="beacon_refresh_code_node",
     description=(
         "Per-file beacon-aware refresh of a Cartographer-mapped FILE node from its "
         "source file. Uses a SHA1 guard to skip unchanged files, rebuilds the "
@@ -2367,7 +2367,7 @@ def nexus_purge_keystones(keystone_ids: list[str]) -> dict:
         "subtrees keyed by beacon id."
     ),
 )
-async def beacon_refresh_file_refresh_node(
+async def beacon_refresh_code_node(
     file_node_id: str,
     dry_run: bool = False,
 ) -> dict:

@@ -512,12 +512,11 @@ def apply_markdown_beacons(
 
         b_id = (beacon.get("id") or "").strip()
         role = (beacon.get("role") or "").strip()
-        slice_labels = (beacon.get("slice_labels") or "").strip()
-        # Defaults: derive role from id prefix (before '@'), slice_labels from role
+        raw_slice_labels = (beacon.get("slice_labels") or "").strip()
+        # Defaults: derive role from id prefix (before '@')
         if not role and b_id and "@" in b_id:
             role = b_id.split("@", 1)[0]
-        if not slice_labels and role:
-            slice_labels = role.replace(":", "-")
+        slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
 
         if DEBUG_MD_BEACONS:
             print(
@@ -533,7 +532,7 @@ def apply_markdown_beacons(
         display_slice = slice_labels or "-"
 
         tag_suffix = _slice_label_tags(slice_labels or display_slice)
-        name = f"🔱 {display_role} [slice:{display_slice}]"
+        name = f"🔱 {display_role}"
         if tag_suffix:
             name = f"{name} {tag_suffix}"
 
@@ -655,6 +654,30 @@ def _slice_label_tags(slice_labels: str) -> str:
             continue
         labels.append(f"#{part}")
     return " ".join(labels)
+
+
+def _canonicalize_slice_labels(slice_labels: str | None, role: str | None) -> str:
+    """Canonicalize slice_labels for tags and display.
+
+    - If slice_labels is empty and role is provided, derive labels from role.
+    - Replaces ':' with '-' in every label to match tag convention
+      (e.g. model:mert:production → model-mert-production).
+    - Accepts comma/whitespace separated labels and normalizes each token.
+    """
+    raw = (slice_labels or "").strip()
+    base_role = (role or "").strip()
+    tokens: list[str] = []
+
+    if raw:
+        for part in re.split(r"[\s,]+", raw):
+            part = part.strip()
+            if not part:
+                continue
+            tokens.append(part.replace(":", "-"))
+    elif base_role:
+        tokens.append(base_role.replace(":", "-"))
+
+    return ",".join(tokens)
 
 
 def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
@@ -1067,12 +1090,11 @@ def apply_python_beacons(
         # Decorate chosen AST node
         b_id = (beacon.get("id") or "").strip()
         role = (beacon.get("role") or "").strip()
-        slice_labels = (beacon.get("slice_labels") or "").strip()
-        # Defaults: derive role from id prefix (before '@'), slice_labels from role
+        raw_slice_labels = (beacon.get("slice_labels") or "").strip()
+        # Defaults: derive role from id prefix (before '@')
         if not role and b_id and "@" in b_id:
             role = b_id.split("@", 1)[0]
-        if not slice_labels and role:
-            slice_labels = role.replace(":", "-")
+        slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
 
         display_role = role or b_id or "ast-beacon"
         display_slice = slice_labels or "-"
@@ -1080,7 +1102,7 @@ def apply_python_beacons(
         tag_suffix = _slice_label_tags(slice_labels or display_slice)
         name = chosen.get("name") or "Untitled"
         if "🔱" not in name:
-            name = f"{name} 🔱 [slice:{display_slice} role:{display_role}]"
+            name = f"{name} 🔱"
         if tag_suffix:
             name = f"{name} {tag_suffix}"
         chosen["name"] = name
@@ -1162,18 +1184,17 @@ def apply_python_beacons(
 
         b_id = (beacon.get("id") or "").strip()
         role = (beacon.get("role") or "").strip()
-        slice_labels = (beacon.get("slice_labels") or "").strip()
-        # Defaults: derive role from id prefix (before '@'), slice_labels from role
+        raw_slice_labels = (beacon.get("slice_labels") or "").strip()
+        # Defaults: derive role from id prefix (before '@')
         if not role and b_id and "@" in b_id:
             role = b_id.split("@", 1)[0]
-        if not slice_labels and role:
-            slice_labels = role.replace(":", "-")
+        slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
 
         display_role = role or b_id or "span-beacon"
         display_slice = slice_labels or "-"
 
         tag_suffix = _slice_label_tags(slice_labels or display_slice)
-        name = f"🔱 {display_role} [slice:{display_slice}]"
+        name = f"🔱 {display_role}"
         if tag_suffix:
             name = f"{name} {tag_suffix}"
 
@@ -1717,19 +1738,18 @@ def apply_sql_beacons(
 
         b_id = (beacon.get("id") or "").strip()
         role = (beacon.get("role") or "").strip()
-        slice_labels = (beacon.get("slice_labels") or "").strip()
+        raw_slice_labels = (beacon.get("slice_labels") or "").strip()
 
-        # Defaults: derive role from id prefix (before '@'), slice_labels from role
+        # Defaults: derive role from id prefix (before '@')
         if not role and b_id and "@" in b_id:
             role = b_id.split("@", 1)[0]
-        if not slice_labels and role:
-            slice_labels = role.replace(":", "-")
+        slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
 
         display_role = role or b_id or "sql-span-beacon"
         display_slice = slice_labels or "-"
 
         tag_suffix = _slice_label_tags(slice_labels or display_slice)
-        name = f"🔱 {display_role} [slice:{display_slice}]"
+        name = f"🔱 {display_role}"
         if tag_suffix:
             name = f"{name} {tag_suffix}"
 
@@ -1824,18 +1844,17 @@ def apply_sh_beacons(
 
         b_id = (beacon.get("id") or "").strip()
         role = (beacon.get("role") or "").strip()
-        slice_labels = (beacon.get("slice_labels") or "").strip()
+        raw_slice_labels = (beacon.get("slice_labels") or "").strip()
 
         if not role and b_id and "@" in b_id:
             role = b_id.split("@", 1)[0]
-        if not slice_labels and role:
-            slice_labels = role.replace(":", "-")
+        slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
 
         display_role = role or b_id or "sh-span-beacon"
         display_slice = slice_labels or "-"
 
         tag_suffix = _slice_label_tags(slice_labels or display_slice)
-        name = f"🔱 {display_role} [slice:{display_slice}]"
+        name = f"🔱 {display_role}"
         if tag_suffix:
             name = f"{name} {tag_suffix}"
 
