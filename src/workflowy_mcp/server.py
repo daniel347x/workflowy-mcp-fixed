@@ -404,6 +404,230 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         }))
 
 
+def _guess_line_number_from_name(file_path: str, node_name: str | None) -> int:
+    """Best-effort line-number guess for non-beacon nodes.
+
+    Heuristic (kept intentionally simple and cheap):
+    - Start from the plain-text Workflowy node name provided by the extension.
+    - Trim off trailing beacon/hashtag decorations (everything at and after
+      the first "🔱" or "#").
+    - Prefer the function-like head (up to and including "(") when present;
+      otherwise fall back to the first whitespace-delimited token.
+    - If the resulting head is very short (<3 chars) bail out and return 1.
+    - Scan the file line-by-line and return the first 1-based line index that
+      contains the head as a substring. If nothing matches, return 1.
+    """
+    if not node_name:
+        return 1
+
+    candidate = (node_name or "").strip()
+    if not candidate:
+        return 1
+
+    # Strip trailing decorations like "🔱 model:forward@1 #model-forward".
+    for sep in ("🔱", "#"):
+        idx = candidate.find(sep)
+        if idx != -1:
+            candidate = candidate[:idx].strip()
+            break
+
+    if not candidate:
+        return 1
+
+    head = candidate
+    paren_idx = candidate.find("(")
+    if paren_idx != -1:
+        # Keep the callable-looking prefix (e.g. "forward(")
+        head = candidate[: paren_idx + 1]
+    else:
+        parts = candidate.split()
+        if parts:
+            head = parts[0]
+
+    head = head.strip()
+    if len(head) < 3:
+        return 1
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            for lineno, line in enumerate(f, start=1):
+                if head in line:
+                    return lineno
+    except Exception as e:  # noqa: BLE001
+        log_event(f"_guess_line_number_from_name: search failed for {file_path}: {e}", "WS_HANDLER")
+
+    return 1
+
+
+def _launch_windsurf(file_path: str, line: int | None = None) -> None:
+    """Launch WindSurf for the given file/line on Windows.
+
+    Uses the same executable path and CLI flags as the Conversation Continuity
+    Agent's run_command helpers, but invoked directly via subprocess.Popen so
+    no additional shell quoting is required.
+    """
+    import subprocess
+
+    exe = r"C:\\Users\\danie\\AppData\\Local\\Programs\\Windsurf\\Windsurf.exe"
+    args = [exe]
+
+    if line is not None and isinstance(line, int) and line > 0:
+        args.extend(["-g", f"{file_path}:{line}"])
+    else:
+        # Reuse existing window and just open the file
+        args.extend(["-r", file_path])
+
+    try:
+        subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        log_event(f"Launched WindSurf for {file_path} (line={line})", "WS_HANDLER")
+    except Exception as e:  # noqa: BLE001
+        # Let callers surface a structured error if needed
+        log_event(f"Failed to launch WindSurf for {file_path}: {e}", "WS_HANDLER")
+        raise
+
+
+async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None:
+    """Handle F10-driven request to open code in WindSurf for a Workflowy node.
+
+    Behaviour:
+    - First attempt: treat node_id as a Cartographer beacon and call
+      beacon_get_code_snippet(...) to obtain (file_path, start_line).
+    - Fallback: call refresh_file_node_beacons(dry_run=True) starting from
+      the same UUID to resolve the enclosing FILE node and its Path: ...
+      note, but without writing anything back to Workflowy.
+    - For non-beacon nodes (or when no specific line is known), make a
+      best-effort guess at the line number by searching the file for a
+      function-like head derived from node_name.
+    - Finally, launch WindSurf with -g file:line (or -r file for line=1).
+    """
+    node_id = data.get("node_id") or data.get("target_uuid") or data.get("uuid")
+    node_name = data.get("node_name") or ""
+
+    if not node_id:
+        await websocket.send(
+            json.dumps(
+                {
+                    "action": "open_node_in_windsurf_result",
+                    "success": False,
+                    "error": "No node_id provided in open_node_in_windsurf payload",
+                }
+            )
+        )
+        return
+
+    client = get_client()
+    file_path: str | None = None
+    line_number: int | None = None
+    beacon_mode = False
+
+    # 1) Beacon-aware fast path: if this UUID corresponds to a beacon node,
+    # reuse the existing snippet resolution to get file + line directly.
+    try:
+        snippet_result = await client.beacon_get_code_snippet(beacon_node_id=node_id, context=10)
+        if isinstance(snippet_result, dict) and snippet_result.get("success"):
+            file_path = snippet_result.get("file_path")
+            start_line = snippet_result.get("start_line") or snippet_result.get("end_line")
+            if isinstance(start_line, int) and start_line > 0:
+                line_number = start_line
+            beacon_mode = True
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            f"open_node_in_windsurf: beacon_get_code_snippet failed for {node_id}: {e}",
+            "WS_HANDLER",
+        )
+
+    # 2) Fallback: dry-run file-level refresh to locate the enclosing FILE node
+    # and its Path: ... note, without mutating Workflowy.
+    if not file_path:
+        try:
+            refresh_result = await client.refresh_file_node_beacons(
+                file_node_id=node_id,
+                dry_run=True,
+            )
+            if not isinstance(refresh_result, dict) or not refresh_result.get("success"):
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "action": "open_node_in_windsurf_result",
+                            "success": False,
+                            "node_id": node_id,
+                            "error": refresh_result.get("error")
+                            if isinstance(refresh_result, dict)
+                            else "refresh_file_node_beacons(dry_run=True) failed",
+                        }
+                    )
+                )
+                return
+            file_path = refresh_result.get("source_path")
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                f"open_node_in_windsurf: refresh_file_node_beacons(dry_run=True) failed for {node_id}: {e}",
+                "WS_HANDLER",
+            )
+            await websocket.send(
+                json.dumps(
+                    {
+                        "action": "open_node_in_windsurf_result",
+                        "success": False,
+                        "node_id": node_id,
+                        "error": f"Failed to resolve source file for node {node_id}: {e}",
+                    }
+                )
+            )
+            return
+
+    if not file_path:
+        await websocket.send(
+            json.dumps(
+                {
+                    "action": "open_node_in_windsurf_result",
+                    "success": False,
+                    "node_id": node_id,
+                    "error": "Could not determine source file path for node",
+                }
+            )
+        )
+        return
+
+    # 3) If we still do not have a concrete line number (non-beacon case),
+    # perform a very lightweight in-file search using the node_name hint.
+    if not line_number or not isinstance(line_number, int) or line_number <= 0:
+        line_number = _guess_line_number_from_name(file_path, node_name)
+
+    # 4) Launch WindSurf
+    try:
+        _launch_windsurf(file_path, line_number)
+        await websocket.send(
+            json.dumps(
+                {
+                    "action": "open_node_in_windsurf_result",
+                    "success": True,
+                    "node_id": node_id,
+                    "file_path": file_path,
+                    "line": line_number,
+                    "beacon_mode": beacon_mode,
+                }
+            )
+        )
+    except Exception as e:  # noqa: BLE001
+        await websocket.send(
+            json.dumps(
+                {
+                    "action": "open_node_in_windsurf_result",
+                    "success": False,
+                    "node_id": node_id,
+                    "file_path": file_path,
+                    "line": line_number,
+                    "error": f"Failed to launch WindSurf: {e}",
+                }
+            )
+        )
+
+
 async def websocket_handler(websocket):
     """Handle WebSocket connections from Chrome extension.
     
@@ -512,6 +736,31 @@ async def websocket_handler(websocket):
                             f"Failed to mark /nodes-export cache dirty from WebSocket notification: {e}",
                             "WS_HANDLER",
                         )
+                    continue
+
+                # F10-driven: open associated code file in WindSurf from the hovered node
+                if action == 'open_node_in_windsurf':
+                    try:
+                        await _handle_open_node_in_windsurf(data, websocket)
+                    except Exception as e:
+                        log_event(
+                            f"open_node_in_windsurf handler error: {e}",
+                            "WS_HANDLER",
+                        )
+                        try:
+                            await websocket.send(
+                                json.dumps(
+                                    {
+                                        "action": "open_node_in_windsurf_result",
+                                        "success": False,
+                                        "node_id": data.get('node_id'),
+                                        "error": str(e),
+                                    }
+                                )
+                            )
+                        except Exception:
+                            # Best-effort only; do not crash the handler on error reporting
+                            pass
                     continue
                 
                 # Put all other messages in queue for workflowy_glimpse() to consume
