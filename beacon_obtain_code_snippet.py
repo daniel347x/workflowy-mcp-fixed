@@ -1313,7 +1313,7 @@ def _markdown_snippet_for_beacon(
 
     for j in range(block_end + 1, n + 1):
         stripped = lines[j - 1].strip()
-        if _re_md_beacon.match(r"^#{1,6}\\s", stripped):
+        if _re_md_beacon.match(r"^#{1,32}\\s", stripped):
             next_header = j
             break
 
@@ -2449,7 +2449,7 @@ def get_snippet_for_md_path(
         s = (raw or "").strip()
         if not s:
             continue
-        m = re.match(r"^(#{1,6})\s*(.*)$", s)
+        m = re.match(r"^(#{1,32})\\s*(.*)$", s)
         if not m:
             raise RuntimeError(f"Invalid MD_PATH component {raw!r} in note")
         level = len(m.group(1))
@@ -2470,7 +2470,7 @@ def get_snippet_for_md_path(
 
     for lineno, raw in enumerate(lines, start=1):
         stripped = raw.strip()
-        m = re.match(r"^(#{1,6})\s*(.*)$", stripped)
+        m = re.match(r"^(#{1,32})\\s*(.*)$", stripped)
         if not m:
             continue
         level = len(m.group(1))
@@ -2506,7 +2506,7 @@ def get_snippet_for_md_path(
     core_end = n
     for j in range(heading_line + 1, n + 1):
         s = lines[j - 1].strip()
-        m = re.match(r"^(#{1,6})\s*(.*)$", s)
+        m = re.match(r"^(#{1,32})\\s*(.*)$", s)
         if not m:
             continue
         lvl = len(m.group(1))
