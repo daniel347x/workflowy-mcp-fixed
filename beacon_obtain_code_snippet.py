@@ -644,7 +644,7 @@ def _python_snippet_for_beacon(
 
     n = len(lines)
 
-    # 1) AST beacon path
+    # 1) AST beacon path – decorate the AST node and include its body as core.
     node = _python_find_ast_node_for_beacon(outline_nodes, beacon_id)
     if node is not None:
         start_code = node.get("orig_lineno_start_unused")
@@ -663,6 +663,81 @@ def _python_snippet_for_beacon(
             end = min(n, core_end + context)
             beacon_line = comment_line if comment_line is not None else start_code
             return start, end, lines, core_start, core_end, beacon_line
+
+    # 2) SPAN beacons – use closing-delimiter span if present, otherwise
+    #    single-beacon heuristic with anchor line.
+
+    # First, see if there is a closing-delimiter pair for this id
+    span = _python_find_closing_beacon_span(lines, beacons, target)
+    if span is not None:
+        inner_start, inner_end = span
+        comment_line = _comment_line_for_id(target)
+        if comment_line is not None:
+            cb_span = _python_comment_block_span(lines, comment_line)
+            if cb_span is not None:
+                core_start = cb_span[0]
+            else:
+                core_start = comment_line
+        else:
+            core_start = inner_start
+        core_end = inner_end
+        start = max(1, core_start - context)
+        end = min(n, core_end + context)
+        beacon_line = comment_line if comment_line is not None else inner_start
+        return start, end, lines, core_start, core_end, beacon_line
+
+    # Otherwise, fall back to the original single-beacon heuristic
+    chosen = None
+    for b in beacons:
+        if (b.get("id") or "").strip() == target:
+            chosen = b
+            break
+
+    if not chosen:
+        raise RuntimeError(f"Beacon id {beacon_id!r} not found in Python file {file_path!r}")
+
+    comment_line = int(chosen.get("comment_line") or 1)
+
+    # Anchor on next non-blank, non-comment, non-decorator line after block
+    anchor = None
+    j = comment_line
+    # Advance until the end of the beacon block (first line containing ']')
+    while j <= n:
+        raw = lines[j - 1]
+        stripped = raw.lstrip()
+        body = stripped.lstrip("#").lstrip() if stripped.startswith("#") else stripped
+        if "]" in body:
+            j += 1
+            break
+        j += 1
+
+    while j <= n:
+        raw = lines[j - 1]
+        stripped = raw.lstrip()
+        if not stripped:
+            j += 1
+            continue
+        if stripped.startswith("#") or stripped.startswith("@"):
+            j += 1
+            continue
+        anchor = j
+        break
+
+    if anchor is None:
+        anchor = comment_line
+
+    # Core region: comment block (if any) plus the anchor line
+    cb_span = _python_comment_block_span(lines, comment_line)
+    if cb_span is not None:
+        core_start = cb_span[0]
+    else:
+        core_start = comment_line
+    core_end = anchor
+
+    start = max(1, core_start - context)
+    end = min(n, core_end + context)
+    beacon_line = comment_line
+    return start, end, lines, core_start, core_end, beacon_line
 
 
 def get_snippet_for_ast_qualname(
