@@ -3056,9 +3056,15 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         if _is_folder_node(node_local):
                             raw_name = str(node_local.get("name") or "")
                             txt = raw_name
+                            # Strip leading emoji/bullets
                             while txt and not txt[0].isalnum():
                                 txt = txt[1:]
-                            folder_name = txt.strip() or raw_name.strip()
+                            base = txt.strip() or raw_name.strip()
+                            # NEW: strip trailing #tags (e.g. "📂 folder #tag1 #tag2")
+                            tokens = base.split()
+                            while tokens and str(tokens[-1]).startswith("#"):
+                                tokens.pop()
+                            folder_name = " ".join(tokens) if tokens else base
                             segments.append(folder_name)
                         parent_id_local = parent_of.get(current)
                         if not parent_id_local:
