@@ -1283,6 +1283,50 @@ def _markdown_snippet_for_beacon(
         beacon_line = comment_line if comment_line is not None else inner_start
         return start, end, lines, core_start, core_end, beacon_line
 
+    # No closing tag: fall back to single-beacon semantics.
+    # Core span is all lines from the opening beacon comment block down to
+    # just before the next Markdown heading at ANY level.
+    chosen = None
+    for b in beacons:
+        if (b.get("id") or "").strip() == target:
+            chosen = b
+            break
+
+    if not chosen:
+        raise RuntimeError(f"Beacon id {beacon_id!r} not found in Markdown file {file_path!r}")
+
+    comment_line = int(chosen.get("comment_line") or 1)
+
+    # Find end of the beacon block (first line containing ']')
+    j = comment_line
+    block_end = comment_line
+    while j <= n:
+        raw = lines[j - 1]
+        if "]" in raw:
+            block_end = j
+            break
+        j += 1
+
+    # Next heading at ANY level after the beacon block
+    next_header: int | None = None
+    import re as _re_md_beacon
+
+    for j in range(block_end + 1, n + 1):
+        stripped = lines[j - 1].strip()
+        if _re_md_beacon.match(r"^#{1,6}\\s", stripped):
+            next_header = j
+            break
+
+    core_start = comment_line
+    core_end = next_header - 1 if next_header is not None else n
+    if core_end < core_start:
+        core_end = core_start
+
+    start = max(1, core_start - context)
+    end = min(n, core_end + context)
+    beacon_line = comment_line
+    return start, end, lines, core_start, core_end, beacon_line
+
 
 def get_snippet_for_ast_qualname(
     file_path: str,
