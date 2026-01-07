@@ -1128,6 +1128,9 @@ def _markdown_find_closing_beacon_span(
         inner = block_lines[1:-1] if len(block_lines) >= 2 else []
         for raw_line in inner:
             text = raw_line.strip()
+            # Strip leading SQL comment prefix if present
+            if text.startswith("--"):
+                text = text[2:].lstrip()
             if not text or text.startswith("@beacon-close"):
                 continue
             if text.startswith("<!--") or text.startswith("-->"):
@@ -1515,6 +1518,9 @@ def _sql_find_closing_beacon_span(
         inner = block_lines[1:-1] if len(block_lines) >= 2 else []
         for raw_line in inner:
             text = raw_line.strip()
+            # Strip leading SQL comment prefix if present
+            if text.startswith("--"):
+                text = text[2:].lstrip()
             if not text or text.startswith("@beacon-close"):
                 continue
             if text.startswith("<!--") or text.startswith("-->"):
@@ -1669,6 +1675,25 @@ def _sql_snippet_for_beacon(
         end = min(n, core_end + context)
         beacon_line = comment_line if comment_line is not None else inner_start
         return start, end, lines, core_start, core_end, beacon_line
+
+    # No closing delimiter found: default to symmetric context around the
+    # opening beacon comment line (context lines above and below).
+    chosen = None
+    for b in beacons:
+        if (b.get("id") or "").strip() == target:
+            chosen = b
+            break
+
+    if not chosen:
+        raise RuntimeError(f"Beacon id {beacon_id!r} not found in SQL file {file_path!r}")
+
+    comment_line = int(chosen.get("comment_line") or 1)
+    core_start = comment_line
+    core_end = comment_line
+    start = max(1, comment_line - context)
+    end = min(n, comment_line + context)
+    beacon_line = comment_line
+    return start, end, lines, core_start, core_end, beacon_line
 
 
 def get_snippet_for_ast_qualname(
