@@ -532,7 +532,7 @@ def _launch_windsurf(file_path: str, line: int | None = None) -> None:
 
 
 async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
-    """Handle F11-driven request to refresh a Cartographer FILE node.
+    """Handle F12-driven request to refresh a Cartographer FILE node.
 
     This is a WebSocket wrapper around the existing beacon_refresh_code_node
     MCP tool (which in turn calls client.refresh_file_node_beacons). The
@@ -582,6 +582,60 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
                     "success": False,
                     "node_id": node_id,
                     "error": f"Failed to refresh file node {node_id}: {e}",
+                }
+            )
+        )
+
+
+async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
+    """Handle F12-driven request to refresh a Cartographer FOLDER subtree.
+
+    - Recursively refreshes all descendant FILE nodes via
+      refresh_file_node_beacons.
+    - Optionally scans the filesystem under the folder's Path: note using the
+      Cartographer whitelist and creates FILE nodes (and intermediate
+      FOLDER nodes) for any on-disk files not represented in the subtree.
+    """
+    node_id = data.get("node_id") or data.get("target_uuid") or data.get("uuid")
+
+    if not node_id:
+        await websocket.send(
+            json.dumps(
+                {
+                    "action": "refresh_folder_node_result",
+                    "success": False,
+                    "error": "No node_id provided in refresh_folder_node payload",
+                }
+            )
+        )
+        return
+
+    client = get_client()
+
+    try:
+        result = await client.refresh_folder_cartographer_sync(
+            folder_node_id=node_id,
+            dry_run=False,
+        )
+        if not isinstance(result, dict):
+            result = {"success": False, "error": "refresh_folder_cartographer_sync returned non-dict"}
+
+        result["action"] = "refresh_folder_node_result"
+        result["node_id"] = node_id
+        await websocket.send(json.dumps(result))
+
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            f"_handle_refresh_folder_node: refresh_folder_cartographer_sync failed for {node_id}: {e}",
+            "WS_HANDLER",
+        )
+        await websocket.send(
+            json.dumps(
+                {
+                    "action": "refresh_folder_node_result",
+                    "success": False,
+                    "node_id": node_id,
+                    "error": f"Failed to refresh folder subtree {node_id}: {e}",
                 }
             )
         )
@@ -867,7 +921,7 @@ async def websocket_handler(websocket):
                             pass
                     continue
 
-                # F11-driven: refresh Cartographer FILE node in Workflowy from source
+                # F12-driven: refresh Cartographer FILE node in Workflowy from source
                 if action == 'refresh_file_node':
                     try:
                         await _handle_refresh_file_node(data, websocket)
@@ -881,6 +935,31 @@ async def websocket_handler(websocket):
                                 json.dumps(
                                     {
                                         "action": "refresh_file_node_result",
+                                        "success": False,
+                                        "node_id": data.get('node_id'),
+                                        "error": str(e),
+                                    }
+                                )
+                            )
+                        except Exception:
+                            # Best-effort only; do not crash the handler on error reporting
+                            pass
+                    continue
+
+                # F12-driven: refresh Cartographer FOLDER subtree (multi-file sync)
+                if action == 'refresh_folder_node':
+                    try:
+                        await _handle_refresh_folder_node(data, websocket)
+                    except Exception as e:
+                        log_event(
+                            f"refresh_folder_node handler error: {e}",
+                            "WS_HANDLER",
+                        )
+                        try:
+                            await websocket.send(
+                                json.dumps(
+                                    {
+                                        "action": "refresh_folder_node_result",
                                         "success": False,
                                         "node_id": data.get('node_id'),
                                         "error": str(e),
