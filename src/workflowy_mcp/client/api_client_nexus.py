@@ -860,6 +860,87 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "candidates": metadata.get("candidates"),
             }
 
+        # For Markdown heading nodes, require an explicit MD_PATH block in the note.
+        if ext in {".md", ".markdown"}:
+            md_path_lines: list[str] = []
+            if isinstance(note, str):
+                in_block = False
+                for line in note.splitlines():
+                    stripped = line.strip()
+                    if not in_block:
+                        if stripped.startswith("MD_PATH:"):
+                            in_block = True
+                            continue
+                    else:
+                        if stripped == "---":
+                            break
+                        if stripped:
+                            md_path_lines.append(stripped)
+
+            if not md_path_lines:
+                raise NetworkError(
+                    "Non-beacon Markdown node %r has no MD_PATH in its note; "
+                    "refresh Cartographer mapping for this FILE node and retry."
+                    % (beacon_node_id,)
+                )
+
+            try:
+                import importlib
+
+                client_dir = os.path.dirname(os.path.abspath(__file__))
+                wf_mcp_dir = os.path.dirname(client_dir)
+                mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+                project_root = os.path.dirname(mcp_servers_dir)
+                if project_root not in sys.path:
+                    sys.path.insert(0, project_root)
+
+                bos = importlib.import_module("beacon_obtain_code_snippet")
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(
+                    "Could not import beacon_obtain_code_snippet module for MD_PATH-based "
+                    f"resolution; underlying error: {e}"
+                ) from e
+
+            try:
+                snippet_result = bos.get_snippet_for_md_path(  # type: ignore[attr-defined]
+                    file_path,
+                    md_path_lines,
+                    context,
+                )
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(
+                    f"Failed to obtain MD_PATH-based snippet for node {beacon_node_id!r} "
+                    f"in file {file_path!r}: {e}"
+                ) from e
+
+            if isinstance(snippet_result, tuple) and len(snippet_result) == 7:
+                start, end, lines, core_start, core_end, beacon_line, metadata = snippet_result
+            else:
+                raise NetworkError(
+                    "get_snippet_for_md_path returned unexpected shape; expected 7-tuple."
+                )
+
+            snippet_text = "\n".join(lines[start - 1 : end]) if lines else ""
+
+            return {
+                "success": True,
+                "file_path": file_path,
+                "beacon_node_id": beacon_node_id,
+                # Represent the MD_PATH in a compact single-line form for debugging.
+                "beacon_id": " | ".join(md_path_lines),
+                "kind": "node",
+                "start_line": start,
+                "end_line": end,
+                "core_start_line": core_start,
+                "core_end_line": core_end,
+                "beacon_line": beacon_line,
+                "snippet": snippet_text,
+                "resolution_strategy": metadata.get("resolution_strategy"),
+                "confidence": metadata.get("confidence"),
+                "ambiguity": metadata.get("ambiguity"),
+                "candidates": metadata.get("candidates"),
+            }
+
         # For non-Python files we currently do not support non-beacon snippet
         # resolution; require explicit beacons or future AST-like metadata.
         raise NetworkError(

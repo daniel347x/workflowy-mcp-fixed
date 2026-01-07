@@ -39,13 +39,28 @@ def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
     Lower priority = appears first in document.
     
     v2.1: Now handles horizontal rules (hr) and lists (bullet_list, ordered_list).
-    """
-    root_children = []
-    stack = []  # Stack of (heading_level, nexus_node)
-    priority_counter = 100
-    current_content = []  # Accumulates paragraphs, lists, hrs, code blocks as Markdown text
     
-    def flush_content():
+    v2.2: For each Markdown heading node, writes an explicit MD_PATH block into
+    the note:
+
+        MD_PATH:
+        # Top
+        ## Section
+        ### Subsection
+        ---
+        <existing heading content>
+
+    This mirrors Python's AST_QUALNAME header and is consumed by
+    get_snippet_for_md_path in beacon_obtain_code_snippet.py.
+    """
+    root_children: List[Dict[str, Any]] = []
+    # Stack of (heading_level, nexus_node)
+    stack: List[tuple[int, Dict[str, Any]]] = []
+    priority_counter = 100
+    # Accumulates paragraphs, lists, hrs, code blocks as Markdown text
+    current_content: List[str] = []
+
+    def flush_content() -> None:
         """Flush accumulated content to current node's note field."""
         if current_content and stack:
             note_text = "\n\n".join(current_content)
@@ -55,61 +70,75 @@ def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
             else:
                 current_node["note"] = note_text
             current_content.clear()
-    
+
     i = 0
     while i < len(tokens):
         token = tokens[i]
-        
+
         if token.type == "heading_open":
             # Flush any pending content before starting new heading
             flush_content()
-            
+
             # Start of a heading
             heading_level = int(token.tag[1])  # h1 -> 1, h2 -> 2, etc.
-            
+
             # Get the heading text from next token (should be inline)
             heading_text = ""
             if i + 1 < len(tokens) and tokens[i + 1].type == "inline":
                 heading_text = tokens[i + 1].content
-            
-            # Create NEXUS node
-            nexus_node = {
-                "name": heading_text or "...",
-                "priority": priority_counter,
-                "children": []
-            }
-            priority_counter += 100
-            
-            # Pop stack until we find the correct parent level
+
+            # Pop stack until we find the correct parent level for this heading
             while stack and stack[-1][0] >= heading_level:
                 stack.pop()
-            
+
+            # Build MD_PATH lines from current ancestor stack + this heading
+            md_path_lines: List[str] = []
+            for lvl, ancestor_node in stack:
+                ancestor_name = (ancestor_node.get("name") or "").strip() or "..."
+                md_path_lines.append(f"{('#' * lvl)} {ancestor_name}".rstrip())
+            this_heading_name = heading_text or "..."
+            md_path_lines.append(f"{('#' * heading_level)} {this_heading_name}".rstrip())
+
+            note_lines: List[str] = ["MD_PATH:"]
+            note_lines.extend(md_path_lines)
+            note_lines.append("---")
+            note_text = "\n".join(note_lines)
+
+            # Create NEXUS node
+            nexus_node: Dict[str, Any] = {
+                "name": this_heading_name,
+                "priority": priority_counter,
+                "note": note_text,
+                "children": [],
+            }
+            priority_counter += 100
+
             # Add to parent (or root if stack empty)
             if stack:
                 stack[-1][1]["children"].append(nexus_node)
             else:
                 root_children.append(nexus_node)
-            
+
             # Push this heading onto stack
             stack.append((heading_level, nexus_node))
-            
+
             # Skip the inline and heading_close tokens
             i += 3  # heading_open, inline, heading_close
             continue
-        
+
         elif token.type == "hr":
             # Horizontal rule - preserve as underscores (mdformat style)
             current_content.append("______________________________________________________________________")
             i += 1
             continue
-        
+
         elif token.type == "paragraph_open":
             # Paragraph content
             if i + 1 < len(tokens) and tokens[i + 1].type == "inline":
                 current_content.append(tokens[i + 1].content)
             i += 3  # paragraph_open, inline, paragraph_close
             continue
-        
+
         elif token.type == "fence" or token.type == "code_block":
             # Code block
             fence_char = "`"
@@ -117,37 +146,37 @@ def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
             if token.type == "fence" and token.markup:
                 fence_char = token.markup[0]
                 fence_count = len(token.markup)
-            
+
             fence = fence_char * fence_count
             current_content.append(f"{fence}{token.info}")
             current_content.append(token.content.rstrip())
             current_content.append(fence)
             i += 1
             continue
-        
+
         elif token.type == "bullet_list_open" or token.type == "ordered_list_open":
             # Start of a list - collect all list items
-            list_lines = []
+            list_lines: List[str] = []
             list_depth = 0
             is_ordered = token.type == "ordered_list_open"
-            
+
             # Advance past the list_open
             i += 1
-            
+
             # Process list items until we hit the matching list_close
             while i < len(tokens):
                 tok = tokens[i]
-                
+
                 if tok.type == "list_item_open":
                     list_depth += 1
                     i += 1
                     continue
-                
+
                 elif tok.type == "list_item_close":
                     list_depth -= 1
                     i += 1
                     continue
-                
+
                 elif tok.type == "paragraph_open":
                     # List item content (paragraph inside list item)
                     if i + 1 < len(tokens) and tokens[i + 1].type == "inline":
@@ -158,7 +187,7 @@ def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
                         list_lines.append(f"{indent}{marker} {content}")
                     i += 3  # paragraph_open, inline, paragraph_close
                     continue
-                
+
                 elif tok.type == "fence" or tok.type == "code_block":
                     # Code block attached to a list item; render it directly after the bullet.
                     fence_char = "`"
@@ -174,34 +203,34 @@ def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
                     list_lines.append(fence)
                     i += 1
                     continue
-                
+
                 elif tok.type == "bullet_list_close" or tok.type == "ordered_list_close":
                     # End of list
                     i += 1
                     break
-                
+
                 elif tok.type == "bullet_list_open" or tok.type == "ordered_list_open":
                     # Nested list - for now, skip (complex case)
                     # TODO: Handle nested lists properly
                     i += 1
                     continue
-                
+
                 else:
                     i += 1
                     continue
-            
+
             # Add collected list to content
             if list_lines:
                 current_content.append("\n".join(list_lines))
-            
+
             continue
-        
+
         # Skip other token types we don't handle yet
         i += 1
-    
+
     # Flush any remaining content
     flush_content()
-    
+
     return root_children
 
 

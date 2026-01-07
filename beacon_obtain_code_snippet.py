@@ -2290,3 +2290,121 @@ def main(argv: Optional[List[str]] = None) -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     main()
+
+
+def get_snippet_for_md_path(
+    file_path: str,
+    md_path_lines: List[str],
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    """Resolve snippet for a Markdown heading node identified by its MD_PATH.
+
+    md_path_lines should be the sequence of heading lines recorded in the
+    Workflowy note, e.g.::
+
+        MD_PATH:
+        # Top
+        ## Section
+        ### Subsection
+        ---
+
+    The caller must strip the leading ``MD_PATH:`` line and terminating ``---``
+    separator and pass only the actual heading lines.
+
+    Contract:
+    - If exactly one heading in the file has a computed path whose (level,text)
+      chain matches ``md_path_lines`` exactly, return a snippet spanning the
+      lines from that heading down to just before the next heading of the same
+      or higher level, with standard ``context`` padding.
+    - If zero or multiple matches, raise RuntimeError so the MCP layer can
+      surface a clear error (we do *not* guess).
+    """
+    import re
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+
+    # Parse desired MD_PATH into a list of (level, text) tuples.
+    desired: List[tuple[int, str]] = []
+    for raw in md_path_lines:
+        s = (raw or "").strip()
+        if not s:
+            continue
+        m = re.match(r"^(#{1,6})\s*(.*)$", s)
+        if not m:
+            raise RuntimeError(f"Invalid MD_PATH component {raw!r} in note")
+        level = len(m.group(1))
+        text = (m.group(2) or "").strip()
+        desired.append((level, text))
+
+    if not desired:
+        raise RuntimeError("Empty MD_PATH for Markdown snippet resolution")
+
+    target_depth = len(desired)
+    target_level = desired[-1][0]
+
+    # Scan headings in the actual Markdown file, tracking their hierarchical
+    # paths using the same semantics Cartographer uses when building the
+    # Workflowy tree (nearest preceding heading with a lower level is parent).
+    candidates: List[tuple[int, int]] = []  # (heading_line, heading_level)
+    stack: List[tuple[int, str]] = []  # (level, text)
+
+    for lineno, raw in enumerate(lines, start=1):
+        stripped = raw.strip()
+        m = re.match(r"^(#{1,6})\s*(.*)$", stripped)
+        if not m:
+            continue
+        level = len(m.group(1))
+        text = (m.group(2) or "").strip()
+
+        # Maintain heading stack
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, text))
+
+        if len(stack) != target_depth:
+            continue
+
+        # Compare (level, text) chain
+        if all(stack[i][0] == desired[i][0] and stack[i][1] == desired[i][1] for i in range(target_depth)):
+            candidates.append((lineno, level))
+
+    if not candidates:
+        raise RuntimeError(
+            f"MD_PATH {md_path_lines!r} not found in Markdown file {file_path!r}"
+        )
+    if len(candidates) > 1:
+        raise RuntimeError(
+            f"MD_PATH {md_path_lines!r} is ambiguous in Markdown file {file_path!r} "
+            f"({len(candidates)} matches); refresh Cartographer mapping."
+        )
+
+    heading_line, heading_level = candidates[0]
+
+    # Core span: from this heading down to just before the next heading of the
+    # same or higher level.
+    core_start = heading_line
+    core_end = n
+    for j in range(heading_line + 1, n + 1):
+        s = lines[j - 1].strip()
+        m = re.match(r"^(#{1,6})\s*(.*)$", s)
+        if not m:
+            continue
+        lvl = len(m.group(1))
+        if lvl <= heading_level:
+            core_end = j - 1
+            break
+
+    if core_end < core_start:
+        core_end = core_start
+
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+
+    metadata = {
+        "resolution_strategy": "md_path_exact",
+        "confidence": 1.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+    return start_line, end_line, lines, core_start, core_end, core_start, metadata
