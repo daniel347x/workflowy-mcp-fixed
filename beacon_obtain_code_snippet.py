@@ -110,6 +110,243 @@ def _read_lines(path: str) -> List[str]:
         return f.read().splitlines()
 
 
+def _python_resolve_ast_node_heuristic(
+    file_path: str,
+    node_name: str,
+    parent_names: List[str],
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    """Resolve a non-beacon Python AST node to a snippet using AST qualname matching.
+
+    Returns: (start, end, lines, core_start, core_end, beacon_line, metadata)
+
+    Where metadata includes:
+    - resolution_strategy: "ast_qualname_exact" | "ast_qualname_prefix" | "ast_simple_name" | "token_search"
+    - confidence: 0.0-1.0
+    - ambiguity: "none" | "auto_resolved" | "disambiguation_needed"
+    - candidates: list of dicts (when ambiguous)
+    """
+
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+
+    try:
+        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse Python AST outline for {file_path}: {e}") from e
+
+    metadata: dict = {
+        "resolution_strategy": None,
+        "confidence": 0.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+
+    def _normalize_core_name(raw: str) -> str:
+        name = (raw or "").strip()
+        if not name:
+            return ""
+        # Strip leading non-alphanumeric decoration / emoji.
+        i = 0
+        while i < len(name) and not (name[i].isalnum() or name[i] in {"_", "$"}):
+            i += 1
+        name = name[i:].lstrip()
+        # Drop trailing hashtag tags (e.g. "#model-forward").
+        tokens = name.split()
+        while tokens and tokens[-1].startswith("#"):
+            tokens.pop()
+        return " ".join(tokens).strip()
+
+    def _classify_python_node_name(raw: str) -> Tuple[str | None, str | None]:
+        core = _normalize_core_name(raw)
+        if not core:
+            return None, None
+        lower = core.lower()
+        # class Foo
+        if lower.startswith("class "):
+            rest = core[len("class ") :].strip()
+            simple = rest.split("(", 1)[0].strip() or None
+            return simple, "class"
+        # async def foo(...)
+        if lower.startswith("async def "):
+            rest = core[len("async def ") :].strip()
+            simple = rest.split("(", 1)[0].strip() or None
+            return simple, "async_function"
+        # def foo(...)
+        if lower.startswith("def "):
+            rest = core[len("def ") :].strip()
+            simple = rest.split("(", 1)[0].strip() or None
+            return simple, "function"
+        # Fallback: treat as function if it looks like name(...)
+        if "(" in core and ")" in core:
+            simple = core.split("(", 1)[0].strip() or None
+            return simple, "function"
+        # Constant / attribute style (e.g. CONSTANT_NAME)
+        return core.split()[0].strip(), "const"
+
+    def _extract_parent_classes(raw_parents: List[str]) -> List[str]:
+        classes: List[str] = []
+        for raw in raw_parents:
+            core = _normalize_core_name(raw)
+            if not core:
+                continue
+            lower = core.lower()
+            if lower.startswith("class "):
+                rest = core[len("class ") :].strip()
+                cname = rest.split("(", 1)[0].strip()
+                if cname:
+                    classes.append(cname)
+        return classes
+
+    simple_name, expected_type = _classify_python_node_name(node_name)
+    parent_classes = _extract_parent_classes(parent_names or [])
+
+    qual_parts: List[str] = []
+    if parent_classes:
+        qual_parts.extend(parent_classes)
+    if simple_name:
+        qual_parts.append(simple_name)
+    intended_qualname = ".".join(qual_parts) if qual_parts else None
+
+    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
+        for n in nodes or []:
+            if isinstance(n, dict):
+                yield n
+                for ch in n.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+
+    ast_candidates: List[dict] = []
+    for node in _iter_nodes(outline_nodes):
+        qual = node.get("ast_qualname")
+        if not isinstance(qual, str) or not qual:
+            continue
+        node_type = node.get("ast_type")
+        start = node.get("orig_lineno_start_unused")
+        end = node.get("orig_lineno_end_unused") or start
+        if not isinstance(start, int) or start <= 0:
+            continue
+        if not isinstance(end, int) or end < start:
+            end = start
+        simple = qual.split(".")[-1]
+        parents = qual.split(".")[:-1]
+        ast_candidates.append(
+            {
+                "node": node,
+                "ast_qualname": qual,
+                "ast_type": node_type,
+                "simple_name": simple,
+                "parent_parts": parents,
+                "start": start,
+                "end": end,
+            }
+        )
+
+    def _build_candidates_list(cands: List[dict]) -> List[dict]:
+        out: List[dict] = []
+        for c in cands:
+            out.append(
+                {
+                    "ast_qualname": c.get("ast_qualname"),
+                    "ast_type": c.get("ast_type"),
+                    "start_line": c.get("start"),
+                    "end_line": c.get("end"),
+                }
+            )
+        return out
+
+    def _make_snippet(
+        cand: dict,
+        strategy: str,
+        confidence: float,
+        ambiguity: str,
+        all_candidates: List[dict] | None = None,
+    ) -> Tuple[int, int, List[str], int, int, int, dict]:
+        core_start = int(cand["start"])
+        core_end = int(cand["end"])
+        start_line = max(1, core_start - context)
+        end_line = min(n, core_end + context)
+        meta = {
+            "resolution_strategy": strategy,
+            "confidence": confidence,
+            "ambiguity": ambiguity,
+            "candidates": _build_candidates_list(all_candidates) if all_candidates else None,
+        }
+        return start_line, end_line, lines, core_start, core_end, core_start, meta
+
+    # Stage 1: exact ast_qualname match
+    if intended_qualname:
+        exact = [
+            c
+            for c in ast_candidates
+            if c["ast_qualname"] == intended_qualname
+            and (expected_type is None or c.get("ast_type") == expected_type)
+        ]
+        if exact:
+            ambiguity = "none" if len(exact) == 1 else "auto_resolved"
+            return _make_snippet(exact[0], "ast_qualname_exact", 1.0, ambiguity, exact)
+
+    # Stage 2: parent class chain prefix + simple name
+    if simple_name and parent_classes:
+        prefix_matches: List[dict] = []
+        for c in ast_candidates:
+            if c["simple_name"] != simple_name:
+                continue
+            parents = c["parent_parts"] or []
+            if len(parents) >= len(parent_classes) and parents[-len(parent_classes) :] == parent_classes:
+                if expected_type is None or c.get("ast_type") == expected_type:
+                    prefix_matches.append(c)
+        if prefix_matches:
+            ambiguity = "none" if len(prefix_matches) == 1 else "auto_resolved"
+            return _make_snippet(prefix_matches[0], "ast_qualname_prefix", 0.9, ambiguity, prefix_matches)
+
+    # Stage 3: simple-name-only match within same ast_type
+    if simple_name:
+        simple_matches: List[dict] = []
+        for c in ast_candidates:
+            if c["simple_name"] != simple_name:
+                continue
+            if expected_type is not None and c.get("ast_type") != expected_type:
+                continue
+            simple_matches.append(c)
+        if simple_matches:
+            ambiguity = "none" if len(simple_matches) == 1 else "auto_resolved"
+            return _make_snippet(simple_matches[0], "ast_simple_name", 0.7, ambiguity, simple_matches)
+
+    # Final fallback: token search based on node_name
+    search_text = _normalize_core_name(node_name)
+    if "(" in search_text:
+        search_text = search_text.split("(", 1)[0].strip()
+    if not search_text:
+        raise RuntimeError(
+            "Cannot derive search token from node name %r for AST resolution" % (node_name,)
+        )
+
+    anchor: int | None = None
+    for idx, line in enumerate(lines, start=1):
+        if search_text in line:
+            anchor = idx
+            break
+
+    if anchor is None:
+        raise RuntimeError(
+            f"Search token {search_text!r} not found in file {file_path!r}"
+        )
+
+    core_start = anchor
+    core_end = anchor
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+    metadata["resolution_strategy"] = "token_search"
+    metadata["confidence"] = 0.4
+    metadata["ambiguity"] = "none"
+    metadata["candidates"] = None
+    return start_line, end_line, lines, core_start, core_end, core_start, metadata
+
+
 # ---------------------------------------------------------------------------
 # Python beacon snippet extraction
 # ---------------------------------------------------------------------------
@@ -1309,25 +1546,40 @@ def get_snippet_data(
     file_path: str,
     beacon_id: str,
     context: int,
-) -> Tuple[int, int, List[str], int, int, int]:
-    """Return (start_line, end_line, lines, core_start, core_end, beacon_line).
+    node_name: str | None = None,
+    parent_names: List[str] | None = None,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    """Return (start_line, end_line, lines, core_start, core_end, beacon_line, metadata).
 
     - `start_line` / `end_line` include the requested `context` lines around
       the core region.
     - `core_start` / `core_end` mark the minimal span that always contains the
       associated beacon comment block (if any) and the relevant code span.
     - `beacon_line` is the exact line of the @beacon[...] tag itself (for
-      editor navigation independent of context/core).
+      editor navigation independent of context/core) *or* the primary anchor
+      line for non-beacon AST nodes.
+    - `metadata` describes how the snippet was resolved (AST vs token search).
 
-    Callers that only care about the visible window can ignore `core_*` and
-    `beacon_line`. Callers that want to drive an editor to the beacon tag
-    line (e.g., Windsurf `-g file:line`) should use `beacon_line`.
+    Callers that only care about the visible window can ignore `core_*`,
+    `beacon_line`, and `metadata`. Callers that want to drive an editor to the
+    beacon tag line (e.g., Windsurf `-g file:line`) should use `beacon_line`.
     """
     file_path = os.path.abspath(file_path)
     ext = Path(file_path).suffix.lower()
 
     if not os.path.isfile(file_path):
         raise RuntimeError(f"Source file not found: {file_path}")
+
+    # Non-beacon Python AST node path: node_name provided → use AST-first
+    # resolver. For beacon-based lookups we call this function without
+    # node_name, which triggers the original beacon-centric behavior.
+    if ext == ".py" and node_name is not None:
+        return _python_resolve_ast_node_heuristic(
+            file_path,
+            node_name,
+            parent_names or [],
+            context,
+        )
 
     if ext == ".py":
         start, end, lines, core_start, core_end, beacon_line = _python_snippet_for_beacon(
@@ -1348,12 +1600,20 @@ def get_snippet_data(
     else:
         raise RuntimeError(f"Unsupported file extension for beacon snippets: {ext}")
 
-    return start, end, lines, core_start, core_end, beacon_line
+    # Legacy beacon path: wrap in metadata for callers that expect the
+    # enriched return shape.
+    metadata = {
+        "resolution_strategy": "beacon",
+        "confidence": 1.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+    return start, end, lines, core_start, core_end, beacon_line, metadata
 
 
 def extract_snippet(file_path: str, beacon_id: str, context: int) -> None:
     """CLI wrapper: resolve snippet and print with line numbers for humans."""
-    start, end, lines, _core_start, _core_end, _beacon_line = get_snippet_data(
+    start, end, lines, _core_start, _core_end, _beacon_line, _meta = get_snippet_data(
         file_path, beacon_id, context
     )
     _print_snippet(os.path.abspath(file_path), beacon_id, start, end, lines)

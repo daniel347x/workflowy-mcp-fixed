@@ -740,14 +740,28 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     f"Failed to obtain snippet for beacon id {beacon_id!r} in file {file_path!r}: {e}"
                 ) from e
 
-            # Unpack the 6-tuple: (start, end, lines, core_start, core_end, beacon_line)
-            if isinstance(snippet_result, tuple) and len(snippet_result) == 6:
+            # Unpack the tuple from helper: prefer enriched 7-tuple but support legacy 6-tuple.
+            if isinstance(snippet_result, tuple) and len(snippet_result) == 7:
+                start, end, lines, core_start, core_end, beacon_line, metadata = snippet_result
+            elif isinstance(snippet_result, tuple) and len(snippet_result) == 6:
                 start, end, lines, core_start, core_end, beacon_line = snippet_result
+                metadata = {
+                    "resolution_strategy": "beacon",
+                    "confidence": 1.0,
+                    "ambiguity": "none",
+                    "candidates": None,
+                }
             else:
                 # Legacy fallback (shouldn't happen with updated helper)
                 start, end, lines = snippet_result[:3]  # type: ignore[misc]
                 core_start, core_end = start, end
                 beacon_line = start
+                metadata = {
+                    "resolution_strategy": "beacon",
+                    "confidence": 1.0,
+                    "ambiguity": "none",
+                    "candidates": None,
+                }
 
             snippet_text = "\n".join(lines[start - 1 : end]) if lines else ""
             return {
@@ -762,6 +776,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "core_end_line": core_end,
                 "beacon_line": beacon_line,
                 "snippet": snippet_text,
+                "resolution_strategy": metadata.get("resolution_strategy"),
+                "confidence": metadata.get("confidence"),
+                "ambiguity": metadata.get("ambiguity"),
+                "candidates": metadata.get("candidates"),
             }
 
         # Step 4B: Non-beacon Cartographer node – heuristic lookup based on name
@@ -777,6 +795,108 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             % (search_text, beacon_node_id, file_path)
         )
 
+        # Build parent_names chain within the same FILE subtree (root → leaf, excluding the node itself)
+        parent_names: list[str] = []
+        current_id_for_parents: str | None = beacon_node_id
+        visited_for_parents: set[str] = set()
+
+        while current_id_for_parents and current_id_for_parents not in visited_for_parents:
+            visited_for_parents.add(current_id_for_parents)
+            node_for_parent = nodes_by_id.get(current_id_for_parents)
+            if not node_for_parent:
+                break
+
+            n_note = node_for_parent.get("note") or node_for_parent.get("no") or ""
+            # Stop at FILE node (contains 'Path:' in note)
+            if isinstance(n_note, str) and "Path:" in n_note:
+                break
+
+            if current_id_for_parents != beacon_node_id:
+                n_name = str(node_for_parent.get("name") or "").strip()
+                if n_name:
+                    parent_names.append(n_name)
+
+            parent_id_val = node_for_parent.get("parent_id") or node_for_parent.get("parentId")
+            current_id_for_parents = str(parent_id_val) if parent_id_val else None
+
+        parent_names.reverse()
+
+        # For Python files, prefer AST-aware resolution via beacon_obtain_code_snippet
+        ext = Path(file_path).suffix.lower()
+        if ext == ".py":
+            try:
+                import importlib
+
+                client_dir = os.path.dirname(os.path.abspath(__file__))
+                wf_mcp_dir = os.path.dirname(client_dir)
+                mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+                project_root = os.path.dirname(mcp_servers_dir)
+                if project_root not in sys.path:
+                    sys.path.insert(0, project_root)
+
+                bos = importlib.import_module("beacon_obtain_code_snippet")
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(
+                    "Could not import beacon_obtain_code_snippet module for AST-based "
+                    f"resolution; underlying error: {e}"
+                ) from e
+
+            try:
+                snippet_result = bos.get_snippet_data(  # type: ignore[attr-defined]
+                    file_path,
+                    search_text,
+                    context,
+                    node_name=node_name,
+                    parent_names=parent_names,
+                )
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(
+                    f"Failed to obtain AST-based snippet for node {beacon_node_id!r} in file {file_path!r}: {e}"
+                ) from e
+
+            # Unpack 7-tuple from new helper, or fall back gracefully
+            if isinstance(snippet_result, tuple) and len(snippet_result) == 7:
+                start, end, lines, core_start, core_end, beacon_line, metadata = snippet_result
+            elif isinstance(snippet_result, tuple) and len(snippet_result) == 6:
+                start, end, lines, core_start, core_end, beacon_line = snippet_result
+                metadata = {
+                    "resolution_strategy": "beacon_helper_legacy",
+                    "confidence": 0.7,
+                    "ambiguity": "unknown",
+                    "candidates": None,
+                }
+            else:
+                start, end, lines = snippet_result[:3]  # type: ignore[misc]
+                core_start, core_end = start, end
+                beacon_line = start
+                metadata = {
+                    "resolution_strategy": "beacon_helper_legacy",
+                    "confidence": 0.5,
+                    "ambiguity": "unknown",
+                    "candidates": None,
+                }
+
+            snippet_text = "\n".join(lines[start - 1 : end]) if lines else ""
+
+            return {
+                "success": True,
+                "file_path": file_path,
+                "beacon_node_id": beacon_node_id,
+                "beacon_id": search_text,
+                "kind": "node",
+                "start_line": start,
+                "end_line": end,
+                "core_start_line": core_start,
+                "core_end_line": core_end,
+                "beacon_line": beacon_line,
+                "snippet": snippet_text,
+                "resolution_strategy": metadata.get("resolution_strategy"),
+                "confidence": metadata.get("confidence"),
+                "ambiguity": metadata.get("ambiguity"),
+                "candidates": metadata.get("candidates"),
+            }
+
+        # Non-Python: fall back to simple text search heuristic
         try:
             start, end, lines = _heuristic_snippet_for_node(file_path, search_text, context)
         except Exception as e:  # noqa: BLE001
@@ -799,7 +919,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "end_line": end,
             "core_start_line": start,
             "core_end_line": end,
+            "beacon_line": start,
             "snippet": snippet_text,
+            "resolution_strategy": "token_search",
+            "confidence": 0.4,
+            "ambiguity": "unknown",
+            "candidates": None,
         }
 
     async def nexus_scry(
