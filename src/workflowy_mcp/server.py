@@ -694,11 +694,16 @@ async def _maybe_create_ast_beacon_from_tags(
     beacon_id = f"{first_tag}@{suffix}"
     slice_labels = ",".join(tags)
 
+    # Match indentation of the AST node / decorators so the beacon comment
+    # lives in the correct block (inside the class/function), not at column 0.
+    base_line = lines[insert_idx] if 0 <= insert_idx < n_lines else ""
+    indent = base_line[: len(base_line) - len(base_line.lstrip())]
+
     beacon_block = [
-        "# @beacon[",
-        f"#   id={beacon_id},",
-        f"#   slice_labels={slice_labels},",
-        "# ]",
+        f"{indent}# @beacon[",
+        f"{indent}#   id={beacon_id},",
+        f"{indent}#   slice_labels={slice_labels},",
+        f"{indent}# ]",
     ]
 
     new_lines = lines[:insert_idx] + beacon_block + lines[insert_idx:]
