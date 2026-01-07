@@ -2692,3 +2692,354 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "notes_salvaged": notes_salvaged,
             "notes_orphaned": notes_orphaned,
         }
+
+    async def refresh_folder_cartographer_sync(
+        self,
+        folder_node_id: str,
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Multi-file Cartographer sync for a FOLDER subtree.
+
+        Behavior:
+        - Recursively finds all descendant FILE nodes (Cartographer-mapped,
+          i.e. nodes whose note contains a "Path:" line and whose name does
+          not start with the folder emoji) and refreshes each via
+          refresh_file_node_beacons.
+        - Tracks which Paths are present on disk vs missing.
+        - If the folder node itself has a Path: line that points to an
+          existing directory, performs a second pass over the filesystem
+          using the Cartographer whitelist and creates FILE nodes in
+          Workflowy for any on-disk files not represented in the subtree,
+          creating intermediate FOLDER nodes as needed.
+
+        This is effectively a "direct Cartographer sync" for the subtree
+        rooted at folder_node_id, without going through GEM/JEWEL/WEAVE.
+        """
+        logger = _ClientLogger()
+        log_event(
+            f"refresh_folder_cartographer_sync start (folder_node_id={folder_node_id}, dry_run={dry_run})",
+            "BEACON",
+        )
+
+        # 1) Export subtree under the folder root
+        try:
+            raw = await export_nodes_impl(self, folder_node_id)
+        except Exception as e:  # noqa: BLE001
+            raise NetworkError(f"export_nodes failed for {folder_node_id}: {e}") from e
+
+        flat_nodes = raw.get("nodes") or []
+        if not flat_nodes:
+            return {
+                "success": False,
+                "error": f"Folder node {folder_node_id} not found or has empty subtree",
+            }
+
+        # Index nodes and parents
+        node_by_id: dict[str, dict[str, Any]] = {}
+        parent_of: dict[str, str] = {}
+        for n in flat_nodes:
+            nid = n.get("id")
+            if not nid:
+                continue
+            s_nid = str(nid)
+            node_by_id[s_nid] = n
+            pid = n.get("parent_id") or n.get("parentId")
+            if pid:
+                parent_of[s_nid] = str(pid)
+
+        root_node = node_by_id.get(str(folder_node_id))
+        note_text_root = str(root_node.get("note") or "") if root_node else ""
+
+        def _parse_path_from_note(note_str: str) -> str | None:
+            for line in note_str.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("Path:"):
+                    val = stripped.split(":", 1)[1].strip()
+                    return val or None
+            return None
+
+        def _is_folder_node(node: dict[str, Any]) -> bool:
+            name = str(node.get("name") or "").strip()
+            return name.startswith("📂")
+
+        def _canonical_path(path: str) -> str:
+            return os.path.normcase(os.path.normpath(path))
+
+        root_path = _parse_path_from_note(note_text_root) if note_text_root else None
+        if root_path and not os.path.isdir(root_path):
+            log_event(
+                f"refresh_folder_cartographer_sync: root Path=\"{root_path}\" is not a directory; ignoring disk sync",
+                "BEACON",
+            )
+            root_path = None
+
+        # 2) Find descendant FILE nodes and refresh them via refresh_file_node_beacons
+        present_files: set[str] = set()
+        present_paths_raw: dict[str, str] = {}
+        missing_paths: list[str] = []
+        refreshed_count = 0
+        refresh_errors: list[str] = []
+
+        for n in flat_nodes:
+            nid = n.get("id")
+            if not nid:
+                continue
+            s_nid = str(nid)
+            note = n.get("note") or n.get("no") or ""
+            if not isinstance(note, str) or "Path:" not in note:
+                continue
+            # Skip folder nodes; we only treat files here
+            if _is_folder_node(n):
+                continue
+
+            source_path = _parse_path_from_note(str(note))
+            if not source_path:
+                continue
+
+            canonical = _canonical_path(source_path)
+            exists = os.path.isfile(source_path)
+            if exists:
+                present_files.add(canonical)
+                # Prefer first-seen raw path for reporting
+                present_paths_raw.setdefault(canonical, source_path)
+            else:
+                missing_paths.append(source_path)
+
+            # Per-file refresh only when the file exists on disk
+            if not exists:
+                continue
+
+            try:
+                result = await self.refresh_file_node_beacons(
+                    file_node_id=s_nid,
+                    dry_run=dry_run,
+                )
+                if isinstance(result, dict) and result.get("success"):
+                    refreshed_count += 1
+                else:
+                    err_msg = None
+                    if isinstance(result, dict):
+                        err_msg = result.get("error") or result.get("message")
+                    refresh_errors.append(f"{s_nid}: {err_msg or 'unknown error from refresh_file_node_beacons'}")
+            except Exception as e:  # noqa: BLE001
+                refresh_errors.append(f"{s_nid}: {e}")
+
+        # 3) Optional second phase: filesystem scan + creation of missing FILE nodes
+        disk_scan_performed = False
+        disk_files_norm: dict[str, str] = {}
+        only_on_disk_keys: set[str] = set()
+        new_files_created = 0
+        new_folders_created = 0
+
+        cartographer = None
+        project_root: str | None = None
+
+        if not dry_run and root_path:
+            # Determine project_root and import nexus_map_codebase
+            try:
+                import importlib
+
+                client_dir = os.path.dirname(os.path.abspath(__file__))
+                wf_mcp_dir = os.path.dirname(client_dir)
+                mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+                project_root = os.path.dirname(mcp_servers_dir)
+                if project_root not in sys.path:
+                    sys.path.insert(0, project_root)
+                cartographer = importlib.import_module("nexus_map_codebase")
+            except Exception as e:  # noqa: BLE001
+                log_event(
+                    f"refresh_folder_cartographer_sync: failed to import nexus_map_codebase: {e}",
+                    "BEACON",
+                )
+                cartographer = None
+
+            # Load Cartographer whitelist (optional)
+            include_exts: set[str] | None = None
+            if project_root is not None:
+                try:
+                    wl_path = os.path.join(project_root, "Components", "cartographer_whitelist.txt")
+                    if os.path.isfile(wl_path):
+                        exts: set[str] = set()
+                        with open(wl_path, "r", encoding="utf-8") as wf:
+                            for line in wf:
+                                line = line.strip()
+                                if not line or line.startswith("#"):
+                                    continue
+                                if not line.startswith("."):
+                                    line = "." + line
+                                exts.add(line.lower())
+                        if exts:
+                            include_exts = exts
+                except Exception as e:  # noqa: BLE001
+                    log_event(
+                        f"refresh_folder_cartographer_sync: failed to load Cartographer whitelist: {e}",
+                        "BEACON",
+                    )
+                    include_exts = None
+
+            # Walk filesystem under root_path and collect files matching whitelist
+            try:
+                for dirpath, _dirnames, filenames in os.walk(root_path):
+                    for fname in filenames:
+                        _base, ext = os.path.splitext(fname)
+                        ext = ext.lower()
+                        if include_exts and ext not in include_exts:
+                            continue
+                        full_path = os.path.join(dirpath, fname)
+                        key = _canonical_path(full_path)
+                        disk_files_norm[key] = full_path
+                disk_scan_performed = True
+            except Exception as e:  # noqa: BLE001
+                log_event(
+                    f"refresh_folder_cartographer_sync: os.walk failed under {root_path}: {e}",
+                    "BEACON",
+                )
+
+            if disk_scan_performed and cartographer is not None:
+                # Compute set difference: files on disk that are not represented as FILE nodes
+                disk_keys = set(disk_files_norm.keys())
+                only_on_disk_keys = disk_keys - present_files
+
+                # Build mapping from relative folder paths to Workflowy folder node IDs
+                folder_node_by_relpath: dict[str, str] = {"": str(folder_node_id)}
+
+                def _compute_folder_relpath(nid: str) -> str | None:
+                    segments: list[str] = []
+                    current = nid
+                    visited_ids: set[str] = set()
+                    while current and current not in visited_ids:
+                        visited_ids.add(current)
+                        if current == str(folder_node_id):
+                            break
+                        node_local = node_by_id.get(current)
+                        if not node_local:
+                            return None
+                        if _is_folder_node(node_local):
+                            raw_name = str(node_local.get("name") or "")
+                            txt = raw_name
+                            while txt and not txt[0].isalnum():
+                                txt = txt[1:]
+                            folder_name = txt.strip() or raw_name.strip()
+                            segments.append(folder_name)
+                        parent_id_local = parent_of.get(current)
+                        if not parent_id_local:
+                            return None
+                        current = parent_id_local
+                    segments.reverse()
+                    if not segments:
+                        return ""
+                    return os.path.join(*segments)
+
+                for nid, node_local in node_by_id.items():
+                    if not _is_folder_node(node_local):
+                        continue
+                    rel = _compute_folder_relpath(nid)
+                    if rel is not None and rel not in folder_node_by_relpath:
+                        folder_node_by_relpath[rel] = nid
+
+                async def _create_subtree(parent_uuid: str, node: dict[str, Any]) -> None:
+                    nonlocal new_files_created
+                    name = str(node.get("name") or "").strip() or "..."
+                    note = node.get("note")
+                    data = node.get("data") or {}
+                    layout_mode = data.get("layoutMode")
+
+                    req = NodeCreateRequest(
+                        name=name,
+                        parent_id=parent_uuid,
+                        note=note,
+                        layoutMode=layout_mode,
+                        position="bottom",
+                    )
+                    wf_node = await self.create_node(req, _internal_call=True)
+
+                    for child in node.get("children") or []:
+                        await _create_subtree(wf_node.id, child)
+
+                # Create missing FILE nodes and any required intermediate FOLDER nodes
+                for key in sorted(only_on_disk_keys):
+                    file_path = disk_files_norm.get(key)
+                    if not file_path:
+                        continue
+                    try:
+                        rel_path = os.path.relpath(file_path, root_path)
+                    except ValueError:
+                        # On Windows, relpath may fail if drives differ; skip in that case
+                        continue
+                    parts = [p for p in rel_path.split(os.sep) if p]
+                    if not parts:
+                        continue
+                    dir_parts = parts[:-1]
+
+                    parent_uuid = str(folder_node_id)
+                    current_rel = ""
+                    for seg in dir_parts:
+                        next_rel = seg if not current_rel else os.path.join(current_rel, seg)
+                        folder_uuid = folder_node_by_relpath.get(next_rel)
+                        if not folder_uuid:
+                            folder_path = os.path.join(root_path, next_rel)
+                            try:
+                                folder_note = cartographer.format_file_note(  # type: ignore[attr-defined]
+                                    folder_path,
+                                    line_count=None,
+                                    sha1=None,
+                                )
+                            except Exception:
+                                folder_note = f"Path: {folder_path}"
+                            req = NodeCreateRequest(
+                                name=f"📂 {seg}",
+                                parent_id=parent_uuid,
+                                note=folder_note,
+                                layoutMode=None,
+                                position="bottom",
+                            )
+                            created_folder = await self.create_node(req, _internal_call=True)
+                            folder_uuid = created_folder.id
+                            folder_node_by_relpath[next_rel] = folder_uuid
+                            new_folders_created += 1
+                        parent_uuid = folder_uuid
+                        current_rel = next_rel
+
+                    # Now create the FILE subtree under parent_uuid using Cartographer
+                    try:
+                        file_map = cartographer.map_codebase(file_path)  # type: ignore[attr-defined]
+                    except Exception as e:  # noqa: BLE001
+                        log_event(
+                            f"refresh_folder_cartographer_sync: map_codebase failed for {file_path}: {e}",
+                            "BEACON",
+                        )
+                        continue
+
+                    await _create_subtree(parent_uuid, file_map)
+                    new_files_created += 1
+
+                # Mark nodes-export cache dirty for the folder subtree
+                try:
+                    self._mark_nodes_export_dirty([str(folder_node_id)])
+                except Exception:
+                    pass
+
+        log_event(
+            "refresh_folder_cartographer_sync complete for "
+            f"{folder_node_id} (refreshed_files={refreshed_count}, new_files={new_files_created}, "
+            f"new_folders={new_folders_created})",
+            "BEACON",
+        )
+
+        return {
+            "success": True,
+            "folder_node_id": folder_node_id,
+            "root_path": root_path,
+            "dry_run": dry_run,
+            "refreshed_file_nodes": refreshed_count,
+            "refresh_errors": refresh_errors,
+            "present_paths": sorted(present_paths_raw.values()),
+            "missing_paths": missing_paths,
+            "disk_scan_performed": disk_scan_performed,
+            "disk_root": root_path if disk_scan_performed else None,
+            "disk_files_considered": len(disk_files_norm) if disk_scan_performed else 0,
+            "disk_files_only_on_disk": len(only_on_disk_keys) if disk_scan_performed else 0,
+            "new_files_created": new_files_created,
+            "new_folders_created": new_folders_created,
+        }

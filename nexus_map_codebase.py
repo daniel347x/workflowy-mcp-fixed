@@ -1482,10 +1482,12 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
                 
                 if os.path.isdir(full_path):
                     children = scan_dir(full_path)
-                    if children: # Only add non-empty directories
+                    if children:  # Only add non-empty directories
+                        folder_note = format_file_note(full_path)
                         nodes.append({
                             "name": f"{EMOJI_FOLDER} {item}",
-                            "children": children
+                            "note": folder_note,
+                            "children": children,
                         })
                 
                 elif os.path.isfile(full_path):
