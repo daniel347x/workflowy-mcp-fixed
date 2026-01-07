@@ -559,34 +559,76 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         beacon_node_id: str,
         context: int = 10,
     ) -> dict[str, Any]:
-        """Resolve a beacon UUID to (file_path, beacon_id, kind) and snippet.
+        """Resolve a Workflowy UUID to (file_path, beacon_id/kind or heuristic) and snippet.
 
-        This uses the cached /nodes-export snapshot to locate:
-        - the beacon node (note contains BEACON (AST|SPAN) with id: ... and kind: ...), and
-        - the ancestor FILE node whose note starts with "Path: ...".
+        Primary (beacon) mode:
+        - beacon_node_id points to a Cartographer beacon node whose note contains
+          "BEACON (AST|SPAN)" with an `id:` (and optional `kind:`) line.
+        - We locate the enclosing FILE node (note starts with "Path: ...").
+        - Delegate to beacon_obtain_code_snippet.get_snippet_data(...) which
+          understands language-specific beacon semantics (AST vs span, etc.).
 
-        Once (file_path, beacon_id) are known, it delegates to the
-        beacon_obtain_code_snippet.get_snippet_data(...) helper to
-        compute (start_line, end_line, lines) and returns a raw snippet
-        (no prepended line numbers) plus line bounds.
+        Extended (non-beacon Cartographer node) mode:
+        - If the node's note does *not* contain beacon metadata, we still
+          resolve the enclosing FILE node via the same Path: heuristic.
+        - We then derive a simple search token from the node's *name* by:
+            * stripping trailing tags (e.g. "#model-forward")
+            * stripping leading non-alphanumeric decoration/emoji
+        - We search for that token in the source file and return a context
+          window around the first matching line.
 
-        Returns a dict:
-            {
-              "success": True,
-              "file_path": str,
-              "beacon_node_id": str,
-              "beacon_id": str,
-              "kind": "ast" | "span" | None,
-              "start_line": int,
-              "end_line": int,
-              "snippet": str,
-            }
-
-        If any step fails (missing beacon, missing Path:, import error,
-        snippet failure), a NetworkError is raised with a descriptive
-        message for the MCP tool layer to surface.
+        This allows the MCP tool to return source for *any* Cartographer node
+        (AST or span), not just beacon nodes.
         """
         logger = _ClientLogger()
+
+        # Helper: derive a quick-and-dirty search token from a Cartographer node name.
+        def _derive_search_text_from_node_name(raw_name: str) -> str:
+            if not raw_name:
+                return ""
+            name = str(raw_name).strip()
+            if not name:
+                return ""
+
+            # Drop trailing tags like "#model-forward" or "#docs-intro".
+            tokens = name.split()
+            while tokens and (str(tokens[-1]).startswith("#") or str(tokens[-1]).startswith("🔱")):
+                tokens.pop()
+            core = " ".join(tokens).strip()
+            if not core:
+                core = name  # fall back to full name if everything looked like a tag
+
+            # Strip leading non-alphanumeric / decoration (emoji, bullets, etc.).
+            i = 0
+            while i < len(core) and not (core[i].isalnum() or core[i] in {"_", "$"}):
+                i += 1
+            core = core[i:].lstrip()
+            return core
+
+        # Helper: heuristic snippet around first occurrence of search_text.
+        def _heuristic_snippet_for_node(file_path: str, search_text: str, ctx: int) -> tuple[int, int, list[str]]:
+            if not search_text:
+                raise RuntimeError("Empty search text for heuristic snippet lookup")
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    lines_local = f.read().splitlines()
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"Failed to read source file {file_path!r}: {exc}") from exc
+
+            anchor: int | None = None
+            for idx, line in enumerate(lines_local, start=1):
+                if search_text in line:
+                    anchor = idx
+                    break
+
+            if anchor is None:
+                raise RuntimeError(
+                    f"Search token {search_text!r} not found in file {file_path!r}"
+                )
+
+            lo = max(1, anchor - ctx)
+            hi = min(len(lines_local), anchor + ctx)
+            return lo, hi, lines_local
 
         # Step 1: Load /nodes-export snapshot (cached if available)
         raw = await export_nodes_impl(self, node_id=None, use_cache=True, force_refresh=False)
@@ -595,7 +637,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             str(n.get("id")): n for n in all_nodes if n.get("id")
         }
 
-        # If beacon not found, try one forced refresh before failing
+        # If node not found, try one forced refresh before failing
         if beacon_node_id not in nodes_by_id:
             logger.info(
                 f"beacon_get_code_snippet: {beacon_node_id} not in cache; refreshing /nodes-export"
@@ -607,26 +649,25 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         beacon_node = nodes_by_id.get(beacon_node_id)
         if not beacon_node:
             raise NetworkError(
-                f"Beacon node {beacon_node_id!r} not found in /nodes-export snapshot"
+                f"Node {beacon_node_id!r} not found in /nodes-export snapshot"
             )
 
-        # Step 2: Parse beacon note for id and kind
+        node_name = str(beacon_node.get("name") or "").strip()
+
+        # Step 2: Parse beacon note for id and kind (if present)
         note = beacon_node.get("note") or beacon_node.get("no") or ""
         beacon_id: str | None = None
         kind: str | None = None
-        if isinstance(note, str):
+        has_beacon_metadata = False
+        if isinstance(note, str) and ("BEACON (" in note or "@beacon[" in note):
             for line in note.splitlines():
                 stripped = line.strip()
                 if stripped.startswith("id:"):
                     beacon_id = stripped.split(":", 1)[1].strip()
                 elif stripped.startswith("kind:"):
                     kind = stripped.split(":", 1)[1].strip()
-
-        if not beacon_id:
-            raise NetworkError(
-                f"Beacon node {beacon_node_id!r} has no 'id:' line in note; "
-                "cannot determine beacon id"
-            )
+            if beacon_id:
+                has_beacon_metadata = True
 
         # Step 3: Walk ancestors to find FILE node with Path: ... in its note
         current_id = beacon_node_id
@@ -642,7 +683,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             n_note = node.get("note") or node.get("no") or ""
             if isinstance(n_note, str) and "Path:" in n_note:
                 # Heuristic: FILE nodes created by Cartographer store the
-                # local path on the first line as "Path: E:\...".
+                # local path on the first line as "Path: E:\\...".
                 file_node = node
                 break
 
@@ -651,7 +692,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         if not file_node:
             raise NetworkError(
-                f"Could not find ancestor FILE node with 'Path:' note for beacon {beacon_node_id!r}"
+                "Could not find ancestor FILE node with 'Path:' note for "
+                f"node {beacon_node_id!r}"
             )
 
         file_note = file_node.get("note") or file_node.get("no") or ""
@@ -668,33 +710,79 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 f"Ancestor FILE node for {beacon_node_id!r} is missing a 'Path:' line"
             )
 
-        # Step 4: Delegate to beacon_obtain_code_snippet.get_snippet_data
+        # Step 4A: Beacon-aware snippet (AST/span) using helper module
+        if has_beacon_metadata and beacon_id:
+            try:
+                import importlib
+
+                # Resolve project_root similarly to refresh_file_node_beacons so that
+                # beacon_obtain_code_snippet.py can live at the project root alongside
+                # nexus_map_codebase.py.
+                client_dir = os.path.dirname(os.path.abspath(__file__))
+                wf_mcp_dir = os.path.dirname(client_dir)
+                mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+                project_root = os.path.dirname(mcp_servers_dir)
+                if project_root not in sys.path:
+                    sys.path.insert(0, project_root)
+
+                bos = importlib.import_module("beacon_obtain_code_snippet")
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(
+                    "Could not import beacon_obtain_code_snippet module; "
+                    "ensure it resides at the project root alongside nexus_map_codebase.py. "
+                    f"Underlying error: {e}"
+                ) from e
+
+            try:
+                snippet_result = bos.get_snippet_data(file_path, beacon_id, context)  # type: ignore[attr-defined]
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(
+                    f"Failed to obtain snippet for beacon id {beacon_id!r} in file {file_path!r}: {e}"
+                ) from e
+
+            # Unpack the 6-tuple: (start, end, lines, core_start, core_end, beacon_line)
+            if isinstance(snippet_result, tuple) and len(snippet_result) == 6:
+                start, end, lines, core_start, core_end, beacon_line = snippet_result
+            else:
+                # Legacy fallback (shouldn't happen with updated helper)
+                start, end, lines = snippet_result[:3]  # type: ignore[misc]
+                core_start, core_end = start, end
+                beacon_line = start
+
+            snippet_text = "\n".join(lines[start - 1 : end]) if lines else ""
+            return {
+                "success": True,
+                "file_path": file_path,
+                "beacon_node_id": beacon_node_id,
+                "beacon_id": beacon_id,
+                "kind": kind,
+                "start_line": start,
+                "end_line": end,
+                "core_start_line": core_start,
+                "core_end_line": core_end,
+                "beacon_line": beacon_line,
+                "snippet": snippet_text,
+            }
+
+        # Step 4B: Non-beacon Cartographer node – heuristic lookup based on name
+        search_text = _derive_search_text_from_node_name(node_name)
+        if not search_text:
+            raise NetworkError(
+                "Node {nid!r} has no beacon metadata and its name did not yield a "
+                "usable search token".format(nid=beacon_node_id)
+            )
+
+        logger.info(
+            "beacon_get_code_snippet: using heuristic search token %r for node %r in %r"
+            % (search_text, beacon_node_id, file_path)
+        )
+
         try:
-            import importlib
-
-            # Resolve project_root similarly to refresh_file_node_beacons so that
-            # beacon_obtain_code_snippet.py can live at the project root alongside
-            # nexus_map_codebase.py.
-            client_dir = os.path.dirname(os.path.abspath(__file__))
-            wf_mcp_dir = os.path.dirname(client_dir)
-            mcp_servers_dir = os.path.dirname(wf_mcp_dir)
-            project_root = os.path.dirname(mcp_servers_dir)
-            if project_root not in sys.path:
-                sys.path.insert(0, project_root)
-
-            bos = importlib.import_module("beacon_obtain_code_snippet")
+            start, end, lines = _heuristic_snippet_for_node(file_path, search_text, context)
         except Exception as e:  # noqa: BLE001
             raise NetworkError(
-                "Could not import beacon_obtain_code_snippet module; "
-                "ensure it resides at the project root alongside nexus_map_codebase.py. "
-                f"Underlying error: {e}"
-            ) from e
-
-        try:
-            start, end, lines = bos.get_snippet_data(file_path, beacon_id, context)  # type: ignore[attr-defined]
-        except Exception as e:  # noqa: BLE001
-            raise NetworkError(
-                f"Failed to obtain snippet for beacon id {beacon_id!r} in file {file_path!r}: {e}"
+                f"Failed to locate snippet for node {beacon_node_id!r} in file {file_path!r} "
+                f"using search token {search_text!r}: {e}"
             ) from e
 
         snippet_text = "\n".join(lines[start - 1 : end]) if lines else ""
@@ -703,10 +791,14 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "success": True,
             "file_path": file_path,
             "beacon_node_id": beacon_node_id,
-            "beacon_id": beacon_id,
-            "kind": kind,
+            # For non-beacon nodes, expose the search token as a pseudo-id and
+            # mark kind='node' so callers can distinguish from true beacons.
+            "beacon_id": search_text,
+            "kind": "node",
             "start_line": start,
             "end_line": end,
+            "core_start_line": start,
+            "core_end_line": end,
             "snippet": snippet_text,
         }
 

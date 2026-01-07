@@ -627,9 +627,16 @@ async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None
         snippet_result = await client.beacon_get_code_snippet(beacon_node_id=node_id, context=10)
         if isinstance(snippet_result, dict) and snippet_result.get("success"):
             file_path = snippet_result.get("file_path")
-            start_line = snippet_result.get("start_line") or snippet_result.get("end_line")
-            if isinstance(start_line, int) and start_line > 0:
-                line_number = start_line
+            # Use beacon_line (the @beacon tag line) for direct navigation.
+            # This points to the exact beacon tag, independent of context/core.
+            beacon_line = snippet_result.get("beacon_line")
+            if isinstance(beacon_line, int) and beacon_line > 0:
+                line_number = beacon_line
+            else:
+                # Fallback to start_line if beacon_line unavailable (legacy/non-beacon)
+                start_line = snippet_result.get("start_line") or snippet_result.get("end_line")
+                if isinstance(start_line, int) and start_line > 0:
+                    line_number = start_line
             beacon_mode = True
     except Exception as e:  # noqa: BLE001
         log_event(
