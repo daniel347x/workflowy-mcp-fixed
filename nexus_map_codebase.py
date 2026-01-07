@@ -30,6 +30,19 @@ EMOJI_CONST = "💎"
 # Debug flags (controlled via environment variables)
 DEBUG_MD_BEACONS = bool(os.environ.get("CARTOGRAPHER_MD_BEACONS"))
 
+
+def _get_line_count(path: str) -> Optional[int]:
+    """Return number of lines in a text file, or None on error.
+
+    Used to annotate FILE nodes with LINE COUNT in their Workflowy notes.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return sum(1 for _ in f)
+    except Exception:
+        return None
+
+
 # --- Parsers ---
 
 def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
@@ -1463,16 +1476,20 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
                         continue
                         
                     # Dispatch
+                    line_count: Optional[int] = None
                     if ext == '.py':
                         icon = EMOJI_PYTHON
                         children = parse_file_outline(full_path)
+                        line_count = _get_line_count(full_path)
                     elif ext == '.md':
                         icon = EMOJI_MARKDOWN
                         children = parse_markdown_structure(full_path)
+                        line_count = _get_line_count(full_path)
                     elif ext == '.sql':
                         icon = EMOJI_SQL
                         with open(full_path, 'r', encoding='utf-8') as f:
                             sql_lines = f.read().splitlines()
+                        line_count = len(sql_lines)
                         children: List[Dict[str, Any]] = []
                         sql_beacons = parse_sql_beacon_blocks(sql_lines)
                         apply_sql_beacons(sql_lines, children, sql_beacons)
@@ -1480,16 +1497,23 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
                         icon = EMOJI_SHELL
                         with open(full_path, 'r', encoding='utf-8') as f:
                             sh_lines = f.read().splitlines()
+                        line_count = len(sh_lines)
                         children = []
                         sh_beacons = parse_sh_beacon_blocks(sh_lines)
                         apply_sh_beacons(sh_lines, children, sh_beacons)
                     else:
                         icon = EMOJI_FILE
-                        children = [] # Generic file = Leaf node
+                        children = []  # Generic file = Leaf node
+                        line_count = _get_line_count(full_path)
+                    
+                    note_lines = [f"Path: {full_path}"]
+                    if line_count is not None:
+                        note_lines.append(f"LINE COUNT: {line_count}")
+                    note = "\n".join(note_lines)
                     
                     nodes.append({
                         "name": f"{icon} {item}",
-                        "note": f"Path: {full_path}",
+                        "note": note,
                         "children": children
                     })
                     
@@ -1504,16 +1528,28 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
         _, ext = os.path.splitext(root_path)
         ext = ext.lower()
         if ext == '.py':
+            children = parse_file_outline(root_path)
+            lc = _get_line_count(root_path)
+            note_lines = [f"Path: {root_path}"]
+            if lc is not None:
+                note_lines.append(f"LINE COUNT: {lc}")
+            note = "\n".join(note_lines)
             return {
                 "name": f"{EMOJI_PYTHON} {os.path.basename(root_path)}",
-                "note": f"Path: {root_path}",
-                "children": parse_file_outline(root_path)
+                "note": note,
+                "children": children
             }
         elif ext == '.md':
+            children = parse_markdown_structure(root_path)
+            lc = _get_line_count(root_path)
+            note_lines = [f"Path: {root_path}"]
+            if lc is not None:
+                note_lines.append(f"LINE COUNT: {lc}")
+            note = "\n".join(note_lines)
             return {
                 "name": f"{EMOJI_MARKDOWN} {os.path.basename(root_path)}",
-                "note": f"Path: {root_path}",
-                "children": parse_markdown_structure(root_path)
+                "note": note,
+                "children": children
             }
         elif ext == '.sql':
             with open(root_path, 'r', encoding='utf-8') as f:
@@ -1521,9 +1557,11 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
             children: List[Dict[str, Any]] = []
             sql_beacons = parse_sql_beacon_blocks(sql_lines)
             apply_sql_beacons(sql_lines, children, sql_beacons)
+            note_lines = [f"Path: {root_path}", f"LINE COUNT: {len(sql_lines)}"]
+            note = "\n".join(note_lines)
             return {
                 "name": f"{EMOJI_SQL} {os.path.basename(root_path)}",
-                "note": f"Path: {root_path}",
+                "note": note,
                 "children": children,
             }
         elif ext == '.sh':
@@ -1532,15 +1570,22 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
             children: List[Dict[str, Any]] = []
             sh_beacons = parse_sh_beacon_blocks(sh_lines)
             apply_sh_beacons(sh_lines, children, sh_beacons)
+            note_lines = [f"Path: {root_path}", f"LINE COUNT: {len(sh_lines)}"]
+            note = "\n".join(note_lines)
             return {
                 "name": f"{EMOJI_SHELL} {os.path.basename(root_path)}",
-                "note": f"Path: {root_path}",
+                "note": note,
                 "children": children,
             }
         else:
+             lc = _get_line_count(root_path)
+             note_lines = [f"Path: {root_path}"]
+             if lc is not None:
+                 note_lines.append(f"LINE COUNT: {lc}")
+             note = "\n".join(note_lines)
              return {
                 "name": f"{EMOJI_FILE} {os.path.basename(root_path)}",
-                "note": f"Path: {root_path}",
+                "note": note,
                 "children": []
             }
     
