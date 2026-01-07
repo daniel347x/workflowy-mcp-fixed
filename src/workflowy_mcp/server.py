@@ -531,17 +531,228 @@ def _launch_windsurf(file_path: str, line: int | None = None) -> None:
         raise
 
 
+async def _maybe_create_ast_beacon_from_tags(
+    client: "WorkFlowyClient",
+    node_id: str,
+    node_name: str | None,
+) -> dict[str, Any] | None:
+    """Attempt AST-beacon auto-creation for an AST node with trailing #tags.
+
+    Conditions for activation:
+    - Node's note contains an AST_QUALNAME: line (Python Cartographer AST node).
+    - Node's note does NOT contain an existing BEACON metadata block
+      (no "BEACON (" or "@beacon[" in the note).
+    - The Workflowy node name has one or more trailing tokens starting with
+      '#', which we treat as tags.
+
+    On success, this edits the underlying Python file in-place by inserting a
+    minimal @beacon[...] block immediately above any decorators for the AST
+    node (or above the def/class line if there are no decorators) and returns
+    a small result dict. Returns None when conditions are not met so the
+    caller can fall back to normal F12 behavior (per-file refresh).
+    """
+    # Load /nodes-export snapshot from the client's cache so we can inspect
+    # the node's note without any additional API calls.
+    try:
+        raw = await client.export_nodes(node_id=None, use_cache=True, force_refresh=False)
+        all_nodes = raw.get("nodes") or []
+        nodes_by_id: dict[str, dict[str, Any]] = {
+            str(n.get("id")): n for n in all_nodes if n.get("id")
+        }
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            f"_maybe_create_ast_beacon_from_tags: export_nodes failed: {e}",
+            "WS_HANDLER",
+        )
+        return None
+
+    node = nodes_by_id.get(str(node_id))
+    if not node:
+        return None
+
+    note_val = node.get("note") or node.get("no") or ""
+    if not isinstance(note_val, str):
+        return None
+
+    # Require AST metadata and no existing beacon metadata in the note.
+    if "AST_QUALNAME:" not in note_val:
+        return None
+    if "BEACON (" in note_val or "@beacon[" in note_val:
+        return None
+
+    ast_qualname: str | None = None
+    for line in note_val.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("AST_QUALNAME:"):
+            ast_qualname = stripped.split(":", 1)[1].strip() or None
+            break
+    if not ast_qualname:
+        return None
+
+    # Extract trailing #tags from the node name.
+    tags: list[str] = []
+    if node_name:
+        parts = str(node_name).strip().split()
+        acc: list[str] = []
+        for tok in reversed(parts):
+            if tok.startswith("#") and len(tok) > 1:
+                acc.append(tok[1:])  # drop leading '#'
+            else:
+                break
+        tags = list(reversed(acc))
+
+    if not tags:
+        # No manual tags to convert into a beacon – fall back to normal F12 behavior.
+        return None
+
+    # Resolve source file and AST line via existing beacon_get_code_snippet AST path.
+    try:
+        snippet_result = await client.beacon_get_code_snippet(  # type: ignore[attr-defined]
+            beacon_node_id=str(node_id),
+            context=0,
+        )
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            f"_maybe_create_ast_beacon_from_tags: beacon_get_code_snippet failed for {node_id}: {e}",
+            "WS_HANDLER",
+        )
+        return None
+
+    if not isinstance(snippet_result, dict) or not snippet_result.get("success"):
+        return None
+
+    file_path = snippet_result.get("file_path")
+    if not file_path or not isinstance(file_path, str):
+        return None
+
+    from pathlib import Path
+
+    if Path(file_path).suffix.lower() != ".py":
+        # Only Python AST nodes are supported for this auto-beacon path.
+        return None
+
+    core_start_line = (
+        snippet_result.get("core_start_line")
+        or snippet_result.get("start_line")
+    )
+    if not isinstance(core_start_line, int) or core_start_line <= 0:
+        return None
+
+    # Read file contents.
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            f"_maybe_create_ast_beacon_from_tags: failed to read {file_path}: {e}",
+            "WS_HANDLER",
+        )
+        return {
+            "success": False,
+            "file_path": file_path,
+            "error": f"Failed to read source file: {e}",
+        }
+
+    n_lines = len(lines)
+    ast_line_idx = min(max(core_start_line, 1), n_lines) - 1  # 0-based index
+
+    # Choose insertion point: immediately above any decorator block, else on the
+    # def/class line returned by the AST outline.
+    insert_idx = ast_line_idx
+    j = ast_line_idx - 1
+    top_decorator_idx: int | None = None
+    while j >= 0:
+        stripped = lines[j].lstrip()
+        if not stripped:
+            j -= 1
+            continue
+        if stripped.startswith("@"):  # decorator line
+            top_decorator_idx = j
+            j -= 1
+            continue
+        # Stop on first non-blank, non-decorator line.
+        break
+    if top_decorator_idx is not None:
+        insert_idx = top_decorator_idx
+
+    # Lightweight guard: if there is already an @beacon[ very close above,
+    # skip auto-creation to avoid accidental duplicates when the Workflowy
+    # note has not yet been refreshed.
+    for k in range(max(0, insert_idx - 8), insert_idx):
+        if "@beacon[" in lines[k]:
+            return None
+
+    # Build beacon id & slice_labels from tags.
+    import secrets
+
+    def _random_suffix(length: int = 4) -> str:
+        alphabet = "0123456789abcdef"
+        return "".join(secrets.choice(alphabet) for _ in range(length))
+
+    first_tag = tags[0]
+    suffix = _random_suffix()
+    beacon_id = f"{first_tag}@{suffix}"
+    slice_labels = ",".join(tags)
+
+    beacon_block = [
+        "# @beacon[",
+        f"#   id={beacon_id},",
+        f"#   slice_labels={slice_labels},",
+        "# ]",
+    ]
+
+    new_lines = lines[:insert_idx] + beacon_block + lines[insert_idx:]
+
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(new_lines))
+            f.write("\n")
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            f"_maybe_create_ast_beacon_from_tags: failed to write updated {file_path}: {e}",
+            "WS_HANDLER",
+        )
+        return {
+            "success": False,
+            "file_path": file_path,
+            "error": f"Failed to write updated file: {e}",
+        }
+
+    log_event(
+        "AST auto-beacon created: id="
+        f"{beacon_id} ast_qualname={ast_qualname} file={file_path} tags={tags}",
+        "WS_HANDLER",
+    )
+
+    return {
+        "success": True,
+        "mode": "ast_beacon_created",
+        "file_path": file_path,
+        "ast_qualname": ast_qualname,
+        "beacon_id": beacon_id,
+        "tags": tags,
+    }
+
+
 async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
     """Handle F12-driven request to refresh a Cartographer FILE node.
 
     This is a WebSocket wrapper around the existing beacon_refresh_code_node
     MCP tool (which in turn calls client.refresh_file_node_beacons). The
-    implementation is straightforward:
+    default implementation is straightforward:
     - Extract node_id from the WebSocket payload.
     - Call client.refresh_file_node_beacons(file_node_id=node_id, dry_run=False).
     - Send back a refresh_file_node_result with success/counts or error.
+
+    NEW (Jan 2026): If the target UUID corresponds to a Cartographer AST node
+    whose note contains AST_QUALNAME: but no existing BEACON metadata, and the
+    node name has trailing #tags, we instead auto-create a Python AST beacon in
+    the underlying source file and return a result describing that change. In
+    that case we **do not** trigger a file-level refresh; Dan will manually
+    refresh the file node in Workflowy afterwards.
     """
     node_id = data.get("node_id") or data.get("target_uuid") or data.get("uuid")
+    node_name = data.get("node_name") or ""
 
     if not node_id:
         await websocket.send(
@@ -557,6 +768,33 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
 
     client = get_client()
 
+    # Special-case: AST node without existing beacon, but with trailing #tags
+    # in its name. In that case, auto-create an AST beacon in the underlying
+    # Python file instead of performing a file-level Cartographer refresh.
+    ast_result: dict[str, Any] | None = None
+    try:
+        ast_result = await _maybe_create_ast_beacon_from_tags(
+            client=client,
+            node_id=str(node_id),
+            node_name=node_name,
+        )
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            f"_handle_refresh_file_node: AST auto-beacon path failed for {node_id}: {e}",
+            "WS_HANDLER",
+        )
+        ast_result = None
+
+    if ast_result is not None:
+        # We handled this F12 as a beacon-creation operation; surface a
+        # refresh_file_node_result payload so the extension has a consistent
+        # action name, even though no Workflowy refresh occurred.
+        ast_result["action"] = "refresh_file_node_result"
+        ast_result["node_id"] = node_id
+        await websocket.send(json.dumps(ast_result))
+        return
+
+    # Default path: per-file Cartographer refresh in Workflowy
     try:
         result = await client.refresh_file_node_beacons(
             file_node_id=node_id,
