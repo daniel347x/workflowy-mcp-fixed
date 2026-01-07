@@ -782,48 +782,26 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "candidates": metadata.get("candidates"),
             }
 
-        # Step 4B: Non-beacon Cartographer node – heuristic lookup based on name
-        search_text = _derive_search_text_from_node_name(node_name)
-        if not search_text:
-            raise NetworkError(
-                "Node {nid!r} has no beacon metadata and its name did not yield a "
-                "usable search token".format(nid=beacon_node_id)
-            )
-
-        logger.info(
-            "beacon_get_code_snippet: using heuristic search token %r for node %r in %r"
-            % (search_text, beacon_node_id, file_path)
-        )
-
-        # Build parent_names chain within the same FILE subtree (root → leaf, excluding the node itself)
-        parent_names: list[str] = []
-        current_id_for_parents: str | None = beacon_node_id
-        visited_for_parents: set[str] = set()
-
-        while current_id_for_parents and current_id_for_parents not in visited_for_parents:
-            visited_for_parents.add(current_id_for_parents)
-            node_for_parent = nodes_by_id.get(current_id_for_parents)
-            if not node_for_parent:
-                break
-
-            n_note = node_for_parent.get("note") or node_for_parent.get("no") or ""
-            # Stop at FILE node (contains 'Path:' in note)
-            if isinstance(n_note, str) and "Path:" in n_note:
-                break
-
-            if current_id_for_parents != beacon_node_id:
-                n_name = str(node_for_parent.get("name") or "").strip()
-                if n_name:
-                    parent_names.append(n_name)
-
-            parent_id_val = node_for_parent.get("parent_id") or node_for_parent.get("parentId")
-            current_id_for_parents = str(parent_id_val) if parent_id_val else None
-
-        parent_names.reverse()
-
-        # For Python files, prefer AST-aware resolution via beacon_obtain_code_snippet
+        # Step 4B: Non-beacon Cartographer node – resolve via AST_QUALNAME when available
         ext = Path(file_path).suffix.lower()
+
+        # For Python AST nodes, require an explicit AST_QUALNAME in the note.
         if ext == ".py":
+            ast_qualname: str | None = None
+            if isinstance(note, str):
+                for line in note.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("AST_QUALNAME:"):
+                        ast_qualname = stripped.split(":", 1)[1].strip()
+                        break
+
+            if not ast_qualname:
+                raise NetworkError(
+                    "Non-beacon Python node %r has no AST_QUALNAME in its note; "
+                    "refresh Cartographer mapping for this FILE node and retry."
+                    % (beacon_node_id,)
+                )
+
             try:
                 import importlib
 
@@ -837,44 +815,30 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 bos = importlib.import_module("beacon_obtain_code_snippet")
             except Exception as e:  # noqa: BLE001
                 raise NetworkError(
-                    "Could not import beacon_obtain_code_snippet module for AST-based "
+                    "Could not import beacon_obtain_code_snippet module for AST_QUALNAME-based "
                     f"resolution; underlying error: {e}"
                 ) from e
 
             try:
-                snippet_result = bos.get_snippet_data(  # type: ignore[attr-defined]
+                snippet_result = bos.get_snippet_for_ast_qualname(  # type: ignore[attr-defined]
                     file_path,
-                    search_text,
+                    ast_qualname,
                     context,
-                    node_name=node_name,
-                    parent_names=parent_names,
                 )
             except Exception as e:  # noqa: BLE001
                 raise NetworkError(
-                    f"Failed to obtain AST-based snippet for node {beacon_node_id!r} in file {file_path!r}: {e}"
+                    f"Failed to obtain AST_QUALNAME-based snippet for node {beacon_node_id!r} "
+                    f"in file {file_path!r}: {e}"
                 ) from e
 
-            # Unpack 7-tuple from new helper, or fall back gracefully
             if isinstance(snippet_result, tuple) and len(snippet_result) == 7:
                 start, end, lines, core_start, core_end, beacon_line, metadata = snippet_result
-            elif isinstance(snippet_result, tuple) and len(snippet_result) == 6:
-                start, end, lines, core_start, core_end, beacon_line = snippet_result
-                metadata = {
-                    "resolution_strategy": "beacon_helper_legacy",
-                    "confidence": 0.7,
-                    "ambiguity": "unknown",
-                    "candidates": None,
-                }
             else:
-                start, end, lines = snippet_result[:3]  # type: ignore[misc]
-                core_start, core_end = start, end
-                beacon_line = start
-                metadata = {
-                    "resolution_strategy": "beacon_helper_legacy",
-                    "confidence": 0.5,
-                    "ambiguity": "unknown",
-                    "candidates": None,
-                }
+                # Extremely unlikely; enforce explicit error rather than guessing.
+                raise NetworkError(
+                    "get_snippet_for_ast_qualname returned unexpected shape; "
+                    "expected 7-tuple."
+                )
 
             snippet_text = "\n".join(lines[start - 1 : end]) if lines else ""
 
@@ -882,7 +846,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "success": True,
                 "file_path": file_path,
                 "beacon_node_id": beacon_node_id,
-                "beacon_id": search_text,
+                "beacon_id": ast_qualname,
                 "kind": "node",
                 "start_line": start,
                 "end_line": end,
@@ -896,36 +860,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "candidates": metadata.get("candidates"),
             }
 
-        # Non-Python: fall back to simple text search heuristic
-        try:
-            start, end, lines = _heuristic_snippet_for_node(file_path, search_text, context)
-        except Exception as e:  # noqa: BLE001
-            raise NetworkError(
-                f"Failed to locate snippet for node {beacon_node_id!r} in file {file_path!r} "
-                f"using search token {search_text!r}: {e}"
-            ) from e
-
-        snippet_text = "\n".join(lines[start - 1 : end]) if lines else ""
-
-        return {
-            "success": True,
-            "file_path": file_path,
-            "beacon_node_id": beacon_node_id,
-            # For non-beacon nodes, expose the search token as a pseudo-id and
-            # mark kind='node' so callers can distinguish from true beacons.
-            "beacon_id": search_text,
-            "kind": "node",
-            "start_line": start,
-            "end_line": end,
-            "core_start_line": start,
-            "core_end_line": end,
-            "beacon_line": start,
-            "snippet": snippet_text,
-            "resolution_strategy": "token_search",
-            "confidence": 0.4,
-            "ambiguity": "unknown",
-            "candidates": None,
-        }
+        # For non-Python files we currently do not support non-beacon snippet
+        # resolution; require explicit beacons or future AST-like metadata.
+        raise NetworkError(
+            "Non-beacon snippet resolution is only implemented for Python AST "
+            f"nodes with AST_QUALNAME; node {beacon_node_id!r} is in file {file_path!r} "
+            f"with extension {ext!r}."
+        )
 
     async def nexus_scry(
         self,

@@ -664,6 +664,85 @@ def _python_snippet_for_beacon(
             beacon_line = comment_line if comment_line is not None else start_code
             return start, end, lines, core_start, core_end, beacon_line
 
+
+def get_snippet_for_ast_qualname(
+    file_path: str,
+    ast_qualname: str,
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    """Resolve snippet for a Python AST node identified by its ast_qualname.
+
+    This is the primary resolution path for non-beacon Python AST nodes.
+
+    Contract:
+    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
+      return a snippet spanning its [start,end] lines with the usual context
+      padding.
+    - If zero or multiple matches, raise RuntimeError to signal an error to
+      the caller (MCP tool should surface this, not silently guess).
+    """
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    ast_qualname = (ast_qualname or "").strip()
+    if not ast_qualname:
+        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+
+    try:
+        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
+
+    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
+        for node in nodes or []:
+            if isinstance(node, dict):
+                yield node
+                for ch in node.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+
+    matches: List[dict] = []
+    for node in _iter_nodes(outline_nodes):
+        qual = node.get("ast_qualname")
+        if isinstance(qual, str) and qual == ast_qualname:
+            matches.append(node)
+
+    if not matches:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
+            f"({len(matches)} matches); refresh Cartographer mapping."
+        )
+
+    node = matches[0]
+    start = node.get("orig_lineno_start_unused")
+    end = node.get("orig_lineno_end_unused") or start
+    if not isinstance(start, int) or start <= 0:
+        raise RuntimeError(
+            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
+        )
+    if not isinstance(end, int) or end < start:
+        end = start
+
+    core_start = start
+    core_end = end
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+
+    metadata = {
+        "resolution_strategy": "ast_qualname_exact",
+        "confidence": 1.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+    return start_line, end_line, lines, core_start, core_end, core_start, metadata
+
     # 2) SPAN beacons – use closing-delimiter span if present, otherwise
     #    single-beacon heuristic with anchor line.
 
@@ -685,6 +764,85 @@ def _python_snippet_for_beacon(
         end = min(n, core_end + context)
         beacon_line = comment_line if comment_line is not None else inner_start
         return start, end, lines, core_start, core_end, beacon_line
+
+
+def get_snippet_for_ast_qualname(
+    file_path: str,
+    ast_qualname: str,
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    """Resolve snippet for a Python AST node identified by its ast_qualname.
+
+    This is the primary resolution path for non-beacon Python AST nodes.
+
+    Contract:
+    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
+      return a snippet spanning its [start,end] lines with the usual context
+      padding.
+    - If zero or multiple matches, raise RuntimeError to signal an error to
+      the caller (MCP tool should surface this, not silently guess).
+    """
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    ast_qualname = (ast_qualname or "").strip()
+    if not ast_qualname:
+        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+
+    try:
+        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
+
+    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
+        for node in nodes or []:
+            if isinstance(node, dict):
+                yield node
+                for ch in node.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+
+    matches: List[dict] = []
+    for node in _iter_nodes(outline_nodes):
+        qual = node.get("ast_qualname")
+        if isinstance(qual, str) and qual == ast_qualname:
+            matches.append(node)
+
+    if not matches:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
+            f"({len(matches)} matches); refresh Cartographer mapping."
+        )
+
+    node = matches[0]
+    start = node.get("orig_lineno_start_unused")
+    end = node.get("orig_lineno_end_unused") or start
+    if not isinstance(start, int) or start <= 0:
+        raise RuntimeError(
+            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
+        )
+    if not isinstance(end, int) or end < start:
+        end = start
+
+    core_start = start
+    core_end = end
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+
+    metadata = {
+        "resolution_strategy": "ast_qualname_exact",
+        "confidence": 1.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+    return start_line, end_line, lines, core_start, core_end, core_start, metadata
 
     # Otherwise, fall back to the original single-beacon heuristic
     chosen = None
@@ -738,6 +896,85 @@ def _python_snippet_for_beacon(
     end = min(n, core_end + context)
     beacon_line = comment_line
     return start, end, lines, core_start, core_end, beacon_line
+
+
+def get_snippet_for_ast_qualname(
+    file_path: str,
+    ast_qualname: str,
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    """Resolve snippet for a Python AST node identified by its ast_qualname.
+
+    This is the primary resolution path for non-beacon Python AST nodes.
+
+    Contract:
+    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
+      return a snippet spanning its [start,end] lines with the usual context
+      padding.
+    - If zero or multiple matches, raise RuntimeError to signal an error to
+      the caller (MCP tool should surface this, not silently guess).
+    """
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    ast_qualname = (ast_qualname or "").strip()
+    if not ast_qualname:
+        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+
+    try:
+        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
+
+    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
+        for node in nodes or []:
+            if isinstance(node, dict):
+                yield node
+                for ch in node.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+
+    matches: List[dict] = []
+    for node in _iter_nodes(outline_nodes):
+        qual = node.get("ast_qualname")
+        if isinstance(qual, str) and qual == ast_qualname:
+            matches.append(node)
+
+    if not matches:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
+            f"({len(matches)} matches); refresh Cartographer mapping."
+        )
+
+    node = matches[0]
+    start = node.get("orig_lineno_start_unused")
+    end = node.get("orig_lineno_end_unused") or start
+    if not isinstance(start, int) or start <= 0:
+        raise RuntimeError(
+            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
+        )
+    if not isinstance(end, int) or end < start:
+        end = start
+
+    core_start = start
+    core_end = end
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+
+    metadata = {
+        "resolution_strategy": "ast_qualname_exact",
+        "confidence": 1.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+    return start_line, end_line, lines, core_start, core_end, core_start, metadata
 
 
 # ---------------------------------------------------------------------------
@@ -970,6 +1207,85 @@ def _markdown_snippet_for_beacon(
         end = min(n, core_end + context)
         beacon_line = comment_line if comment_line is not None else inner_start
         return start, end, lines, core_start, core_end, beacon_line
+
+
+def get_snippet_for_ast_qualname(
+    file_path: str,
+    ast_qualname: str,
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    """Resolve snippet for a Python AST node identified by its ast_qualname.
+
+    This is the primary resolution path for non-beacon Python AST nodes.
+
+    Contract:
+    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
+      return a snippet spanning its [start,end] lines with the usual context
+      padding.
+    - If zero or multiple matches, raise RuntimeError to signal an error to
+      the caller (MCP tool should surface this, not silently guess).
+    """
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    ast_qualname = (ast_qualname or "").strip()
+    if not ast_qualname:
+        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+
+    try:
+        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
+
+    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
+        for node in nodes or []:
+            if isinstance(node, dict):
+                yield node
+                for ch in node.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+
+    matches: List[dict] = []
+    for node in _iter_nodes(outline_nodes):
+        qual = node.get("ast_qualname")
+        if isinstance(qual, str) and qual == ast_qualname:
+            matches.append(node)
+
+    if not matches:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
+            f"({len(matches)} matches); refresh Cartographer mapping."
+        )
+
+    node = matches[0]
+    start = node.get("orig_lineno_start_unused")
+    end = node.get("orig_lineno_end_unused") or start
+    if not isinstance(start, int) or start <= 0:
+        raise RuntimeError(
+            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
+        )
+    if not isinstance(end, int) or end < start:
+        end = start
+
+    core_start = start
+    core_end = end
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+
+    metadata = {
+        "resolution_strategy": "ast_qualname_exact",
+        "confidence": 1.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+    return start_line, end_line, lines, core_start, core_end, core_start, metadata
 
     # Otherwise, fall back to the existing span_lineno/anchor behavior
     chosen = None
@@ -1235,6 +1551,85 @@ def _sql_snippet_for_beacon(
         beacon_line = comment_line if comment_line is not None else inner_start
         return start, end, lines, core_start, core_end, beacon_line
 
+
+def get_snippet_for_ast_qualname(
+    file_path: str,
+    ast_qualname: str,
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    """Resolve snippet for a Python AST node identified by its ast_qualname.
+
+    This is the primary resolution path for non-beacon Python AST nodes.
+
+    Contract:
+    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
+      return a snippet spanning its [start,end] lines with the usual context
+      padding.
+    - If zero or multiple matches, raise RuntimeError to signal an error to
+      the caller (MCP tool should surface this, not silently guess).
+    """
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    ast_qualname = (ast_qualname or "").strip()
+    if not ast_qualname:
+        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+
+    try:
+        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
+
+    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
+        for node in nodes or []:
+            if isinstance(node, dict):
+                yield node
+                for ch in node.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+
+    matches: List[dict] = []
+    for node in _iter_nodes(outline_nodes):
+        qual = node.get("ast_qualname")
+        if isinstance(qual, str) and qual == ast_qualname:
+            matches.append(node)
+
+    if not matches:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
+            f"({len(matches)} matches); refresh Cartographer mapping."
+        )
+
+    node = matches[0]
+    start = node.get("orig_lineno_start_unused")
+    end = node.get("orig_lineno_end_unused") or start
+    if not isinstance(start, int) or start <= 0:
+        raise RuntimeError(
+            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
+        )
+    if not isinstance(end, int) or end < start:
+        end = start
+
+    core_start = start
+    core_end = end
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+
+    metadata = {
+        "resolution_strategy": "ast_qualname_exact",
+        "confidence": 1.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+    return start_line, end_line, lines, core_start, core_end, core_start, metadata
+
     # Otherwise, fall back to comment-line anchoring
     chosen = None
     for b in beacons:
@@ -1257,6 +1652,85 @@ def _sql_snippet_for_beacon(
     end = min(n, core_end + context)
     beacon_line = comment_line
     return start, end, lines, core_start, core_end, beacon_line
+
+
+def get_snippet_for_ast_qualname(
+    file_path: str,
+    ast_qualname: str,
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    """Resolve snippet for a Python AST node identified by its ast_qualname.
+
+    This is the primary resolution path for non-beacon Python AST nodes.
+
+    Contract:
+    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
+      return a snippet spanning its [start,end] lines with the usual context
+      padding.
+    - If zero or multiple matches, raise RuntimeError to signal an error to
+      the caller (MCP tool should surface this, not silently guess).
+    """
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    ast_qualname = (ast_qualname or "").strip()
+    if not ast_qualname:
+        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+
+    try:
+        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
+
+    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
+        for node in nodes or []:
+            if isinstance(node, dict):
+                yield node
+                for ch in node.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+
+    matches: List[dict] = []
+    for node in _iter_nodes(outline_nodes):
+        qual = node.get("ast_qualname")
+        if isinstance(qual, str) and qual == ast_qualname:
+            matches.append(node)
+
+    if not matches:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
+            f"({len(matches)} matches); refresh Cartographer mapping."
+        )
+
+    node = matches[0]
+    start = node.get("orig_lineno_start_unused")
+    end = node.get("orig_lineno_end_unused") or start
+    if not isinstance(start, int) or start <= 0:
+        raise RuntimeError(
+            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
+        )
+    if not isinstance(end, int) or end < start:
+        end = start
+
+    core_start = start
+    core_end = end
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+
+    metadata = {
+        "resolution_strategy": "ast_qualname_exact",
+        "confidence": 1.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+    return start_line, end_line, lines, core_start, core_end, core_start, metadata
 
 
 # ---------------------------------------------------------------------------
@@ -1513,6 +1987,85 @@ def _sh_snippet_for_beacon(
         beacon_line = comment_line if comment_line is not None else inner_start
         return start, end, lines, core_start, core_end, beacon_line
 
+
+def get_snippet_for_ast_qualname(
+    file_path: str,
+    ast_qualname: str,
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    """Resolve snippet for a Python AST node identified by its ast_qualname.
+
+    This is the primary resolution path for non-beacon Python AST nodes.
+
+    Contract:
+    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
+      return a snippet spanning its [start,end] lines with the usual context
+      padding.
+    - If zero or multiple matches, raise RuntimeError to signal an error to
+      the caller (MCP tool should surface this, not silently guess).
+    """
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    ast_qualname = (ast_qualname or "").strip()
+    if not ast_qualname:
+        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+
+    try:
+        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
+
+    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
+        for node in nodes or []:
+            if isinstance(node, dict):
+                yield node
+                for ch in node.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+
+    matches: List[dict] = []
+    for node in _iter_nodes(outline_nodes):
+        qual = node.get("ast_qualname")
+        if isinstance(qual, str) and qual == ast_qualname:
+            matches.append(node)
+
+    if not matches:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
+            f"({len(matches)} matches); refresh Cartographer mapping."
+        )
+
+    node = matches[0]
+    start = node.get("orig_lineno_start_unused")
+    end = node.get("orig_lineno_end_unused") or start
+    if not isinstance(start, int) or start <= 0:
+        raise RuntimeError(
+            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
+        )
+    if not isinstance(end, int) or end < start:
+        end = start
+
+    core_start = start
+    core_end = end
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+
+    metadata = {
+        "resolution_strategy": "ast_qualname_exact",
+        "confidence": 1.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+    return start_line, end_line, lines, core_start, core_end, core_start, metadata
+
     # Otherwise, fall back to comment-line anchoring
     chosen = None
     for b in beacons:
@@ -1535,6 +2088,85 @@ def _sh_snippet_for_beacon(
     end = min(n, core_end + context)
     beacon_line = comment_line
     return start, end, lines, core_start, core_end, beacon_line
+
+
+def get_snippet_for_ast_qualname(
+    file_path: str,
+    ast_qualname: str,
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    """Resolve snippet for a Python AST node identified by its ast_qualname.
+
+    This is the primary resolution path for non-beacon Python AST nodes.
+
+    Contract:
+    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
+      return a snippet spanning its [start,end] lines with the usual context
+      padding.
+    - If zero or multiple matches, raise RuntimeError to signal an error to
+      the caller (MCP tool should surface this, not silently guess).
+    """
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    ast_qualname = (ast_qualname or "").strip()
+    if not ast_qualname:
+        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+
+    try:
+        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
+
+    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
+        for node in nodes or []:
+            if isinstance(node, dict):
+                yield node
+                for ch in node.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+
+    matches: List[dict] = []
+    for node in _iter_nodes(outline_nodes):
+        qual = node.get("ast_qualname")
+        if isinstance(qual, str) and qual == ast_qualname:
+            matches.append(node)
+
+    if not matches:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
+            f"({len(matches)} matches); refresh Cartographer mapping."
+        )
+
+    node = matches[0]
+    start = node.get("orig_lineno_start_unused")
+    end = node.get("orig_lineno_end_unused") or start
+    if not isinstance(start, int) or start <= 0:
+        raise RuntimeError(
+            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
+        )
+    if not isinstance(end, int) or end < start:
+        end = start
+
+    core_start = start
+    core_end = end
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+
+    metadata = {
+        "resolution_strategy": "ast_qualname_exact",
+        "confidence": 1.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+    return start_line, end_line, lines, core_start, core_end, core_start, metadata
 
 
 # ---------------------------------------------------------------------------

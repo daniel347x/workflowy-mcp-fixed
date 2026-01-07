@@ -1298,10 +1298,18 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                     qual = item.name if not qual_prefix else f"{qual_prefix}.{item.name}"
                     start = getattr(item, "lineno", None)
                     end = getattr(item, "end_lineno", start)
+                    # Build note: AST_QUALNAME header, then optional separator and docstring.
+                    doc = get_docstring(item)
+                    note_lines: list[str] = [f"AST_QUALNAME: {qual}"]
+                    if doc:
+                        note_lines.append("---")
+                        note_lines.append(doc)
+                    note_text = "\n".join(note_lines)
+
                     node = {
                         "name": f"{EMOJI_CLASS} class {item.name}",
                         "priority": priority_counter[0],
-                        "note": get_docstring(item),
+                        "note": note_text,
                         "children": walk_body(item.body, qual_prefix=qual),
                         "ast_type": "class",
                         "ast_name": item.name,
@@ -1318,10 +1326,18 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                     qual = item.name if not qual_prefix else f"{qual_prefix}.{item.name}"
                     start = getattr(item, "lineno", None)
                     end = getattr(item, "end_lineno", start)
+
+                    doc = get_docstring(item)
+                    note_lines: list[str] = [f"AST_QUALNAME: {qual}"]
+                    if doc:
+                        note_lines.append("---")
+                        note_lines.append(doc)
+                    note_text = "\n".join(note_lines)
+
                     node = {
                         "name": f"{prefix} {sig}",
                         "priority": priority_counter[0],
-                        "note": get_docstring(item),
+                        "note": note_text,
                         "children": walk_body(item.body, qual_prefix=qual),
                         "ast_type": "async_function" if isinstance(item, ast.AsyncFunctionDef) else "function",
                         "ast_name": item.name,
@@ -1338,14 +1354,16 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                         if isinstance(target, ast.Name) and target.id.isupper():
                             start = getattr(item, "lineno", None)
                             end = getattr(item, "end_lineno", start)
+                            qual_const = target.id if not qual_prefix else f"{qual_prefix}.{target.id}"
+                            note_text = f"AST_QUALNAME: {qual_const}\n---\nConstant"
                             node = {
                                 "name": f"{EMOJI_CONST} {target.id}",
                                 "priority": priority_counter[0],
-                                "note": "Constant",
+                                "note": note_text,
                                 "children": [],
                                 "ast_type": "const",
                                 "ast_name": target.id,
-                                "ast_qualname": target.id if not qual_prefix else f"{qual_prefix}.{target.id}",
+                                "ast_qualname": qual_const,
                                 "file_path": file_path,
                                 "orig_lineno_start_unused": start,
                                 "orig_lineno_end_unused": end,
