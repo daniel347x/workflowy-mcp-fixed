@@ -2298,6 +2298,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             except Exception:
                 return None
 
+        def _canonical_path(path: str) -> str:
+            """Normalize filesystem path for equality comparisons (case-insensitive on Windows)."""
+            return os.path.normcase(os.path.normpath(path))
+
         file_sha1 = _compute_sha1(source_path)
 
         if existing_sha1 and existing_sha1 == file_sha1:
@@ -2338,6 +2342,18 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if name and not name[0].isalnum():
                 name = name[1:].lstrip()
             return name.lower().startswith("notes")
+
+        # 4.2a Stash immediate Notes[...] roots under the FILE node keyed by its Path.
+        stashed_notes_by_path: dict[str | None, list[str]] = {}
+        file_children = children_by_parent.get(str(file_node_id), [])
+        file_path_key = _canonical_path(source_path) if source_path else None
+        for child in file_children:
+            cid = child.get("id")
+            if not cid:
+                continue
+            cname = str(child.get("name") or "")
+            if _is_notes_name(cname):
+                stashed_notes_by_path.setdefault(file_path_key, []).append(str(cid))
 
         # 4.3 Salvage Notes under existing beacon nodes
         saved_notes: dict[str, list[str]] = {}
@@ -2671,10 +2687,44 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             except Exception:
                 pass
 
+        # 4.7 FILE-level path-based Notes[...] reattachment (immediate Notes under FILE)
+        total_notes_stashed_by_path = sum(len(v) for v in stashed_notes_by_path.values()) if stashed_notes_by_path else 0
+        notes_path_reattached = 0
+        notes_path_unmatched = 0
+
+        if total_notes_stashed_by_path:
+            if dry_run:
+                # In dry-run mode, assume that Notes keyed to a non-None Path will
+                # be reattached under this FILE node; None-keyed entries remain
+                # unmatched by design.
+                for key, ids_list in stashed_notes_by_path.items():
+                    if key is not None:
+                        notes_path_reattached += len(ids_list)
+                    else:
+                        notes_path_unmatched += len(ids_list)
+            else:
+                file_path_key_canonical = _canonical_path(source_path) if source_path else None
+                for key, ids_list in stashed_notes_by_path.items():
+                    if key is not None and key == file_path_key_canonical:
+                        for nid in ids_list:
+                            try:
+                                await self.move_node(nid, str(file_node_id), "bottom")
+                                notes_path_reattached += 1
+                            except Exception as e:  # noqa: BLE001
+                                log_event(
+                                    "refresh_file_node_beacons: failed to reattach FILE-level Notes "
+                                    f"node {nid} under {file_node_id}: {e}",
+                                    "BEACON",
+                                )
+                    else:
+                        notes_path_unmatched += len(ids_list)
+
         log_event(
             "refresh_file_node_beacons complete for "
             f"{source_path} (deleted={structural_deleted}, created={structural_created}, "
-            f"notes_salvaged={notes_salvaged}, notes_orphaned={notes_orphaned})",
+            f"notes_salvaged={notes_salvaged}, notes_orphaned={notes_orphaned}, "
+            f"notes_stashed_by_path={total_notes_stashed_by_path}, "
+            f"notes_path_reattached={notes_path_reattached}, notes_path_unmatched={notes_path_unmatched})",
             "BEACON",
         )
 
@@ -2691,6 +2741,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "notes_identified_for_salvage": total_notes_to_salvage,
             "notes_salvaged": notes_salvaged,
             "notes_orphaned": notes_orphaned,
+            "notes_stashed_by_path": total_notes_stashed_by_path,
+            "notes_path_reattached": notes_path_reattached,
+            "notes_path_unmatched": notes_path_unmatched,
         }
 
     async def refresh_folder_cartographer_sync(
@@ -2712,6 +2765,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
           using the Cartographer whitelist and creates FILE nodes in
           Workflowy for any on-disk files not represented in the subtree,
           creating intermediate FOLDER nodes as needed.
+        - NEW (Jan 2026): stashes immediate Notes[...] subtrees under the
+          folder root keyed by PATH before mutating, then reattaches them
+          under the FILE/FOLDER node whose note contains the same Path.
 
         This is effectively a "direct Cartographer sync" for the subtree
         rooted at folder_node_id, without going through GEM/JEWEL/WEAVE.
@@ -2748,6 +2804,16 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if pid:
                 parent_of[s_nid] = str(pid)
 
+        # Children index for immediate child lookups (Notes stashing)
+        children_by_parent: dict[str, list[dict[str, Any]]] = {}
+        for n in flat_nodes:
+            nid = n.get("id")
+            if not nid:
+                continue
+            pid = n.get("parent_id") or n.get("parentId")
+            if pid:
+                children_by_parent.setdefault(str(pid), []).append(n)
+
         root_node = node_by_id.get(str(folder_node_id))
         note_text_root = str(root_node.get("note") or "") if root_node else ""
 
@@ -2766,6 +2832,16 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         def _canonical_path(path: str) -> str:
             return os.path.normcase(os.path.normpath(path))
 
+        def _is_notes_name(raw_name: str) -> bool:
+            """Detect immediate Notes[...] roots (strip leading emoji/bullets)."""
+            name = (raw_name or "").strip()
+            if not name:
+                return False
+            if not name[0].isalnum():
+                name = name[1:].lstrip()
+            return name.lower().startswith("notes")
+
+        # Root Path: (may be None or a directory path)
         root_path = _parse_path_from_note(note_text_root) if note_text_root else None
         if root_path and not os.path.isdir(root_path):
             log_event(
@@ -2774,12 +2850,40 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             )
             root_path = None
 
+        # 1a) Stash immediate Notes[...] subtrees keyed by PATH.
+        #
+        # stashed_notes_by_path maps canonical Path (or None) → list of Notes node IDs.
+        # For folder-level sync we physically move Notes under the folder root
+        # so they survive any per-file mutations, then later reattach by PATH.
+        stashed_notes_by_path: dict[str | None, list[str]] = {}
+        notes_moved_to_root = 0
+
+        def _stash_notes_node(notes_node_id: str, owner_path: str | None) -> None:
+            key = _canonical_path(owner_path) if owner_path else None
+            stashed_notes_by_path.setdefault(key, []).append(notes_node_id)
+
+        # Stash Notes directly under the folder root (they conceptually belong
+        # to the folder-level Path, if any).
+        if root_node is not None:
+            root_children = children_by_parent.get(str(folder_node_id), [])
+            for child in root_children:
+                cid = child.get("id")
+                if not cid:
+                    continue
+                cname = str(child.get("name") or "")
+                if _is_notes_name(cname):
+                    _stash_notes_node(str(cid), root_path)
+                    # Already under the folder root; no move needed.
+
         # 2) Find descendant FILE nodes and refresh them via refresh_file_node_beacons
         present_files: set[str] = set()
         present_paths_raw: dict[str, str] = {}
         missing_paths: list[str] = []
         refreshed_count = 0
         refresh_errors: list[str] = []
+
+        # Collect file nodes first so we can stash Notes before any per-file refresh.
+        file_nodes_info: list[tuple[str, str, bool]] = []  # (node_id, source_path, exists_on_disk)
 
         for n in flat_nodes:
             nid = n.get("id")
@@ -2806,7 +2910,39 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             else:
                 missing_paths.append(source_path)
 
-            # Per-file refresh only when the file exists on disk
+            # Record this FILE node for later refresh
+            file_nodes_info.append((s_nid, source_path, exists))
+
+            # Stash immediate Notes[...] children for this FILE node by its Path.
+            file_children = children_by_parent.get(s_nid, [])
+            for child in file_children:
+                cid = child.get("id")
+                if not cid:
+                    continue
+                cname = str(child.get("name") or "")
+                if not _is_notes_name(cname):
+                    continue
+                _stash_notes_node(str(cid), source_path)
+                # Physically move under the folder root so that these Notes are
+                # decoupled from any structural changes to this FILE node.
+                parent_for_child = parent_of.get(str(cid))
+                if (
+                    not dry_run
+                    and parent_for_child
+                    and str(parent_for_child) != str(folder_node_id)
+                ):
+                    try:
+                        await self.move_node(str(cid), str(folder_node_id), "bottom")
+                        notes_moved_to_root += 1
+                    except Exception as e:  # noqa: BLE001
+                        log_event(
+                            "refresh_folder_cartographer_sync: failed to move Notes node "
+                            f"{cid} under folder root {folder_node_id}: {e}",
+                            "BEACON",
+                        )
+
+        # Now perform per-file refresh only when the file exists on disk
+        for s_nid, source_path, exists in file_nodes_info:
             if not exists:
                 continue
 
@@ -2821,7 +2957,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     err_msg = None
                     if isinstance(result, dict):
                         err_msg = result.get("error") or result.get("message")
-                    refresh_errors.append(f"{s_nid}: {err_msg or 'unknown error from refresh_file_node_beacons'}")
+                    refresh_errors.append(
+                        f"{s_nid}: {err_msg or 'unknown error from refresh_file_node_beacons'}",
+                    )
             except Exception as e:  # noqa: BLE001
                 refresh_errors.append(f"{s_nid}: {e}")
 
@@ -3020,10 +3158,75 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 except Exception:
                     pass
 
+        # 4) Reattach stashed Notes[...] subtrees by PATH (if any)
+        notes_reattached = 0
+        notes_unmatched = 0
+
+        if stashed_notes_by_path:
+            # Re-export the refreshed subtree to discover current Path → node_id mapping.
+            refreshed_nodes: list[dict[str, Any]] = []
+            try:
+                refreshed_raw = await export_nodes_impl(self, folder_node_id)
+                refreshed_nodes = refreshed_raw.get("nodes") or []
+            except Exception as e:  # noqa: BLE001
+                log_event(
+                    "refresh_folder_cartographer_sync: re-export for Notes reattach "
+                    f"failed: {e}",
+                    "BEACON",
+                )
+                refreshed_nodes = []
+
+            path_to_node_id: dict[str, str] = {}
+            for n in refreshed_nodes or []:
+                nid = n.get("id")
+                if not nid:
+                    continue
+                note_val = n.get("note") or n.get("no") or ""
+                if not isinstance(note_val, str):
+                    continue
+                node_path = _parse_path_from_note(str(note_val))
+                if not node_path:
+                    continue
+                key = _canonical_path(node_path)
+                # Last writer wins; Paths should be unique per FILE/FOLDER.
+                path_to_node_id[key] = str(nid)
+
+            total_stashed = sum(len(v) for v in stashed_notes_by_path.values())
+
+            if dry_run:
+                # In dry-run mode, just compute how many would be reattached vs left
+                for key, ids_list in stashed_notes_by_path.items():
+                    if key is not None and key in path_to_node_id:
+                        notes_reattached += len(ids_list)
+                    else:
+                        notes_unmatched += len(ids_list)
+            else:
+                for key, ids_list in stashed_notes_by_path.items():
+                    if key is not None and key in path_to_node_id:
+                        target_parent_id = path_to_node_id[key]
+                        for nid in ids_list:
+                            try:
+                                await self.move_node(nid, target_parent_id, "bottom")
+                                notes_reattached += 1
+                            except Exception as e:  # noqa: BLE001
+                                log_event(
+                                    "refresh_folder_cartographer_sync: failed to reattach Notes "
+                                    f"node {nid} under {target_parent_id}: {e}",
+                                    "BEACON",
+                                )
+                    else:
+                        # No matching PATH in the refreshed subtree; leave Notes under
+                        # the folder root (their stashed location) and count them as
+                        # unmatched.
+                        notes_unmatched += len(ids_list)
+        else:
+            total_stashed = 0
+
         log_event(
             "refresh_folder_cartographer_sync complete for "
             f"{folder_node_id} (refreshed_files={refreshed_count}, new_files={new_files_created}, "
-            f"new_folders={new_folders_created})",
+            f"new_folders={new_folders_created}, notes_stashed={total_stashed}, "
+            f"notes_reattached={notes_reattached}, notes_unmatched={notes_unmatched})",
             "BEACON",
         )
 
@@ -3042,4 +3245,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "disk_files_only_on_disk": len(only_on_disk_keys) if disk_scan_performed else 0,
             "new_files_created": new_files_created,
             "new_folders_created": new_folders_created,
+            "notes_stashed": total_stashed,
+            "notes_moved_to_root": notes_moved_to_root,
+            "notes_reattached": notes_reattached,
+            "notes_unmatched": notes_unmatched,
         }
