@@ -2291,6 +2291,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     h.update(chunk)
             return h.hexdigest()
 
+        def _compute_line_count(path: str) -> int | None:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return sum(1 for _ in f)
+            except Exception:
+                return None
+
         file_sha1 = _compute_sha1(source_path)
 
         if existing_sha1 and existing_sha1 == file_sha1:
@@ -2310,6 +2317,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "notes_salvaged": 0,
                 "notes_orphaned": 0,
             }
+
+        previous_sha1 = existing_sha1
 
         # Build parent->children index for current subtree
         children_by_parent: dict[str, list[dict[str, Any]]] = {}
@@ -2587,22 +2596,65 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 # Non-fatal
                 pass
 
-        # 4.6 Update hash in file node note (append or replace Source-SHA1 line)
-        previous_sha1 = existing_sha1
+        # 4.6 Update file node note header with unified Path/LINE COUNT/Source-SHA1
+        file_line_count: int | None = None
         if not dry_run:
+            file_line_count = _compute_line_count(source_path)
+
+            # Split existing note into header (Path/LINE COUNT/Source-SHA1) and tail
             lines = note_text.splitlines() if note_text else []
-            new_line = f"Source-SHA1: {file_sha1}"
-            replaced = False
-            for idx, line in enumerate(lines):
-                if line.strip().startswith("Source-SHA1:"):
-                    lines[idx] = new_line
-                    replaced = True
-                    break
-            if not replaced:
-                if lines and lines[-1].strip():
-                    lines.append("")
-                lines.append(new_line)
-            new_note = "\n".join(lines)
+            header_lines: list[str] = []
+            tail_lines: list[str] = []
+            in_header = True
+            for line in lines:
+                stripped = line.strip()
+                if in_header and (
+                    stripped.startswith("Path:")
+                    or stripped.startswith("LINE COUNT:")
+                    or stripped.startswith("Source-SHA1:")
+                    or stripped == ""
+                ):
+                    header_lines.append(line)
+                else:
+                    in_header = False
+                    tail_lines.append(line)
+
+            try:
+                # Use shared formatter from Cartographer to build canonical header
+                header = cartographer.format_file_note(  # type: ignore[attr-defined]
+                    source_path,
+                    line_count=file_line_count,
+                    sha1=file_sha1,
+                )
+            except Exception as e:  # noqa: BLE001
+                # Fallback: preserve legacy hash-only behavior to avoid breaking refresh
+                log_event(
+                    "refresh_file_node_beacons: format_file_note failed "
+                    f"({e}); falling back to legacy hash-only header update",
+                    "BEACON",
+                )
+                new_line = f"Source-SHA1: {file_sha1}"
+                if lines:
+                    replaced = False
+                    for idx, line in enumerate(lines):
+                        if line.strip().startswith("Source-SHA1:"):
+                            lines[idx] = new_line
+                            replaced = True
+                            break
+                    if not replaced:
+                        if lines and lines[-1].strip():
+                            lines.append("")
+                        lines.append(new_line)
+                    new_note = "\n".join(lines)
+                else:
+                    new_note = new_line
+            else:
+                # Append any non-header tail content exactly as-is, separated by a blank line.
+                if tail_lines:
+                    new_note = header + "\n\n" + "\n".join(tail_lines)
+                else:
+                    new_note = header
+
             try:
                 update_req = NodeUpdateRequest(
                     name=file_node.get("name"),
@@ -2611,7 +2663,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 )
                 await self.update_node(str(file_node_id), update_req)
             except Exception as e:  # noqa: BLE001
-                raise NetworkError(f"Failed to update file node hash note: {e}") from e
+                raise NetworkError(f"Failed to update file node note: {e}") from e
 
             # Mark nodes-export cache dirty for this subtree
             try:

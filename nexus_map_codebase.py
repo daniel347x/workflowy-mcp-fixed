@@ -43,6 +43,27 @@ def _get_line_count(path: str) -> Optional[int]:
         return None
 
 
+def format_file_note(path: str, line_count: int | None = None, sha1: str | None = None) -> str:
+    """Format the standard FILE-node note header.
+
+    Shared between Cartographer (map_codebase) and per-file beacon refresh
+    (refresh_file_node_beacons) so that FILE nodes always expose a consistent
+    header block:
+
+        Path: ...
+        LINE COUNT: N
+        Source-SHA1: ...
+
+    LINE COUNT and Source-SHA1 are optional and omitted when not provided.
+    """
+    lines: list[str] = [f"Path: {path}"]
+    if line_count is not None:
+        lines.append(f"LINE COUNT: {line_count}")
+    if sha1 is not None:
+        lines.append(f"Source-SHA1: {sha1}")
+    return "\n".join(lines)
+
+
 # --- Parsers ---
 
 def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
@@ -1505,12 +1526,9 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
                         icon = EMOJI_FILE
                         children = []  # Generic file = Leaf node
                         line_count = _get_line_count(full_path)
-                    
-                    note_lines = [f"Path: {full_path}"]
-                    if line_count is not None:
-                        note_lines.append(f"LINE COUNT: {line_count}")
-                    note = "\n".join(note_lines)
-                    
+
+                    note = format_file_note(full_path, line_count=line_count)
+
                     nodes.append({
                         "name": f"{icon} {item}",
                         "note": note,
@@ -1530,10 +1548,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
         if ext == '.py':
             children = parse_file_outline(root_path)
             lc = _get_line_count(root_path)
-            note_lines = [f"Path: {root_path}"]
-            if lc is not None:
-                note_lines.append(f"LINE COUNT: {lc}")
-            note = "\n".join(note_lines)
+            note = format_file_note(root_path, line_count=lc)
             return {
                 "name": f"{EMOJI_PYTHON} {os.path.basename(root_path)}",
                 "note": note,
@@ -1542,10 +1557,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
         elif ext == '.md':
             children = parse_markdown_structure(root_path)
             lc = _get_line_count(root_path)
-            note_lines = [f"Path: {root_path}"]
-            if lc is not None:
-                note_lines.append(f"LINE COUNT: {lc}")
-            note = "\n".join(note_lines)
+            note = format_file_note(root_path, line_count=lc)
             return {
                 "name": f"{EMOJI_MARKDOWN} {os.path.basename(root_path)}",
                 "note": note,
@@ -1557,8 +1569,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
             children: List[Dict[str, Any]] = []
             sql_beacons = parse_sql_beacon_blocks(sql_lines)
             apply_sql_beacons(sql_lines, children, sql_beacons)
-            note_lines = [f"Path: {root_path}", f"LINE COUNT: {len(sql_lines)}"]
-            note = "\n".join(note_lines)
+            note = format_file_note(root_path, line_count=len(sql_lines))
             return {
                 "name": f"{EMOJI_SQL} {os.path.basename(root_path)}",
                 "note": note,
@@ -1570,8 +1581,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
             children: List[Dict[str, Any]] = []
             sh_beacons = parse_sh_beacon_blocks(sh_lines)
             apply_sh_beacons(sh_lines, children, sh_beacons)
-            note_lines = [f"Path: {root_path}", f"LINE COUNT: {len(sh_lines)}"]
-            note = "\n".join(note_lines)
+            note = format_file_note(root_path, line_count=len(sh_lines))
             return {
                 "name": f"{EMOJI_SHELL} {os.path.basename(root_path)}",
                 "note": note,
@@ -1579,10 +1589,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
             }
         else:
              lc = _get_line_count(root_path)
-             note_lines = [f"Path: {root_path}"]
-             if lc is not None:
-                 note_lines.append(f"LINE COUNT: {lc}")
-             note = "\n".join(note_lines)
+             note = format_file_note(root_path, line_count=lc)
              return {
                 "name": f"{EMOJI_FILE} {os.path.basename(root_path)}",
                 "note": note,
