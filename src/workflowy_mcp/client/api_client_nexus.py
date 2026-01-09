@@ -144,6 +144,16 @@ def scan_active_weaves(nexus_runs_base: str) -> list[dict[str, Any]]:
     return active
 
 
+def _is_notes_name(raw_name: str) -> bool:
+    """Detect Notes[...] roots (strip leading emoji/bullets)."""
+    name = (raw_name or "").strip()
+    if not name:
+        return False
+    if not name[0].isalnum():
+        name = name[1:].lstrip()
+    return name.lower().startswith("notes")
+
+
 class WorkFlowyClientNexus(WorkFlowyClientEtch):
     """NEXUS pipeline operations - extends Etch."""
 
@@ -2334,15 +2344,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if parent_id:
                 children_by_parent.setdefault(str(parent_id), []).append(n)
 
-        def _is_notes_name(raw_name: str) -> bool:
-            name = (raw_name or "").strip()
-            if not name:
-                return False
-            # Strip a single leading non-alphanumeric symbol (emoji, bullet, etc.)
-            if name and not name[0].isalnum():
-                name = name[1:].lstrip()
-            return name.lower().startswith("notes")
-
         # 4.2a Stash immediate Notes[...] roots under the FILE node keyed by its Path.
         stashed_notes_by_path: dict[str | None, list[str]] = {}
         file_children = children_by_parent.get(str(file_node_id), [])
@@ -2940,22 +2941,36 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if nid:
                     original_ids_seen.add(str(nid))
 
-            def _is_notes_name(raw_name: str) -> bool:
-                name = (raw_name or "").strip()
-                if not name:
-                    return False
-                if not name[0].isalnum():
-                    name = name[1:].lstrip()
-                return name.lower().startswith("notes")
+            # Build a parent→children index so we can preserve entire Notes[...] subtrees
+            # (roots and all descendants) via explicitly_preserved_ids.
+            children_by_parent: dict[str, list[dict[str, Any]]] = {}
+            for n in flat_nodes:
+                pid = n.get("parent_id") or n.get("parentId")
+                if pid:
+                    children_by_parent.setdefault(str(pid), []).append(n)
 
             explicitly_preserved_ids: set[str] = set()
+
+            def _collect_notes_descendants(root_id: str) -> None:
+                for child in children_by_parent.get(root_id, []) or []:
+                    cid = child.get("id")
+                    if not cid:
+                        continue
+                    cid_str = str(cid)
+                    if cid_str in explicitly_preserved_ids:
+                        continue
+                    explicitly_preserved_ids.add(cid_str)
+                    _collect_notes_descendants(cid_str)
+
             for n in flat_nodes:
                 nid = n.get("id")
                 if not nid:
                     continue
                 name = str(n.get("name") or "")
                 if _is_notes_name(name):
-                    explicitly_preserved_ids.add(str(nid))
+                    root_id = str(nid)
+                    explicitly_preserved_ids.add(root_id)
+                    _collect_notes_descendants(root_id)
 
             source_json: dict[str, Any] = {
                 "export_root_id": str(file_node_id),
@@ -3241,14 +3256,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         def _canonical_path(path: str) -> str:
             return os.path.normcase(os.path.normpath(path))
 
-        def _is_notes_name(raw_name: str) -> bool:
-            """Detect immediate Notes[...] roots (strip leading emoji/bullets)."""
-            name = (raw_name or "").strip()
-            if not name:
-                return False
-            if not name[0].isalnum():
-                name = name[1:].lstrip()
-            return name.lower().startswith("notes")
 
         # Root Path: (may be None or a directory path)
         root_path = _parse_path_from_note(note_text_root) if note_text_root else None
