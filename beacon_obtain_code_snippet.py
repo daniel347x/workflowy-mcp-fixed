@@ -1316,6 +1316,7 @@ def _markdown_snippet_for_beacon(
 
     for j in range(block_end + 1, n + 1):
         stripped = lines[j - 1].strip()
+        # Heading: one or more '#' characters followed by a space
         if _re_md_beacon.match(r"^#{1,32}\s", stripped):
             next_header = j
             break

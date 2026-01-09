@@ -383,7 +383,7 @@ def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                             # Default: until just before next header (any level)
                             span_end = len(lines)
                             for idx in range(span_start + 1, len(lines) + 1):
-                                if re.match(r"^#{1,6}\\s", lines[idx - 1]):
+                                if re.match(r"^#{1,6}\s", lines[idx - 1]):
                                     span_end = idx - 1
                                     break
 
@@ -460,7 +460,8 @@ def apply_markdown_beacons(
     Auto-promotion:
       - For beacons where ``kind`` is *not* explicitly set and the first
         non-blank, non-HTML-comment line after the beacon block is a heading
-        (``^#{1,32}\s``), we auto-upgrade ``kind`` from ``span`` to ``ast``.
+        (e.g. a line starting with one or more ``#`` followed by a space),
+        we auto-upgrade ``kind`` from ``span`` to ``ast``.
     """
     if not beacons or not root_children:
         return
@@ -492,7 +493,7 @@ def apply_markdown_beacons(
             # First significant line after the beacon block: if it's a
             # heading of any level (we accept up to 32 '#' chars for
             # extended Markdown), upgrade this beacon to AST.
-            if re.match(r"^#{1,32}\\s", stripped):
+            if re.match(r"^#{1,32}\s", stripped):
                 beacon["kind"] = "ast"
             break
 
