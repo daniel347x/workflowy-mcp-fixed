@@ -488,14 +488,21 @@ def apply_markdown_beacons(
                 break
             k += 1
         j = block_end + 1
+        in_html_comment = False
         while j <= len(lines):
-            stripped = lines[j - 1].strip()
+            raw = lines[j - 1]
+            stripped = raw.strip()
             if not stripped:
                 j += 1
                 continue
-            # Skip non-beacon HTML comment sentinel lines when searching for
-            # the next significant line.
-            if (stripped.startswith("<!--") or stripped.startswith("-->")) and "@beacon[" not in stripped:
+            # Track and skip non-beacon HTML comment blocks (multi-line), so
+            # we only consider real content lines when deciding whether to
+            # auto-promote this beacon to an AST beacon.
+            if not in_html_comment and "<!--" in raw and "@beacon[" not in raw:
+                in_html_comment = True
+            if in_html_comment:
+                if "-->" in raw:
+                    in_html_comment = False
                 j += 1
                 continue
             # First significant line after the beacon block: if it's a
