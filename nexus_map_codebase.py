@@ -2514,8 +2514,10 @@ if __name__ == "__main__":
             # We assume nexus_tree matches the ether_root in structure (Root -> Children)
             # If names differ (e.g. root name change), we might fail to match top level,
             # but usually we care about children.
-            reconcile_trees(nexus_tree, ether_root)
-            print("✅ Reconciliation complete. UUIDs preserved.")
+            # Use Cartographer-aware reconciliation so beacon/AST/MD_PATH anchors
+            # drive ID preservation, with name-based matching as a fallback.
+            reconcile_trees_cartographer(nexus_tree, ether_root)
+            print("✅ Reconciliation complete (Cartographer-aware). UUIDs preserved.")
         else:
              print("⚠️ Existing map loaded but empty/invalid.")
 
