@@ -2779,6 +2779,53 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         )
 
         incremental_probe: dict[str, Any] | None = None
+        resolved_from_descendant = False
+
+        # 0) Optional descendant→FILE resolution so callers may pass a beacon or AST
+        # child UUID and still get a file-scoped incremental refresh, matching the
+        # behavior of _refresh_file_node_beacons_legacy.
+        try:
+            raw_cache = await export_nodes_impl(
+                self,
+                node_id=None,
+                use_cache=True,
+                force_refresh=False,
+            )
+            all_nodes_cache = raw_cache.get("nodes", []) or []
+            nodes_by_id_cache: dict[str, dict[str, Any]] = {
+                str(n.get("id")): n for n in all_nodes_cache if n.get("id")
+            }
+        except Exception:
+            nodes_by_id_cache = {}
+
+        if nodes_by_id_cache and str(file_node_id) in nodes_by_id_cache:
+            current_id: str | None = str(file_node_id)
+            visited_ids: set[str] = set()
+            resolved_file_node_id: str | None = None
+
+            while current_id and current_id not in visited_ids:
+                visited_ids.add(current_id)
+                node = nodes_by_id_cache.get(current_id)
+                if not node:
+                    break
+
+                n_note = node.get("note") or node.get("no") or ""
+                if isinstance(n_note, str) and "Path:" in n_note:
+                    # This is the enclosing FILE node created by Cartographer.
+                    resolved_file_node_id = current_id
+                    break
+
+                parent_id_val = node.get("parent_id") or node.get("parentId")
+                current_id = str(parent_id_val) if parent_id_val else None
+
+            if resolved_file_node_id and resolved_file_node_id != file_node_id:
+                log_event(
+                    "refresh_file_node_beacons (incremental): resolved descendant UUID "
+                    f"{file_node_id} → FILE node {resolved_file_node_id}",
+                    "BEACON",
+                )
+                file_node_id = resolved_file_node_id
+                resolved_from_descendant = True
 
         try:
             import importlib
@@ -2943,33 +2990,72 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     "reconcile",
                 )
 
-            # 7) Call reconcile_tree in DRY-RUN mode to get a plan (no mutations)
-            reconcile_plan: dict[str, Any] | None = None
+            # 7) Call reconcile_tree to compute and optionally apply an incremental
+            # plan for this FILE node. This uses the same reconciliation engine as
+            # WEAVE but scoped to a single file.
+            from ..models import NodeListRequest
+            from .workflowy_move_reconcile import reconcile_tree as _reconcile_tree_for_f12
+
+            stats: dict[str, Any] = {
+                "api_calls": 0,
+                "nodes_created": 0,
+                "nodes_updated": 0,
+                "nodes_deleted": 0,
+                "nodes_moved": 0,
+            }
+
+            async def list_wrapper(parent_uuid: str) -> list[dict[str, Any]]:
+                request = NodeListRequest(parentId=parent_uuid)
+                nodes, _ = await self.list_nodes(request)
+                stats["api_calls"] += 1
+                return [n.model_dump() for n in nodes]
+
+            async def create_wrapper(parent_uuid: str, data: dict) -> str:
+                req = NodeCreateRequest(
+                    name=data.get("name"),
+                    parent_id=parent_uuid,
+                    note=data.get("note"),
+                    layoutMode=(data.get("data") or {}).get("layoutMode"),
+                    position="bottom",
+                )
+                _log_to_file_helper(f"F12 CREATE: {data.get('name')}", "reconcile")
+                node = await self.create_node(req, _internal_call=True)
+                stats["api_calls"] += 1
+                stats["nodes_created"] += 1
+                return node.id
+
+            async def update_wrapper(node_uuid: str, data: dict) -> None:
+                req = NodeUpdateRequest(
+                    name=data.get("name"),
+                    note=data.get("note"),
+                    layoutMode=(data.get("data") or {}).get("layoutMode"),
+                )
+                _log_to_file_helper(f"F12 UPDATE: {node_uuid}", "reconcile")
+                await self.update_node(node_uuid, req)
+                stats["api_calls"] += 1
+                stats["nodes_updated"] += 1
+
+            async def delete_wrapper(node_uuid: str) -> None:
+                _log_to_file_helper(f"F12 DELETE: {node_uuid}", "reconcile")
+                await self.delete_node(node_uuid)
+                stats["api_calls"] += 1
+                stats["nodes_deleted"] += 1
+
+            async def move_wrapper(node_uuid: str, new_parent: str, position: str = "top") -> None:
+                _log_to_file_helper(f"F12 MOVE: {node_uuid}", "reconcile")
+                await self.move_node(node_uuid, new_parent, position)
+                stats["api_calls"] += 1
+                stats["nodes_moved"] += 1
+
+            async def export_wrapper(node_uuid: str) -> dict:
+                # Use the same bulk export helper as the rest of the client.
+                _log_to_file_helper(f"F12 EXPORT: {node_uuid}", "reconcile")
+                data = await export_nodes_impl(self, node_uuid)
+                stats["api_calls"] += 1
+                return data
+
             try:
-                from .workflowy_move_reconcile import reconcile_tree as _reconcile_tree_for_f12
-
-                async def list_wrapper(parent_uuid: str) -> list[dict[str, Any]]:
-                    # For dry-run we rely on export_nodes for the full snapshot;
-                    # list_nodes is not used in that path.
-                    return []
-
-                async def create_wrapper(parent_uuid: str, data: dict) -> str:
-                    return "DRYRUN-CREATE"
-
-                async def update_wrapper(node_uuid: str, data: dict) -> None:
-                    return None
-
-                async def delete_wrapper(node_uuid: str) -> None:
-                    return None
-
-                async def move_wrapper(node_uuid: str, new_parent: str, position: str = "top") -> None:
-                    return None
-
-                async def export_wrapper(node_uuid: str) -> dict:
-                    # Use the same bulk export helper as the rest of the client.
-                    return await export_nodes_impl(self, node_uuid)
-
-                reconcile_plan = await _reconcile_tree_for_f12(
+                reconcile_result = await _reconcile_tree_for_f12(
                     source_json=source_json,
                     parent_uuid=str(file_node_id),
                     list_nodes=list_wrapper,
@@ -2979,23 +3065,31 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     move_node=move_wrapper,
                     export_nodes=export_wrapper,
                     import_policy="strict",
-                    dry_run=True,
+                    dry_run=dry_run,
                     skip_delete_bulk_export_wait=True,
                     log_to_file_msg=lambda m: _log_to_file_helper(m, "reconcile"),
                 )
             except Exception as e:  # noqa: BLE001
-                reconcile_plan = {"success": False, "error": str(e)}
                 _log_to_file_helper(
-                    f"refresh_file_node_beacons incremental: reconcile_tree dry-run failed: {e}",
+                    f"refresh_file_node_beacons incremental: reconcile_tree failed: {e}",
                     "reconcile",
                 )
+                raise
 
             incremental_probe = {
+                "success": True,
                 "source_json_file": source_json_path,
-                "reconcile_dry_run_plan": reconcile_plan,
+                "reconcile_result": reconcile_result,
                 "file_node_id_effective": str(file_node_id),
                 "source_path": source_path,
+                "resolved_from_descendant": resolved_from_descendant,
+                "stats": stats,
             }
+            log_event(
+                "refresh_file_node_beacons incremental scaffold complete "
+                f"(file_node_id_effective={file_node_id}, source_json_file={source_json_path}, dry_run={dry_run})",
+                "BEACON",
+            )
 
         except Exception as e:  # noqa: BLE001
             # Incremental scaffold is strictly best-effort. Any error falls back
@@ -3005,13 +3099,52 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "success": False,
                 "error": str(e),
                 "file_node_id_effective": str(file_node_id),
+                "resolved_from_descendant": resolved_from_descendant,
             }
             _log_to_file_helper(
                 f"refresh_file_node_beacons incremental scaffold failed (falling back to legacy): {e}",
                 "reconcile",
             )
+            log_event(
+                "refresh_file_node_beacons incremental scaffold failed; falling back to legacy "
+                f"(file_node_id_effective={file_node_id}): {e}",
+                "BEACON",
+            )
 
-        # 8) Delegate the actual mutation to the existing legacy implementation
+        # 8) If incremental scaffold succeeded, return its result directly without
+        # calling the legacy full-rebuild path. Legacy remains available as a
+        # fallback when the incremental path fails.
+        if incremental_probe is not None and incremental_probe.get("success"):
+            result: dict[str, Any] = {
+                "success": True,
+                "file_node_id": incremental_probe.get("file_node_id_effective"),
+                "source_path": incremental_probe.get("source_path"),
+                "dry_run": dry_run,
+                "reconcile_result": incremental_probe.get("reconcile_result"),
+            }
+            stats = incremental_probe.get("stats")
+            if isinstance(stats, dict):
+                result.update(
+                    {
+                        "nodes_created": stats.get("nodes_created"),
+                        "nodes_updated": stats.get("nodes_updated"),
+                        "nodes_deleted": stats.get("nodes_deleted"),
+                        "nodes_moved": stats.get("nodes_moved"),
+                        "api_calls": stats.get("api_calls"),
+                    }
+                )
+            result["_incremental_probe"] = incremental_probe
+            if not dry_run:
+                try:
+                    self._mark_nodes_export_dirty(
+                        [str(incremental_probe.get("file_node_id_effective") or file_node_id)]
+                    )
+                except Exception:
+                    pass
+            return result
+
+        # 9) Incremental scaffold failed – delegate mutation to the existing
+        # legacy implementation while preserving probe metadata for debugging.
         legacy_result = await self._refresh_file_node_beacons_legacy(
             file_node_id=file_node_id,
             dry_run=dry_run,
