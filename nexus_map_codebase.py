@@ -893,7 +893,7 @@ def normalize_for_match(s: str) -> str:
     return "".join(ch for ch in s if not ch.isspace())
 
 
-_TAG_LIKE_PATTERN = re.compile(r"<[A-Za-z_/][A-Za-z0-9_\-/]*>")
+_TAG_LIKE_PATTERN = re.compile(r"<[A-Za-z_/][-A-Za-z0-9_/]*>")
 
 
 def whiten_text_for_header_compare(text: str | None) -> str:
