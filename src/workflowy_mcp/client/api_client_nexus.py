@@ -160,7 +160,7 @@ class NotesSalvageContext:
     """Shared NOTES salvage/restore metadata for a single FILE node.
 
     This context is produced before we mutate a Cartographer-mapped FILE subtree
-    (legacy full-rebuild path) and may also be used in the incremental F12 path
+    (legacy full-rebuild path) and is also used in the incremental F12 path
     as belt-and-suspenders protection.
     """
 
@@ -168,6 +168,8 @@ class NotesSalvageContext:
     saved_notes_by_beacon: dict[str, list[str]] = field(default_factory=dict)
     # FILE-level path-based salvage: canonical_path/None -> [notes_root_id, ...]
     stashed_notes_by_path: dict[str | None, list[str]] = field(default_factory=dict)
+    # Notes under non-FILE, non-beacon parents keyed by original parent_id
+    generic_notes_by_parent: dict[str, list[str]] = field(default_factory=dict)
 
     # Parking node used only in the legacy path when we temporarily move
     # NOTES subtrees out from under beacon nodes while we delete/rebuild the
@@ -3564,10 +3566,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
           Path so they can be reattached after structural changes.
 
         In "incremental" mode we still avoid a parking node, but when not
-        dry_run we *do* physically move beacon-scoped Notes[...] subtrees up
-        under the FILE node before reconcile_tree runs. This fully decouples
-        NOTES from structural mutations while still relying on
-        explicitly_preserved_ids as the primary deletion guard.
+        dry_run we *do* physically move Notes[...] subtrees up under the FILE
+        node before reconcile_tree runs (both beacon-scoped and generic
+        non-beacon Notes). This fully decouples NOTES from structural
+        mutations while still relying on explicitly_preserved_ids as the
+        primary deletion guard.
         """
 
         def _canonical_path(path: str) -> str:
@@ -3575,12 +3578,15 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         ctx = NotesSalvageContext()
 
-        # Build parent→children index once for this snapshot.
+        # Build parent→children and id→node indexes once for this snapshot.
         children_by_parent: dict[str, list[dict[str, Any]]] = {}
+        nodes_by_id: dict[str, dict[str, Any]] = {}
         for n in flat_nodes:
             nid = n.get("id")
             if not nid:
                 continue
+            s_nid = str(nid)
+            nodes_by_id[s_nid] = n
             pid = n.get("parent_id") or n.get("parentId")
             if pid:
                 children_by_parent.setdefault(str(pid), []).append(n)
@@ -3625,13 +3631,43 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     ctx.saved_notes_by_beacon.setdefault(beacon_id_val, []).append(str(cid))
                     ctx.total_notes_to_salvage += 1
 
-        # 3) Optional: pre-salvage moves.
+        # 3) Generic Notes[...] under non-FILE, non-beacon parents. These would
+        # otherwise block deletion of their structural parents during
+        # incremental reconcile.
+        salvaged_ids: set[str] = set()
+        for ids_list in ctx.saved_notes_by_beacon.values():
+            salvaged_ids.update(ids_list)
+
+        for parent_id, children in children_by_parent.items():
+            if parent_id == str(file_node_id):
+                continue
+
+            parent_node = nodes_by_id.get(parent_id) or {}
+            parent_note = parent_node.get("note") or ""
+            # Skip parents that are themselves beacon nodes – their Notes are
+            # already tracked in saved_notes_by_beacon.
+            if "BEACON (" in str(parent_note):
+                continue
+
+            for child in children:
+                cid = child.get("id")
+                if not cid:
+                    continue
+                cid_str = str(cid)
+                if cid_str in salvaged_ids:
+                    continue
+                cname = str(child.get("name") or "")
+                if _is_notes_name(cname):
+                    ctx.generic_notes_by_parent.setdefault(parent_id, []).append(cid_str)
+                    ctx.total_notes_to_salvage += 1
+
+        # 4) Optional: pre-salvage moves.
         #
         # In legacy mode we use a dedicated 🅿️ Notes (parking) node under the
         # FILE and move beacon-scoped NOTES there before deleting the
         # structural subtree. In incremental mode we avoid a parking node but
-        # still physically move beacon-scoped NOTES up under the FILE node so
-        # they are decoupled from any reconcile_tree mutations.
+        # still physically move NOTES up under the FILE node so they are
+        # decoupled from any reconcile_tree mutations.
         if mode == "legacy":
             # Locate existing parking node if present.
             for child in file_children:
@@ -3679,10 +3715,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             )
         elif mode == "incremental":
             # In incremental mode we skip a parking node but still, when not
-            # dry_run, move beacon-scoped Notes[...] roots directly under the
-            # FILE node. This ensures reconcile_tree never sees them as
-            # children of a structural parent that might be moved or deleted.
-            if not dry_run and ctx.saved_notes_by_beacon:
+            # dry_run, move beacon-scoped and generic Notes[...] roots directly
+            # under the FILE node. This ensures reconcile_tree never sees them
+            # as children of a structural parent that might be moved or
+            # deleted.
+            if not dry_run:
+                # Beacon-scoped first
                 for notes_list in ctx.saved_notes_by_beacon.values():
                     for nid in notes_list:
                         try:
@@ -3693,6 +3731,30 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 f"Failed to move notes node {nid} to file root {file_node_id}: {e}",
                                 "BEACON",
                             )
+                # Then generic Notes under non-FILE, non-beacon parents
+                for notes_list in ctx.generic_notes_by_parent.values():
+                    for nid in notes_list:
+                        try:
+                            await self.move_node(nid, str(file_node_id), "bottom")
+                            ctx.notes_moved_to_parking += 1
+                        except Exception as e:  # noqa: BLE001
+                            log_event(
+                                f"Failed to move generic notes node {nid} to file root {file_node_id}: {e}",
+                                "BEACON",
+                            )
+
+        # 5) Log summary for observability.
+        try:
+            log_event(
+                "collect_notes_salvage_context_for_file "
+                f"mode={mode} file={file_node_id} path={source_path} "
+                f"beacon_roots={sum(len(v) for v in ctx.saved_notes_by_beacon.values())} "
+                f"generic_parents={len(ctx.generic_notes_by_parent)} "
+                f"notes_moved_pre_reconcile={ctx.notes_moved_to_parking}",
+                "BEACON",
+            )
+        except Exception:
+            pass
 
         return ctx
 
@@ -3712,6 +3774,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
           a 🧩 Notes (salvaged) node when the beacon disappeared).
         - Reattach FILE-level Notes[...] roots keyed by canonical Path so they
           remain directly under the FILE node.
+        - Reattach generic Notes[...] that were temporarily moved off
+          non-FILE, non-beacon parents in the incremental path, or salvage
+          them under 🧩 Notes (salvaged) when their original parents vanish.
         - Clean up a parking node created during collection when appropriate.
 
         This helper is used by both the legacy full-rebuild path and the
@@ -3745,6 +3810,47 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if pid:
                 children_by_parent.setdefault(str(pid), []).append(n)
 
+        salvaged_root_id: str | None = None
+
+        async def _ensure_salvaged_root() -> str | None:
+            """Locate or create the 🧩 Notes (salvaged) root under the FILE node."""
+            nonlocal salvaged_root_id
+
+            if dry_run:
+                return None
+            if salvaged_root_id is not None:
+                return salvaged_root_id
+
+            # Try to locate an existing salvaged root first.
+            for child in children_by_parent.get(str(file_node_id), []) or []:
+                cid = child.get("id")
+                if not cid:
+                    continue
+                cname = str(child.get("name") or "")
+                if _is_notes_name(cname) and "salvaged" in cname.lower():
+                    salvaged_root_id = str(cid)
+                    return salvaged_root_id
+
+            # Create a new salvaged root.
+            req = NodeCreateRequest(
+                name="🧩 Notes (salvaged)",
+                parent_id=str(file_node_id),
+                note=None,
+                layoutMode=None,
+                position="bottom",
+            )
+            try:
+                created = await self.create_node(
+                    req,
+                    _internal_call=True,
+                )
+                salvaged_root_id = created.id
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(
+                    f"Failed to create 'Notes (salvaged)' node: {e}",
+                ) from e
+            return salvaged_root_id
+
         # 2) Build beacon_id → new Workflowy node id mapping.
         new_beacon_nodes: dict[str, str] = {}
         for n in refreshed_nodes:
@@ -3766,7 +3872,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # 3) Reattach beacon-scoped NOTES.
         notes_salvaged = 0
         notes_orphaned = 0
-        salvaged_root_id: str | None = None
 
         if salvage_ctx.saved_notes_by_beacon:
             if dry_run:
@@ -3793,42 +3898,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         # node if possible.
                         if not ids_list:
                             continue
-                        if salvaged_root_id is None and not dry_run:
-                            # Try to locate an existing salvaged root first.
-                            for child in children_by_parent.get(str(file_node_id), []) or []:
-                                cid = child.get("id")
-                                if not cid:
-                                    continue
-                                cname = str(child.get("name") or "")
-                                if _is_notes_name(cname) and "salvaged" in cname.lower():
-                                    salvaged_root_id = str(cid)
-                                    break
-
-                            if salvaged_root_id is None:
-                                req = NodeCreateRequest(
-                                    name="🧩 Notes (salvaged)",
-                                    parent_id=str(file_node_id),
-                                    note=None,
-                                    layoutMode=None,
-                                    position="bottom",
-                                )
-                                try:
-                                    created = await self.create_node(
-                                        req,
-                                        _internal_call=True,
-                                    )
-                                    salvaged_root_id = created.id
-                                except Exception as e:  # noqa: BLE001
-                                    raise NetworkError(
-                                        f"Failed to create 'Notes (salvaged)' node: {e}",
-                                    ) from e
-
+                        root_id = await _ensure_salvaged_root()
                         for nid in ids_list:
-                            if dry_run or salvaged_root_id is None:
+                            if dry_run or root_id is None:
                                 notes_orphaned += 1
                                 continue
                             try:
-                                await self.move_node(nid, salvaged_root_id, "bottom")
+                                await self.move_node(nid, root_id, "bottom")
                                 notes_orphaned += 1
                             except Exception as e:  # noqa: BLE001
                                 log_event(
@@ -3836,7 +3912,52 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                     "BEACON",
                                 )
 
-        # 4) FILE-level path-based Notes[...] reattachment (immediate Notes under
+        # 4) Generic Notes[...] reattachment for incremental path.
+        generic_reattached = 0
+        generic_salvaged = 0
+
+        if salvage_ctx.generic_notes_by_parent:
+            if dry_run:
+                for parent_id, ids_list in salvage_ctx.generic_notes_by_parent.items():
+                    if parent_id in node_by_id:
+                        generic_reattached += len(ids_list)
+                    else:
+                        generic_salvaged += len(ids_list)
+            else:
+                for parent_id, ids_list in salvage_ctx.generic_notes_by_parent.items():
+                    parent_exists = parent_id in node_by_id
+                    if parent_exists:
+                        for nid in ids_list:
+                            if nid not in node_by_id:
+                                # Note vanished entirely; treat as orphan.
+                                generic_salvaged += 1
+                                continue
+                            try:
+                                await self.move_node(nid, parent_id, "bottom")
+                                generic_reattached += 1
+                            except Exception as e:  # noqa: BLE001
+                                log_event(
+                                    f"Failed to reattach generic notes node {nid} to parent {parent_id}: {e}",
+                                    "BEACON",
+                                )
+                    else:
+                        # Original structural parent is gone – salvage under
+                        # 🧩 Notes (salvaged) if possible.
+                        root_id = await _ensure_salvaged_root()
+                        for nid in ids_list:
+                            if dry_run or root_id is None:
+                                generic_salvaged += 1
+                                continue
+                            try:
+                                await self.move_node(nid, root_id, "bottom")
+                                generic_salvaged += 1
+                            except Exception as e:  # noqa: BLE001
+                                log_event(
+                                    f"Failed to move generic notes node {nid} to salvaged root: {e}",
+                                    "BEACON",
+                                )
+
+        # 5) FILE-level path-based Notes[...] reattachment (immediate Notes under
         # the FILE node whose Path matches source_path).
         total_notes_stashed_by_path = sum(
             len(v) for v in salvage_ctx.stashed_notes_by_path.values()
@@ -3868,13 +3989,29 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     else:
                         notes_path_unmatched += len(ids_list)
 
-        # 5) Clean up parking node if we created it during collection.
+        # 6) Clean up parking node if we created it during collection.
         if not dry_run and salvage_ctx.parking_created_here and salvage_ctx.parking_node_id:
             try:
                 await self.delete_node(salvage_ctx.parking_node_id)
             except Exception:
                 # Non-fatal; at worst the parking node remains in the tree.
                 pass
+
+        # 7) Log summary and return counts.
+        try:
+            log_event(
+                "_restore_notes_for_file "
+                f"file={file_node_id} path={source_path} "
+                f"identified={salvage_ctx.total_notes_to_salvage} "
+                f"notes_salvaged={notes_salvaged} notes_orphaned={notes_orphaned} "
+                f"generic_reattached={generic_reattached} generic_salvaged={generic_salvaged} "
+                f"stashed_by_path={total_notes_stashed_by_path} "
+                f"path_reattached={notes_path_reattached} path_unmatched={notes_path_unmatched} "
+                f"notes_moved_pre_reconcile={salvage_ctx.notes_moved_to_parking}",
+                "BEACON",
+            )
+        except Exception:
+            pass
 
         return {
             "notes_identified_for_salvage": salvage_ctx.total_notes_to_salvage,
@@ -3884,4 +4021,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "notes_path_reattached": notes_path_reattached,
             "notes_path_unmatched": notes_path_unmatched,
             "notes_moved_to_parking": salvage_ctx.notes_moved_to_parking,
+            "generic_notes_reattached": generic_reattached,
+            "generic_notes_salvaged": generic_salvaged,
         }
