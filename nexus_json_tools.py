@@ -19,7 +19,7 @@ running `nexus_weave` to write changes back into Workflowy.
 Example (simple rename):
 
   python nexus_json_tools.py \
-    E:\...\\temp\\qm-XXXX-mcp-deploy-docs--nexus_mcp_deploy_47ec.json \
+    E:\\...\\temp\\qm-XXXX-mcp-deploy-docs--nexus_mcp_deploy_47ec.json \
     rename-node --id 577dcdf0-... --name "New step title"
 
 Example (3-way shard fuse):

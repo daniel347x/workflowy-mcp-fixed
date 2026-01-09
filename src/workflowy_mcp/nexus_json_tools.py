@@ -19,7 +19,7 @@ running `nexus_weave` to write changes back into Workflowy.
 Example (simple rename):
 
   python nexus_json_tools.py \
-    E:\...\\temp\\qm-XXXX-mcp-deploy-docs--nexus_mcp_deploy_47ec.json \
+    E:\\...\\temp\\qm-XXXX-mcp-deploy-docs--nexus_mcp_deploy_47ec.json \
     rename-node --id 577dcdf0-... --name "New step title"
 
 Example (3-way shard fuse):
@@ -57,6 +57,77 @@ from typing import Any, Dict, List, Optional, Tuple, Set
 JsonDict = Dict[str, Any]
 
 
+def _build_jewel_preview_lines(
+    roots: List[JsonDict],
+    max_note_chars: int = 1024,
+) -> List[str]:
+    """Build a human-readable preview of the JEWEL / GEM tree.
+
+    This preview is purely for agents/humans. It is never read by any NEXUS or
+    JEWELSTORM algorithm and is safe to regenerate or discard at any time.
+    """
+    # PASS 1: Collect all jewel_id / id labels to compute max width
+    all_labels: List[str] = []
+
+    def collect_labels(node: JsonDict) -> None:
+        jewel_id = node.get("jewel_id") or node.get("id") or "?"
+        all_labels.append(str(jewel_id))
+        children = node.get("children") or []
+        for child in children:
+            if isinstance(child, dict):
+                collect_labels(child)
+
+    for root in roots or []:
+        if isinstance(root, dict):
+            collect_labels(root)
+
+    max_id_width = max((len(lbl) for lbl in all_labels), default=0)
+
+    # PASS 2: Build aligned preview lines
+    lines: List[str] = []
+
+    def walk(node: JsonDict, depth: int) -> None:
+        jewel_id = node.get("jewel_id") or node.get("id") or "?"
+        id_label = str(jewel_id).ljust(max_id_width)
+        indent = " " * 4 * depth
+        children = node.get("children") or []
+        has_child_dicts = any(isinstance(c, dict) for c in children)
+        bullet = "•" if not has_child_dicts else "⦿"
+        name = node.get("name") or "Untitled"
+        note = node.get("note") or ""
+
+        # Surface SKELETON role hints in the preview (delete vs merge targets)
+        sk_hint = node.get("skeleton_hint")
+        # NOTE (Dec 2025): subtree_mode='shell' is an editing-scope marker, not a
+        # deletion-intent marker. Do NOT infer DELETE_SECTION from shell.
+        if sk_hint == "DELETE_SECTION":
+            hint_prefix = "[DELETE] "
+        elif sk_hint == "MERGE_TARGET":
+            hint_prefix = "[MERGE] "
+        elif sk_hint == "PERMANENT_SECTION":
+            hint_prefix = "[KEEP] "
+        else:
+            hint_prefix = ""
+
+        if isinstance(note, str) and note:
+            flat = note.replace("\n", "\\n")
+            if len(flat) > max_note_chars:
+                flat = flat[:max_note_chars]
+            name_part = f"{hint_prefix}{name} [{flat}]"
+        else:
+            name_part = f"{hint_prefix}{name}"
+
+        lines.append(f"[{id_label}] {indent}{bullet} {name_part}")
+        for child in children:
+            if isinstance(child, dict):
+                walk(child, depth + 1)
+
+    for root in roots or []:
+        if isinstance(root, dict):
+            walk(root, 0)
+    return lines
+
+
 def log_jewel(message: str) -> None:
     """Log JEWELSTORM operations to a persistent logfile (best-effort).
 
@@ -76,11 +147,33 @@ def log_jewel(message: str) -> None:
         pass
 
 
+def _normalize_node_key_order(node: JsonDict) -> JsonDict:
+    """Ensure id / preview_id / jewel_id appear first in each node for readability."""
+    front_keys = ["id", "preview_id", "jewel_id"]
+    ordered: JsonDict = {}
+    for k in front_keys:
+        if k in node:
+            ordered[k] = node[k]
+    for k, v in node.items():
+        if k not in ordered:
+            ordered[k] = v
+    children = ordered.get("children")
+    if isinstance(children, list):
+        new_children: List[JsonDict] = []
+        for ch in children:
+            if isinstance(ch, dict):
+                new_children.append(_normalize_node_key_order(ch))
+            else:
+                new_children.append(ch)
+        ordered["children"] = new_children
+    return ordered
+
+
 def transform_jewel(
     jewel_file: str,
     operations: List[Dict[str, Any]],
     dry_run: bool = False,
-    stop_on_error: bool = True,
+    stop_on_error: bool = False,
 ) -> Dict[str, Any]:
     """Apply JEWELSTORM semantic operations to a NEXUS working_gem JSON file.
 
@@ -148,6 +241,10 @@ def transform_jewel(
         }
 
     # Determine editable roots list (supports both export-package dict and bare list)
+    nexus_tag_in_file: Optional[str] = None
+    if isinstance(data, dict):
+        nexus_tag_in_file = data.get("nexus_tag")
+
     if isinstance(data, dict) and isinstance(data.get("nodes"), list):
         original_roots = data["nodes"]
     elif isinstance(data, list):
@@ -175,6 +272,64 @@ def transform_jewel(
 
     # Work on a deep copy so we never mutate the original unless we succeed
     roots: List[JsonDict] = copy.deepcopy(original_roots)
+
+    # ------- Managed NEXUS witness context (optional) -------
+    # If this working_gem came from JEWELSTRIKE, it may carry nexus_tag.
+    # When present, we can locate the witness GEM (S0) for this run and use it
+    # to compute ancestry relationships for additional safety checks.
+    witness_parent_by_id: Optional[Dict[str, Optional[str]]] = None
+    if nexus_tag_in_file:
+        try:
+            # Resolve nexus_tag -> phantom_gem.json (best-effort).
+            # We avoid importing jewelstrike.py here because nexus_json_tools.py is often
+            # imported from non-project CWDs. Instead, replicate the minimal resolution logic.
+            from pathlib import Path
+
+            base_dir = Path(
+                r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_runs"
+            )
+            suffix = f"__{nexus_tag_in_file}"
+            candidates = [
+                child
+                for child in base_dir.iterdir()
+                if child.is_dir() and (child.name == nexus_tag_in_file or child.name.endswith(suffix))
+            ]
+            if candidates:
+                run_dir = sorted(candidates, key=lambda p: p.name)[-1]
+                phantom_path = run_dir / "phantom_gem.json"
+                if phantom_path.exists():
+                    witness_data = load_json(str(phantom_path))
+                else:
+                    witness_data = None
+            else:
+                witness_data = None
+
+            if witness_data is not None:
+                witness_roots = []
+                if isinstance(witness_data, dict) and isinstance(witness_data.get("nodes"), list):
+                    witness_roots = witness_data.get("nodes") or []
+                elif isinstance(witness_data, list):
+                    witness_roots = witness_data
+
+                # Build parent map (by real Workflowy id) from witness tree
+                w_parent: Dict[str, Optional[str]] = {}
+
+                def _walk_w(node: JsonDict, parent_id: Optional[str]) -> None:
+                    nid = node.get("id")
+                    if nid:
+                        w_parent[str(nid)] = parent_id
+                    for ch in node.get("children") or []:
+                        if isinstance(ch, dict):
+                            _walk_w(ch, str(nid) if nid else parent_id)
+
+                for r in witness_roots:
+                    if isinstance(r, dict):
+                        _walk_w(r, None)
+
+                witness_parent_by_id = w_parent
+        except Exception:
+            # Managed witness context is best-effort; never block transform_jewel.
+            witness_parent_by_id = None
 
     # ------- Indexing: jewel_id-based identity -------
     by_jewel_id: Dict[str, JsonDict] = {}
@@ -333,6 +488,31 @@ def transform_jewel(
             if isinstance(child, dict):
                 _remove_subtree_from_index(child)
 
+    def _has_any_witness_descendant(node_workflowy_id: Optional[str]) -> Optional[bool]:
+        """Return True if witness ledger implies this node has at least one known descendant.
+
+        Uses witness_parent_by_id (built from phantom_gem.json for nexus_tag) if available.
+
+        - Returns None if witness context is unavailable.
+        - Returns False if no witness descendants are found.
+
+        Note: This is an epistemic test: "known descendants", not "all descendants in ETHER".
+        """
+        if not node_workflowy_id:
+            return False
+        if witness_parent_by_id is None:
+            return None
+
+        target = str(node_workflowy_id)
+        # Any node in witness_parent_by_id whose ancestor chain includes target counts as a descendant.
+        for nid, parent in witness_parent_by_id.items():
+            cur = parent
+            while cur is not None:
+                if cur == target:
+                    return True
+                cur = witness_parent_by_id.get(cur)
+        return False
+
     def _build_subtree_from_spec(spec: Dict[str, Any]) -> JsonDict:
         """Build a new subtree from a CREATE_NODE spec (Pattern A).
 
@@ -379,6 +559,10 @@ def transform_jewel(
     def _classify_children_for_destructive_ops(node: JsonDict) -> Dict[str, Any]:
         """Classify immediate children for destructive JEWELSTORM ops.
 
+        IMPORTANT:
+        - This classification is about what is present/known in the local JSON.
+        - "truncated" means the child set may be incomplete/unknown in ETHER.
+
         Returns a dict with:
             children: list of child dict nodes
             children_status: str
@@ -389,8 +573,11 @@ def transform_jewel(
         """
         children_raw = node.get("children") or []
         children = [c for c in children_raw if isinstance(c, dict)]
-        children_status = node.get("children_status") or "complete"
-        truncated = children_status in {"truncated_by_depth", "truncated_by_count"}
+        # children_status is epistemic metadata used for WEAVE safety.
+        # NEVER default missing to 'complete' (that can cause unsafe deletes).
+        # Fail-closed: missing => unknown.
+        children_status = node.get("children_status") or "unknown"
+        truncated = children_status != "complete"
         has_loaded_ether_children = any(c.get("id") is not None for c in children)
         has_new_children = any(c.get("id") is None for c in children)
 
@@ -422,6 +609,122 @@ def transform_jewel(
     attrs_updated = 0
     errors: List[Dict[str, Any]] = []
 
+    # -------------------------------------------------------------------------
+    # Usability: normalize operation ordering + skip invalid ops
+    #
+    # Goal:
+    # - Apply DELETEs before MOVE/RENAME/etc. (avoid moving nodes that will be deleted)
+    # - When multiple DELETE_NODE ops are provided, order deepest-first so descendant
+    #   deletes happen before ancestor deletes (and optionally become redundant).
+    # - Skip MOVE_NODE ops if the source node is deleted or is inside a deleted subtree.
+    #
+    # Notes:
+    # - This is purely an offline JSON transform convenience layer.
+    # - We keep non-delete ops in relative order after deletes.
+    # -------------------------------------------------------------------------
+
+    ops_in = list(operations or [])
+
+    def _op_type(op: Dict[str, Any]) -> str:
+        return str(op.get("op") or op.get("operation") or "").upper()
+
+    delete_ops: List[Dict[str, Any]] = []
+    other_ops: List[Dict[str, Any]] = []
+    for op in ops_in:
+        if _op_type(op) == "DELETE_NODE":
+            delete_ops.append(op)
+        else:
+            other_ops.append(op)
+
+    # Build a depth lookup for delete targets (deeper-first)
+    def _resolve_jid_maybe(jid: Any) -> Optional[str]:
+        if not jid:
+            return None
+        try:
+            return _resolve_to_jewel_id(str(jid))
+        except Exception:
+            return str(jid)
+
+    def _depth_of(jid: str) -> int:
+        d = 0
+        cur = parent_by_jewel_id.get(jid)
+        while cur is not None:
+            d += 1
+            cur = parent_by_jewel_id.get(cur)
+        return d
+
+    delete_targets: List[str] = []
+    for op in delete_ops:
+        jid_raw = op.get("jewel_id")
+        jid = _resolve_jid_maybe(jid_raw)
+        if jid:
+            delete_targets.append(jid)
+
+    delete_targets_set = set(delete_targets)
+
+    # Compute redundant deletes: if an ancestor is also being deleted, the child delete is redundant.
+    redundant_deletes: set[str] = set()
+    for jid in delete_targets_set:
+        cur = parent_by_jewel_id.get(jid)
+        while cur is not None:
+            if cur in delete_targets_set:
+                redundant_deletes.add(jid)
+                break
+            cur = parent_by_jewel_id.get(cur)
+
+    # Filter + sort delete ops
+    filtered_delete_ops: List[Dict[str, Any]] = []
+    for op in delete_ops:
+        jid = _resolve_jid_maybe(op.get("jewel_id"))
+        if jid and jid in redundant_deletes:
+            # Best-effort: record as a non-fatal "skipped" error so user sees it.
+            errors.append({
+                "index": -1,
+                "op": op,
+                "code": "SKIP_REDUNDANT_DELETE",
+                "message": f"Skipping DELETE_NODE for {jid}: ancestor also deleted in same operation batch",
+            })
+            continue
+        filtered_delete_ops.append(op)
+
+    filtered_delete_ops.sort(
+        key=lambda op: _depth_of(_resolve_jid_maybe(op.get("jewel_id")) or ""),
+        reverse=True,
+    )
+
+    # Build deleted-subtree guard for MOVE_NODE skipping
+    deleted_subtree_roots = {
+        _resolve_jid_maybe(op.get("jewel_id"))
+        for op in filtered_delete_ops
+        if _resolve_jid_maybe(op.get("jewel_id"))
+    }
+
+    def _is_in_deleted_subtree(jid: str) -> bool:
+        if jid in deleted_subtree_roots:
+            return True
+        cur = parent_by_jewel_id.get(jid)
+        while cur is not None:
+            if cur in deleted_subtree_roots:
+                return True
+            cur = parent_by_jewel_id.get(cur)
+        return False
+
+    filtered_other_ops: List[Dict[str, Any]] = []
+    for op in other_ops:
+        if _op_type(op) == "MOVE_NODE":
+            jid = _resolve_jid_maybe(op.get("jewel_id"))
+            if jid and _is_in_deleted_subtree(jid):
+                errors.append({
+                    "index": -1,
+                    "op": op,
+                    "code": "SKIP_MOVE_DELETED_SUBTREE",
+                    "message": f"Skipping MOVE_NODE for {jid}: node is deleted or inside a deleted subtree",
+                })
+                continue
+        filtered_other_ops.append(op)
+
+    operations = filtered_delete_ops + filtered_other_ops
+
     for idx, op in enumerate(operations or []):
         op_type_raw = op.get("op") or op.get("operation")
         if not op_type_raw:
@@ -437,6 +740,36 @@ def transform_jewel(
             continue
 
         op_type = str(op_type_raw).upper()
+
+        # VALIDATION: Reject unknown fields in operation to prevent hallucinations
+        VALID_FIELDS_BY_OP = {
+            "MOVE_NODE": {"op", "operation", "jewel_id", "new_parent_jewel_id", "position", "relative_to_jewel_id"},
+            "DELETE_NODE": {"op", "operation", "jewel_id", "confirm_delete_known_descendants_from_ether", "delete_from_ether", "mode"},
+            "DELETE_ALL_CHILDREN": {"op", "operation", "jewel_id", "confirm_delete_known_descendants_from_ether", "delete_from_ether", "mode"},
+            "RENAME_NODE": {"op", "operation", "jewel_id", "new_name", "name"},
+            "SET_NOTE": {"op", "operation", "jewel_id", "new_note", "note"},
+            "SET_ATTRS": {"op", "operation", "jewel_id", "attrs"},
+            "CREATE_NODE": {"op", "operation", "parent_jewel_id", "position", "relative_to_jewel_id", "name", "note", "attrs", "data", "jewel_id", "children", "node"},
+            "SET_ATTRS_BY_PATH": {"op", "operation", "path", "attrs"},
+            # Text-level JEWELSTORM helpers
+            "SEARCH_REPLACE": {"op", "operation", "search", "replace", "case_sensitive", "whole_word", "regex", "fields"},
+            "SEARCH_AND_TAG": {"op", "operation", "search", "tag", "case_sensitive", "whole_word", "regex", "fields", "tag_in_name", "tag_in_note"},
+        }
+        
+        valid_fields = VALID_FIELDS_BY_OP.get(op_type)
+        if valid_fields:
+            unknown_fields = set(op.keys()) - valid_fields
+            if unknown_fields:
+                err = {
+                    "index": idx,
+                    "op": op,
+                    "code": "UNKNOWN_FIELDS",
+                    "message": f"Operation '{op_type}' contains unknown field(s): {sorted(unknown_fields)}. Valid fields: {sorted(valid_fields)}",
+                }
+                errors.append(err)
+                if stop_on_error:
+                    break
+                continue
 
         try:
             # MOVE_NODE
@@ -456,6 +789,18 @@ def transform_jewel(
                     rel_jid = _resolve_to_jewel_id(rel_jid)
                 new_parent_jid = op.get("new_parent_jewel_id")
 
+                # VALIDATION: MOVE_NODE must have valid parent target
+                # Three valid cases:
+                #   1. new_parent_jewel_id provided and exists in tree
+                #   2. position BEFORE/AFTER with relative_to_jewel_id (parent inferred)
+                #   3. Neither provided → REJECT (ambiguous root move)
+                if new_parent_jid is None and not rel_jid:
+                    raise ValueError(
+                        "MOVE_NODE requires either 'new_parent_jewel_id' or 'relative_to_jewel_id' (for BEFORE/AFTER). "
+                        "Cannot move node without specifying where to place it. "
+                        "To move to GEM root, explicitly provide the root jewel_id as new_parent_jewel_id."
+                    )
+
                 if position in {"BEFORE", "AFTER"}:
                     if not rel_jid:
                         raise ValueError(
@@ -466,15 +811,12 @@ def transform_jewel(
                     target_parent_jid = rel_parent_jid
                     target_list = rel_siblings
                 else:
-                    # FIRST/LAST under explicit parent (or root when parent None)
+                    # FIRST/LAST under explicit parent
                     target_parent_jid = new_parent_jid
-                    if new_parent_jid is None:
-                        target_list = roots
-                    else:
-                        parent_node = by_jewel_id.get(new_parent_jid)
-                        if parent_node is None:
-                            raise ValueError(f"New parent jewel_id/id {new_parent_jid!r} not found")
-                        target_list = _ensure_children_list(parent_node)
+                    parent_node = by_jewel_id.get(new_parent_jid)
+                    if parent_node is None:
+                        raise ValueError(f"MOVE_NODE new_parent_jewel_id {new_parent_jid!r} not found in tree")
+                    target_list = _ensure_children_list(parent_node)
 
                 # Cycle check
                 _assert_no_cycle(src_jid, target_parent_jid)
@@ -513,7 +855,12 @@ def transform_jewel(
                 if not jid:
                     raise ValueError("DELETE_NODE requires 'jewel_id'")
 
-                delete_from_ether = bool(op.get("delete_from_ether"))
+                # Acknowledgement flag (alias): prefer the newer, explicit name.
+                delete_from_ether = bool(
+                    op.get("confirm_delete_known_descendants_from_ether")
+                    if "confirm_delete_known_descendants_from_ether" in op
+                    else op.get("delete_from_ether")
+                )
                 mode_raw = op.get("mode")
                 mode = str(mode_raw).upper() if mode_raw is not None else "SMART"
 
@@ -521,6 +868,7 @@ def transform_jewel(
                 info = _classify_children_for_destructive_ops(node)
                 children = info["children"]
                 category = info["category"]
+                truncated = bool(info.get("truncated"))
 
                 # Legacy strict mode: preserve original FAIL_IF_HAS_CHILDREN semantics
                 if mode == "FAIL_IF_HAS_CHILDREN":
@@ -535,12 +883,33 @@ def transform_jewel(
                             f"DELETE_NODE {jid!r} refused: mixed new/ETHER/truncated children not supported; "
                             "delete or move children individually first"
                         )
+
+                    # If the child set is truncated/unknown, require explicit acknowledgement.
+                    # Rationale: an EMPTY children list may simply mean "not loaded".
+                    if truncated and not delete_from_ether:
+                        raise ValueError(
+                            f"DELETE_NODE {jid!r} refused: children_status != 'complete' (opaque/unknown subtree). "
+                            "Set delete_from_ether=True to acknowledge this deletion may impact ETHER-backed descendants during WEAVE."
+                        )
+
+                    # Managed witness refinement: if this node has ANY known descendants in the
+                    # witness GEM (S0), then deleting it is a subtree-impacting delete and must be
+                    # explicitly acknowledged.
+                    witness_has_desc = _has_any_witness_descendant(node.get("id"))
+                    if witness_has_desc is True and not delete_from_ether:
+                        raise ValueError(
+                            f"DELETE_NODE {jid!r} refused: node has known descendants in witness GEM (S0); "
+                            "set delete_from_ether=True to acknowledge subtree deletion impact"
+                        )
+
+                    # ETHER-backed children always require explicit acknowledgement.
                     if category == "ETHER_ONLY" and not delete_from_ether:
                         raise ValueError(
                             f"DELETE_NODE {jid!r} refused: node has ETHER-backed children; "
-                            "set delete_from_ether=True to delete subtree in Workflowy"
+                            "set delete_from_ether=True to acknowledge deletion impact in Workflowy"
                         )
-                    # EMPTY and JEWEL_ONLY are always allowed.
+                    # EMPTY and JEWEL_ONLY are allowed when not truncated and (if witness context is available)
+                    # no witness descendants exist.
 
                 # Remove from siblings and index
                 if node in siblings:
@@ -554,7 +923,12 @@ def transform_jewel(
                 if not jid:
                     raise ValueError("DELETE_ALL_CHILDREN requires 'jewel_id'")
 
-                delete_from_ether = bool(op.get("delete_from_ether"))
+                # Acknowledgement flag (alias): prefer the newer, explicit name.
+                delete_from_ether = bool(
+                    op.get("confirm_delete_known_descendants_from_ether")
+                    if "confirm_delete_known_descendants_from_ether" in op
+                    else op.get("delete_from_ether")
+                )
                 mode_raw = op.get("mode")
                 mode = str(mode_raw).upper() if mode_raw is not None else "SMART"
 
@@ -565,17 +939,19 @@ def transform_jewel(
                 info = _classify_children_for_destructive_ops(node)
                 children = info["children"]
                 category = info["category"]
-                truncated = info["truncated"]
+                truncated = bool(info.get("truncated"))
 
                 # Nothing to do
                 if not children and not truncated:
                     pass
                 else:
-                    # For DELETE_ALL_CHILDREN we do not support truncated children sets in v1
+                    # For DELETE_ALL_CHILDREN: if child set is truncated/unknown, require explicit acknowledgement.
+                    # We still refuse to proceed because this operation is inherently "surgical" and unsafe
+                    # when we cannot prove the full child set is loaded.
                     if truncated:
                         raise ValueError(
-                            f"DELETE_ALL_CHILDREN {jid!r} refused: children set is truncated; "
-                            "re-GLIMPSE with full children or delete the node instead"
+                            f"DELETE_ALL_CHILDREN {jid!r} refused: children_status != 'complete' (opaque/unknown children). "
+                            "Re-GLIMPSE / re-SCRY to load full children first, or delete the whole node with delete_from_ether=True."
                         )
 
                     if mode == "FAIL_IF_HAS_CHILDREN":
@@ -593,7 +969,7 @@ def transform_jewel(
                         if category == "ETHER_ONLY" and not delete_from_ether:
                             raise ValueError(
                                 f"DELETE_ALL_CHILDREN {jid!r} refused: children are ETHER-backed; "
-                                "set delete_from_ether=True to delete them in Workflowy"
+                                "set delete_from_ether=True to acknowledge deletion impact in Workflowy"
                             )
                         # EMPTY and JEWEL_ONLY are always allowed here.
 
@@ -608,9 +984,10 @@ def transform_jewel(
                 jid = op.get("jewel_id")
                 if not jid:
                     raise ValueError("RENAME_NODE requires 'jewel_id'")
-                new_name = op.get("new_name")
+                # Accept both 'name' and 'new_name' for consistency with CREATE_NODE
+                new_name = op.get("name") or op.get("new_name")
                 if new_name is None:
-                    raise ValueError("RENAME_NODE requires 'new_name'")
+                    raise ValueError("RENAME_NODE requires 'name' or 'new_name'")
 
                 node = by_jewel_id.get(jid)
                 if node is None:
@@ -623,7 +1000,8 @@ def transform_jewel(
                 jid = op.get("jewel_id")
                 if not jid:
                     raise ValueError("SET_NOTE requires 'jewel_id'")
-                new_note = op.get("new_note")
+                # Accept both 'note' and 'new_note' for consistency with CREATE_NODE
+                new_note = op.get("note") if "note" in op else op.get("new_note")
                 # Allow empty string / None to clear
 
                 node = by_jewel_id.get(jid)
@@ -678,13 +1056,26 @@ def transform_jewel(
                 if rel_jid:
                     rel_jid = _resolve_to_jewel_id(rel_jid)
 
+                # VALIDATION: CREATE_NODE must have valid parent
+                # Three valid cases:
+                #   1. parent_jewel_id provided and exists in tree
+                #   2. position BEFORE/AFTER with relative_to_jewel_id (parent inferred)
+                #   3. Neither provided → REJECT (ambiguous root creation)
+                if parent_jid is None and not rel_jid:
+                    raise ValueError(
+                        "CREATE_NODE requires either 'parent_jewel_id' or 'relative_to_jewel_id' (for BEFORE/AFTER). "
+                        "Cannot create node without specifying where to place it. "
+                        "To create at GEM root, use parent_jewel_id='R' or provide the root jewel_id explicitly."
+                    )
+
                 if parent_jid is None:
-                    parent_children = roots
-                    target_parent_jid = None
+                    # BEFORE/AFTER mode - parent inferred from relative node
+                    parent_children = roots  # Will be overridden below when resolving relative
+                    target_parent_jid = None  # Will be set from relative node's parent
                 else:
                     parent_node = by_jewel_id.get(parent_jid)
                     if parent_node is None:
-                        raise ValueError(f"CREATE_NODE parent_jewel_id {parent_jid!r} not found")
+                        raise ValueError(f"CREATE_NODE parent_jewel_id {parent_jid!r} not found in tree")
                     parent_children = _ensure_children_list(parent_node)
                     target_parent_jid = parent_jid
 
@@ -788,6 +1179,161 @@ def transform_jewel(
 
                 attrs_updated += 1
 
+            # SEARCH_REPLACE – text-level search/replace over name/note fields
+            elif op_type == "SEARCH_REPLACE":
+                import re
+
+                search = op.get("search")
+                if not isinstance(search, str) or not search:
+                    raise ValueError("SEARCH_REPLACE requires non-empty 'search' string")
+                replace = op.get("replace", "")
+                if not isinstance(replace, str):
+                    raise ValueError("SEARCH_REPLACE 'replace' must be a string")
+
+                case_sensitive = bool(op.get("case_sensitive", False))
+                whole_word = bool(op.get("whole_word", False))
+                use_regex = bool(op.get("regex", False))
+
+                fields_opt = str(op.get("fields", "both")).lower()
+                if fields_opt not in {"name", "note", "both"}:
+                    raise ValueError("SEARCH_REPLACE 'fields' must be 'name', 'note', or 'both'")
+
+                flags = 0 if case_sensitive else re.IGNORECASE
+
+                if use_regex:
+                    pattern = re.compile(search, flags)
+                else:
+                    pat = re.escape(search)
+                    if whole_word:
+                        pat = r"\b" + pat + r"\b"
+                    pattern = re.compile(pat, flags)
+
+                def _apply_replace(text: Optional[str]) -> tuple[Optional[str], bool]:
+                    if not isinstance(text, str) or text == "":
+                        return text, False
+                    new_text, count = pattern.subn(replace, text)
+                    return new_text, count > 0
+
+                renamed_nodes = 0
+                updated_notes = 0
+
+                for node in by_jewel_id.values():
+                    name_changed = False
+                    note_changed = False
+
+                    if fields_opt in {"name", "both"}:
+                        name = node.get("name")
+                        new_name, changed = _apply_replace(name)
+                        if changed:
+                            node["name"] = new_name
+                            name_changed = True
+
+                    if fields_opt in {"note", "both"}:
+                        note = node.get("note")
+                        new_note, changed = _apply_replace(note)
+                        if changed:
+                            node["note"] = new_note
+                            note_changed = True
+
+                    if name_changed:
+                        renamed_nodes += 1
+                    if note_changed:
+                        updated_notes += 1
+
+                nodes_renamed += renamed_nodes
+                notes_updated += updated_notes
+
+            # SEARCH_AND_TAG – search, then add a tag to name and/or note
+            elif op_type == "SEARCH_AND_TAG":
+                import re
+
+                search = op.get("search")
+                if not isinstance(search, str) or not search:
+                    raise ValueError("SEARCH_AND_TAG requires non-empty 'search' string")
+
+                raw_tag = op.get("tag")
+                if not isinstance(raw_tag, str) or not raw_tag.strip():
+                    raise ValueError("SEARCH_AND_TAG requires non-empty 'tag' string")
+                tag = raw_tag.strip()
+                if not tag.startswith("#"):
+                    tag = "#" + tag
+
+                case_sensitive = bool(op.get("case_sensitive", False))
+                whole_word = bool(op.get("whole_word", False))
+                use_regex = bool(op.get("regex", False))
+
+                fields_opt = str(op.get("fields", "both")).lower()
+                if fields_opt not in {"name", "note", "both"}:
+                    raise ValueError("SEARCH_AND_TAG 'fields' must be 'name', 'note', or 'both'")
+
+                tag_in_name = bool(op.get("tag_in_name", True))
+                tag_in_note = bool(op.get("tag_in_note", False))
+
+                flags = 0 if case_sensitive else re.IGNORECASE
+
+                if use_regex:
+                    pattern = re.compile(search, flags)
+                else:
+                    pat = re.escape(search)
+                    if whole_word:
+                        pat = r"\b" + pat + r"\b"
+                    pattern = re.compile(pat, flags)
+
+                def _matches(text: Optional[str]) -> bool:
+                    if not isinstance(text, str) or text == "":
+                        return False
+                    return bool(pattern.search(text))
+
+                def _has_tag(text: Optional[str]) -> bool:
+                    if not isinstance(text, str) or text == "":
+                        return False
+                    # Simple token-based check to avoid duplicate tags
+                    return tag in text.split()
+
+                renamed_nodes = 0
+                updated_notes = 0
+
+                for node in by_jewel_id.values():
+                    name = node.get("name")
+                    note = node.get("note")
+
+                    match = False
+                    if fields_opt in {"name", "both"} and _matches(name):
+                        match = True
+                    if fields_opt in {"note", "both"} and _matches(note):
+                        match = True
+
+                    if not match:
+                        continue
+
+                    name_changed = False
+                    note_changed = False
+
+                    if tag_in_name:
+                        base_name = name or ""
+                        if not _has_tag(base_name):
+                            new_name = (base_name + " " + tag).strip()
+                            node["name"] = new_name
+                            name_changed = True
+
+                    if tag_in_note:
+                        base_note = note or ""
+                        if not _has_tag(base_note):
+                            if base_note:
+                                new_note = base_note + "\n" + tag
+                            else:
+                                new_note = tag
+                            node["note"] = new_note
+                            note_changed = True
+
+                    if name_changed:
+                        renamed_nodes += 1
+                    if note_changed:
+                        updated_notes += 1
+
+                nodes_renamed += renamed_nodes
+                notes_updated += updated_notes
+
             else:
                 raise ValueError(f"Unknown operation type {op_type!r}")
 
@@ -805,24 +1351,52 @@ def transform_jewel(
             if stop_on_error:
                 break
 
+    # Build preview tree from the updated working roots (for agents/humans).
+    # This is ephemeral and never read by NEXUS/JEWELSTORM algorithms.
+    preview_tree = _build_jewel_preview_lines(roots)
+
     # ------- Persist changes (if not dry-run and no stop-on-error failure) -------
     if not dry_run and (not stop_on_error or not errors):
         # Attach modified roots back to original structure
         if isinstance(data, dict) and isinstance(data.get("nodes"), list):
-            data["nodes"] = roots
-            # Recalculate counts for readability in the JEWEL working_gem,
-            # but DO NOT touch children_status here. Truncation semantics belong
-            # to the NEXUS/TERRAIN layer (shimmering/enchanted terrain).
+            # Recalculate counts FIRST (operates in-place on `roots`)
             wrapper = {"nodes": roots}
             recalc_all_counts_gem(wrapper)
+
+            # Normalize key order for all nodes before writing
+            normalized_roots = []
+            for r in roots:
+                if isinstance(r, dict):
+                    normalized_roots.append(_normalize_node_key_order(r))
+                else:
+                    normalized_roots.append(r)
+            roots = normalized_roots
+
+            # Rebuild data dict but only update JEWEL-local fields.
+            # We intentionally avoid touching NEXUS metadata such as
+            # export_root_id/export_root_name/original_ids_seen/etc.,
+            # because JEWELMORPH re-attaches the authoritative values
+            # from phantom_gem.json.
+            new_data = dict(data)
+            new_data["nodes"] = roots
+            new_data["__preview_tree__"] = preview_tree
+            data = new_data
         elif isinstance(data, list):
-            data = roots  # type: ignore[assignment]
+            # For bare list JEWELs, normalize key order as well
+            normalized_roots = []
+            for r in roots:
+                if isinstance(r, dict):
+                    normalized_roots.append(_normalize_node_key_order(r))
+                else:
+                    normalized_roots.append(r)
+            data = normalized_roots  # type: ignore[assignment]
             wrapper = {"nodes": roots}
             recalc_all_counts_gem(wrapper)
 
         save_json(jewel_file, data)  # type: ignore[arg-type]
 
     return {
+        "preview_tree": preview_tree,
         "success": len(errors) == 0,
         "applied_count": applied_count,
         "dry_run": dry_run,
@@ -899,11 +1473,13 @@ def find_node_and_parent(data: JsonDict, target_id: str) -> Tuple[Optional[JsonD
 
 
 def recalc_counts_for_node(node: JsonDict) -> int:
-    """Recalculate child/descendant counts for TERRAIN files (human-focused).
+    """Recalculate child/descendant counts (human-focused) WITHOUT breaking children_status.
 
-    Writes *_human_readable_only counters alongside children_status. These
-    counts are intended for human inspection and debugging, not for core
-    WEAVE semantics.
+    IMPORTANT DESIGN RULE (Dec 2025): children_status is an *epistemic* flag
+    used for WEAVE safety (complete vs truncated/unknown). It must NEVER be
+    overwritten by count-recalc utilities.
+
+    This helper updates only the *_human_readable_only counters.
 
     Returns this node's total_descendant_count__human_readable_only.
     """
@@ -915,21 +1491,34 @@ def recalc_counts_for_node(node: JsonDict) -> int:
     immediate = len(children)
     total_desc = 0
     for child in children:
-        child_total = recalc_counts_for_node(child)
-        total_desc += 1 + child_total
+        if isinstance(child, dict):
+            child_total = recalc_counts_for_node(child)
+            total_desc += 1 + child_total
 
     node["immediate_child_count__human_readable_only"] = immediate
     node["total_descendant_count__human_readable_only"] = total_desc
-    node["children_status"] = "complete"
+
+    # Fail-closed normalization: if children_status is missing, stamp "unknown".
+    # WEAVE already treats missing as truncated, but stamping makes the invariant
+    # explicit and prevents other tooling from assuming completeness.
+    if "children_status" not in node or not node.get("children_status"):
+        node["children_status"] = "unknown"
+
     return total_desc
 
 
 def recalc_all_counts(data: JsonDict) -> None:
+    """Recalculate *_human_readable_only counters for TERRAIN-like files.
+
+    NOTE: This function name is kept for backward compatibility with existing
+    CLI commands, but it is now children_status-safe.
+    """
     nodes = data.get("nodes") or []
     if not isinstance(nodes, list):
         return
     for node in nodes:
-        recalc_counts_for_node(node)
+        if isinstance(node, dict):
+            recalc_counts_for_node(node)
 
 
 def recalc_counts_for_node_gem(node: JsonDict) -> int:
@@ -1389,13 +1978,21 @@ def cmd_fuse_shard_3way(args: argparse.Namespace) -> None:
 
     affected_ids: Set[str] = set()
 
-    # Determine which roots to process: intersection of root_ids present in both S0 and S1
+    # Determine which roots to process.
+    # Normal case: intersection of root_ids present in both S0 and S1.
+    # Special case: if JEWEL (S1) has no roots at all, interpret that as a
+    # request to delete the entire GEM shard (all S0 roots) from Territory.
     s0_root_ids = [n.get("id") for n in witness_roots if isinstance(n, dict) and n.get("id")]
     s1_root_ids = {n.get("id") for n in morphed_roots if isinstance(n, dict) and n.get("id")}
     root_ids = [rid for rid in s0_root_ids if rid in s1_root_ids]
 
     if not root_ids:
-        die("No overlapping shard roots between witness and morphed shards")
+        # If JEWEL is completely empty (no nodes at all), treat this as
+        # "delete all GEM roots" rather than a structural error.
+        if not morphed_roots:
+            root_ids = s0_root_ids
+        else:
+            die("No overlapping shard roots between witness and morphed shards")
 
     updates = 0
     creates = 0
