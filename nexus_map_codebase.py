@@ -904,7 +904,7 @@ def whiten_text_for_header_compare(text: str | None) -> str:
 
     Rules:
     - Strip simple HTML tags like <code>, </code>, <span>, </span> by pattern:
-      <[A-Za-z_/][A-Za-z0-9_\-/]*>
+      <[A-Za-z_/][-A-Za-z0-9_/]*>
       (no whitespace or digits at the start, so "a < 5" is untouched).
     - Drop all backticks.
     - Drop emoji / Symbol, Other (So) codepoints.
