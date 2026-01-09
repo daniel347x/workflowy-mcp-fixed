@@ -2702,14 +2702,14 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     f"File node {file_node_id} note is missing 'Path:' line; cannot build incremental map",
                 )
 
-            # Optional: collect NOTES salvage metadata for belt-and-suspenders
-            # around reconcile_tree. In the incremental path we run this in
-            # metadata-only mode (no parking node, no moves).
+            # Optional: collect NOTES salvage metadata (and in non-dry-run
+            # mode, physically move beacon-scoped NOTES up under the FILE
+            # node) *before* any reconcile_tree mutations.
             salvage_ctx = await self._collect_notes_salvage_context_for_file(
                 flat_nodes=flat_nodes,
                 file_node_id=str(file_node_id),
                 source_path=source_path,
-                dry_run=True,
+                dry_run=dry_run,
                 mode="incremental",
             )
 
@@ -3563,9 +3563,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         - Recording immediate FILE-level Notes[...] roots keyed by canonical
           Path so they can be reattached after structural changes.
 
-        In "incremental" mode we only collect metadata (no parking node, no
-        moves). This provides belt-and-suspenders protection for the
-        reconcile_tree-based F12 path without altering its core behavior.
+        In "incremental" mode we still avoid a parking node, but when not
+        dry_run we *do* physically move beacon-scoped Notes[...] subtrees up
+        under the FILE node before reconcile_tree runs. This fully decouples
+        NOTES from structural mutations while still relying on
+        explicitly_preserved_ids as the primary deletion guard.
         """
 
         def _canonical_path(path: str) -> str:
@@ -3623,9 +3625,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     ctx.saved_notes_by_beacon.setdefault(beacon_id_val, []).append(str(cid))
                     ctx.total_notes_to_salvage += 1
 
-        # 3) Optional: create or locate 🅿️ Notes (parking) under the FILE node and
-        # move beacon-scoped Notes[...] there. This is only needed in the legacy
-        # full-rebuild path when we are about to delete the structural subtree.
+        # 3) Optional: pre-salvage moves.
+        #
+        # In legacy mode we use a dedicated 🅿️ Notes (parking) node under the
+        # FILE and move beacon-scoped NOTES there before deleting the
+        # structural subtree. In incremental mode we avoid a parking node but
+        # still physically move beacon-scoped NOTES up under the FILE node so
+        # they are decoupled from any reconcile_tree mutations.
         if mode == "legacy":
             # Locate existing parking node if present.
             for child in file_children:
@@ -3669,6 +3675,22 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         except Exception as e:  # noqa: BLE001
                             log_event(
                                 f"Failed to move notes node {nid} to parking: {e}",
+                                "BEACON",
+                            )
+        elif mode == "incremental":
+            # In incremental mode we skip a parking node but still, when not
+            # dry_run, move beacon-scoped Notes[...] roots directly under the
+            # FILE node. This ensures reconcile_tree never sees them as
+            # children of a structural parent that might be moved or deleted.
+            if not dry_run and ctx.saved_notes_by_beacon:
+                for notes_list in ctx.saved_notes_by_beacon.values():
+                    for nid in notes_list:
+                        try:
+                            await self.move_node(nid, str(file_node_id), "bottom")
+                            ctx.notes_moved_to_parking += 1
+                        except Exception as e:  # noqa: BLE001
+                            log_event(
+                                f"Failed to move notes node {nid} to file root {file_node_id}: {e}",
                                 "BEACON",
                             )
 
