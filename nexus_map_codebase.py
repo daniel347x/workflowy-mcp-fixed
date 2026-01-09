@@ -479,15 +479,23 @@ def apply_markdown_beacons(
         comment_line = beacon.get("comment_line") or 0
         if not isinstance(comment_line, int) or comment_line <= 0:
             continue
-        j = comment_line + 1
+        # Find end of the @beacon[...] block (first line containing ']')
+        block_end = comment_line
+        k = comment_line
+        while k <= len(lines):
+            if "]" in lines[k - 1]:
+                block_end = k
+                break
+            k += 1
+        j = block_end + 1
         while j <= len(lines):
             stripped = lines[j - 1].strip()
             if not stripped:
                 j += 1
                 continue
-            # Skip non-beacon HTML comments when searching for the next
-            # significant line.
-            if stripped.startswith("<!--") and "@beacon[" not in stripped:
+            # Skip non-beacon HTML comment sentinel lines when searching for
+            # the next significant line.
+            if (stripped.startswith("<!--") or stripped.startswith("-->")) and "@beacon[" not in stripped:
                 j += 1
                 continue
             # First significant line after the beacon block: if it's a
