@@ -423,7 +423,10 @@ def _extract_markdown_beacon_context(lines: list[str], comment_line: int) -> Lis
             j -= 1
             continue
         if stripped.startswith("<!--") and "@beacon[" not in stripped:
-            context.insert(0, stripped)
+            # Skip pure sentinel lines like "<!--" and "-->", but keep
+            # single-line comments that actually contain text.
+            if stripped != "<!--" and stripped != "-->":
+                context.insert(0, stripped)
             j -= 1
             continue
         break
@@ -436,7 +439,8 @@ def _extract_markdown_beacon_context(lines: list[str], comment_line: int) -> Lis
             j += 1
             continue
         if stripped.startswith("<!--") and "@beacon[" not in stripped:
-            context.append(stripped)
+            if stripped != "<!--" and stripped != "-->":
+                context.append(stripped)
             j += 1
             continue
         break
@@ -667,13 +671,37 @@ def apply_markdown_beacons(
             meta_lines.append("")
             meta_lines.append("CONTEXT COMMENTS (MD):")
             meta_lines.extend(context_lines)
+        # Visual separator between beacon metadata and body text
+        meta_lines.append("---")
 
         note = owner.get("note") or ""
         meta_block = "\n".join(meta_lines)
-        if note:
-            owner["note"] = note + "\n\n" + meta_block
-        else:
+        if not note:
             owner["note"] = meta_block
+        else:
+            # Insert beacon metadata block just after the MD_PATH header
+            # (the first line that is exactly '---' following 'MD_PATH:').
+            lines_note = note.splitlines()
+            insert_idx = len(lines_note)
+            saw_md_path = False
+            for idx, line in enumerate(lines_note):
+                if line.strip() == "MD_PATH:":
+                    saw_md_path = True
+                elif saw_md_path and line.strip() == "---":
+                    insert_idx = idx + 1
+                    break
+            new_lines: list[str] = []
+            new_lines.extend(lines_note[:insert_idx])
+            # Ensure a blank line before the beacon block when joining
+            if insert_idx < len(lines_note) and lines_note[insert_idx].strip():
+                new_lines.append("")
+            new_lines.append(meta_block)
+            # Blank line between beacon block and any existing body text
+            if insert_idx < len(lines_note):
+                if lines_note[insert_idx].strip():
+                    new_lines.append("")
+                new_lines.extend(lines_note[insert_idx:])
+            owner["note"] = "\n".join(new_lines)
 
     # PASS 2: SPAN beacons – unchanged behavior, with optional comment support.
     for beacon in beacons:
