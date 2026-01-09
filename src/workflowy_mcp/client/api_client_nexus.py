@@ -3118,7 +3118,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         def _parse_path_from_note(note_str: str) -> str | None:
             for line in note_str.splitlines():
                 stripped = line.strip()
-                if stripped.startswith("Path:"):
+                # Accept both standard FILE metadata ("Path:") and the
+                # Cartographer root header ("Root:"), treating them
+                # equivalently for purposes of locating the filesystem
+                # path associated with a node.
+                if stripped.startswith("Path:") or stripped.startswith("Root:"):
                     val = stripped.split(":", 1)[1].strip()
                     return val or None
             return None
