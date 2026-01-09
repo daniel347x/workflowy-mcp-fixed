@@ -921,6 +921,21 @@ def whiten_text_for_header_compare(text: str | None) -> str:
     # Drop backticks used for inline code in Markdown.
     s = s.replace("`", "")
 
+    # Normalize a small set of common HTML entities so textual comparisons
+    # are robust to &lt;/&gt;/&amp;/&quot; vs their literal forms.
+    html_entity_map = {
+        "&quot;": '"',
+        "&lt;": "<",
+        "&gt;": ">",
+        "&amp;": "&",
+    }
+    for ent, ch in html_entity_map.items():
+        if ent in s:
+            s = s.replace(ent, ch)
+
+    # Drop double quotes entirely (including those produced from &quot;).
+    s = s.replace('"', "")
+
     # Remove emoji / other symbolic decoration.
     s = "".join(ch for ch in s if unicodedata.category(ch) != "So")
 

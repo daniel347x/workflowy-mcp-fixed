@@ -2980,6 +2980,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     export_nodes=export_wrapper,
                     import_policy="strict",
                     dry_run=True,
+                    skip_delete_bulk_export_wait=True,
                     log_to_file_msg=lambda m: _log_to_file_helper(m, "reconcile"),
                 )
             except Exception as e:  # noqa: BLE001

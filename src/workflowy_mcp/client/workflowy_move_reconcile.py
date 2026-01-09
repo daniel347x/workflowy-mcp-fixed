@@ -72,6 +72,7 @@ async def reconcile_tree(
     log_weave_entry: Optional[Callable[[Dict[str, Any]], None]] = None,
     log_debug_msg: Optional[Callable[[str], None]] = None,
     log_to_file_msg: Optional[Callable[[str], None]] = None,
+    skip_delete_bulk_export_wait: bool = False,
     debug_log_path: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
@@ -964,27 +965,34 @@ async def reconcile_tree(
     # begins <60s later. To reduce noisy 429s and make behavior predictable,
     # wait until at least ~65 seconds have elapsed since weave_start_time
     # before issuing the DELETE-phase bulk export.
-    try:
-        import asyncio
-        min_elapsed = 65.0  # seconds
-        now = datetime.now()
-        elapsed = (now - weave_start_time).total_seconds()
-        if elapsed < min_elapsed:
-            wait_seconds = min_elapsed - elapsed
-            log(
-                f"   DELETE phase: waiting {wait_seconds:.1f}s before bulk export "
-                f"to respect Workflowy /nodes-export rate limit (elapsed since WEAVE_START={elapsed:.1f}s)"
-            )
-            await asyncio.sleep(wait_seconds)
-            now2 = datetime.now()
-            elapsed2 = (now2 - weave_start_time).total_seconds()
-            log(
-                f"   DELETE phase: wait complete; elapsed since WEAVE_START={elapsed2:.1f}s. "
-                f"Proceeding to bulk export snapshot."
-            )
-    except Exception:
-        # If anything goes wrong with timing/sleep, continue without blocking DELETE.
-        pass
+    #
+    # F12 / Cartographer per-file refresh is the *opposite* scenario: human is
+    # at the wheel in Workflowy, ETHER edits are local and immediate, and the
+    # expectation is fast feedback. When skip_delete_bulk_export_wait=True,
+    # we bypass this rate-limit guard entirely and rely on the caller to use
+    # cached /nodes-export snapshots appropriately.
+    if not skip_delete_bulk_export_wait:
+        try:
+            import asyncio
+            min_elapsed = 65.0  # seconds
+            now = datetime.now()
+            elapsed = (now - weave_start_time).total_seconds()
+            if elapsed < min_elapsed:
+                wait_seconds = min_elapsed - elapsed
+                log(
+                    f"   DELETE phase: waiting {wait_seconds:.1f}s before bulk export "
+                    f"to respect Workflowy /nodes-export rate limit (elapsed since WEAVE_START={elapsed:.1f}s)"
+                )
+                await asyncio.sleep(wait_seconds)
+                now2 = datetime.now()
+                elapsed2 = (now2 - weave_start_time).total_seconds()
+                log(
+                    f"   DELETE phase: wait complete; elapsed since WEAVE_START={elapsed2:.1f}s. "
+                    f"Proceeding to bulk export snapshot."
+                )
+        except Exception:
+            # If anything goes wrong with timing/sleep, continue without blocking DELETE.
+            pass
 
     ids_in_source = {n['id'] for n in preorder(source_nodes)}
     log(f"   Source IDs (from preorder): {ids_in_source}")
