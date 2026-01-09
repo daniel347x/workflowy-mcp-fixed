@@ -485,6 +485,11 @@ def apply_markdown_beacons(
         while k <= len(lines):
             if "]" in lines[k - 1]:
                 block_end = k
+                # If the very next line closes the same HTML comment block,
+                # treat that "-->" line as part of the beacon block so that
+                # auto-promotion starts scanning AFTER the entire comment.
+                if block_end < len(lines) and "-->" in lines[block_end]:
+                    block_end += 1
                 break
             k += 1
         j = block_end + 1
