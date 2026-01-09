@@ -2169,7 +2169,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "errors": errors
         }
 
-    async def refresh_file_node_beacons(
+    async def _refresh_file_node_beacons_legacy(
         self,
         file_node_id: str,
         *,
@@ -2745,6 +2745,274 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "notes_path_reattached": notes_path_reattached,
             "notes_path_unmatched": notes_path_unmatched,
         }
+
+    async def refresh_file_node_beacons(
+        self,
+        file_node_id: str,
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Incremental, beacon-aware per-file refresh (F12).
+
+        CURRENT BEHAVIOR (safe scaffold):
+        - Builds a per-file NEXUS-style JSON (terrain/gem-like) shaped for
+          workflowy_move_reconcile.reconcile_tree.
+        - Runs reconcile_tree(...) in dry_run mode to compute a plan only
+          (no Workflowy mutations).
+        - Writes that JSON to temp/cartographer_file_refresh for inspection.
+        - Then delegates the actual mutation to _refresh_file_node_beacons_legacy,
+          so runtime behavior remains identical to the legacy full-rebuild path.
+
+        This gives us:
+        - A reproducible, file-scoped source_json for testing incremental
+          reconciliation.
+        - A dry-run plan from the same engine used by WEAVE.
+
+        Once the incremental path is battle-tested, this function becomes the
+        natural place to switch from legacy full-rebuild to true incremental
+        reconcile_tree-based updates.
+        """
+        logger = _ClientLogger()
+        log_event(
+            f"refresh_file_node_beacons (incremental scaffold) start (file_node_id={file_node_id}, dry_run={dry_run})",
+            "BEACON",
+        )
+
+        incremental_probe: dict[str, Any] | None = None
+
+        try:
+            import importlib
+            import json as json_module
+            import copy
+
+            # 1) Export the FILE subtree to discover current structure and Path
+            try:
+                raw = await export_nodes_impl(self, file_node_id)
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(f"export_nodes failed for {file_node_id} (incremental scaffold): {e}") from e
+
+            flat_nodes = raw.get("nodes") or []
+            if not flat_nodes:
+                raise NetworkError(
+                    f"File node {file_node_id} not found or has empty subtree (incremental scaffold)",
+                )
+
+            file_node: dict[str, Any] | None = None
+            for n in flat_nodes:
+                if str(n.get("id")) == str(file_node_id):
+                    file_node = n
+                    break
+
+            if not file_node:
+                raise NetworkError(
+                    f"File node {file_node_id} not present in exported subtree (incremental scaffold)",
+                )
+
+            note_text = str(file_node.get("note") or "")
+            source_path: str | None = None
+            for line in note_text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("Path:"):
+                    source_path = stripped.split(":", 1)[1].strip() or None
+                    break
+
+            if not source_path:
+                raise NetworkError(
+                    f"File node {file_node_id} note is missing 'Path:' line; cannot build incremental map",
+                )
+
+            # 2) Build an in-memory hierarchy for the existing Workflowy subtree
+            hierarchical_tree = self._build_hierarchy(flat_nodes, True)
+            ether_root: dict[str, Any] | None = None
+            if hierarchical_tree and len(hierarchical_tree) == 1:
+                ether_root = hierarchical_tree[0]
+            else:
+                for cand in hierarchical_tree or []:
+                    if str(cand.get("id")) == str(file_node_id):
+                        ether_root = cand
+                        break
+            if ether_root is None:
+                # Fall back to a minimal shell with just the file node stats.
+                ether_root = {
+                    "id": str(file_node_id),
+                    "name": file_node.get("name"),
+                    "note": note_text,
+                    "children": [],
+                }
+
+            # 3) Import Cartographer and build a fresh per-file map
+            client_dir = os.path.dirname(os.path.abspath(__file__))
+            wf_mcp_dir = os.path.dirname(client_dir)
+            mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+            project_root = os.path.dirname(mcp_servers_dir)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+
+            try:
+                cartographer = importlib.import_module("nexus_map_codebase")
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(
+                    f"Failed to import nexus_map_codebase in incremental scaffold: {e}",
+                ) from e
+
+            try:
+                file_map = cartographer.map_codebase(source_path)  # type: ignore[attr-defined]
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(
+                    f"Cartographer map_codebase failed for {source_path} (incremental scaffold): {e}",
+                ) from e
+
+            new_children = copy.deepcopy(file_map.get("children") or [])
+
+            # 4) Seed IDs into the Cartographer tree by matching existing
+            # Workflowy children by name via reconcile_trees.
+            source_root = {
+                "name": file_node.get("name") or "",
+                "note": note_text,
+                "children": new_children,
+            }
+
+            try:
+                cartographer.reconcile_trees(source_root, ether_root)  # type: ignore[attr-defined]
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(
+                    f"reconcile_trees(source_root, ether_root) failed in incremental scaffold: {e}",
+                ) from e
+
+            # 5) Build a per-file source_json shaped for reconcile_tree
+            original_ids_seen: set[str] = set()
+            for n in flat_nodes:
+                nid = n.get("id")
+                if nid:
+                    original_ids_seen.add(str(nid))
+
+            def _is_notes_name(raw_name: str) -> bool:
+                name = (raw_name or "").strip()
+                if not name:
+                    return False
+                if not name[0].isalnum():
+                    name = name[1:].lstrip()
+                return name.lower().startswith("notes")
+
+            explicitly_preserved_ids: set[str] = set()
+            for n in flat_nodes:
+                nid = n.get("id")
+                if not nid:
+                    continue
+                name = str(n.get("name") or "")
+                if _is_notes_name(name):
+                    explicitly_preserved_ids.add(str(nid))
+
+            source_json: dict[str, Any] = {
+                "export_root_id": str(file_node_id),
+                "export_root_name": file_node.get("name"),
+                "export_root_children_status": "complete",
+                "nodes": source_root.get("children") or [],
+                "original_ids_seen": sorted(original_ids_seen),
+                "explicitly_preserved_ids": sorted(explicitly_preserved_ids),
+            }
+
+            # 6) Persist JSON to temp/cartographer_file_refresh for inspection
+            source_json_path: str | None = None
+            try:
+                file_refresh_dir = os.path.join(project_root, "temp", "cartographer_file_refresh")
+                os.makedirs(file_refresh_dir, exist_ok=True)
+                short_id = str(file_node_id).replace("-", "")[:8]
+                base_name = os.path.basename(source_path)
+                source_json_path = os.path.join(
+                    file_refresh_dir,
+                    f"file_refresh_{short_id}_{base_name}.json",
+                )
+                with open(source_json_path, "w", encoding="utf-8") as f:
+                    json_module.dump(source_json, f, indent=2, ensure_ascii=False)
+                _log_to_file_helper(
+                    f"refresh_file_node_beacons incremental source_json written: {source_json_path}",
+                    "reconcile",
+                )
+            except Exception as e:  # noqa: BLE001
+                source_json_path = None
+                _log_to_file_helper(
+                    f"refresh_file_node_beacons incremental: failed to write source_json file: {e}",
+                    "reconcile",
+                )
+
+            # 7) Call reconcile_tree in DRY-RUN mode to get a plan (no mutations)
+            reconcile_plan: dict[str, Any] | None = None
+            try:
+                from .workflowy_move_reconcile import reconcile_tree as _reconcile_tree_for_f12
+
+                async def list_wrapper(parent_uuid: str) -> list[dict[str, Any]]:
+                    # For dry-run we rely on export_nodes for the full snapshot;
+                    # list_nodes is not used in that path.
+                    return []
+
+                async def create_wrapper(parent_uuid: str, data: dict) -> str:
+                    return "DRYRUN-CREATE"
+
+                async def update_wrapper(node_uuid: str, data: dict) -> None:
+                    return None
+
+                async def delete_wrapper(node_uuid: str) -> None:
+                    return None
+
+                async def move_wrapper(node_uuid: str, new_parent: str, position: str = "top") -> None:
+                    return None
+
+                async def export_wrapper(node_uuid: str) -> dict:
+                    # Use the same bulk export helper as the rest of the client.
+                    return await export_nodes_impl(self, node_uuid)
+
+                reconcile_plan = await _reconcile_tree_for_f12(
+                    source_json=source_json,
+                    parent_uuid=str(file_node_id),
+                    list_nodes=list_wrapper,
+                    create_node=create_wrapper,
+                    update_node=update_wrapper,
+                    delete_node=delete_wrapper,
+                    move_node=move_wrapper,
+                    export_nodes=export_wrapper,
+                    import_policy="strict",
+                    dry_run=True,
+                    log_to_file_msg=lambda m: _log_to_file_helper(m, "reconcile"),
+                )
+            except Exception as e:  # noqa: BLE001
+                reconcile_plan = {"success": False, "error": str(e)}
+                _log_to_file_helper(
+                    f"refresh_file_node_beacons incremental: reconcile_tree dry-run failed: {e}",
+                    "reconcile",
+                )
+
+            incremental_probe = {
+                "source_json_file": source_json_path,
+                "reconcile_dry_run_plan": reconcile_plan,
+                "file_node_id_effective": str(file_node_id),
+                "source_path": source_path,
+            }
+
+        except Exception as e:  # noqa: BLE001
+            # Incremental scaffold is strictly best-effort. Any error falls back
+            # to the legacy implementation while still recording the failure in
+            # the probe metadata so we can debug later.
+            incremental_probe = {
+                "success": False,
+                "error": str(e),
+                "file_node_id_effective": str(file_node_id),
+            }
+            _log_to_file_helper(
+                f"refresh_file_node_beacons incremental scaffold failed (falling back to legacy): {e}",
+                "reconcile",
+            )
+
+        # 8) Delegate the actual mutation to the existing legacy implementation
+        legacy_result = await self._refresh_file_node_beacons_legacy(
+            file_node_id=file_node_id,
+            dry_run=dry_run,
+        )
+
+        if isinstance(legacy_result, dict) and incremental_probe is not None:
+            legacy_result.setdefault("_incremental_probe", incremental_probe)
+
+        return legacy_result
 
     async def refresh_folder_cartographer_sync(
         self,
