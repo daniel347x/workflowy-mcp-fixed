@@ -280,12 +280,14 @@ def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
           slice_labels=DOC,
           kind=span,
           start_snippet="# Heading text",
+          comment=One-line human note,
         ]
         -->
 
     Returns a list of dicts with keys:
         id, role, slice_labels, kind, start_snippet, end_snippet,
-        comment_line, span_lineno_start, span_lineno_end.
+        comment, comment_line, span_lineno_start, span_lineno_end,
+        kind_explicit.
     """
     beacons: list[dict[str, Any]] = []
     n = len(lines)
@@ -329,7 +331,8 @@ def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     val = val[1:-1]
                 fields[key] = val
 
-            kind = (fields.get("kind") or "span").strip().lower() or "span"
+            kind_raw = fields.get("kind")
+            kind = (kind_raw or "span").strip().lower() or "span"
             if kind not in {"ast", "span"}:
                 continue
 
@@ -391,9 +394,11 @@ def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 "kind": kind,
                 "start_snippet": start_snippet,
                 "end_snippet": end_snippet,
+                "comment": fields.get("comment"),
                 "comment_line": comment_line,
                 "span_lineno_start": span_start,
                 "span_lineno_end": span_end,
+                "kind_explicit": bool(kind_raw),
             }
             beacons.append(beacon)
         else:
@@ -444,16 +449,52 @@ def apply_markdown_beacons(
     root_children: List[Dict[str, Any]],
     beacons: list[dict[str, Any]],
 ) -> None:
-    """Attach Markdown span beacons as child nodes under headings.
+    """Attach Markdown beacons under headings or decorate headings directly.
 
-    V1: we support only kind=span beacons. The `start_snippet` is typically a
-    Markdown heading line (e.g. "# Title" or "## Files"). We map the beacon to
-    the heading node whose text matches the heading text parsed from
-    `start_snippet`. If no such heading is found, we attach the span node at the
-    top level.
+    V2:
+      - Supports both kind=span and kind=ast beacons.
+      - kind=ast beacons decorate the nearest heading node's name and note.
+      - kind=span beacons remain child nodes under the nearest enclosing
+        heading (or at the top level if no heading is found).
+
+    Auto-promotion:
+      - For beacons where ``kind`` is *not* explicitly set and the first
+        non-blank, non-HTML-comment line after the beacon block is a heading
+        (``^#{1,32}\s``), we auto-upgrade ``kind`` from ``span`` to ``ast``.
     """
     if not beacons or not root_children:
         return
+
+    # Normalize kind and optionally auto-promote some span beacons to AST
+    # based on their position relative to the next heading.
+    for beacon in beacons:
+        kind = (beacon.get("kind") or "span").strip().lower() or "span"
+        beacon["kind"] = kind
+        if kind != "span":
+            continue
+        # Only auto-promote when the user did not explicitly specify kind.
+        if beacon.get("kind_explicit"):
+            continue
+        comment_line = beacon.get("comment_line") or 0
+        if not isinstance(comment_line, int) or comment_line <= 0:
+            continue
+        j = comment_line + 1
+        while j <= len(lines):
+            stripped = lines[j - 1].strip()
+            if not stripped:
+                j += 1
+                continue
+            # Skip non-beacon HTML comments when searching for the next
+            # significant line.
+            if stripped.startswith("<!--") and "@beacon[" not in stripped:
+                j += 1
+                continue
+            # First significant line after the beacon block: if it's a
+            # heading of any level (we accept up to 32 '#' chars for
+            # extended Markdown), upgrade this beacon to AST.
+            if re.match(r"^#{1,32}\\s", stripped):
+                beacon["kind"] = "ast"
+            break
 
     def iter_nodes(nodes: List[Dict[str, Any]]):
         for node in nodes:
@@ -465,8 +506,7 @@ def apply_markdown_beacons(
     all_nodes = list(iter_nodes(root_children))
 
     # Precompute heading positions (line numbers) in the Markdown source so
-    # we can attach span beacons to the nearest preceding heading even when
-    # the @beacon[...] block itself lives far away in the file.
+    # we can attach beacons relative to concrete headings.
     heading_positions: list[tuple[Dict[str, Any], int]] = []
 
     def _find_heading_lineno(heading_text: str) -> Optional[int]:
@@ -482,7 +522,9 @@ def apply_markdown_beacons(
             stripped = line.strip()
             if not stripped.startswith("#"):
                 if DEBUG_MD_BEACONS:
-                    print(f"[MD-HEAD-CHECK] heading={heading_text!r} line={idx} text={stripped!r} (no # prefix)")
+                    print(
+                        f"[MD-HEAD-CHECK] heading={heading_text!r} line={idx} text={stripped!r} (no # prefix)"
+                    )
                 continue
             # Count leading '#' characters
             hash_count = 0
@@ -493,7 +535,9 @@ def apply_markdown_beacons(
                     break
             if not (1 <= hash_count <= 6):
                 if DEBUG_MD_BEACONS:
-                    print(f"[MD-HEAD-CHECK] heading={heading_text!r} line={idx} text={stripped!r} (hash_count={hash_count} out of range)")
+                    print(
+                        f"[MD-HEAD-CHECK] heading={heading_text!r} line={idx} text={stripped!r} (hash_count={hash_count} out of range)"
+                    )
                 continue
             rest = stripped[hash_count:].lstrip()
             if DEBUG_MD_BEACONS:
@@ -517,6 +561,100 @@ def apply_markdown_beacons(
         for h_node, h_ln in heading_positions:
             print(f"  - name={h_node.get('name')!r} lineno={h_ln}")
 
+    # PASS 1: AST beacons – decorate heading nodes.
+    for beacon in beacons:
+        if beacon.get("kind") != "ast":
+            continue
+
+        b_id = (beacon.get("id") or "").strip()
+        role = (beacon.get("role") or "").strip()
+        raw_slice_labels = (beacon.get("slice_labels") or "").strip()
+        # Defaults: derive role from id prefix (before '@')
+        if not role and b_id and "@" in b_id:
+            role = b_id.split("@", 1)[0]
+        slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
+
+        display_role = role or b_id or "md-ast-beacon"
+        display_slice = slice_labels or "-"
+        tag_suffix = _slice_label_tags(slice_labels or display_slice)
+
+        comment_line = beacon.get("comment_line") or 0
+        owner: Optional[Dict[str, Any]] = None
+
+        # Preferred: nearest heading *after* the beacon block.
+        if isinstance(comment_line, int) and comment_line > 0 and heading_positions:
+            best_node: Optional[Dict[str, Any]] = None
+            best_lineno: Optional[int] = None
+            for node, h_lineno in heading_positions:
+                if h_lineno > comment_line and (best_lineno is None or h_lineno < best_lineno):
+                    best_lineno = h_lineno
+                    best_node = node
+            if best_node is not None:
+                owner = best_node
+
+        # Fallback: use start_snippet text if it looks like a header line.
+        if owner is None:
+            start_snippet = beacon.get("start_snippet") or ""
+            header_text = None
+            m = (
+                re.match(r"^#{1,32}\\s*(.*)", start_snippet.strip())
+                if start_snippet
+                else None
+            )
+            if m:
+                header_text = m.group(1).strip()
+
+            if header_text:
+                norm_target = normalize_for_match(header_text)
+                for node in all_nodes:
+                    node_name = (node.get("name") or "")
+                    node_norm = normalize_for_match(node_name)
+                    if node_norm == norm_target or (
+                        norm_target and norm_target in node_norm
+                    ):
+                        owner = node
+                        break
+
+        if owner is None:
+            # If we couldn't find a heading to decorate, fall back to SPAN
+            # semantics by resetting kind; the SPAN pass will handle it.
+            beacon["kind"] = "span"
+            continue
+
+        name = owner.get("name") or "Untitled"
+        if "🔱" not in name:
+            name = f"{name} 🔱"
+        if tag_suffix:
+            name = f"{name} {tag_suffix}"
+        owner["name"] = name
+
+        context_lines = _extract_markdown_beacon_context(
+            lines, beacon.get("comment_line") or 0
+        )
+        comment = beacon.get("comment")
+
+        meta_lines = [
+            "BEACON (MD AST)",
+            f"id: {b_id}",
+            f"role: {role}",
+            f"slice_labels: {slice_labels}",
+            "kind: ast",
+        ]
+        if comment:
+            meta_lines.append(f"comment: {comment}")
+        if context_lines:
+            meta_lines.append("")
+            meta_lines.append("CONTEXT COMMENTS (MD):")
+            meta_lines.extend(context_lines)
+
+        note = owner.get("note") or ""
+        meta_block = "\n".join(meta_lines)
+        if note:
+            owner["note"] = note + "\n\n" + meta_block
+        else:
+            owner["note"] = meta_block
+
+    # PASS 2: SPAN beacons – unchanged behavior, with optional comment support.
     for beacon in beacons:
         if beacon.get("kind") != "span":
             continue
@@ -554,7 +692,7 @@ def apply_markdown_beacons(
 
         # Preferred: line-number based nearest-previous-heading resolution.
         if isinstance(span_start, int) and heading_positions:
-            best_node: Optional[Dict[str, Any]] = None
+            best_node = None
             best_lineno = -1
             for node, h_lineno in heading_positions:
                 if h_lineno <= span_start and h_lineno > best_lineno:
@@ -569,7 +707,9 @@ def apply_markdown_beacons(
             for node in all_nodes:
                 node_name = (node.get("name") or "")
                 node_norm = normalize_for_match(node_name)
-                if node_norm == norm_target or (norm_target and norm_target in node_norm):
+                if node_norm == norm_target or (
+                    norm_target and norm_target in node_norm
+                ):
                     owner = node
                     break
 
@@ -599,7 +739,10 @@ def apply_markdown_beacons(
         if tag_suffix:
             name = f"{name} {tag_suffix}"
 
-        context_lines = _extract_markdown_beacon_context(lines, beacon.get("comment_line") or 0)
+        context_lines = _extract_markdown_beacon_context(
+            lines, beacon.get("comment_line") or 0
+        )
+        comment = beacon.get("comment")
 
         note_lines = [
             "BEACON (MD SPAN)",
@@ -608,6 +751,8 @@ def apply_markdown_beacons(
             f"slice_labels: {slice_labels}",
             "kind: span",
         ]
+        if comment:
+            note_lines.append(f"comment: {comment}")
         if context_lines:
             note_lines.append("")
             note_lines.append("CONTEXT COMMENTS (MD):")
@@ -822,6 +967,7 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     "kind": kind,
                     "start_snippet": fields.get("start_snippet"),
                     "end_snippet": fields.get("end_snippet"),
+                    "comment": fields.get("comment"),
                     "comment_line": comment_line,
                 }
                 beacons.append(beacon)
@@ -1171,6 +1317,7 @@ def apply_python_beacons(
         chosen["name"] = name
 
         # Merge beacon metadata into note
+        comment = beacon.get("comment")
         meta_lines = [
             "BEACON (AST)",
             f"id: {b_id}",
@@ -1178,6 +1325,8 @@ def apply_python_beacons(
             f"slice_labels: {slice_labels}",
             "kind: ast",
         ]
+        if comment:
+            meta_lines.append(f"comment: {comment}")
         context_lines = _extract_python_beacon_context(comment_line)
         if context_lines:
             meta_lines.append("")
@@ -1262,6 +1411,7 @@ def apply_python_beacons(
             name = f"{name} {tag_suffix}"
 
         context_lines = _extract_python_beacon_context(comment_line)
+        comment = beacon.get("comment")
 
         note_lines = [
             "BEACON (SPAN)",
@@ -1270,6 +1420,8 @@ def apply_python_beacons(
             f"slice_labels: {slice_labels}",
             "kind: span",
         ]
+        if comment:
+            note_lines.append(f"comment: {comment}")
         if context_lines:
             note_lines.append("")
             note_lines.append("CONTEXT COMMENTS (PYTHON):")
@@ -1680,6 +1832,7 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     "kind": kind,
                     "start_snippet": fields.get("start_snippet"),
                     "end_snippet": fields.get("end_snippet"),
+                    "comment": fields.get("comment"),
                     "comment_line": comment_line,
                 }
                 beacons.append(beacon)
@@ -1755,6 +1908,7 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     "kind": kind,
                     "start_snippet": fields.get("start_snippet"),
                     "end_snippet": fields.get("end_snippet"),
+                    "comment": fields.get("comment"),
                     "comment_line": comment_line,
                 }
                 beacons.append(beacon)
@@ -1855,6 +2009,7 @@ def apply_sql_beacons(
             name = f"{name} {tag_suffix}"
 
         context_lines = _extract_sql_beacon_context(lines, beacon.get("comment_line") or 0)
+        comment = beacon.get("comment")
 
         note_lines = [
             "BEACON (SQL SPAN)",
@@ -1863,6 +2018,8 @@ def apply_sql_beacons(
             f"slice_labels: {slice_labels}",
             "kind: span",
         ]
+        if comment:
+            note_lines.append(f"comment: {comment}")
         if context_lines:
             note_lines.append("")
             note_lines.append("CONTEXT COMMENTS (SQL):")
@@ -1960,6 +2117,7 @@ def apply_sh_beacons(
             name = f"{name} {tag_suffix}"
 
         context_lines = _extract_sh_beacon_context(lines, beacon.get("comment_line") or 0)
+        comment = beacon.get("comment")
 
         note_lines = [
             "BEACON (SH SPAN)",
@@ -1968,6 +2126,8 @@ def apply_sh_beacons(
             f"slice_labels: {slice_labels}",
             "kind: span",
         ]
+        if comment:
+            note_lines.append(f"comment: {comment}")
         if context_lines:
             note_lines.append("")
             note_lines.append("CONTEXT COMMENTS (SH):")
