@@ -6,6 +6,7 @@ import os
 from typing import Any
 from datetime import datetime
 from pathlib import Path
+from dataclasses import dataclass, field
 
 from ..models import NetworkError, NodeCreateRequest, NodeUpdateRequest
 
@@ -152,6 +153,31 @@ def _is_notes_name(raw_name: str) -> bool:
     if not name[0].isalnum():
         name = name[1:].lstrip()
     return name.lower().startswith("notes")
+
+
+@dataclass
+class NotesSalvageContext:
+    """Shared NOTES salvage/restore metadata for a single FILE node.
+
+    This context is produced before we mutate a Cartographer-mapped FILE subtree
+    (legacy full-rebuild path) and may also be used in the incremental F12 path
+    as belt-and-suspenders protection.
+    """
+
+    # Beacon-based salvage: beacon_id -> [notes_root_id, ...]
+    saved_notes_by_beacon: dict[str, list[str]] = field(default_factory=dict)
+    # FILE-level path-based salvage: canonical_path/None -> [notes_root_id, ...]
+    stashed_notes_by_path: dict[str | None, list[str]] = field(default_factory=dict)
+
+    # Parking node used only in the legacy path when we temporarily move
+    # NOTES subtrees out from under beacon nodes while we delete/rebuild the
+    # structural subtree.
+    parking_node_id: str | None = None
+    parking_created_here: bool = False
+
+    # Counters for telemetry
+    total_notes_to_salvage: int = 0
+    notes_moved_to_parking: int = 0
 
 
 class WorkFlowyClientNexus(WorkFlowyClientEtch):
@@ -2187,12 +2213,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     ) -> dict[str, Any]:
         """Per-file beacon-aware refresh of a Cartographer-mapped FILE node.
 
-        - Uses a SHA1 guard to skip work when the underlying source file has not
-          changed.
-        - Rebuilds ONLY the structural subtree under the given file node using
-          Cartographer in single-file mode.
-        - Salvages Notes[...] subtrees whose beacon `id:` is unchanged and
-          reattaches them under the new beacon nodes.
+        Legacy implementation: full structural rebuild under the FILE node using
+        Cartographer in single-file mode, with hash guard and robust NOTES
+        salvage/restore semantics.
 
         This method intentionally DOES NOT touch siblings of the file node, and
         it preserves top-level "Notes" manual roots under the file.
@@ -2205,15 +2228,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         """
         logger = _ClientLogger()
         log_event(
-            f"refresh_file_node_beacons start (file_node_id={file_node_id}, dry_run={dry_run})",
+            f"refresh_file_node_beacons (legacy) start (file_node_id={file_node_id}, dry_run={dry_run})",
             "BEACON",
         )
 
-        # 4.0 Optional: resolve arbitrary descendant UUID → enclosing FILE node UUID.
+        # 1) Optional: resolve arbitrary descendant UUID → enclosing FILE node UUID.
         # This mirrors beacon_get_code_snippet semantics so callers can pass a
         # beacon or child node UUID and still refresh the correct FILE node.
         try:
-            raw_cache = await export_nodes_impl(self, node_id=None, use_cache=True, force_refresh=False)
+            raw_cache = await export_nodes_impl(
+                self,
+                node_id=None,
+                use_cache=True,
+                force_refresh=False,
+            )
             all_nodes_cache = raw_cache.get("nodes", []) or []
             nodes_by_id_cache: dict[str, dict[str, Any]] = {
                 str(n.get("id")): n for n in all_nodes_cache if n.get("id")
@@ -2242,13 +2270,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
             if resolved_file_node_id and resolved_file_node_id != file_node_id:
                 log_event(
-                    "refresh_file_node_beacons: resolved descendant UUID "
+                    "refresh_file_node_beacons (legacy): resolved descendant UUID "
                     f"{file_node_id} → FILE node {resolved_file_node_id}",
                     "BEACON",
                 )
                 file_node_id = resolved_file_node_id
 
-        # 4.1 Resolve file node & source path
+        # 2) Resolve file node & source path
         try:
             raw = await export_nodes_impl(self, file_node_id)
         except Exception as e:  # noqa: BLE001
@@ -2261,7 +2289,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "error": f"File node {file_node_id} not found or has empty subtree",
             }
 
-        file_node = None
+        file_node: dict[str, Any] | None = None
         for n in flat_nodes:
             if str(n.get("id")) == str(file_node_id):
                 file_node = n
@@ -2291,7 +2319,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         if not os.path.isfile(source_path):
             raise NetworkError(f"Source file not found at Path: {source_path}")
 
-        # 4.2 Hash guard
+        # 3) Hash guard
         def _compute_sha1(path: str) -> str:
             import hashlib
 
@@ -2308,15 +2336,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             except Exception:
                 return None
 
-        def _canonical_path(path: str) -> str:
-            """Normalize filesystem path for equality comparisons (case-insensitive on Windows)."""
-            return os.path.normcase(os.path.normpath(path))
-
         file_sha1 = _compute_sha1(source_path)
 
         if existing_sha1 and existing_sha1 == file_sha1:
             log_event(
-                f"refresh_file_node_beacons: unchanged (hash match) for {source_path}",
+                f"refresh_file_node_beacons (legacy): unchanged (hash match) for {source_path}",
                 "BEACON",
             )
             return {
@@ -2334,7 +2358,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         previous_sha1 = existing_sha1
 
-        # Build parent->children index for current subtree
+        # 4) Build parent->children index for current subtree (used for structural
+        # deletion; salvage helpers build their own view as needed).
         children_by_parent: dict[str, list[dict[str, Any]]] = {}
         for n in flat_nodes:
             nid = n.get("id")
@@ -2344,92 +2369,18 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if parent_id:
                 children_by_parent.setdefault(str(parent_id), []).append(n)
 
-        # 4.2a Stash immediate Notes[...] roots under the FILE node keyed by its Path.
-        stashed_notes_by_path: dict[str | None, list[str]] = {}
         file_children = children_by_parent.get(str(file_node_id), [])
-        file_path_key = _canonical_path(source_path) if source_path else None
-        for child in file_children:
-            cid = child.get("id")
-            if not cid:
-                continue
-            cname = str(child.get("name") or "")
-            if _is_notes_name(cname):
-                stashed_notes_by_path.setdefault(file_path_key, []).append(str(cid))
 
-        # 4.3 Salvage Notes under existing beacon nodes
-        saved_notes: dict[str, list[str]] = {}
-        total_notes_to_salvage = 0
+        # 5) Collect NOTES salvage context (shared with incremental F12 path).
+        salvage_ctx = await self._collect_notes_salvage_context_for_file(
+            flat_nodes=flat_nodes,
+            file_node_id=str(file_node_id),
+            source_path=source_path,
+            dry_run=dry_run,
+            mode="legacy",
+        )
 
-        for n in flat_nodes:
-            nid = n.get("id")
-            if not nid:
-                continue
-            note = n.get("note") or ""
-            if "BEACON (" not in str(note):
-                continue
-            beacon_id_val: str | None = None
-            for line in str(note).splitlines():
-                stripped = line.strip()
-                if stripped.startswith("id:"):
-                    beacon_id_val = stripped.split(":", 1)[1].strip()
-                    break
-            if not beacon_id_val:
-                continue
-
-            sid = str(nid)
-            children = children_by_parent.get(sid, [])
-            for child in children:
-                cid = child.get("id")
-                if not cid:
-                    continue
-                cname = str(child.get("name") or "")
-                if _is_notes_name(cname):
-                    saved_notes.setdefault(beacon_id_val, []).append(str(cid))
-                    total_notes_to_salvage += 1
-
-        # Create or locate 'Notes (parking)' under the file node
-        parking_node_id: str | None = None
-        parking_created_here = False
-
-        file_children = children_by_parent.get(str(file_node_id), [])
-        for child in file_children:
-            cid = child.get("id")
-            if not cid:
-                continue
-            cname = str(child.get("name") or "")
-            if _is_notes_name(cname) and "parking" in cname.lower():
-                parking_node_id = str(cid)
-                break
-
-        if total_notes_to_salvage and parking_node_id is None and not dry_run:
-            req = NodeCreateRequest(
-                name="🅿️ Notes (parking)",
-                parent_id=str(file_node_id),
-                note=None,
-                layoutMode=None,
-                position="bottom",
-            )
-            try:
-                created = await self.create_node(req, _internal_call=True)
-                parking_node_id = created.id
-                parking_created_here = True
-            except Exception as e:  # noqa: BLE001
-                raise NetworkError(f"Failed to create 'Notes (parking)' node: {e}") from e
-
-        notes_moved_to_parking = 0
-        if not dry_run and parking_node_id and saved_notes:
-            for notes_list in saved_notes.values():
-                for nid in notes_list:
-                    try:
-                        await self.move_node(nid, parking_node_id, "bottom")
-                        notes_moved_to_parking += 1
-                    except Exception as e:  # noqa: BLE001
-                        log_event(
-                            f"Failed to move notes node {nid} to parking: {e}",
-                            "BEACON",
-                        )
-
-        # 4.4 Delete structural subtree under file node (non-Notes and non-parking)
+        # 6) Delete structural subtree under file node (non-Notes and non-parking)
         structural_deleted = 0
         if file_children:
             for child in file_children:
@@ -2437,7 +2388,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if not cid:
                     continue
                 sid = str(cid)
-                if parking_node_id and sid == parking_node_id:
+                if salvage_ctx.parking_node_id and sid == salvage_ctx.parking_node_id:
                     continue
                 cname = str(child.get("name") or "")
                 if _is_notes_name(cname):
@@ -2453,8 +2404,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             "BEACON",
                         )
 
-        # 4.4 (cont.) Rebuild structural subtree from Cartographer single-file map
-        # Import nexus_map_codebase dynamically from project root
+        # 7) Rebuild structural subtree from Cartographer single-file map
         try:
             import importlib
 
@@ -2478,28 +2428,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         new_children = file_map.get("children") or []
         structural_created = 0
 
-        # Collect beacon ids present in new map (used by dry_run and by reattachment)
-        def _collect_beacon_ids(nodes: list[dict[str, Any]]) -> set[str]:
-            ids: set[str] = set()
-            for node in nodes or []:
-                note = node.get("note") or ""
-                if "BEACON (" in str(note):
-                    for line in str(note).splitlines():
-                        stripped = line.strip()
-                        if stripped.startswith("id:"):
-                            val = stripped.split(":", 1)[1].strip()
-                            if val:
-                                ids.add(val)
-                            break
-                children = node.get("children") or []
-                if children:
-                    ids.update(_collect_beacon_ids(children))
-            return ids
-
-        new_beacon_ids = _collect_beacon_ids(new_children)
-
-        new_beacon_nodes: dict[str, str] = {}
-
         if not dry_run:
             async def _create_subtree(parent_uuid: str, node: dict[str, Any]) -> None:
                 nonlocal structural_created
@@ -2518,18 +2446,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 wf_node = await self.create_node(req, _internal_call=True)
                 structural_created += 1
 
-                # Capture beacon id mapping for reattachment
-                beacon_id_val: str | None = None
-                note_text_new = str(note or "")
-                if "BEACON (" in note_text_new:
-                    for line in note_text_new.splitlines():
-                        stripped = line.strip()
-                        if stripped.startswith("id:"):
-                            beacon_id_val = stripped.split(":", 1)[1].strip()
-                            break
-                if beacon_id_val:
-                    new_beacon_nodes[beacon_id_val] = wf_node.id
-
                 for child in node.get("children") or []:
                     await _create_subtree(wf_node.id, child)
 
@@ -2546,74 +2462,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
             structural_created = _count_nodes(new_children)
 
-        # 4.5 Reattach Notes based on beacon id
-        notes_salvaged = 0
-        notes_orphaned = 0
-        salvaged_root_id: str | None = None
-
-        if saved_notes:
-            if dry_run:
-                for beacon_id, ids_list in saved_notes.items():
-                    if beacon_id in new_beacon_ids:
-                        notes_salvaged += len(ids_list)
-                    else:
-                        notes_orphaned += len(ids_list)
-            else:
-                # Non-dry-run: reattach under new beacons or 'Notes (salvaged)'
-                if new_beacon_nodes:
-                    for beacon_id, ids_list in saved_notes.items():
-                        target_parent = new_beacon_nodes.get(beacon_id)
-                        if target_parent:
-                            for nid in ids_list:
-                                try:
-                                    await self.move_node(nid, target_parent, "bottom")
-                                    notes_salvaged += 1
-                                except Exception as e:  # noqa: BLE001
-                                    log_event(
-                                        f"Failed to reattach notes node {nid} to beacon {beacon_id}: {e}",
-                                        "BEACON",
-                                    )
-                        else:
-                            # Orphaned – move under 'Notes (salvaged)'
-                            if not ids_list:
-                                continue
-                            if salvaged_root_id is None:
-                                req = NodeCreateRequest(
-                                    name="🧩 Notes (salvaged)",
-                                    parent_id=str(file_node_id),
-                                    note=None,
-                                    layoutMode=None,
-                                    position="bottom",
-                                )
-                                try:
-                                    created = await self.create_node(
-                                        req,
-                                        _internal_call=True,
-                                    )
-                                    salvaged_root_id = created.id
-                                except Exception as e:  # noqa: BLE001
-                                    raise NetworkError(
-                                        f"Failed to create 'Notes (salvaged)' node: {e}",
-                                    ) from e
-                            for nid in ids_list:
-                                try:
-                                    await self.move_node(nid, salvaged_root_id, "bottom")
-                                    notes_orphaned += 1
-                                except Exception as e:  # noqa: BLE001
-                                    log_event(
-                                        f"Failed to move notes node {nid} to salvaged root: {e}",
-                                        "BEACON",
-                                    )
-
-        # If we created a fresh parking node and successfully moved notes off it, delete it
-        if not dry_run and parking_created_here and parking_node_id:
-            try:
-                await self.delete_node(parking_node_id)
-            except Exception:
-                # Non-fatal
-                pass
-
-        # 4.6 Update file node note header with unified Path/LINE COUNT/Source-SHA1
+        # 8) Update file node note header with unified Path/LINE COUNT/Source-SHA1
         file_line_count: int | None = None
         if not dry_run:
             file_line_count = _compute_line_count(source_path)
@@ -2646,7 +2495,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             except Exception as e:  # noqa: BLE001
                 # Fallback: preserve legacy hash-only behavior to avoid breaking refresh
                 log_event(
-                    "refresh_file_node_beacons: format_file_note failed "
+                    "refresh_file_node_beacons (legacy): format_file_note failed "
                     f"({e}); falling back to legacy hash-only header update",
                     "BEACON",
                 )
@@ -2688,40 +2537,23 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             except Exception:
                 pass
 
-        # 4.7 FILE-level path-based Notes[...] reattachment (immediate Notes under FILE)
-        total_notes_stashed_by_path = sum(len(v) for v in stashed_notes_by_path.values()) if stashed_notes_by_path else 0
-        notes_path_reattached = 0
-        notes_path_unmatched = 0
+        # 9) Restore NOTES from salvage context (beacon-based + path-based) and
+        # optionally clean up any parking node that was created.
+        restore_counts = await self._restore_notes_for_file(
+            file_node_id=str(file_node_id),
+            source_path=source_path,
+            salvage_ctx=salvage_ctx,
+            dry_run=dry_run,
+        )
 
-        if total_notes_stashed_by_path:
-            if dry_run:
-                # In dry-run mode, assume that Notes keyed to a non-None Path will
-                # be reattached under this FILE node; None-keyed entries remain
-                # unmatched by design.
-                for key, ids_list in stashed_notes_by_path.items():
-                    if key is not None:
-                        notes_path_reattached += len(ids_list)
-                    else:
-                        notes_path_unmatched += len(ids_list)
-            else:
-                file_path_key_canonical = _canonical_path(source_path) if source_path else None
-                for key, ids_list in stashed_notes_by_path.items():
-                    if key is not None and key == file_path_key_canonical:
-                        for nid in ids_list:
-                            try:
-                                await self.move_node(nid, str(file_node_id), "bottom")
-                                notes_path_reattached += 1
-                            except Exception as e:  # noqa: BLE001
-                                log_event(
-                                    "refresh_file_node_beacons: failed to reattach FILE-level Notes "
-                                    f"node {nid} under {file_node_id}: {e}",
-                                    "BEACON",
-                                )
-                    else:
-                        notes_path_unmatched += len(ids_list)
+        notes_salvaged = restore_counts.get("notes_salvaged", 0)
+        notes_orphaned = restore_counts.get("notes_orphaned", 0)
+        total_notes_stashed_by_path = restore_counts.get("notes_stashed_by_path", 0)
+        notes_path_reattached = restore_counts.get("notes_path_reattached", 0)
+        notes_path_unmatched = restore_counts.get("notes_path_unmatched", 0)
 
         log_event(
-            "refresh_file_node_beacons complete for "
+            "refresh_file_node_beacons (legacy) complete for "
             f"{source_path} (deleted={structural_deleted}, created={structural_created}, "
             f"notes_salvaged={notes_salvaged}, notes_orphaned={notes_orphaned}, "
             f"notes_stashed_by_path={total_notes_stashed_by_path}, "
@@ -2739,7 +2571,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "dry_run": dry_run,
             "structural_nodes_deleted": structural_deleted,
             "structural_nodes_created": structural_created,
-            "notes_identified_for_salvage": total_notes_to_salvage,
+            "notes_identified_for_salvage": salvage_ctx.total_notes_to_salvage,
             "notes_salvaged": notes_salvaged,
             "notes_orphaned": notes_orphaned,
             "notes_stashed_by_path": total_notes_stashed_by_path,
@@ -2781,6 +2613,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         incremental_probe: dict[str, Any] | None = None
         resolved_from_descendant = False
+        salvage_ctx: NotesSalvageContext | None = None
 
         # 0) Optional descendant→FILE resolution so callers may pass a beacon or AST
         # child UUID and still get a file-scoped incremental refresh, matching the
@@ -2868,6 +2701,17 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 raise NetworkError(
                     f"File node {file_node_id} note is missing 'Path:' line; cannot build incremental map",
                 )
+
+            # Optional: collect NOTES salvage metadata for belt-and-suspenders
+            # around reconcile_tree. In the incremental path we run this in
+            # metadata-only mode (no parking node, no moves).
+            salvage_ctx = await self._collect_notes_salvage_context_for_file(
+                flat_nodes=flat_nodes,
+                file_node_id=str(file_node_id),
+                source_path=source_path,
+                dry_run=True,
+                mode="incremental",
+            )
 
             # 2) Build an in-memory hierarchy for the existing Workflowy subtree
             hierarchical_tree = self._build_hierarchy(flat_nodes, True)
@@ -3148,6 +2992,34 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         "api_calls": stats.get("api_calls"),
                     }
                 )
+
+            # Optional belt-and-suspenders NOTES restore pass on top of the
+            # explicitly_preserved_ids guard used by reconcile_tree. This is
+            # metadata-only for collection, but in the non-dry-run path we
+            # allow it to actually move NOTES back under their intended parents
+            # when structural alignment changes in unexpected ways.
+            if not dry_run and salvage_ctx is not None:
+                try:
+                    effective_file_node_id = str(
+                        incremental_probe.get("file_node_id_effective") or file_node_id
+                    )
+                    effective_source_path = str(
+                        incremental_probe.get("source_path") or ""
+                    )
+                    restore_counts = await self._restore_notes_for_file(
+                        file_node_id=effective_file_node_id,
+                        source_path=effective_source_path,
+                        salvage_ctx=salvage_ctx,
+                        dry_run=dry_run,
+                    )
+                    result["notes_restore"] = restore_counts
+                except Exception as e:  # noqa: BLE001
+                    _log_to_file_helper(
+                        "refresh_file_node_beacons incremental: _restore_notes_for_file "
+                        f"failed: {e}",
+                        "reconcile",
+                    )
+
             result["_incremental_probe"] = incremental_probe
             if not dry_run:
                 try:
@@ -3671,4 +3543,323 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "notes_moved_to_root": notes_moved_to_root,
             "notes_reattached": notes_reattached,
             "notes_unmatched": notes_unmatched,
+        }
+
+    async def _collect_notes_salvage_context_for_file(
+        self,
+        *,
+        flat_nodes: list[dict[str, Any]],
+        file_node_id: str,
+        source_path: str,
+        dry_run: bool,
+        mode: str = "legacy",
+    ) -> NotesSalvageContext:
+        """Collect NOTES salvage metadata for a single Cartographer FILE node.
+
+        In "legacy" mode this mirrors the prior behavior of
+        _refresh_file_node_beacons_legacy by:
+        - Identifying beacon-scoped Notes[...] subtrees and, when not dry_run,
+          moving them under a temporary 🅿️ Notes (parking) node.
+        - Recording immediate FILE-level Notes[...] roots keyed by canonical
+          Path so they can be reattached after structural changes.
+
+        In "incremental" mode we only collect metadata (no parking node, no
+        moves). This provides belt-and-suspenders protection for the
+        reconcile_tree-based F12 path without altering its core behavior.
+        """
+
+        def _canonical_path(path: str) -> str:
+            return os.path.normcase(os.path.normpath(path))
+
+        ctx = NotesSalvageContext()
+
+        # Build parent→children index once for this snapshot.
+        children_by_parent: dict[str, list[dict[str, Any]]] = {}
+        for n in flat_nodes:
+            nid = n.get("id")
+            if not nid:
+                continue
+            pid = n.get("parent_id") or n.get("parentId")
+            if pid:
+                children_by_parent.setdefault(str(pid), []).append(n)
+
+        # 1) FILE-level Notes[...] roots keyed by canonical Path.
+        file_children = children_by_parent.get(str(file_node_id), [])
+        file_path_key = _canonical_path(source_path) if source_path else None
+        for child in file_children:
+            cid = child.get("id")
+            if not cid:
+                continue
+            cname = str(child.get("name") or "")
+            if _is_notes_name(cname):
+                ctx.stashed_notes_by_path.setdefault(file_path_key, []).append(str(cid))
+
+        # 2) Beacon-scoped Notes[...] subtrees.
+        for n in flat_nodes:
+            nid = n.get("id")
+            if not nid:
+                continue
+            note = n.get("note") or ""
+            if "BEACON (" not in str(note):
+                continue
+
+            beacon_id_val: str | None = None
+            for line in str(note).splitlines():
+                stripped = line.strip()
+                if stripped.startswith("id:"):
+                    beacon_id_val = stripped.split(":", 1)[1].strip()
+                    break
+            if not beacon_id_val:
+                continue
+
+            sid = str(nid)
+            children = children_by_parent.get(sid, [])
+            for child in children:
+                cid = child.get("id")
+                if not cid:
+                    continue
+                cname = str(child.get("name") or "")
+                if _is_notes_name(cname):
+                    ctx.saved_notes_by_beacon.setdefault(beacon_id_val, []).append(str(cid))
+                    ctx.total_notes_to_salvage += 1
+
+        # 3) Optional: create or locate 🅿️ Notes (parking) under the FILE node and
+        # move beacon-scoped Notes[...] there. This is only needed in the legacy
+        # full-rebuild path when we are about to delete the structural subtree.
+        if mode == "legacy":
+            # Locate existing parking node if present.
+            for child in file_children:
+                cid = child.get("id")
+                if not cid:
+                    continue
+                cname = str(child.get("name") or "")
+                if _is_notes_name(cname) and "parking" in cname.lower():
+                    ctx.parking_node_id = str(cid)
+                    break
+
+            # Create parking node when needed.
+            if (
+                ctx.total_notes_to_salvage
+                and ctx.parking_node_id is None
+                and not dry_run
+            ):
+                req = NodeCreateRequest(
+                    name="🅿️ Notes (parking)",
+                    parent_id=str(file_node_id),
+                    note=None,
+                    layoutMode=None,
+                    position="bottom",
+                )
+                try:
+                    created = await self.create_node(req, _internal_call=True)
+                    ctx.parking_node_id = created.id
+                    ctx.parking_created_here = True
+                except Exception as e:  # noqa: BLE001
+                    raise NetworkError(
+                        f"Failed to create 'Notes (parking)' node: {e}",
+                    ) from e
+
+            # Move beacon-scoped Notes[...] under parking.
+            if not dry_run and ctx.parking_node_id and ctx.saved_notes_by_beacon:
+                for notes_list in ctx.saved_notes_by_beacon.values():
+                    for nid in notes_list:
+                        try:
+                            await self.move_node(nid, ctx.parking_node_id, "bottom")
+                            ctx.notes_moved_to_parking += 1
+                        except Exception as e:  # noqa: BLE001
+                            log_event(
+                                f"Failed to move notes node {nid} to parking: {e}",
+                                "BEACON",
+                            )
+
+        return ctx
+
+    async def _restore_notes_for_file(
+        self,
+        *,
+        file_node_id: str,
+        source_path: str,
+        salvage_ctx: NotesSalvageContext,
+        dry_run: bool,
+    ) -> dict[str, int]:
+        """Restore NOTES after structural changes for a single FILE node.
+
+        Responsibilities:
+        - Re-export the FILE subtree and find new beacon nodes by `id:`.
+        - Move beacon-scoped Notes[...] roots under their new parents (or under
+          a 🧩 Notes (salvaged) node when the beacon disappeared).
+        - Reattach FILE-level Notes[...] roots keyed by canonical Path so they
+          remain directly under the FILE node.
+        - Clean up a parking node created during collection when appropriate.
+
+        This helper is used by both the legacy full-rebuild path and the
+        incremental F12 path (as a belt-and-suspenders layer on top of
+        explicitly_preserved_ids).
+        """
+
+        def _canonical_path(path: str) -> str:
+            return os.path.normcase(os.path.normpath(path))
+
+        # 1) Re-export refreshed subtree under the FILE node.
+        try:
+            refreshed_raw = await export_nodes_impl(self, file_node_id)
+            refreshed_nodes = refreshed_raw.get("nodes") or []
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                f"_restore_notes_for_file: export_nodes_impl failed for {file_node_id}: {e}",
+                "BEACON",
+            )
+            refreshed_nodes = []
+
+        node_by_id: dict[str, dict[str, Any]] = {}
+        children_by_parent: dict[str, list[dict[str, Any]]] = {}
+        for n in refreshed_nodes:
+            nid = n.get("id")
+            if not nid:
+                continue
+            s_nid = str(nid)
+            node_by_id[s_nid] = n
+            pid = n.get("parent_id") or n.get("parentId")
+            if pid:
+                children_by_parent.setdefault(str(pid), []).append(n)
+
+        # 2) Build beacon_id → new Workflowy node id mapping.
+        new_beacon_nodes: dict[str, str] = {}
+        for n in refreshed_nodes:
+            nid = n.get("id")
+            if not nid:
+                continue
+            note = n.get("note") or n.get("no") or ""
+            if "BEACON (" not in str(note):
+                continue
+            beacon_id_val: str | None = None
+            for line in str(note).splitlines():
+                stripped = line.strip()
+                if stripped.startswith("id:"):
+                    beacon_id_val = stripped.split(":", 1)[1].strip()
+                    break
+            if beacon_id_val:
+                new_beacon_nodes[beacon_id_val] = str(nid)
+
+        # 3) Reattach beacon-scoped NOTES.
+        notes_salvaged = 0
+        notes_orphaned = 0
+        salvaged_root_id: str | None = None
+
+        if salvage_ctx.saved_notes_by_beacon:
+            if dry_run:
+                for beacon_id, ids_list in salvage_ctx.saved_notes_by_beacon.items():
+                    if beacon_id in new_beacon_nodes:
+                        notes_salvaged += len(ids_list)
+                    else:
+                        notes_orphaned += len(ids_list)
+            else:
+                for beacon_id, ids_list in salvage_ctx.saved_notes_by_beacon.items():
+                    target_parent = new_beacon_nodes.get(beacon_id)
+                    if target_parent:
+                        for nid in ids_list:
+                            try:
+                                await self.move_node(nid, target_parent, "bottom")
+                                notes_salvaged += 1
+                            except Exception as e:  # noqa: BLE001
+                                log_event(
+                                    f"Failed to reattach notes node {nid} to beacon {beacon_id}: {e}",
+                                    "BEACON",
+                                )
+                    else:
+                        # Orphaned – move under 'Notes (salvaged)' under the FILE
+                        # node if possible.
+                        if not ids_list:
+                            continue
+                        if salvaged_root_id is None and not dry_run:
+                            # Try to locate an existing salvaged root first.
+                            for child in children_by_parent.get(str(file_node_id), []) or []:
+                                cid = child.get("id")
+                                if not cid:
+                                    continue
+                                cname = str(child.get("name") or "")
+                                if _is_notes_name(cname) and "salvaged" in cname.lower():
+                                    salvaged_root_id = str(cid)
+                                    break
+
+                            if salvaged_root_id is None:
+                                req = NodeCreateRequest(
+                                    name="🧩 Notes (salvaged)",
+                                    parent_id=str(file_node_id),
+                                    note=None,
+                                    layoutMode=None,
+                                    position="bottom",
+                                )
+                                try:
+                                    created = await self.create_node(
+                                        req,
+                                        _internal_call=True,
+                                    )
+                                    salvaged_root_id = created.id
+                                except Exception as e:  # noqa: BLE001
+                                    raise NetworkError(
+                                        f"Failed to create 'Notes (salvaged)' node: {e}",
+                                    ) from e
+
+                        for nid in ids_list:
+                            if dry_run or salvaged_root_id is None:
+                                notes_orphaned += 1
+                                continue
+                            try:
+                                await self.move_node(nid, salvaged_root_id, "bottom")
+                                notes_orphaned += 1
+                            except Exception as e:  # noqa: BLE001
+                                log_event(
+                                    f"Failed to move notes node {nid} to salvaged root: {e}",
+                                    "BEACON",
+                                )
+
+        # 4) FILE-level path-based Notes[...] reattachment (immediate Notes under
+        # the FILE node whose Path matches source_path).
+        total_notes_stashed_by_path = sum(
+            len(v) for v in salvage_ctx.stashed_notes_by_path.values()
+        ) if salvage_ctx.stashed_notes_by_path else 0
+        notes_path_reattached = 0
+        notes_path_unmatched = 0
+
+        if total_notes_stashed_by_path:
+            if dry_run:
+                for key, ids_list in salvage_ctx.stashed_notes_by_path.items():
+                    if key is not None and key == _canonical_path(source_path):
+                        notes_path_reattached += len(ids_list)
+                    else:
+                        notes_path_unmatched += len(ids_list)
+            else:
+                file_path_key_canonical = _canonical_path(source_path) if source_path else None
+                for key, ids_list in salvage_ctx.stashed_notes_by_path.items():
+                    if key is not None and key == file_path_key_canonical:
+                        for nid in ids_list:
+                            try:
+                                await self.move_node(nid, str(file_node_id), "bottom")
+                                notes_path_reattached += 1
+                            except Exception as e:  # noqa: BLE001
+                                log_event(
+                                    "_restore_notes_for_file: failed to reattach FILE-level Notes "
+                                    f"node {nid} under {file_node_id}: {e}",
+                                    "BEACON",
+                                )
+                    else:
+                        notes_path_unmatched += len(ids_list)
+
+        # 5) Clean up parking node if we created it during collection.
+        if not dry_run and salvage_ctx.parking_created_here and salvage_ctx.parking_node_id:
+            try:
+                await self.delete_node(salvage_ctx.parking_node_id)
+            except Exception:
+                # Non-fatal; at worst the parking node remains in the tree.
+                pass
+
+        return {
+            "notes_identified_for_salvage": salvage_ctx.total_notes_to_salvage,
+            "notes_salvaged": notes_salvaged,
+            "notes_orphaned": notes_orphaned,
+            "notes_stashed_by_path": total_notes_stashed_by_path,
+            "notes_path_reattached": notes_path_reattached,
+            "notes_path_unmatched": notes_path_unmatched,
+            "notes_moved_to_parking": salvage_ctx.notes_moved_to_parking,
         }
