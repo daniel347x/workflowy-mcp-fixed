@@ -2873,7 +2873,14 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             }
 
             try:
-                cartographer.reconcile_trees(source_root, ether_root)  # type: ignore[attr-defined]
+                # Prefer the Cartographer-aware reconciliation when available.
+                if hasattr(cartographer, "reconcile_trees_cartographer"):
+                    cartographer.reconcile_trees_cartographer(  # type: ignore[attr-defined]
+                        source_root,
+                        ether_root,
+                    )
+                else:
+                    cartographer.reconcile_trees(source_root, ether_root)  # type: ignore[attr-defined]
             except Exception as e:  # noqa: BLE001
                 raise NetworkError(
                     f"reconcile_trees(source_root, ether_root) failed in incremental scaffold: {e}",

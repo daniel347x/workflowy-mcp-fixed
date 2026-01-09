@@ -7,6 +7,7 @@ import tempfile
 from typing import List, Dict, Any, Optional
 
 import re
+import unicodedata
 from markdown_it import MarkdownIt
 import mdformat
 
@@ -890,6 +891,201 @@ def normalize_for_match(s: str) -> str:
     if not isinstance(s, str):
         return ""
     return "".join(ch for ch in s if not ch.isspace())
+
+
+_TAG_LIKE_PATTERN = re.compile(r"<[A-Za-z_/][A-Za-z0-9_\-/]*>")
+
+
+def whiten_text_for_header_compare(text: str | None) -> str:
+    """Whiten heading-like text for structural comparison.
+
+    Used by Cartographer/F12/MD_PATH flows to decide whether two headings are
+    "semantically the same" while preserving trailing #tags.
+
+    Rules:
+    - Strip simple HTML tags like <code>, </code>, <span>, </span> by pattern:
+      <[A-Za-z_/][A-Za-z0-9_\-/]*>
+      (no whitespace or digits at the start, so "a < 5" is untouched).
+    - Drop all backticks.
+    - Drop emoji / Symbol, Other (So) codepoints.
+    - Drop all whitespace.
+    - Do NOT strip '#' or words, so tag changes still show up as differences.
+    """
+    if not isinstance(text, str):
+        return ""
+    s = text
+
+    # Remove simple tag-like markup such as <code>, </code>, <span>, </span>.
+    s = _TAG_LIKE_PATTERN.sub("", s)
+
+    # Drop backticks used for inline code in Markdown.
+    s = s.replace("`", "")
+
+    # Remove emoji / other symbolic decoration.
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "So")
+
+    # Collapse and remove whitespace entirely.
+    s = re.sub(r"\s+", "", s)
+    return s
+
+
+def _extract_beacon_id_from_note(note: str | None) -> str | None:
+    """Extract beacon `id:` field from a node's note, if present.
+
+    We deliberately do not try to distinguish AST vs SPAN kinds here; the
+    id is expected to be unique within a single file's Cartographer subtree.
+    """
+    if not isinstance(note, str) or "BEACON (" not in note:
+        return None
+    for line in note.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("id:"):
+            val = stripped.split(":", 1)[1].strip()
+            return val or None
+    return None
+
+
+def _extract_ast_qualname_from_note(note: str | None) -> str | None:
+    """Extract AST_QUALNAME from a node's note, if present."""
+    if not isinstance(note, str):
+        return None
+    for line in note.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("AST_QUALNAME:"):
+            val = stripped.split(":", 1)[1].strip()
+            return val or None
+    return None
+
+
+def _extract_md_path_from_note(note: str | None) -> list[str] | None:
+    """Extract MD_PATH heading lines from a Markdown node's note, if any.
+
+    Returns the raw heading lines (including leading '#' characters) between
+    the 'MD_PATH:' sentinel and the terminating '---' line.
+    """
+    if not isinstance(note, str):
+        return None
+    lines = note.splitlines()
+    in_block = False
+    path_lines: list[str] = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not in_block:
+            if stripped == "MD_PATH:":
+                in_block = True
+            continue
+        if stripped == "---":
+            break
+        if stripped:
+            # Preserve the heading text as written; callers may whiten it.
+            path_lines.append(stripped)
+    return path_lines or None
+
+
+def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[str, Any]) -> None:
+    """Reconcile a Cartographer-derived subtree against an existing ETHER tree.
+
+    This variant is used for F12 / per-file Cartographer refresh. It prefers
+    identity anchors over raw name matching:
+
+      1. Beacon id (`id:` under BEACON (AST|SPAN)).
+      2. AST_QUALNAME (Python AST nodes).
+      3. MD_PATH header sequence for Markdown headings (each line whitened via
+         ``whiten_text_for_header_compare``).
+      4. Fallback: raw name equality.
+
+    For nodes that are matched (i.e., share identity and thus an id), we then
+    compare name and note using ``whiten_text_for_header_compare`` and, when
+    they are semantically equal, we *restore* the ETHER value into the source
+    tree. This lets the downstream WEAVE engine skip spurious updates caused
+    purely by Workflowy whitening or formatting differences, while still
+    propagating real changes (e.g. new tags or beacon metadata).
+    """
+    # Seed id on the root when present.
+    if isinstance(ether_node, dict) and "id" in ether_node:
+        source_node["id"] = ether_node["id"]
+
+    source_children = [c for c in (source_node.get("children") or []) if isinstance(c, dict)]
+    ether_children = [c for c in (ether_node.get("children") or []) if isinstance(c, dict)]
+
+    if not source_children or not ether_children:
+        return
+
+    # Build Ether maps by identity anchor.
+    ether_by_beacon: dict[str, dict[str, Any]] = {}
+    ether_by_ast: dict[str, dict[str, Any]] = {}
+    ether_by_mdpath: dict[tuple[str, ...], dict[str, Any]] = {}
+    ether_by_name: dict[str, dict[str, Any]] = {}
+
+    for e in ether_children:
+        note_e = e.get("note") or ""
+        # 1) Beacon id
+        b_id = _extract_beacon_id_from_note(note_e)
+        if b_id and b_id not in ether_by_beacon:
+            ether_by_beacon[b_id] = e
+        # 2) AST_QUALNAME
+        qual = _extract_ast_qualname_from_note(note_e)
+        if qual and qual not in ether_by_ast:
+            ether_by_ast[qual] = e
+        # 3) MD_PATH
+        md_path = _extract_md_path_from_note(note_e)
+        if md_path:
+            key = tuple(whiten_text_for_header_compare(line) for line in md_path if line.strip())
+            if key and key not in ether_by_mdpath:
+                ether_by_mdpath[key] = e
+        # 4) Raw name fallback
+        name_e = e.get("name")
+        if isinstance(name_e, str) and name_e not in ether_by_name:
+            ether_by_name[name_e] = e
+
+    for s in source_children:
+        note_s = s.get("note") or ""
+        name_s = s.get("name") or ""
+        match: dict[str, Any] | None = None
+
+        # 1) Beacon id
+        b_id_s = _extract_beacon_id_from_note(note_s)
+        if b_id_s and b_id_s in ether_by_beacon:
+            match = ether_by_beacon[b_id_s]
+        else:
+            # 2) AST_QUALNAME
+            qual_s = _extract_ast_qualname_from_note(note_s)
+            if qual_s and qual_s in ether_by_ast:
+                match = ether_by_ast[qual_s]
+            else:
+                # 3) MD_PATH (whitened per-line comparison)
+                md_path_s = _extract_md_path_from_note(note_s)
+                if md_path_s:
+                    key_s = tuple(
+                        whiten_text_for_header_compare(line) for line in md_path_s if line.strip()
+                    )
+                    if key_s and key_s in ether_by_mdpath:
+                        match = ether_by_mdpath[key_s]
+                # 4) Raw name fallback
+                if match is None and isinstance(name_s, str) and name_s in ether_by_name:
+                    match = ether_by_name[name_s]
+
+        if match is None:
+            # No identity match at this level; we do not attempt to force ids.
+            continue
+
+        # Seed id from the matched Ether node.
+        if "id" in match:
+            s["id"] = match["id"]
+
+        # Whiten-based no-op suppression: if name/note are semantically equal
+        # after whitening, preserve the ETHER values so WEAVE sees no change.
+        name_e = match.get("name")
+        if isinstance(name_s, str) and isinstance(name_e, str):
+            if whiten_text_for_header_compare(name_s) == whiten_text_for_header_compare(name_e):
+                s["name"] = name_e
+        note_e = match.get("note")
+        if isinstance(note_s, str) and isinstance(note_e, str):
+            if whiten_text_for_header_compare(note_s) == whiten_text_for_header_compare(note_e):
+                s["note"] = note_e
+
+        # Recurse into children with the same Cartographer-aware logic.
+        reconcile_trees_cartographer(s, match)
 
 
 def _slice_label_tags(slice_labels: str) -> str:
