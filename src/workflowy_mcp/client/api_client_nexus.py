@@ -63,6 +63,19 @@ def _log_glimpse_to_file(operation_type: str, node_id: str, result: dict[str, An
         pass
 
 
+def parse_path_or_root_from_note(note_str: str | None) -> str | None:
+    """Extract a filesystem path from a Cartographer note header.
+
+    Recognizes both "Path:" (per-file metadata) and "Root:" (Cartographer root).
+    Returns the value after the colon, stripped, or None if not found.
+    """
+    for line in (note_str or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Path:") or stripped.startswith("Root:"):
+            return stripped.split(":", 1)[1].strip() or None
+    return None
+
+
 def is_pid_running(pid: int) -> bool:
     """Check if a process ID is currently running."""
     try:
@@ -182,9 +195,17 @@ class NotesSalvageContext:
     notes_moved_to_parking: int = 0
 
 
+# @beacon[
+#   id=ra-tracking@6bj2zv,
+#   slice_labels=ra-tracking,ra-nexus-test
+# ]
 class WorkFlowyClientNexus(WorkFlowyClientEtch):
     """NEXUS pipeline operations - extends Etch."""
 
+    # @beacon[
+    #   id=ra-tracking@6bj2zv004,
+    #   slice_labels=ra-tracking,ra-nexus-test-3
+    # ]
     def _get_nexus_dir(self, nexus_tag: str) -> str:
         """Resolve base directory for a CORINTHIAN NEXUS run."""
         base_dir = Path(
@@ -278,6 +299,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         
         raise NetworkError("WebSocket unavailable - use workflowy_scry")
     
+    # @beacon[
+    #   id=ra-tracking@6bj2zv000,
+    #   slice_labels=ra-tracking,ra-nexus-test-3
+    # ]
     async def workflowy_scry(
         self,
         node_id: str,
@@ -353,6 +378,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "_source": "api"
             }
         
+        # @beacon[
+        #   id=ra-tracking@6bj2zv001,
+        #   slice_labels=ra-tracking,ra-nexus-test-3
+        # ]
         # Size limit handling
         # Old behavior: hard error when subtree exceeds size_limit.
         # New behavior (ground-truth semantics): optionally TRUNCATE instead of erroring,
@@ -381,6 +410,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             # Note: flat_nodes is a pre-order-ish list from /nodes-export filtered to subtree.
             # This truncation is intentionally coarse; downstream logic must treat it as incomplete.
             flat_nodes = flat_nodes[: max(1, size_limit)]
+            # @beacon-close[
+            #   id=ra-tracking@6bj2zv001,
+            # ]
         
         # Build hierarchy
         hierarchical_tree = self._build_hierarchy(flat_nodes, True)
@@ -2304,18 +2336,16 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             }
 
         note_text = str(file_node.get("note") or "")
-        source_path: str | None = None
+        source_path = parse_path_or_root_from_note(note_text)
         existing_sha1: str | None = None
         for line in note_text.splitlines():
             stripped = line.strip()
-            if stripped.startswith("Path:"):
-                source_path = stripped.split(":", 1)[1].strip() or None
-            elif stripped.startswith("Source-SHA1:"):
+            if stripped.startswith("Source-SHA1:"):
                 existing_sha1 = stripped.split(":", 1)[1].strip() or None
 
         if not source_path:
             raise NetworkError(
-                f"File node {file_node_id} note is missing 'Path:' line; cannot refresh",
+                f"File node {file_node_id} note is missing 'Path:'/'Root:' line; cannot refresh",
             )
 
         if not os.path.isfile(source_path):
@@ -2692,17 +2722,29 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 )
 
             note_text = str(file_node.get("note") or "")
-            source_path: str | None = None
-            for line in note_text.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("Path:"):
-                    source_path = stripped.split(":", 1)[1].strip() or None
-                    break
+            source_path = parse_path_or_root_from_note(note_text)
 
             if not source_path:
                 raise NetworkError(
-                    f"File node {file_node_id} note is missing 'Path:' line; cannot build incremental map",
+                    f"File node {file_node_id} note is missing 'Path:'/'Root:' line; cannot build incremental map",
                 )
+
+            # NEW: directory-aware routing – if Path/Root points to a directory,
+            # delegate to the FOLDER-level Cartographer sync instead of the
+            # per-file incremental pipeline.
+            if os.path.isdir(source_path):
+                log_event(
+                    "refresh_file_node_beacons: Path/Root points to directory; "
+                    f"routing to refresh_folder_cartographer_sync for node {file_node_id}",
+                    "BEACON",
+                )
+                folder_result = await self.refresh_folder_cartographer_sync(
+                    folder_node_id=str(file_node_id),
+                    dry_run=dry_run,
+                )
+                if isinstance(folder_result, dict):
+                    folder_result.setdefault("routed_from", "refresh_file_node_beacons")
+                return folder_result
 
             # Optional: collect NOTES salvage metadata (and in non-dry-run
             # mode, physically move beacon-scoped NOTES up under the FILE
