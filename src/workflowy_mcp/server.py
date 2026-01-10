@@ -175,57 +175,59 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         # Build node lookup by ID
         nodes_by_id = {n.get("id"): n for n in all_nodes if n.get("id")}
         
-        # Check if target node's ancestor chain intersects dirty set
-        # If so, refresh cache before proceeding (lazy refresh on demand)
+        # Check if target node's ancestor chain intersects dirty set.
+        # Under manual-refresh semantics, dirty IDs are **diagnostic only** and
+        # must not trigger automatic /nodes-export calls. We log and continue to
+        # use the existing snapshot.
         dirty_ids = client._nodes_export_dirty_ids
-        if dirty_ids and ("*" in dirty_ids or target in dirty_ids):
-            # Quick check: is target itself dirty or global dirty flag set?
-            needs_refresh = True
-        elif dirty_ids:
-            # Walk ancestor chain from target to see if any ancestor is dirty
+        if dirty_ids:
             needs_refresh = False
-            current = target
-            visited_check: set[str] = set()
-            while current and current not in visited_check:
-                visited_check.add(current)
-                if current in dirty_ids:
-                    needs_refresh = True
-                    break
-                node_dict = nodes_by_id.get(current)
-                if not node_dict:
-                    break
-                current = node_dict.get("parent_id") or node_dict.get("parentId")
-            
+            if "*" in dirty_ids or target in dirty_ids:
+                needs_refresh = True
+            else:
+                current = target
+                visited_check: set[str] = set()
+                while current and current not in visited_check:
+                    visited_check.add(current)
+                    if current in dirty_ids:
+                        needs_refresh = True
+                        break
+                    node_dict = nodes_by_id.get(current)
+                    if not node_dict:
+                        break
+                    current = node_dict.get("parent_id") or node_dict.get("parentId")
             if needs_refresh:
-                log_event(f"Path from {target} intersects dirty IDs; refreshing cache", "UUID_RES")
-                export_data = await client.export_nodes(node_id=None, use_cache=False, force_refresh=True)
-                all_nodes = export_data.get("nodes", []) or []
-                nodes_by_id = {n.get("id"): n for n in all_nodes if n.get("id")}
-        
+                log_event(
+                    f"Path from {target} intersects dirty IDs; using existing /nodes-export "
+                    "snapshot (manual refresh only)",
+                    "UUID_RES",
+                )
+
         # DEBUG: Log cache stats
-        log_event(f"Resolving path for target_uuid: {target} (cache: {len(nodes_by_id)} nodes)", "UUID_RES")
-        
-        # If node not found in cache, try refreshing once before giving up
+        log_event(
+            f"Resolving path for target_uuid: {target} (cache: {len(nodes_by_id)} nodes)",
+            "UUID_RES",
+        )
+
+        # If node not found in cache, fail with a clear manual-refresh message.
         if target not in nodes_by_id:
-            log_event(f"Node {target} not found in cache; attempting refresh", "UUID_RES")
-            try:
-                export_data = await client.export_nodes(node_id=None, use_cache=False, force_refresh=True)
-                all_nodes = export_data.get("nodes", []) or []
-                nodes_by_id = {n.get("id"): n for n in all_nodes if n.get("id")}
-                log_event(f"Cache refreshed: {len(nodes_by_id)} nodes", "UUID_RES")
-            except Exception as refresh_err:
-                log_event(f"Cache refresh failed: {refresh_err}", "UUID_RES")
-            
-            # Check again after refresh
-            if target not in nodes_by_id:
-                await websocket.send(json.dumps({
-                    "action": "uuid_path_result",
-                    "success": False,
-                    "target_uuid": target_uuid,
-                    "error": f"Node {target} not found (tried cache + refresh)",
-                }))
-                return
-        
+            error_msg = (
+                f"Node {target} not found in cached /nodes-export; run "
+                "workflowy_refresh_nodes_export_cache from the UUID widget and retry."
+            )
+            log_event(error_msg, "UUID_RES")
+            await websocket.send(
+                json.dumps(
+                    {
+                        "action": "uuid_path_result",
+                        "success": False,
+                        "target_uuid": target_uuid,
+                        "error": error_msg,
+                    }
+                )
+            )
+            return
+
         # Walk parent chain from target to root
         path_nodes = []
         visited: set[str] = set()
@@ -871,6 +873,21 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
         return
 
     client = get_client()
+
+    # Opportunistically patch the /nodes-export cache name for this node, if provided,
+    # so auto-beacon and Cartographer can see fresh tags without requiring a full
+    # cache refresh. This must never affect F12 behavior; failures are logged only.
+    if node_name:
+        try:
+            await client.update_cached_node_name(
+                node_id=str(node_id),
+                new_name=str(node_name),
+            )
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                f"_handle_refresh_file_node: update_cached_node_name failed for {node_id}: {e}",
+                "WS_HANDLER",
+            )
 
     # Special-case: AST node without existing beacon, but with trailing #tags
     # in its name. In that case, auto-create an AST beacon in the underlying
