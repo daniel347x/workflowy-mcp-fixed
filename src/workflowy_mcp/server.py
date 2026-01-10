@@ -551,6 +551,11 @@ async def _maybe_create_ast_beacon_from_tags(
     a small result dict. Returns None when conditions are not met so the
     caller can fall back to normal F12 behavior (per-file refresh).
     """
+    log_event(
+        f"_maybe_create_ast_beacon_from_tags: enter node_id={node_id} node_name={node_name!r}",
+        "WS_HANDLER",
+    )
+
     # Use /nodes-export snapshot from the client's cache so we can inspect
     # the node's note without any additional API calls, but never trigger a
     # fresh /nodes-export call from this helper. If the cache is unavailable,
@@ -569,16 +574,39 @@ async def _maybe_create_ast_beacon_from_tags(
 
     node = nodes_by_id.get(str(node_id))
     if not node:
+        log_event(
+            f"_maybe_create_ast_beacon_from_tags: skipping – node_id {node_id} not found in cache",
+            "WS_HANDLER",
+        )
         return None
 
     note_val = node.get("note") or node.get("no") or ""
     if not isinstance(note_val, str):
+        log_event(
+            "_maybe_create_ast_beacon_from_tags: skipping – note is not a string",
+            "WS_HANDLER",
+        )
         return None
 
+    has_ast = "AST_QUALNAME:" in note_val
+    has_beacon = "BEACON (" in note_val or "@beacon[" in note_val
+    log_event(
+        f"_maybe_create_ast_beacon_from_tags: note_flags ast={has_ast} beacon={has_beacon}",
+        "WS_HANDLER",
+    )
+
     # Require AST metadata and no existing beacon metadata in the note.
-    if "AST_QUALNAME:" not in note_val:
+    if not has_ast:
+        log_event(
+            "_maybe_create_ast_beacon_from_tags: skipping – no AST_QUALNAME in note",
+            "WS_HANDLER",
+        )
         return None
-    if "BEACON (" in note_val or "@beacon[" in note_val:
+    if has_beacon:
+        log_event(
+            "_maybe_create_ast_beacon_from_tags: skipping – beacon metadata already present",
+            "WS_HANDLER",
+        )
         return None
 
     ast_qualname: str | None = None
@@ -588,6 +616,10 @@ async def _maybe_create_ast_beacon_from_tags(
             ast_qualname = stripped.split(":", 1)[1].strip() or None
             break
     if not ast_qualname:
+        log_event(
+            "_maybe_create_ast_beacon_from_tags: skipping – failed to parse AST_QUALNAME",
+            "WS_HANDLER",
+        )
         return None
 
     # Extract trailing #tags from the node name.
@@ -602,12 +634,25 @@ async def _maybe_create_ast_beacon_from_tags(
                 break
         tags = list(reversed(acc))
 
+    log_event(
+        f"_maybe_create_ast_beacon_from_tags: extracted_tags={tags}",
+        "WS_HANDLER",
+    )
+
     if not tags:
         # No manual tags to convert into a beacon – fall back to normal F12 behavior.
+        log_event(
+            "_maybe_create_ast_beacon_from_tags: skipping – no trailing #tags in node_name",
+            "WS_HANDLER",
+        )
         return None
 
     # Resolve source file and AST line via existing beacon_get_code_snippet AST path.
     try:
+        log_event(
+            f"_maybe_create_ast_beacon_from_tags: calling beacon_get_code_snippet for node_id={node_id}",
+            "WS_HANDLER",
+        )
         snippet_result = await client.beacon_get_code_snippet(  # type: ignore[attr-defined]
             beacon_node_id=str(node_id),
             context=0,
@@ -620,16 +665,28 @@ async def _maybe_create_ast_beacon_from_tags(
         return None
 
     if not isinstance(snippet_result, dict) or not snippet_result.get("success"):
+        log_event(
+            "_maybe_create_ast_beacon_from_tags: skipping – beacon_get_code_snippet returned failure",
+            "WS_HANDLER",
+        )
         return None
 
     file_path = snippet_result.get("file_path")
     if not file_path or not isinstance(file_path, str):
+        log_event(
+            "_maybe_create_ast_beacon_from_tags: skipping – invalid file_path in snippet_result",
+            "WS_HANDLER",
+        )
         return None
 
     from pathlib import Path
 
     if Path(file_path).suffix.lower() != ".py":
         # Only Python AST nodes are supported for this auto-beacon path.
+        log_event(
+            f"_maybe_create_ast_beacon_from_tags: skipping – non-.py file {file_path}",
+            "WS_HANDLER",
+        )
         return None
 
     core_start_line = (
@@ -637,7 +694,16 @@ async def _maybe_create_ast_beacon_from_tags(
         or snippet_result.get("start_line")
     )
     if not isinstance(core_start_line, int) or core_start_line <= 0:
+        log_event(
+            "_maybe_create_ast_beacon_from_tags: skipping – invalid core_start_line",
+            "WS_HANDLER",
+        )
         return None
+
+    log_event(
+        f"_maybe_create_ast_beacon_from_tags: resolved file_path={file_path!r} core_start_line={core_start_line}",
+        "WS_HANDLER",
+    )
 
     # Read file contents.
     try:
@@ -681,6 +747,10 @@ async def _maybe_create_ast_beacon_from_tags(
     # note has not yet been refreshed.
     for k in range(max(0, insert_idx - 8), insert_idx):
         if "@beacon[" in lines[k]:
+            log_event(
+                "_maybe_create_ast_beacon_from_tags: skipping – existing @beacon[ found near insertion point",
+                "WS_HANDLER",
+            )
             return None
 
     # Build beacon id & slice_labels from tags.
