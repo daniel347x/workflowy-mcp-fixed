@@ -1069,11 +1069,93 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "candidates": metadata.get("candidates"),
             }
 
-        # For non-Python files we currently do not support non-beacon snippet
-        # resolution; require explicit beacons or future AST-like metadata.
+        # For nodes without AST/MD_PATH metadata, fall back to a file-level snippet
+        # for text-like files. This behaves like a targeted read_file() using the
+        # node's name as an anchor when possible.
+        TEXT_EXTS = {
+            ".py",
+            ".md",
+            ".markdown",
+            ".txt",
+            ".json",
+            ".yaml",
+            ".yml",
+            ".toml",
+            ".ini",
+            ".cfg",
+            ".sql",
+            ".sh",
+            ".ps1",
+            ".bat",
+            ".js",
+            ".ts",
+            ".tsx",
+            ".css",
+            ".html",
+            ".c",
+            ".h",
+            ".hpp",
+            ".hh",
+            ".hxx",
+            ".cpp",
+            ".cc",
+            ".cxx",
+        }
+        base_name = Path(file_path).name
+        is_text_like = ext in TEXT_EXTS or (
+            ext == "" and base_name in {"Dockerfile", "dockerfile", "Makefile", "makefile"}
+        )
+        if is_text_like:
+            lines: list[str] = []
+            start = end = 0
+            strategy = "file_top"
+            search_text = _derive_search_text_from_node_name(node_name)
+            if search_text:
+                try:
+                    start, end, lines = _heuristic_snippet_for_node(
+                        file_path,
+                        search_text,
+                        context,
+                    )
+                    strategy = "file_anchor_search"
+                except Exception:  # noqa: BLE001
+                    # Fall through to top-of-file snippet
+                    lines = []
+            if not lines:
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        lines = f.read().splitlines()
+                except Exception as exc:  # noqa: BLE001
+                    raise NetworkError(
+                        f"Failed to read source file {file_path!r}: {exc}"
+                    ) from exc
+                start = 1
+                end = min(len(lines), max(1, context * 2))
+                strategy = "file_top"
+            snippet_text = "\n".join(lines[start - 1 : end]) if lines else ""
+            return {
+                "success": True,
+                "file_path": file_path,
+                "beacon_node_id": beacon_node_id,
+                "beacon_id": Path(file_path).name,
+                "kind": "file",
+                "start_line": start,
+                "end_line": end,
+                "core_start_line": start,
+                "core_end_line": end,
+                "beacon_line": start,
+                "snippet": snippet_text,
+                "resolution_strategy": strategy,
+                "confidence": 0.7,
+                "ambiguity": "none",
+                "candidates": None,
+            }
+
+        # Non-text: still require explicit metadata
         raise NetworkError(
             "Non-beacon snippet resolution is only implemented for Python AST "
-            f"nodes with AST_QUALNAME; node {beacon_node_id!r} is in file {file_path!r} "
+            "nodes with AST_QUALNAME, Markdown nodes with MD_PATH, or text-like files; "
+            f"node {beacon_node_id!r} is in file {file_path!r} "
             f"with extension {ext!r}."
         )
 
