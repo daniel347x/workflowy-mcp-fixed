@@ -761,10 +761,14 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
             n_note = node.get("note") or node.get("no") or ""
             node_name_dbg = str(node.get("name") or "").strip()
-            has_path_header = isinstance(n_note, str) and "Path:" in n_note
             note_preview = ""
+            first_line = ""
             if isinstance(n_note, str):
-                note_preview = "\n".join(n_note.splitlines()[:2])
+                lines_local = n_note.splitlines()
+                if lines_local:
+                    first_line = lines_local[0].strip()
+                    note_preview = "\n".join(lines_local[:2])
+            has_path_header = first_line.startswith("Path:")
             logger.debug(
                 f"beacon_get_code_snippet: visit node={current_id!r} name={node_name_dbg!r} "
                 f"has_Path={has_path_header} note_preview={note_preview!r}"
