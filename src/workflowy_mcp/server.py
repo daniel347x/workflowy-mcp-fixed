@@ -588,8 +588,39 @@ async def _maybe_create_ast_beacon_from_tags(
         )
         return None
 
-    has_ast = "AST_QUALNAME:" in note_val
-    has_beacon = "BEACON (" in note_val or "@beacon[" in note_val
+    # Determine AST vs beacon metadata using strict header patterns so that
+    # docstrings that merely *mention* @beacon[...] do not block auto-creation.
+    lines = note_val.splitlines()
+
+    # AST detection: Cartographer always writes AST_QUALNAME on the first
+    # non-empty line of the note for AST-backed nodes.
+    first_nonempty = ""
+    for ln in lines:
+        stripped_ln = ln.strip()
+        if stripped_ln:
+            first_nonempty = stripped_ln
+            break
+    has_ast = first_nonempty.startswith("AST_QUALNAME:")
+
+    # Beacon detection: true BEACON metadata appears as a header block
+    # starting with a BEACON line, followed (after skipping blank lines)
+    # by an id: ... line. This avoids treating prose mentions of
+    # "BEACON (AST)" or "@beacon[...]" as real metadata.
+    nonempty = [ln.strip() for ln in lines if ln.strip()]
+    has_beacon = False
+    for i, ln in enumerate(nonempty):
+        if ln.startswith("BEACON"):
+            # Look for next non-empty line and require id: ...
+            for j in range(i + 1, len(nonempty)):
+                nxt = nonempty[j]
+                if not nxt:
+                    continue
+                if nxt.lower().startswith("id:"):
+                    has_beacon = True
+                break
+            if has_beacon:
+                break
+
     log_event(
         f"_maybe_create_ast_beacon_from_tags: note_flags ast={has_ast} beacon={has_beacon}",
         "WS_HANDLER",
@@ -610,11 +641,8 @@ async def _maybe_create_ast_beacon_from_tags(
         return None
 
     ast_qualname: str | None = None
-    for line in note_val.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("AST_QUALNAME:"):
-            ast_qualname = stripped.split(":", 1)[1].strip() or None
-            break
+    if first_nonempty and first_nonempty.startswith("AST_QUALNAME:"):
+        ast_qualname = first_nonempty.split(":", 1)[1].strip() or None
     if not ast_qualname:
         log_event(
             "_maybe_create_ast_beacon_from_tags: skipping – failed to parse AST_QUALNAME",
