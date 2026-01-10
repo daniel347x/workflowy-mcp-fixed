@@ -787,12 +787,43 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         file_note = file_node.get("note") or file_node.get("no") or ""
         file_path: str | None = None
-        if isinstance(file_note, str):
-            for line in file_note.splitlines():
+
+        def _extract_path_from_note(note_str: str | None) -> str | None:
+            if not isinstance(note_str, str):
+                return None
+            for line in note_str.splitlines():
                 stripped = line.strip()
                 if stripped.startswith("Path:"):
-                    file_path = stripped[len("Path:") :].strip()
-                    break
+                    val = stripped.split(":", 1)[1].strip()
+                    if val:
+                        return val
+            return None
+
+        # First attempt: use the /nodes-export snapshot (may be slightly stale).
+        file_path = _extract_path_from_note(file_note)
+
+        # If snapshot does not yet reflect the Path header (e.g. after a recent
+        # Cartographer refresh that has not been mirrored into the cached
+        # /nodes-export), fall back to a targeted /nodes/<id> fetch for this FILE
+        # node to obtain its most up-to-date note.
+        if not file_path:
+            try:
+                file_id = str(file_node.get("id"))
+                fresh_node = await self.get_node(file_id)
+                fresh_dict = fresh_node.model_dump()
+                fresh_note = fresh_dict.get("note") or fresh_dict.get("no")
+                file_path = _extract_path_from_note(fresh_note)
+                if not file_path:
+                    logger.warning(
+                        "beacon_get_code_snippet: FILE node %r still missing 'Path:' after fresh get_node",
+                        file_id,
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "beacon_get_code_snippet: failed to refresh FILE node %r for Path lookup: %s",
+                    file_node.get("id"),
+                    e,
+                )
 
         if not file_path:
             raise NetworkError(
