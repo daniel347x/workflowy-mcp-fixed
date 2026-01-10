@@ -768,7 +768,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if lines_local:
                     first_line = lines_local[0].strip()
                     note_preview = "\n".join(lines_local[:2])
-            has_path_header = first_line.startswith("Path:")
+            has_path_header = first_line.startswith("Path:") or first_line.startswith("Root:")
             logger.debug(
                 f"beacon_get_code_snippet: visit node={current_id!r} name={node_name_dbg!r} "
                 f"has_Path={has_path_header} note_preview={note_preview!r}"
