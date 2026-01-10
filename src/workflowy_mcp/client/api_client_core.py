@@ -96,6 +96,10 @@ class WorkFlowyClientCore:
         self._nodes_export_cache: dict[str, Any] | None = None
         self._nodes_export_cache_timestamp = None
         self._nodes_export_dirty_ids: set[str] = set()
+        # Cache maintenance mode: "lazy" (mark-dirty only) vs "eager" (patch cache when possible).
+        # Currently mainly used for logging/diagnostics; helpers below always
+        # respect the presence/absence of an actual cache snapshot.
+        self._nodes_export_cache_mode: str = "eager"
     
     def _log_debug(self, message: str) -> None:
         """Log debug messages to stderr (unified logging)."""
@@ -428,6 +432,126 @@ class WorkFlowyClientCore:
             if nid:
                 self._nodes_export_dirty_ids.add(nid)
 
+    def _get_nodes_export_cache_nodes(self) -> list[dict[str, Any]]:
+        """Return the flat `nodes` list from the /nodes-export cache or raise.
+
+        These helpers are intentionally strict: if the cache is missing or
+        malformed, callers should fall back to marking regions dirty and let
+        export_nodes_impl(...) refresh from the API.
+        """
+        if self._nodes_export_cache is None:
+            raise RuntimeError("nodes-export cache is not initialized")
+        nodes = self._nodes_export_cache.get("nodes")
+        if not isinstance(nodes, list):
+            raise RuntimeError("nodes-export cache is missing 'nodes' list")
+        return nodes
+
+    def _normalize_node_for_nodes_export_cache(self, node_dict: dict[str, Any]) -> dict[str, Any]:
+        """Normalize a node dict for insertion into the /nodes-export cache.
+
+        - Ensures `id` is a string.
+        - Dewhitens name/nm and note/no so cache stays in semantic space,
+          matching the behavior of export_nodes_impl(...).
+        """
+        normalized: dict[str, Any] = dict(node_dict) if node_dict is not None else {}
+        node_id = normalized.get("id")
+        if node_id is not None:
+            normalized["id"] = str(node_id)
+        for key in ("name", "nm", "note", "no"):
+            if key in normalized:
+                normalized[key] = self._dewhiten_text(normalized.get(key))  # type: ignore[arg-type]
+        return normalized
+
+    def _apply_create_to_nodes_export_cache(self, node: WorkFlowyNode) -> None:
+        """Eagerly insert a newly created node into the /nodes-export cache."""
+        nodes = self._get_nodes_export_cache_nodes()
+        node_dict = self._normalize_node_for_nodes_export_cache(node.model_dump())
+        nodes.append(node_dict)
+        # New node is now represented; clear any stale dirty flag for it.
+        if node.id in self._nodes_export_dirty_ids:
+            self._nodes_export_dirty_ids.discard(node.id)
+
+    def _apply_update_to_nodes_export_cache(self, node: WorkFlowyNode) -> None:
+        """Eagerly update an existing node inside the /nodes-export cache.
+
+        Raises RuntimeError if the node cannot be found so callers can mark
+        the path dirty and fall back to a full /nodes-export refresh.
+        """
+        nodes = self._get_nodes_export_cache_nodes()
+        node_id = node.id
+        updated = self._normalize_node_for_nodes_export_cache(node.model_dump())
+        for idx, existing in enumerate(nodes):
+            if str(existing.get("id")) == node_id:
+                # Preserve any extraneous keys from the existing snapshot but
+                # overwrite core fields from the fresh node state.
+                merged = dict(existing)
+                merged.update(updated)
+                nodes[idx] = merged
+                if node_id in self._nodes_export_dirty_ids:
+                    self._nodes_export_dirty_ids.discard(node_id)
+                return
+        # Node not present in cache – signal caller to fall back to dirty flag.
+        self._log_debug(f"_apply_update_to_nodes_export_cache: node {node_id} not in cache; marking dirty")
+        raise RuntimeError(f"nodes-export cache missing node {node_id}")
+
+    def _apply_delete_to_nodes_export_cache(self, node_id: str) -> None:
+        """Eagerly remove a deleted node (and its descendants) from the cache."""
+        nodes = self._get_nodes_export_cache_nodes()
+        # Build parent->children index once for this snapshot.
+        children_by_parent: dict[str, list[str]] = {}
+        for n in nodes:
+            nid = n.get("id")
+            if not nid:
+                continue
+            pid = n.get("parent_id") or n.get("parentId")
+            if pid:
+                children_by_parent.setdefault(str(pid), []).append(str(nid))
+
+        # Collect all descendants of node_id.
+        target_id = str(node_id)
+        to_remove: set[str] = {target_id}
+        stack = [target_id]
+        visited: set[str] = set()
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            for child_id in children_by_parent.get(cur, []):
+                if child_id not in to_remove:
+                    to_remove.add(child_id)
+                    stack.append(child_id)
+
+        if len(to_remove) == 1 and all(str(n.get("id")) != target_id for n in nodes):
+            # Nothing to remove; treat as soft failure so caller can mark dirty.
+            self._log_debug(f"_apply_delete_to_nodes_export_cache: node {node_id} not in cache; marking dirty")
+            raise RuntimeError(f"nodes-export cache missing node {node_id}")
+
+        new_nodes = [n for n in nodes if str(n.get("id")) not in to_remove]
+        self._nodes_export_cache["nodes"] = new_nodes
+        # Clear dirty flag for the deleted node itself; ancestors may still be dirty.
+        if target_id in self._nodes_export_dirty_ids:
+            self._nodes_export_dirty_ids.discard(target_id)
+
+    def _apply_move_to_nodes_export_cache(self, node_id: str, new_parent_id: str | None) -> None:
+        """Eagerly update parent_id for a moved node in the cache."""
+        nodes = self._get_nodes_export_cache_nodes()
+        target_id = str(node_id)
+        found = False
+        for n in nodes:
+            if str(n.get("id")) == target_id:
+                n["parent_id"] = new_parent_id
+                if "parentId" in n:
+                    n["parentId"] = new_parent_id
+                found = True
+                break
+        if not found:
+            self._log_debug(f"_apply_move_to_nodes_export_cache: node {node_id} not in cache; marking dirty")
+            raise RuntimeError(f"nodes-export cache missing node {node_id}")
+        # Clear dirty flags for the moved node; parents may still be marked dirty separately.
+        if target_id in self._nodes_export_dirty_ids:
+            self._nodes_export_dirty_ids.discard(target_id)
+
     async def refresh_nodes_export_cache(self, max_retries: int = 10) -> dict[str, Any]:
         """Force a fresh /nodes-export call and update the in-memory cache.
 
@@ -548,13 +672,18 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 node_data = await self._handle_response(get_response)
                 node = WorkFlowyNode(**node_data["node"])
 
-                # Best-effort: mark this node as dirty in the /nodes-export cache so that
-                # any subtree exports including it can trigger a refresh when needed.
+                # Best-effort: eagerly maintain the /nodes-export cache when present.
                 try:
-                    self._mark_nodes_export_dirty([node.id])
+                    if self._nodes_export_cache is not None:
+                        self._apply_create_to_nodes_export_cache(node)
+                    else:
+                        self._mark_nodes_export_dirty([node.id])
                 except Exception:
-                    # Cache dirty marking must never affect API behavior
-                    pass
+                    # Cache maintenance must never affect API behavior; fall back to dirty flag.
+                    try:
+                        self._mark_nodes_export_dirty([node.id])
+                    except Exception:
+                        pass
 
                 return node
 
@@ -654,14 +783,18 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     # Fallback for unexpected format
                     node = WorkFlowyNode(**data)
 
-                # Best-effort: mark this node as dirty so that subsequent
-                # /nodes-export-based operations touching this subtree can
-                # trigger a refresh when needed.
+                # Best-effort: eagerly maintain the /nodes-export cache when possible.
                 try:
-                    self._mark_nodes_export_dirty([node_id])
+                    if self._nodes_export_cache is not None:
+                        self._apply_update_to_nodes_export_cache(node)
+                    else:
+                        self._mark_nodes_export_dirty([node_id])
                 except Exception:
-                    # Cache dirty marking must never affect API behavior
-                    pass
+                    # Cache maintenance must never affect API behavior; fall back to dirty flag.
+                    try:
+                        self._mark_nodes_export_dirty([node_id])
+                    except Exception:
+                        pass
 
                 return node
                     
@@ -876,14 +1009,17 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     logger.info(success_msg)
                     _log_to_file_helper(success_msg, "reconcile")
 
-                # Best-effort: mark this node as dirty so any subsequent
-                # /nodes-export-based operations that rely on it will trigger
-                # a refresh when needed.
+                # Best-effort: eagerly maintain the /nodes-export cache when possible.
                 try:
-                    self._mark_nodes_export_dirty([node_id])
+                    if self._nodes_export_cache is not None:
+                        self._apply_delete_to_nodes_export_cache(node_id)
+                    else:
+                        self._mark_nodes_export_dirty([node_id])
                 except Exception:
-                    # Cache dirty marking must never affect API behavior
-                    pass
+                    try:
+                        self._mark_nodes_export_dirty([node_id])
+                    except Exception:
+                        pass
 
                 return True
                 
@@ -952,10 +1088,24 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 if isinstance(data, dict) and data.get('status') == 'ok':
                     get_response = await self.client.get(f"/nodes/{node_id}")
                     node_data = await self._handle_response(get_response)
-                    return WorkFlowyNode(**node_data["node"])
+                    node = WorkFlowyNode(**node_data["node"])
                 else:
                     # Fallback for unexpected format
-                    return WorkFlowyNode(**data)
+                    node = WorkFlowyNode(**data)
+
+                # Best-effort: eagerly patch completion state into /nodes-export cache.
+                try:
+                    if self._nodes_export_cache is not None:
+                        self._apply_update_to_nodes_export_cache(node)
+                    else:
+                        self._mark_nodes_export_dirty([node_id])
+                except Exception:
+                    try:
+                        self._mark_nodes_export_dirty([node_id])
+                    except Exception:
+                        pass
+
+                return node
 
             except RateLimitError as e:
                 retry_count += 1
@@ -1012,10 +1162,24 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 if isinstance(data, dict) and data.get('status') == 'ok':
                     get_response = await self.client.get(f"/nodes/{node_id}")
                     node_data = await self._handle_response(get_response)
-                    return WorkFlowyNode(**node_data["node"])
+                    node = WorkFlowyNode(**node_data["node"])
                 else:
                     # Fallback for unexpected format
-                    return WorkFlowyNode(**data)
+                    node = WorkFlowyNode(**data)
+
+                # Best-effort: eagerly patch completion state into /nodes-export cache.
+                try:
+                    if self._nodes_export_cache is not None:
+                        self._apply_update_to_nodes_export_cache(node)
+                    else:
+                        self._mark_nodes_export_dirty([node_id])
+                except Exception:
+                    try:
+                        self._mark_nodes_export_dirty([node_id])
+                    except Exception:
+                        pass
+
+                return node
 
             except RateLimitError as e:
                 retry_count += 1
@@ -1092,16 +1256,24 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 success = data.get("status") == "ok"
 
                 if success:
-                    # Best-effort: mark this node (and its new parent, if any)
-                    # as dirty so path-based exports will refresh as needed.
+                    # Best-effort: eagerly maintain the /nodes-export cache when possible.
                     try:
-                        ids: list[str] = [node_id]
-                        if parent_id is not None:
-                            ids.append(parent_id)
-                        self._mark_nodes_export_dirty(ids)
+                        if self._nodes_export_cache is not None:
+                            self._apply_move_to_nodes_export_cache(node_id, parent_id)
+                        else:
+                            ids: list[str] = [node_id]
+                            if parent_id is not None:
+                                ids.append(parent_id)
+                            self._mark_nodes_export_dirty(ids)
                     except Exception:
-                        # Cache dirty marking must never affect API behavior
-                        pass
+                        # Cache maintenance must never affect API behavior; fall back to dirty flags.
+                        try:
+                            ids = [node_id]
+                            if parent_id is not None:
+                                ids.append(parent_id)
+                            self._mark_nodes_export_dirty(ids)
+                        except Exception:
+                            pass
 
                 return success
                 
