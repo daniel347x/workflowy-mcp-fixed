@@ -10,6 +10,7 @@ from ..models import (
     NetworkError,
     NodeCreateRequest,
     NodeListRequest,
+    RateLimitError,
 )
 
 from .api_client_core import (
@@ -868,7 +869,30 @@ async def export_nodes_impl(
 
             except Exception as e:
                 retry_count += 1
-                logger.warning(f"Export error: {e}. Retry {retry_count}/{max_retries}")
+
+                # Make rate-limit waits explicit in logs so F12/WEAVE behavior is
+                # easier to interpret when /nodes-export is throttled.
+                if isinstance(e, RateLimitError):
+                    retry_after_hint = None
+                    try:
+                        # RateLimitError.details may carry a "retry_after" hint.
+                        retry_after_hint = getattr(e, "details", {}).get("retry_after")
+                    except Exception:
+                        retry_after_hint = None
+
+                    retry_delay = base_delay * (2 ** retry_count)
+                    msg = (
+                        "export_nodes_impl: Rate limited on /nodes-export. "
+                        f"Retry {retry_count}/{max_retries} after {retry_delay:.1f}s "
+                        f"(retry_after={retry_after_hint!r})"
+                    )
+                    logger.warning(msg)
+                    _log_to_file_helper(msg, "reconcile")
+                else:
+                    logger.warning(
+                        f"Export error: {e}. Retry {retry_count}/{max_retries}"
+                    )
+
                 if retry_count < max_retries:
                     await asyncio.sleep(base_delay * (2 ** retry_count))
                 else:

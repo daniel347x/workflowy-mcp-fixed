@@ -551,17 +551,18 @@ async def _maybe_create_ast_beacon_from_tags(
     a small result dict. Returns None when conditions are not met so the
     caller can fall back to normal F12 behavior (per-file refresh).
     """
-    # Load /nodes-export snapshot from the client's cache so we can inspect
-    # the node's note without any additional API calls.
+    # Use /nodes-export snapshot from the client's cache so we can inspect
+    # the node's note without any additional API calls, but never trigger a
+    # fresh /nodes-export call from this helper. If the cache is unavailable,
+    # we simply skip the AST auto-beacon path and fall back to normal F12.
     try:
-        raw = await client.export_nodes(node_id=None, use_cache=True, force_refresh=False)
-        all_nodes = raw.get("nodes") or []
+        all_nodes = client._get_nodes_export_cache_nodes()
         nodes_by_id: dict[str, dict[str, Any]] = {
             str(n.get("id")): n for n in all_nodes if n.get("id")
         }
     except Exception as e:  # noqa: BLE001
         log_event(
-            f"_maybe_create_ast_beacon_from_tags: export_nodes failed: {e}",
+            f"_maybe_create_ast_beacon_from_tags: nodes-export cache unavailable: {e}",
             "WS_HANDLER",
         )
         return None
