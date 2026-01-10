@@ -96,6 +96,20 @@ async def main():
     )
     
     client = WorkFlowyClient(config)
+
+    # Ensure this worker has a fresh /nodes-export snapshot. Unlike the MCP
+    # server (where /nodes-export refresh is manual via the UUID widget), the
+    # detached WEAVE worker must be able to reconcile against ETHER on its
+    # own. We therefore perform a one-time explicit refresh here.
+    try:
+        log_worker("Refreshing /nodes-export cache for WEAVE worker…")
+        await client.refresh_nodes_export_cache()
+        log_worker("/nodes-export cache refresh complete for WEAVE worker")
+    except Exception as e:  # noqa: BLE001
+        log_worker(f"ERROR: refresh_nodes_export_cache failed in WEAVE worker: {e}")
+        import traceback
+        log_worker(traceback.format_exc())
+        sys.exit(1)
     
     # Determine PID file location and validate inputs based on mode
     pid_file = None
