@@ -3141,6 +3141,59 @@ async def beacon_get_code_snippet(
         return {"success": False, "error": str(e)}
 
 
+# Tool: Beacon-based text snippet (read_text_file twin)
+@mcp.tool(
+    name="read_text_snippet",
+    description=(
+        "Return a raw text snippet anchored by a Cartographer beacon/AST/heading/file "
+        "node, using the same resolution pipeline as beacon_get_code_snippet, but "
+        "returning only the snippet text."
+    ),
+)
+async def read_text_snippet(
+    beacon_node_id: str,
+    context: int = 20,
+) -> str:
+    """Return raw text snippet anchored by a Cartographer node.
+
+    This is a thin wrapper around WorkFlowyClientNexus.beacon_get_code_snippet that
+    returns only the ``snippet`` field as plain text. It uses the same resolution
+    pipeline as beacon_get_code_snippet:
+
+    - BEACON (AST|SPAN) metadata when present
+    - AST_QUALNAME / MD_PATH when present for .py/.md
+    - Implicit search or top-of-file fallback for other Cartographer FILE/child nodes
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.beacon_get_code_snippet(
+            beacon_node_id=beacon_node_id,
+            context=context,
+        )
+        if _rate_limiter:
+            _rate_limiter.on_success()
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+    if not isinstance(result, dict):
+        raise RuntimeError("Unexpected result from beacon_get_code_snippet")
+
+    if not result.get("success", False):
+        raise RuntimeError(result.get("error", "Unknown error from beacon_get_code_snippet"))
+
+    snippet = result.get("snippet", "")
+    if not isinstance(snippet, str):
+        snippet = str(snippet)
+
+    return snippet
+
+
 # Tool: List Nexus Keystones
 @mcp.tool(
     name="nexus_list_keystones",
