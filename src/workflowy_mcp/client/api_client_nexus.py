@@ -204,7 +204,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
     # @beacon[
     #   id=ra-tracking@6bj2zv004,
-    #   slice_labels=ra-tracking,ra-nexus-test-3
+    #   slice_labels=ra-tracking,ra-nexus-test-7
     # ]
     def _get_nexus_dir(self, nexus_tag: str) -> str:
         """Resolve base directory for a CORINTHIAN NEXUS run."""
@@ -706,6 +706,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         nodes_by_id: dict[str, dict[str, Any]] = {
             str(n.get("id")): n for n in all_nodes if n.get("id")
         }
+        logger.info(
+            f"beacon_get_code_snippet: /nodes-export snapshot loaded with {len(nodes_by_id)} nodes"
+        )
 
         # If node not found, try one forced refresh before failing
         if beacon_node_id not in nodes_by_id:
@@ -740,6 +743,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 has_beacon_metadata = True
 
         # Step 3: Walk ancestors to find FILE node with Path: ... in its note
+        logger.info(
+            f"beacon_get_code_snippet: starting FILE ancestor search from {beacon_node_id!r}"
+        )
         current_id = beacon_node_id
         visited: set[str] = set()
         file_node: dict[str, Any] | None = None
@@ -748,10 +754,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             visited.add(current_id)
             node = nodes_by_id.get(current_id)
             if not node:
+                logger.warning(
+                    f"beacon_get_code_snippet: node {current_id!r} missing from nodes_by_id during ancestor walk"
+                )
                 break
 
             n_note = node.get("note") or node.get("no") or ""
-            if isinstance(n_note, str) and "Path:" in n_note:
+            node_name_dbg = str(node.get("name") or "").strip()
+            has_path_header = isinstance(n_note, str) and "Path:" in n_note
+            logger.debug(
+                f"beacon_get_code_snippet: visit node={current_id!r} name={node_name_dbg!r} has_Path={has_path_header}"
+            )
+
+            if has_path_header:
                 # Heuristic: FILE nodes created by Cartographer store the
                 # local path on the first line as "Path: E:\\...".
                 file_node = node
@@ -761,6 +776,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             current_id = str(parent_id) if parent_id else None
 
         if not file_node:
+            logger.error(
+                "beacon_get_code_snippet: no ancestor FILE node with 'Path:' "
+                f"for {beacon_node_id!r}; visited_chain={list(visited)}"
+            )
             raise NetworkError(
                 "Could not find ancestor FILE node with 'Path:' note for "
                 f"node {beacon_node_id!r}"
