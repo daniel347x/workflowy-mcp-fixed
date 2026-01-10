@@ -823,10 +823,16 @@ async def export_nodes_impl(
     max_retries: int = 10,
     use_cache: bool = True,
     force_refresh: bool = False,
+    _allow_api_refresh: bool = False,
 ) -> dict[str, Any]:
     """Export all nodes or filter to specific node's subtree (implementation).
-    
+
     This is extracted as a module-level function to avoid circular imports.
+
+    _allow_api_refresh is an internal guard: only explicit cache-refresh
+    operations (triggered by Dan via the UUID widget) are permitted to
+    call /nodes-export. All other callers must rely on the existing
+    in-memory snapshot and will fail fast if no cache is present.
     """
     import asyncio
 
@@ -836,6 +842,12 @@ async def export_nodes_impl(
         """Call /nodes-export with retries and update cache."""
         retry_count = 0
         base_delay = 1.0
+
+        if not _allow_api_refresh:
+            raise NetworkError(
+                "export_nodes_impl: automatic /nodes-export refresh is disabled; "
+                "run workflowy_refresh_nodes_export_cache from the UUID widget."
+            )
 
         while retry_count < max_retries:
             await asyncio.sleep(API_RATE_LIMIT_DELAY)
@@ -902,6 +914,12 @@ async def export_nodes_impl(
 
     # Decide cache vs fetch
     if (not use_cache) or force_refresh or client._nodes_export_cache is None:
+        if not _allow_api_refresh:
+            # No automatic cache refresh; require explicit refresh via widget.
+            raise NetworkError(
+                "nodes-export cache is not initialized; run "
+                "workflowy_refresh_nodes_export_cache from the UUID widget."
+            )
         data = await fetch_and_cache()
     else:
         data = client._nodes_export_cache
@@ -912,8 +930,16 @@ async def export_nodes_impl(
             nodes_by_id = {n.get("id"): n for n in all_nodes if n.get("id")}
 
             if node_id not in nodes_by_id:
-                logger.info(f"Node {node_id} not in cache; refreshing")
-                data = await fetch_and_cache()
+                # In manual mode, this indicates a stale snapshot; surface a
+                # clear error instead of silently triggering a fresh export.
+                logger.warning(
+                    "export_nodes_impl: node %s not present in cached /nodes-export; "
+                    "automatic refresh is disabled", node_id,
+                )
+                raise NetworkError(
+                    "nodes-export cache does not include requested node; run "
+                    "workflowy_refresh_nodes_export_cache from the UUID widget."
+                )
             else:
                 dirty = client._nodes_export_dirty_ids
                 path_hits_dirty = False
@@ -932,8 +958,12 @@ async def export_nodes_impl(
                     cur = parent_id
 
                 if path_hits_dirty:
-                    logger.info(f"Path from {node_id} hits dirty; refreshing")
-                    data = await fetch_and_cache()
+                    # Honor Dan's preference: do NOT trigger API refresh here; just log.
+                    logger.info(
+                        "export_nodes_impl: path from %s hits dirty; using existing "
+                        "nodes-export cache (automatic refresh disabled)",
+                        node_id,
+                    )
                 else:
                     logger.info(f"Using cached export for {node_id}")
 

@@ -569,7 +569,12 @@ class WorkFlowyClientCore:
 
         # Delegate to export_nodes with caching disabled for this call.
         data = await export_nodes_impl(
-            self, node_id=None, max_retries=max_retries, use_cache=False, force_refresh=True
+            self,
+            node_id=None,
+            max_retries=max_retries,
+            use_cache=False,
+            force_refresh=True,
+            _allow_api_refresh=True,
         )
         nodes = data.get("nodes", []) or []
 

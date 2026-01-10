@@ -24,7 +24,8 @@ A Model Context Protocol (MCP) server that integrates WorkFlowy's outline and ta
 - ❌ **CANNOT** jump directly to deeply nested nodes
 - ❌ **CANNOT** use node IDs from WorkFlowy web URLs (they use different IDs)
 
-**Practical Impact:** 
+**Practical Impact:**
+
 - You must navigate hierarchically from root to find existing nodes
 - No text search means manually traversing the tree to find specific content
 - Deep nodes require multiple list operations to reach
@@ -69,14 +70,17 @@ pip install -e .
 ### Configuration
 
 1. **Get your WorkFlowy API key**:
+
    - From [WorkFlowy](https://beta.workflowy.com/api-key)
 
-2. **Configure client**:
+1. **Configure client**:
    Edit your client configuration (Claude Desktop example):
+
    - Mac: `~/Library/Application Support/Claude/claude_desktop_config.json`
    - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
    Add to the `mcpServers` section:
+
    ```json
    {
      "mcpServers": {
@@ -97,13 +101,14 @@ pip install -e .
    }
    ```
 
-3. **Restart your client** to load the MCP server
+1. **Restart your client** to load the MCP server
 
 ## Usage
 
 Once configured, you can use WorkFlowy tools with your agent:
 
 ### Working with New Nodes
+
 ```
 "Create a new WorkFlowy node called 'Project Tasks'"
 # Returns: Created node with ID: abc-123-def
@@ -116,7 +121,9 @@ Once configured, you can use WorkFlowy tools with your agent:
 ```
 
 ### Navigating Existing Nodes
+
 Since there's no search, you must navigate from root:
+
 ```
 "List my root-level WorkFlowy nodes"
 # Returns: List of top-level nodes with their IDs
@@ -229,6 +236,7 @@ pytest -xvs
 ### Error Handling
 
 All tools return a consistent error format:
+
 ```json
 {
     "success": false,

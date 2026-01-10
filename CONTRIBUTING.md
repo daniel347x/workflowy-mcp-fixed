@@ -18,28 +18,33 @@ By participating in this project, you agree to be respectful, inclusive, and pro
 ### Development Setup
 
 1. **Fork and clone the repository**:
+
    ```bash
    git clone https://github.com/vladzima/workflowy-mcp.git
    cd workflowy-mcp
    ```
 
-2. **Create a virtual environment**:
+1. **Create a virtual environment**:
+
    ```bash
    python -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
-3. **Install development dependencies**:
+1. **Install development dependencies**:
+
    ```bash
    pip install -e ".[dev]"
    ```
 
-4. **Set up pre-commit hooks** (recommended):
+1. **Set up pre-commit hooks** (recommended):
+
    ```bash
    pre-commit install
    ```
 
-5. **Configure environment**:
+1. **Configure environment**:
+
    ```bash
    cp .env.example .env
    # Edit .env with your test API key
@@ -86,21 +91,25 @@ pytest --cov=workflowy_mcp --cov-report=term-missing
 ### 4. Test Your Changes
 
 #### Unit Tests
+
 ```bash
 pytest tests/unit/ -xvs
 ```
 
 #### Contract Tests
+
 ```bash
 pytest tests/contract/ -xvs
 ```
 
 #### Integration Tests (requires API key)
+
 ```bash
 pytest tests/integration/ -xvs
 ```
 
 #### Performance Tests
+
 ```bash
 pytest tests/performance/ -xvs
 ```
@@ -133,6 +142,7 @@ git push origin feature/your-feature-name
 ```
 
 Then create a Pull Request on GitHub with:
+
 - Clear description of changes
 - Link to related issues
 - Test results/coverage report
@@ -168,7 +178,7 @@ src/workflowy_mcp/
 - **Unit Tests** (`tests/unit/`): Test individual components in isolation
 - **Contract Tests** (`tests/contract/`): Test MCP tool contracts
 - **Integration Tests** (`tests/integration/`): Test with mocked API
-- **Performance Tests** (`tests/performance/`): Ensure <500ms response times
+- **Performance Tests** (`tests/performance/`): Ensure \<500ms response times
 
 ### Writing Tests
 
@@ -207,6 +217,7 @@ open htmlcov/index.html  # View coverage report
 ### Adding a New MCP Tool
 
 1. **Define the tool** in `src/workflowy_mcp/server.py`:
+
    ```python
    @mcp.tool()
    async def workflowy_new_tool(
@@ -217,21 +228,21 @@ open htmlcov/index.html  # View coverage report
        # Implementation
    ```
 
-2. **Add contract test** in `tests/contract/test_new_tool.py`
+1. **Add contract test** in `tests/contract/test_new_tool.py`
 
-3. **Add integration test** in `tests/integration/`
+1. **Add integration test** in `tests/integration/`
 
-4. **Update documentation** in README.md
+1. **Update documentation** in README.md
 
 ### Adding API Client Methods
 
 1. **Add method** to `src/workflowy_mcp/client/api_client.py`
 
-2. **Add retry logic** if needed
+1. **Add retry logic** if needed
 
-3. **Add rate limiting** if needed
+1. **Add rate limiting** if needed
 
-4. **Write unit tests** in `tests/unit/`
+1. **Write unit tests** in `tests/unit/`
 
 ## Documentation
 
@@ -280,8 +291,8 @@ WORKFLOWY_API_KEY=your_key python -m workflowy_mcp.server
 ### Testing with Claude Desktop
 
 1. Update `claude_desktop_config.json` to point to your dev environment
-2. Restart Claude Desktop
-3. Test your changes interactively
+1. Restart Claude Desktop
+1. Test your changes interactively
 
 ### Debugging
 
@@ -312,10 +323,10 @@ stats.print_stats()
 ## Release Process
 
 1. Update version in `pyproject.toml`
-2. Update CHANGELOG.md
-3. Create git tag: `git tag v1.2.3`
-4. Push tag: `git push origin v1.2.3`
-5. GitHub Actions will handle PyPI release
+1. Update CHANGELOG.md
+1. Create git tag: `git tag v1.2.3`
+1. Push tag: `git push origin v1.2.3`
+1. GitHub Actions will handle PyPI release
 
 ## Getting Help
 
