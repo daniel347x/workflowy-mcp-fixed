@@ -476,25 +476,32 @@ async def reconcile_tree(
         return roots
 
     def normalize_html_entities(s: str | None) -> str | None:
-        """Normalize HTML entities exactly as _validate_name_field/_validate_note_field do.
-        
-        This ensures comparison uses the SAME normalization that update_node will apply,
-        preventing spurious updates when ETHER has escaped entities but source doesn't.
-        
-        Escapes (in order):
-        1. & → &amp; (must be first to avoid double-escaping)
-        2. < → &lt;
-        3. > → &gt;
+        """Decode a small set of HTML entities for semantic comparison.
+
+        This is the counterpart to the escaping performed by
+        _validate_name_field/_validate_note_field and the Workflowy GUI:
+
+        - &amp;  → &
+        - &lt;  → <
+        - &gt;  → >
+        - &quot; → "
+
+        By decoding prior to comparison, we treat source/target notes as equal
+        when they differ only by whether characters have been escaped ("->"
+        vs "-&gt;", etc.), preventing spurious UPDATE operations.
         """
         if s is None:
             return None
-        # Order matters: & first (so we don't double-escape &lt; → &amp;lt;)
-        if '&' in s:
-            s = s.replace('&', '&amp;')
-        if '<' in s:
-            s = s.replace('<', '&lt;')
-        if '>' in s:
-            s = s.replace('>', '&gt;')
+        # Decode the small set of entities we know Workflowy uses.
+        html_entity_map = {
+            "&amp;": "&",
+            "&lt;": "<",
+            "&gt;": ">",
+            "&quot;": '"',
+        }
+        for ent, ch in html_entity_map.items():
+            if ent in s:
+                s = s.replace(ent, ch)
         return s
 
     def node_data_equal(src: Optional[Node], tgt: Optional[Node]) -> bool:
