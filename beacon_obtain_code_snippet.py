@@ -1086,6 +1086,47 @@ def _js_ts_find_closing_beacon_span(
 
 
 # @beacon[
+#   id=carto-js-ts@_js_ts_find_ast_node_for_beacon,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+# ]
+# Phase 3 JS/TS: JS/TS AST node finder for beacons.
+# Searches recursively through the outline tree for AST nodes with matching beacon IDs.
+def _js_ts_find_ast_node_for_beacon(
+    outline_nodes: List[dict],
+    beacon_id: str,
+) -> Optional[dict]:
+    """Find AST node decorated by this beacon ID (JS/TS version).
+    
+    Searches recursively through the outline tree for a node whose note
+    contains the beacon metadata block with matching id.
+    """
+    def _iter_nodes(nodes: List[dict]) -> Iterable[dict]:
+        for node in nodes or []:
+            if isinstance(node, dict):
+                yield node
+                for ch in node.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+    
+    target = beacon_id.strip()
+    for node in _iter_nodes(outline_nodes):
+        note = node.get("note") or ""
+        if not isinstance(note, str):
+            continue
+        # Look for beacon metadata in note
+        if "BEACON (JS/TS AST)" not in note:
+            continue
+        # Parse id from note
+        for line in note.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("id:"):
+                found_id = stripped.split(":", 1)[1].strip()
+                if found_id == target:
+                    return node
+    return None
+
+
+# @beacon[
 #   id=carto-js-ts@_js_ts_snippet_for_beacon,
 #   slice_labels=carto-js-ts,carto-js-ts-snippets,
 # ]
@@ -1102,22 +1143,32 @@ def _js_ts_snippet_for_beacon(
     lines = _read_lines(file_path)
     n = len(lines)
 
+    # Parse AST outline once (for AST beacons) and beacon blocks once (for
+    # both AST and SPAN beacons).
+    try:
+        outline_nodes = nexus_map_codebase.parse_js_ts_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse JS/TS AST for {file_path}: {e}") from e
+
     try:
         beacons = nexus_map_codebase.parse_js_beacon_blocks(lines)  # type: ignore[attr-defined]
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"Failed to parse JS/TS beacon blocks in {file_path}: {e}") from e
 
     target = beacon_id.strip()
-    chosen: Optional[dict] = None
-    for b in beacons:
-        if (b.get("id") or "").strip() == target:
-            chosen = b
-            break
 
-    if not chosen:
-        raise RuntimeError(f"Beacon id {beacon_id!r} not found in JS/TS file {file_path!r}")
-
-    comment_line = int(chosen.get("comment_line") or 1)
+    # Helper: lookup comment_line for this beacon id (if present)
+    def _comment_line_for_id(bid: str) -> Optional[int]:
+        bid = bid.strip()
+        if not bid:
+            return None
+        for b in beacons:
+            if (b.get("id") or "").strip() != bid:
+                continue
+            cl = b.get("comment_line")
+            if isinstance(cl, int) and cl > 0:
+                return cl
+        return None
 
     def _comment_block_span_js(lines: List[str], comment_line: int) -> Tuple[int, int]:
         j = comment_line
@@ -1130,22 +1181,60 @@ def _js_ts_snippet_for_beacon(
             j += 1
         return comment_line, block_end
 
-    cb_start, cb_end = _comment_block_span_js(lines, comment_line)
+    # 1) AST beacon path – decorate the AST node and include its body as core.
+    node = _js_ts_find_ast_node_for_beacon(outline_nodes, beacon_id)
+    if node is not None:
+        start_code = node.get("orig_lineno_start_unused")
+        end_code = node.get("orig_lineno_end_unused")
+        if isinstance(start_code, int) and isinstance(end_code, int) and start_code > 0 and end_code >= start_code:
+            comment_line = _comment_line_for_id(target)
+            core_start = start_code
+            if comment_line is not None:
+                span = _comment_block_span_js(lines, comment_line)
+                if span is not None:
+                    core_start = span[0]
+                else:
+                    core_start = comment_line
+            core_end = end_code
+            start = max(1, core_start - context)
+            end = min(n, core_end + context)
+            beacon_line = comment_line if comment_line is not None else start_code
+            return start, end, lines, core_start, core_end, beacon_line
 
-    # If this beacon participates in an open/close pair of snippet-less
-    # beacons with the same id, treat that pair as defining the content span.
-    span = None
-    if not (chosen.get("start_snippet") or chosen.get("end_snippet")):
-        span = _js_ts_find_closing_beacon_span(lines, beacons, target)
+    # 2) SPAN beacons – use closing-delimiter span if present, otherwise
+    #    single-beacon heuristic with anchor line.
 
+    # First, see if there is a closing-delimiter pair for this id
+    span = _js_ts_find_closing_beacon_span(lines, beacons, target)
     if span is not None:
         content_start, content_end = span
-        core_start = cb_start
+        comment_line = _comment_line_for_id(target)
+        if comment_line is not None:
+            cb_span = _comment_block_span_js(lines, comment_line)
+            if cb_span is not None:
+                core_start = cb_span[0]
+            else:
+                core_start = comment_line
+        else:
+            core_start = content_start
         core_end = content_end
         start = max(1, core_start - context)
         end = min(n, core_end + context)
-        beacon_line = comment_line
+        beacon_line = comment_line if comment_line is not None else content_start
         return start, end, lines, core_start, core_end, beacon_line
+
+    # Otherwise, fall back to the original single-beacon heuristic
+    chosen: Optional[dict] = None
+    for b in beacons:
+        if (b.get("id") or "").strip() == target:
+            chosen = b
+            break
+
+    if not chosen:
+        raise RuntimeError(f"Beacon id {beacon_id!r} not found in JS/TS file {file_path!r}")
+
+    comment_line = int(chosen.get("comment_line") or 1)
+    cb_start, cb_end = _comment_block_span_js(lines, comment_line)
 
     # Anchor on next non-blank, non-comment line after the beacon block
     anchor = None
@@ -1165,6 +1254,7 @@ def _js_ts_snippet_for_beacon(
     if anchor is None:
         anchor = comment_line
 
+    # Core region: comment block (if any) plus the anchor line
     core_start = cb_start
     core_end = anchor
     start = max(1, core_start - context)
