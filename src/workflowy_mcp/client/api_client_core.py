@@ -872,14 +872,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                                 f"name={getattr(node, 'nm', None) or getattr(node, 'name', None)!r}"
                             )
                             logger.info(msg)
-                            _log_to_file_helper(msg, "reconcile")
                         except Exception as cache_exc:  # noqa: BLE001
                             err_msg = (
                                 "create_node: _apply_create_to_nodes_export_cache failed for "
                                 f"id={node.id}: {cache_exc}"
                             )
                             logger.warning(err_msg)
-                            _log_to_file_helper(err_msg, "reconcile")
                             # Fall back to marking this node id as dirty so a future
                             # explicit cache refresh can repair the snapshot.
                             self._mark_nodes_export_dirty([node.id])
@@ -889,7 +887,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                             f"id={node.id}"
                         )
                         logger.info(msg)
-                        _log_to_file_helper(msg, "reconcile")
                         self._mark_nodes_export_dirty([node.id])
                 except Exception as exc:  # noqa: BLE001
                     # Cache maintenance must never affect API behavior; fall back to dirty flag.
@@ -898,7 +895,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                         f"id={node.id}: {exc}"
                     )
                     logger.warning(outer_msg)
-                    _log_to_file_helper(outer_msg, "reconcile")
                     try:
                         self._mark_nodes_export_dirty([node.id])
                     except Exception:
