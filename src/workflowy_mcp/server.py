@@ -897,21 +897,29 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
     # - Local cache sync (name + note)
     beacon_update_result: dict[str, Any] | None = None
     try:
-        # Get the node's current note from cache.
-        all_nodes_for_note = client._get_nodes_export_cache_nodes()
-        nodes_by_id_for_note: dict[str, dict[str, Any]] = {
-            str(n.get("id")): n for n in all_nodes_for_note if n.get("id")
-        }
-        node_for_note = nodes_by_id_for_note.get(str(node_id))
-        if node_for_note:
-            note_val = str(node_for_note.get("note") or node_for_note.get("no") or "")
-            
-            # Call the new unified beacon update method (supports Python/JS/TS/Markdown).
-            beacon_update_result = await client.update_beacon_from_node(
-                node_id=str(node_id),
-                name=str(node_name),
-                note=note_val,
-            )
+        # Get the node's current note from WebSocket payload (fresh from DOM).
+        # Only fall back to cache if not provided.
+        note_val = data.get("node_note")
+        if note_val is None:
+            # Fallback to cache for backwards compatibility
+            all_nodes_for_note = client._get_nodes_export_cache_nodes()
+            nodes_by_id_for_note: dict[str, dict[str, Any]] = {
+                str(n.get("id")): n for n in all_nodes_for_note if n.get("id")
+            }
+            node_for_note = nodes_by_id_for_note.get(str(node_id))
+            if node_for_note:
+                note_val = str(node_for_note.get("note") or node_for_note.get("no") or "")
+            else:
+                note_val = ""
+        else:
+            note_val = str(note_val)
+        
+        # Call the new unified beacon update method (supports Python/JS/TS/Markdown).
+        beacon_update_result = await client.update_beacon_from_node(
+            node_id=str(node_id),
+            name=str(node_name),
+            note=note_val,
+        )
     except Exception as e:  # noqa: BLE001
         log_event(
             f"_handle_refresh_file_node: update_beacon_from_node failed for {node_id}: {e}",
