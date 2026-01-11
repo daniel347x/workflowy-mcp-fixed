@@ -3283,6 +3283,8 @@ def update_beacon_from_node_python(
             slice_labels_canon = ",".join(merged)
 
         block_span = _find_beacon_block_by_id(beacon_id)
+        # DEBUG: Log beacon lookup result
+        print(f"[CARTOGRAPHER] update_beacon_from_node_js_ts: block_span={block_span}", file=sys.stderr)
         
         if block_span is not None:
             # Case 1a: UPDATE existing beacon on disk.
@@ -3455,9 +3457,13 @@ def update_beacon_from_node_js_ts(
 
     Mirrors the Python helper but uses JS/TS beacons and Tree-sitter outlines.
     """
+    # DEBUG: Log entry
+    print(f"[CARTOGRAPHER] update_beacon_from_node_js_ts: file={file_path!r} name={name!r}", file=sys.stderr)
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
     ast_qualname = _extract_ast_qualname_from_note(note)
+    # DEBUG: Log extracted metadata
+    print(f"[CARTOGRAPHER] update_beacon_from_node_js_ts: base_name={base_name!r} tags={tags} beacon_id={beacon_id!r} ast_qualname={ast_qualname!r}", file=sys.stderr)
 
     result: Dict[str, Any] = {
         "language": "js_ts",
