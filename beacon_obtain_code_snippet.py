@@ -986,38 +986,38 @@ def _js_ts_find_closing_beacon_span(
 ) -> Optional[Tuple[int, int]]:
     """Open/close span for JS/TS beacons with a matching id.
 
-    Semantics mirror the Python/Markdown helpers:
-    - We scan the parsed beacon list for entries whose id matches target_id.
-    - We restrict to beacons that have no start_snippet/end_snippet
-      (snippet-less beacons).
-    - If the first two matches are snippet-less, the first is the opener and
-      the second is the closer.
-    - The content span is:
+    This mirrors the Markdown helper: we use the beacon list to locate the
+    opener for a given id, then scan the raw lines for a matching
+    @beacon-close[...] block. We no longer support the legacy "two snippet-less
+    beacons" pairing; the only supported forms are:
 
-        (end_of_open_block + 1) .. (close_comment_line - 1)
+        // @beacon[ id=foo@123, ... ]
+        ...
+        // @beacon-close[ id=foo@123, ]
 
-      where end_of_open_block is the line whose text contains ']' in the
-      beacon block that starts at open_comment_line.
+    or a single opener without a close, which falls back to the
+    single-beacon heuristic in _js_ts_snippet_for_beacon.
     """
     tid = (target_id or "").strip()
     if not tid:
         return None
 
-    snippetless: List[dict] = []
+    # Find the opener in the parsed beacons to get its comment_line.
+    open_b: Optional[dict] = None
     for b in beacons:
         bid = (b.get("id") or "").strip()
         if bid != tid:
             continue
+        # We only care about snippet-less beacons for open/close semantics.
         if b.get("start_snippet") or b.get("end_snippet"):
             continue
-        snippetless.append(b)
-        if len(snippetless) >= 2:
-            break
+        open_b = b
+        break
 
-    if len(snippetless) < 2:
+    if not open_b:
         return None
 
-    open_b, close_b = snippetless[0], snippetless[1]
+    open_comment = int(open_b.get("comment_line") or 1)
 
     def _block_end_lineno(comment_line: int) -> int:
         j = max(1, int(comment_line))
@@ -1029,19 +1029,60 @@ def _js_ts_find_closing_beacon_span(
             j += 1
         return int(comment_line) or 1
 
-    open_comment = int(open_b.get("comment_line") or 1)
-    close_comment = int(close_b.get("comment_line") or 1)
-
-    if close_comment <= open_comment:
-        return None
-
     open_end = _block_end_lineno(open_comment)
-    content_start = open_end + 1
-    content_end = close_comment - 1
-    if content_start > content_end:
-        return None
+    n = len(lines)
 
-    return content_start, content_end
+    # Scan forward for a @beacon-close[...] block with matching id.
+    j = open_end + 1
+    while j <= n:
+        raw = lines[j - 1]
+        if "@beacon-close[" not in raw:
+            j += 1
+            continue
+
+        # Collect full close block
+        block_lines: List[str] = [raw]
+        close_comment = j
+        k = j + 1
+        while k <= n:
+            raw2 = lines[k - 1]
+            block_lines.append(raw2)
+            if "]" in raw2:
+                break
+            k += 1
+
+        # Parse fields to get id
+        fields: Dict[str, str] = {}
+        inner = block_lines[1:-1] if len(block_lines) >= 2 else []
+        for raw_line in inner:
+            text = raw_line.strip()
+            text = text.lstrip("/").lstrip("*").lstrip()
+            # Drop trailing ',' or '],' or ']'
+            while text and text[-1] in ",]":
+                text = text[:-1].rstrip()
+            if not text or "=" not in text:
+                continue
+            key, val = text.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            if (val.startswith("\"") and val.endswith("\"")) or (
+                val.startswith("'") and val.endswith("'")
+            ):
+                val = val[1:-1]
+            fields[key] = val
+
+        close_id = (fields.get("id") or "").strip()
+        if close_id != tid:
+            j += 1
+            continue
+
+        content_start = open_end + 1
+        content_end = close_comment - 1
+        if content_start > content_end:
+            return None
+        return content_start, content_end
+
+    return None
 
 
 # @beacon[
