@@ -3319,7 +3319,7 @@ def update_beacon_from_node_python(
             target_line: Optional[int] = None
             if ast_qualname:
                 try:
-                    outline_nodes = parse_file_outline(file_path)
+                    outline_nodes = parse_js_ts_outline(file_path)
                 except Exception:
                     outline_nodes = []
 
