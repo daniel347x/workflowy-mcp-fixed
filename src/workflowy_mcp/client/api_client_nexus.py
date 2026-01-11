@@ -3422,7 +3422,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             # For AST/beacon nodes, the helper stripped trailing tags.
             # Update the cached node name to match.
             try:
-                updated = self.update_cached_node_name(
+                updated = await self.update_cached_node_name(
                     str(node_id),
                     base_name_from_helper,
                 )
