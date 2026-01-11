@@ -866,15 +866,32 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 try:
                     if self._nodes_export_cache is not None:
                         try:
-                            self._apply_create_to_nodes_export_cache(node)
+                            # Insert the newly created node into the cached /nodes-export snapshot,
+                            # explicitly wiring its parent_id/parentId from the creation request so
+                            # that subtree exports (export_nodes_impl) see it under the correct
+                            # folder/file parent.
+                            nodes = self._get_nodes_export_cache_nodes()
+                            node_dict = self._normalize_node_for_nodes_export_cache(node.model_dump())
+
+                            parent_for_cache = request.parent_id
+                            if parent_for_cache:
+                                node_dict["parent_id"] = parent_for_cache
+                                node_dict["parentId"] = parent_for_cache
+
+                            nodes.append(node_dict)
+
+                            if node.id in self._nodes_export_dirty_ids:
+                                self._nodes_export_dirty_ids.discard(node.id)
+
                             msg = (
                                 f"create_node: cache insert success id={node.id} "
-                                f"name={getattr(node, 'nm', None) or getattr(node, 'name', None)!r}"
+                                f"name={getattr(node, 'nm', None) or getattr(node, 'name', None)!r} "
+                                f"parent={parent_for_cache!r}"
                             )
                             logger.info(msg)
                         except Exception as cache_exc:  # noqa: BLE001
                             err_msg = (
-                                "create_node: _apply_create_to_nodes_export_cache failed for "
+                                "create_node: cache maintenance failure for "
                                 f"id={node.id}: {cache_exc}"
                             )
                             logger.warning(err_msg)
