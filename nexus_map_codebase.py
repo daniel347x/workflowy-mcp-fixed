@@ -1540,8 +1540,11 @@ def apply_python_beacons(
     for beacon in beacons:
         if beacon.get("kind") != "ast":
             continue
+        b_id = beacon.get("id") or "(no-id)"
         start_snippet = beacon.get("start_snippet")
         comment_line = beacon.get("comment_line") or 0
+        anchor_lineno = beacon.get("_anchor_lineno")
+        print(f"[CARTOGRAPHER] apply_js_beacons Pass1: id={b_id} start_snippet={start_snippet!r} _anchor_lineno={anchor_lineno}", file=sys.stderr)
 
         chosen: Optional[dict[str, Any]] = None
 
@@ -2917,12 +2920,15 @@ def apply_js_beacons(
     for beacon in beacons:
         kind = beacon.get("kind")
         start_snippet = beacon.get("start_snippet")
+        b_id = beacon.get("id") or "(no-id)"
+        print(f"[CARTOGRAPHER] apply_js_beacons pre-pass: id={b_id} kind={kind} start_snippet={start_snippet!r}", file=sys.stderr)
         if kind in {"span", "ast"} and not start_snippet:
             comment_line = beacon.get("comment_line") or 0
             if isinstance(comment_line, int) and comment_line > 0:
                 anchor = _js_next_anchor_line_after(comment_line)
             else:
                 anchor = None
+            print(f"[CARTOGRAPHER] apply_js_beacons pre-pass: id={b_id} comment_line={comment_line} anchor={anchor}", file=sys.stderr)
             if anchor is None:
                 continue
             beacon["_anchor_lineno"] = anchor
@@ -2936,6 +2942,7 @@ def apply_js_beacons(
                 if isinstance(ln, int) and ln == anchor:
                     ast_candidates.append(node)
 
+            print(f"[CARTOGRAPHER] apply_js_beacons pre-pass: id={b_id} ast_candidates={len(ast_candidates)}", file=sys.stderr)
             if len(ast_candidates) == 1:
                 beacon["kind"] = "ast"
 
@@ -2943,8 +2950,11 @@ def apply_js_beacons(
     for beacon in beacons:
         if beacon.get("kind") != "ast":
             continue
+        b_id = beacon.get("id") or "(no-id)"
         start_snippet = beacon.get("start_snippet")
         comment_line = beacon.get("comment_line") or 0
+        anchor_lineno = beacon.get("_anchor_lineno")
+        print(f"[CARTOGRAPHER] apply_js_beacons Pass1: id={b_id} start_snippet={start_snippet!r} _anchor_lineno={anchor_lineno}", file=sys.stderr)
 
         chosen: Optional[dict[str, Any]] = None
 
