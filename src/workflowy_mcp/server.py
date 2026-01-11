@@ -889,30 +889,43 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
                 "WS_HANDLER",
             )
 
-    # Special-case: AST node without existing beacon, but with trailing #tags
-    # in its name. In that case, auto-create an AST beacon in the underlying
-    # Python file instead of performing a file-level Cartographer refresh.
-    ast_result: dict[str, Any] | None = None
+    # Special-case: AST/beacon node with metadata/tags in name/note.
+    # Use the new update_beacon_from_node method which supports Python/JS/TS/Markdown.
+    # This handles:
+    # - Creating beacons from tags for AST nodes (all languages)
+    # - Updating existing beacon metadata from note changes
+    # - Local cache sync (name + note)
+    beacon_update_result: dict[str, Any] | None = None
     try:
-        ast_result = await _maybe_create_ast_beacon_from_tags(
-            client=client,
-            node_id=str(node_id),
-            node_name=node_name,
-        )
+        # Get the node's current note from cache.
+        all_nodes_for_note = client._get_nodes_export_cache_nodes()
+        nodes_by_id_for_note: dict[str, dict[str, Any]] = {
+            str(n.get("id")): n for n in all_nodes_for_note if n.get("id")
+        }
+        node_for_note = nodes_by_id_for_note.get(str(node_id))
+        if node_for_note:
+            note_val = str(node_for_note.get("note") or node_for_note.get("no") or "")
+            
+            # Call the new unified beacon update method (supports Python/JS/TS/Markdown).
+            beacon_update_result = await client.update_beacon_from_node(
+                node_id=str(node_id),
+                name=str(node_name),
+                note=note_val,
+            )
     except Exception as e:  # noqa: BLE001
         log_event(
-            f"_handle_refresh_file_node: AST auto-beacon path failed for {node_id}: {e}",
+            f"_handle_refresh_file_node: update_beacon_from_node failed for {node_id}: {e}",
             "WS_HANDLER",
         )
-        ast_result = None
+        beacon_update_result = None
 
-    if ast_result is not None:
-        # We handled this F12 as a beacon-creation operation; surface a
-        # refresh_file_node_result payload so the extension has a consistent
-        # action name, even though no Workflowy refresh occurred.
-        ast_result["action"] = "refresh_file_node_result"
-        ast_result["node_id"] = node_id
-        await websocket.send(json.dumps(ast_result))
+    # If update_beacon_from_node succeeded and performed an operation
+    # (created/updated beacon), return early without doing a full file refresh.
+    if beacon_update_result is not None and beacon_update_result.get("operation") in {"updated_beacon", "created_beacon"}:
+        # Surface as refresh_file_node_result so extension has consistent action.
+        beacon_update_result["action"] = "refresh_file_node_result"
+        beacon_update_result["node_id"] = node_id
+        await websocket.send(json.dumps(beacon_update_result))
         return
 
     # Default path: per-file Cartographer refresh in Workflowy
