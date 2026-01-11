@@ -459,7 +459,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "id": root_node.get('id'),
                 "name": root_node.get('name'),
                 "note": root_node.get('note'),
-                "parent_id": root_node.get('parent_id')
+                "parent_id": root_node.get('parent_id') or root_node.get('parentId')
             }
             children = root_node.get('children', [])
             root_children_status = root_node.get("children_status", "complete")
@@ -470,7 +470,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     "id": target_root.get('id'),
                     "name": target_root.get('name'),
                     "note": target_root.get('note'),
-                    "parent_id": target_root.get('parent_id')
+                    "parent_id": target_root.get('parent_id') or target_root.get('parentId')
                 }
                 children = target_root.get('children', [])
                 root_children_status = target_root.get("children_status", "complete")
@@ -604,7 +604,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         root_node_info = {
             'id': node_id,
             'name': ws_root.get('name', 'Root'),
-            'parent_id': ws_root.get('parent_id'),
+            'parent_id': ws_root.get('parent_id') or ws_root.get('parentId'),
             'full_path_uuids': [node_id],
             'full_path_names': [ws_root.get('name', 'Root')]
         }
@@ -1492,7 +1492,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             top_level_nodes[idx] = subtree
                             break
                 else:
-                    parent_skel = skeleton_by_id.get(parent_id)
+                    parent_skel = skeleton_by_id.get(parent_id) or skeleton_by_id.get(parent_id)
                     if parent_skel:
                         children_list = parent_skel.get("children") or []
                         for idx, child in enumerate(children_list):
@@ -4208,7 +4208,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if parent_id == str(file_node_id):
                 continue
 
-            parent_node = nodes_by_id.get(parent_id) or {}
+            parent_node = nodes_by_id.get(parent_id) or nodes_by_id.get(parentId) or {}
             parent_note = parent_node.get("note") or ""
             # Skip parents that are themselves beacon nodes – their Notes are
             # already tracked in saved_notes_by_beacon.

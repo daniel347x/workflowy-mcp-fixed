@@ -1099,10 +1099,10 @@ async def bulk_export_to_file_impl(
         path_uuids = [root_node.get('id')]
         path_names = [root_node.get('name')]
         
-        current_parent_id = root_node.get('parent_id')
+        current_parent_id = root_node.get('parent_id') or root_node.get('parentId')
         while current_parent_id:
             try:
-                parent_node_data = await client.get_node(current_parent_id)
+                parent_node_data = await client.get_node(current_parent_id) or await client.get_node(current_parent_id)
                 path_uuids.insert(0, parent_node_data.id)
                 path_names.insert(0, parent_node_data.nm or 'Untitled')
                 current_parent_id = parent_node_data.parentId
@@ -1112,7 +1112,7 @@ async def bulk_export_to_file_impl(
         root_node_info = {
             'id': root_node.get('id'),
             'name': root_node.get('name'),
-            'parent_id': root_node.get('parent_id'),
+            'parent_id': root_node.get('parent_id') or root_node.get('parentId'),
             'full_path_uuids': path_uuids,
             'full_path_names': path_names
         }

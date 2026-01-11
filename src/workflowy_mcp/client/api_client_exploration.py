@@ -394,7 +394,6 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         return lines
 
     @staticmethod
-    @staticmethod
     def _extract_handle_from_scratchpad_entry(entry: dict[str, Any]) -> str | None:
         """Best-effort: extract a single handle from a scratchpad entry.
 
@@ -1687,7 +1686,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
             "id": root_meta.get("id", root_id),
             "name": root_meta.get("name", "Root"),
             "note": root_meta.get("note"),
-            "parent_id": root_meta.get("parent_id"),
+            "parent_id": root_meta.get("parent_id") or root_meta.get("parentId"),
             "children": root_children,
         }
 

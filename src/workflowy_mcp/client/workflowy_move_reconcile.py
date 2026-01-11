@@ -333,7 +333,7 @@ async def reconcile_tree(
 
     # Infer intended parent if not explicitly provided in file
     def infer_intended_parent(nodes: List[Node]) -> Optional[str]:
-        parents = {n.get('parent_id') for n in nodes if isinstance(n, dict) and 'parent_id' in n}
+        parents = {n.get('parent_id') or n.get('parentId') for n in nodes if isinstance(n, dict) and 'parent_id' in n or 'parentId' in n}
         parents = {p for p in parents if p is not None}
         return next(iter(parents)) if len(parents) == 1 else None
 
@@ -434,7 +434,7 @@ async def reconcile_tree(
                     if nid == root_parent:
                         continue  # never include the reconciliation root in snapshot maps
                     Map_T[nid] = node
-                    parent_id = node.get('parent_id')
+                    parent_id = node.get('parent_id') or node.get('parentId')
                     Parent_T[nid] = parent_id
                     if parent_id is not None:
                         Children_T[parent_id].append(nid)
@@ -559,7 +559,7 @@ async def reconcile_tree(
 
     parent_refs: set[str] = set()
     for n in preorder(source_nodes):
-        p = n.get('parent_id')
+        p = n.get('parent_id') or n.get('parentId')
         if p:
             parent_refs.add(p)
     # Always protect the reconciliation root
