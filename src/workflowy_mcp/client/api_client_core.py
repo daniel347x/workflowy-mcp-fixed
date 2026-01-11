@@ -1213,6 +1213,29 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                 return True
                 
+            except NodeNotFoundError as e:
+                # Node no longer exists in Workflowy – treat as already deleted and
+                # clean up the /nodes-export cache so future operations don't keep
+                # seeing a stale FILE node.
+                not_found_msg = (
+                    f"delete_node {node_id} received 404 NodeNotFoundError: treating as already deleted."
+                )
+                logger.warning(not_found_msg)
+                _log_to_file_helper(not_found_msg, "reconcile")
+
+                try:
+                    if self._nodes_export_cache is not None:
+                        self._apply_delete_to_nodes_export_cache(node_id)
+                    else:
+                        self._mark_nodes_export_dirty([node_id])
+                except Exception:
+                    try:
+                        self._mark_nodes_export_dirty([node_id])
+                    except Exception:
+                        pass
+
+                return True
+
             except RateLimitError as e:
                 retry_count += 1
                 retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))

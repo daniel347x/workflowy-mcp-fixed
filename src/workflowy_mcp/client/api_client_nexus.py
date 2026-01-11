@@ -4096,6 +4096,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "BEACON",
         )
 
+        # Persist the updated /nodes-export cache snapshot when structural changes
+        # have occurred so that future MCP restarts warm-start from a state that
+        # matches the current Workflowy tree (including new FILE/FOLDER nodes and
+        # removed FILE nodes).
+        if not dry_run and (new_files_created or new_folders_created or files_deleted):
+            try:
+                await self.save_nodes_export_cache()
+            except Exception as e:  # noqa: BLE001
+                log_event(
+                    "refresh_folder_cartographer_sync: save_nodes_export_cache failed after structural changes: "
+                    f"{e}",
+                    "BEACON",
+                )
+
         return {
             "success": True,
             "folder_node_id": folder_node_id,
