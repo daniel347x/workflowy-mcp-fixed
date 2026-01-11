@@ -865,11 +865,40 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 # Best-effort: eagerly maintain the /nodes-export cache when present.
                 try:
                     if self._nodes_export_cache is not None:
-                        self._apply_create_to_nodes_export_cache(node)
+                        try:
+                            self._apply_create_to_nodes_export_cache(node)
+                            msg = (
+                                f"create_node: cache insert success id={node.id} "
+                                f"name={getattr(node, 'nm', None) or getattr(node, 'name', None)!r}"
+                            )
+                            logger.info(msg)
+                            _log_to_file_helper(msg, "reconcile")
+                        except Exception as cache_exc:  # noqa: BLE001
+                            err_msg = (
+                                "create_node: _apply_create_to_nodes_export_cache failed for "
+                                f"id={node.id}: {cache_exc}"
+                            )
+                            logger.warning(err_msg)
+                            _log_to_file_helper(err_msg, "reconcile")
+                            # Fall back to marking this node id as dirty so a future
+                            # explicit cache refresh can repair the snapshot.
+                            self._mark_nodes_export_dirty([node.id])
                     else:
+                        msg = (
+                            "create_node: no nodes-export cache present; marking dirty for "
+                            f"id={node.id}"
+                        )
+                        logger.info(msg)
+                        _log_to_file_helper(msg, "reconcile")
                         self._mark_nodes_export_dirty([node.id])
-                except Exception:
+                except Exception as exc:  # noqa: BLE001
                     # Cache maintenance must never affect API behavior; fall back to dirty flag.
+                    outer_msg = (
+                        "create_node: cache maintenance outer failure for "
+                        f"id={node.id}: {exc}"
+                    )
+                    logger.warning(outer_msg)
+                    _log_to_file_helper(outer_msg, "reconcile")
                     try:
                         self._mark_nodes_export_dirty([node.id])
                     except Exception:
