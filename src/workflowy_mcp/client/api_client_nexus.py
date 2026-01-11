@@ -4213,7 +4213,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if parent_id == str(file_node_id):
                 continue
 
-            parent_node = nodes_by_id.get(parent_id) or nodes_by_id.get(parentId) or {}
+            parent_node = nodes_by_id.get(parent_id) or {}
             parent_note = parent_node.get("note") or ""
             # Skip parents that are themselves beacon nodes – their Notes are
             # already tracked in saved_notes_by_beacon.
