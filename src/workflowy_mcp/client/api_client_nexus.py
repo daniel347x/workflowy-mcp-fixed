@@ -2903,6 +2903,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             import importlib
             import json as json_module
             import copy
+            import datetime
+
 
             # 1) Export the FILE subtree to discover current structure and Path
             try:
@@ -3082,9 +3084,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 os.makedirs(file_refresh_dir, exist_ok=True)
                 short_id = str(file_node_id).replace("-", "")[:8]
                 base_name = os.path.basename(source_path)
+                timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
                 source_json_path = os.path.join(
                     file_refresh_dir,
-                    f"file_refresh_{short_id}_{base_name}.json",
+                    f"{timestamp}_file_refresh_{short_id}_{base_name}.json",
                 )
                 with open(source_json_path, "w", encoding="utf-8") as f:
                     json_module.dump(source_json, f, indent=2, ensure_ascii=False)
