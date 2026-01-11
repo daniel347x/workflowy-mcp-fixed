@@ -3256,7 +3256,7 @@ def update_beacon_from_node_python(
         meta_lines.append("# ]")
         return meta_lines
 
-    # Case 1: update/delete existing beacon (beacon_id present in note).
+    # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
         # Derive role/slice_labels/comment from note.
         role_val: str | None = None
@@ -3283,37 +3283,90 @@ def update_beacon_from_node_python(
             slice_labels_canon = ",".join(merged)
 
         block_span = _find_beacon_block_by_id(beacon_id)
-        if block_span is None:
-            # Beacon mentioned in note but not found on disk – treat as noop for
-            # now; a later pass can implement deletion based on AST_QUALNAME.
-            result["operation"] = "noop"
-            return result
+        
+        if block_span is not None:
+            # Case 1a: UPDATE existing beacon on disk.
+            start_idx, end_idx, _cl = block_span
+            new_block = _build_beacon_block(
+                bid=beacon_id,
+                role=role_display or "",
+                slice_labels=slice_labels_canon,
+                kind="ast",
+                comment_text=comment_val,
+            )
+            new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(new_lines) + "\n")
+            except Exception as e:  # noqa: BLE001
+                result["error"] = f"failed_to_write_file: {e}"
+                return result
 
-        start_idx, end_idx, _cl = block_span
-        new_block = _build_beacon_block(
-            bid=beacon_id,
-            role=role_display or "",
-            slice_labels=slice_labels_canon,
-            kind="ast",
-            comment_text=comment_val,
-        )
-        new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
-        try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(new_lines) + "\n")
-        except Exception as e:  # noqa: BLE001
-            result["error"] = f"failed_to_write_file: {e}"
+            result.update(
+                {
+                    "operation": "updated_beacon",
+                    "role": role_display,
+                    "slice_labels": slice_labels_canon,
+                    "comment": comment_val,
+                }
+            )
             return result
+        else:
+            # Case 1b: CREATE beacon from note metadata (beacon_id in note, not on disk).
+            # Use AST_QUALNAME to find insertion point.
+            target_line: Optional[int] = None
+            if ast_qualname:
+                try:
+                    outline_nodes = parse_file_outline(file_path)
+                except Exception:
+                    outline_nodes = []
 
-        result.update(
-            {
-                "operation": "updated_beacon",
-                "role": role_display,
-                "slice_labels": slice_labels_canon,
-                "comment": comment_val,
-            }
-        )
-        return result
+                if outline_nodes:
+                    def _iter_nodes(nodes_list: list[dict[str, Any]]):
+                        for n in nodes_list:
+                            if isinstance(n, dict):
+                                yield n
+                                for ch in n.get("children") or []:
+                                    if isinstance(ch, dict):
+                                        yield from _iter_nodes([ch])
+
+                    for n in _iter_nodes(outline_nodes):
+                        if n.get("ast_qualname") == ast_qualname:
+                            ln = n.get("orig_lineno_start_unused")
+                            if isinstance(ln, int) and ln > 0:
+                                target_line = ln
+                                break
+
+            if not isinstance(target_line, int) or target_line <= 0 or target_line > len(lines):
+                insert_idx = 0
+            else:
+                insert_idx = target_line - 1
+
+            new_block = _build_beacon_block(
+                bid=beacon_id,
+                role=role_display or "",
+                slice_labels=slice_labels_canon,
+                kind="ast",
+                comment_text=comment_val,
+            )
+            new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(new_lines) + "\n")
+            except Exception as e:  # noqa: BLE001
+                result["error"] = f"failed_to_write_file: {e}"
+                return result
+
+            result.update(
+                {
+                    "operation": "created_beacon",
+                    "beacon_id": beacon_id,
+                    "role": role_display,
+                    "slice_labels": slice_labels_canon,
+                    "comment": comment_val,
+                }
+            )
+            return result
 
     # Case 2: no beacon_id, but AST_QUALNAME + tags → create a new beacon.
     if ast_qualname and tags:
@@ -3469,7 +3522,7 @@ def update_beacon_from_node_js_ts(
         meta_lines.append("// ]")
         return meta_lines
 
-    # Case 1: update existing beacon.
+    # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
         role_val: str | None = None
         slice_val: str | None = None
@@ -3492,35 +3545,90 @@ def update_beacon_from_node_js_ts(
             slice_labels_canon = ",".join(merged)
 
         block_span = _find_beacon_block_by_id(beacon_id)
-        if block_span is None:
-            result["operation"] = "noop"
-            return result
+        
+        if block_span is not None:
+            # Case 1a: UPDATE existing beacon on disk.
+            start_idx, end_idx, _cl = block_span
+            new_block = _build_beacon_block(
+                bid=beacon_id,
+                role=role_display or "",
+                slice_labels=slice_labels_canon,
+                kind="ast",
+                comment_text=comment_val,
+            )
+            new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(new_lines) + "\n")
+            except Exception as e:  # noqa: BLE001
+                result["error"] = f"failed_to_write_file: {e}"
+                return result
 
-        start_idx, end_idx, _cl = block_span
-        new_block = _build_beacon_block(
-            bid=beacon_id,
-            role=role_display or "",
-            slice_labels=slice_labels_canon,
-            kind="ast",
-            comment_text=comment_val,
-        )
-        new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
-        try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(new_lines) + "\n")
-        except Exception as e:  # noqa: BLE001
-            result["error"] = f"failed_to_write_file: {e}"
+            result.update(
+                {
+                    "operation": "updated_beacon",
+                    "role": role_display,
+                    "slice_labels": slice_labels_canon,
+                    "comment": comment_val,
+                }
+            )
             return result
+        else:
+            # Case 1b: CREATE beacon from note metadata (beacon_id in note, not on disk).
+            # Use AST_QUALNAME to find insertion point.
+            target_line: Optional[int] = None
+            if ast_qualname:
+                try:
+                    outline_nodes = parse_js_ts_outline(file_path)
+                except Exception:
+                    outline_nodes = []
 
-        result.update(
-            {
-                "operation": "updated_beacon",
-                "role": role_display,
-                "slice_labels": slice_labels_canon,
-                "comment": comment_val,
-            }
-        )
-        return result
+                if outline_nodes:
+                    def _iter_nodes(nodes_list: list[dict[str, Any]]):
+                        for n in nodes_list:
+                            if isinstance(n, dict):
+                                yield n
+                                for ch in n.get("children") or []:
+                                    if isinstance(ch, dict):
+                                        yield from _iter_nodes([ch])
+
+                    for n in _iter_nodes(outline_nodes):
+                        if n.get("ast_qualname") == ast_qualname:
+                            ln = n.get("orig_lineno_start_unused")
+                            if isinstance(ln, int) and ln > 0:
+                                target_line = ln
+                                break
+
+            if not isinstance(target_line, int) or target_line <= 0 or target_line > len(lines):
+                insert_idx = 0
+            else:
+                insert_idx = target_line - 1
+
+            new_block = _build_beacon_block(
+                bid=beacon_id,
+                role=role_display or "",
+                slice_labels=slice_labels_canon,
+                kind="ast",
+                comment_text=comment_val,
+            )
+            new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(new_lines) + "\n")
+            except Exception as e:  # noqa: BLE001
+                result["error"] = f"failed_to_write_file: {e}"
+                return result
+
+            result.update(
+                {
+                    "operation": "created_beacon",
+                    "beacon_id": beacon_id,
+                    "role": role_display,
+                    "slice_labels": slice_labels_canon,
+                    "comment": comment_val,
+                }
+            )
+            return result
 
     # Case 2: create from AST_QUALNAME + tags.
     if ast_qualname and tags:
@@ -3687,7 +3795,7 @@ def update_beacon_from_node_markdown(
         meta_lines.append("-->")
         return meta_lines
 
-    # Case 1: update existing beacon.
+    # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
         role_val: str | None = None
         slice_val: str | None = None
@@ -3710,35 +3818,73 @@ def update_beacon_from_node_markdown(
             slice_labels_canon = ",".join(merged)
 
         block_span = _find_beacon_block_by_id(beacon_id)
-        if block_span is None:
-            result["operation"] = "noop"
-            return result
+        
+        if block_span is not None:
+            # Case 1a: UPDATE existing beacon on disk.
+            start_idx, end_idx, _cl = block_span
+            new_block = _build_beacon_block(
+                bid=beacon_id,
+                role=role_display or "",
+                slice_labels=slice_labels_canon,
+                kind="ast",
+                comment_text=comment_val,
+            )
+            new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(new_lines) + "\n")
+            except Exception as e:  # noqa: BLE001
+                result["error"] = f"failed_to_write_file: {e}"
+                return result
 
-        start_idx, end_idx, _cl = block_span
-        new_block = _build_beacon_block(
-            bid=beacon_id,
-            role=role_display or "",
-            slice_labels=slice_labels_canon,
-            kind="ast",
-            comment_text=comment_val,
-        )
-        new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
-        try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(new_lines) + "\n")
-        except Exception as e:  # noqa: BLE001
-            result["error"] = f"failed_to_write_file: {e}"
+            result.update(
+                {
+                    "operation": "updated_beacon",
+                    "role": role_display,
+                    "slice_labels": slice_labels_canon,
+                    "comment": comment_val,
+                }
+            )
             return result
+        else:
+            # Case 1b: CREATE beacon from note metadata (beacon_id in note, not on disk).
+            # For Markdown, use MD_PATH to find insertion point (or top-of-file).
+            target_line: Optional[int] = None
+            if md_path:
+                # Best-effort: insert at top-of-file for now.
+                # A later refinement can locate the heading via md_path.
+                insert_idx = 0
+            elif ast_qualname:
+                # Fallback: treat as generic file insert.
+                insert_idx = 0
+            else:
+                insert_idx = 0
 
-        result.update(
-            {
-                "operation": "updated_beacon",
-                "role": role_display,
-                "slice_labels": slice_labels_canon,
-                "comment": comment_val,
-            }
-        )
-        return result
+            new_block = _build_beacon_block(
+                bid=beacon_id,
+                role=role_display or "",
+                slice_labels=slice_labels_canon,
+                kind="ast",
+                comment_text=comment_val,
+            )
+            new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(new_lines) + "\n")
+            except Exception as e:  # noqa: BLE001
+                result["error"] = f"failed_to_write_file: {e}"
+                return result
+
+            result.update(
+                {
+                    "operation": "created_beacon",
+                    "beacon_id": beacon_id,
+                    "role": role_display,
+                    "slice_labels": slice_labels_canon,
+                    "comment": comment_val,
+                }
+            )
+            return result
 
     # Case 2: create from MD_PATH + tags.
     if md_path and tags:
