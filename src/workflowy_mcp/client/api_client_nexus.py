@@ -3204,6 +3204,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             )
 
         except Exception as e:  # noqa: BLE001
+            import traceback
+
+            tb = traceback.format_exc()
             # Incremental scaffold is strictly best-effort. Any error falls back
             # to the legacy implementation while still recording the failure in
             # the probe metadata so we can debug later.
@@ -3212,9 +3215,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "error": str(e),
                 "file_node_id_effective": str(file_node_id),
                 "resolved_from_descendant": resolved_from_descendant,
+                "traceback": tb,
             }
             _log_to_file_helper(
-                f"refresh_file_node_beacons incremental scaffold failed (falling back to legacy): {e}",
+                "refresh_file_node_beacons incremental scaffold failed (falling back to legacy): "
+                f"{e}\n{tb}",
                 "reconcile",
             )
             log_event(
