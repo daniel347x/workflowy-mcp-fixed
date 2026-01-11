@@ -3459,6 +3459,7 @@ def update_beacon_from_node_js_ts(
     """
     # DEBUG: Log entry
     print(f"[CARTOGRAPHER] update_beacon_from_node_js_ts: file={file_path!r} name={name!r}", file=sys.stderr)
+    print(f"[CARTOGRAPHER] update_beacon_from_node_js_ts: note={note!r}", file=sys.stderr)
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
     ast_qualname = _extract_ast_qualname_from_note(note)
