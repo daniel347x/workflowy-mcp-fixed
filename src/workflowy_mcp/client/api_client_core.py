@@ -100,11 +100,114 @@ class WorkFlowyClientCore:
         # Currently mainly used for logging/diagnostics; helpers below always
         # respect the presence/absence of an actual cache snapshot.
         self._nodes_export_cache_mode: str = "eager"
+
+        # Best-effort warm start: attempt to load a cached /nodes-export snapshot
+        # from disk on client initialization so MCP restarts do not always pay the
+        # full /nodes-export cost. Failures are logged but never fatal; callers
+        # can still trigger an explicit refresh via refresh_nodes_export_cache().
+        try:
+            loaded = self._load_nodes_export_cache_from_disk()
+            if loaded:
+                self._log_debug("Warm-started /nodes-export cache from disk snapshot")
+        except Exception as exc:  # pragma: no cover - defensive logging only
+            self._log_debug(f"Failed to warm-start /nodes-export cache from disk: {exc}")
     
     def _log_debug(self, message: str) -> None:
         """Log debug messages to stderr (unified logging)."""
         # Console Visibility ONLY - keep reconcile_debug.log clean for weaves
         log_event(message, "CLIENT_DEBUG")
+
+    def _get_nodes_export_snapshot_dir(self) -> str:
+        """Return directory path for persisted /nodes-export cache snapshots.
+
+        This mirrors the project_root discovery logic used by NEXUS helpers and
+        writes snapshots under TODO\\temp\\nodes_export_cache. The directory is
+        created on demand.
+        """
+        # Derive project_root from this file's location:
+        #   client_dir      = ...\\MCP_Servers\\workflowy_mcp\\client
+        #   wf_mcp_dir      = ...\\MCP_Servers\\workflowy_mcp
+        #   mcp_servers_dir = ...\\MCP_Servers
+        #   project_root    = parent of MCP_Servers (TODO project root)
+        client_dir = os.path.dirname(os.path.abspath(__file__))
+        wf_mcp_dir = os.path.dirname(client_dir)
+        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+        project_root = os.path.dirname(mcp_servers_dir)
+
+        snapshot_dir = os.path.join(project_root, "temp", "nodes_export_cache")
+        os.makedirs(snapshot_dir, exist_ok=True)
+        return snapshot_dir
+
+    def _save_nodes_export_cache_to_disk(self) -> str:
+        """Persist current /nodes-export cache snapshot to disk.
+
+        Returns the path to the written JSON file. If no cache is present,
+        raises RuntimeError so callers can surface a clear error to the user.
+        """
+        if self._nodes_export_cache is None:
+            raise RuntimeError("nodes-export cache is not initialized; nothing to save")
+
+        snapshot_dir = self._get_nodes_export_snapshot_dir()
+        # Use a timestamped filename so multiple snapshots can coexist and the
+        # newest can be discovered lexicographically.
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        snapshot_path = os.path.join(snapshot_dir, f"{ts}_nodes_export_snapshot.json")
+
+        # Serialize a minimal wrapper containing the raw export plus lightweight
+        # metadata about when it was captured.
+        payload = {
+            "snapshot_timestamp": datetime.now().isoformat(),
+            "nodes_export": self._nodes_export_cache,
+        }
+        with open(snapshot_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+        self._log_debug(f"Saved /nodes-export cache snapshot to {snapshot_path}")
+        return snapshot_path
+
+    def _load_nodes_export_cache_from_disk(self) -> bool:
+        """Attempt to warm-start /nodes-export cache from the newest snapshot on disk.
+
+        Returns True on success, False if no suitable snapshot was found or if
+        loading failed. Errors are logged but never raised.
+        """
+        snapshot_dir = self._get_nodes_export_snapshot_dir()
+        try:
+            candidates = [
+                os.path.join(snapshot_dir, name)
+                for name in os.listdir(snapshot_dir)
+                if name.endswith("_nodes_export_snapshot.json")
+            ]
+        except FileNotFoundError:
+            return False
+        except Exception as exc:  # pragma: no cover - defensive logging only
+            self._log_debug(f"Failed to list nodes_export_cache snapshots: {exc}")
+            return False
+
+        if not candidates:
+            return False
+
+        # Newest snapshot is lexicographically maximal thanks to timestamp prefix.
+        latest_path = sorted(candidates)[-1]
+        try:
+            with open(latest_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as exc:  # noqa: BLE001
+            self._log_debug(f"Failed to load nodes_export_cache snapshot {latest_path}: {exc}")
+            return False
+
+        nodes_export = payload.get("nodes_export")
+        if not isinstance(nodes_export, dict):
+            self._log_debug(
+                f"nodes_export_cache snapshot {latest_path} missing 'nodes_export' dict; ignoring"
+            )
+            return False
+
+        self._nodes_export_cache = nodes_export
+        self._nodes_export_cache_timestamp = payload.get("snapshot_timestamp")
+        # Start with a clean dirty set; callers may mark regions dirty as needed.
+        self._nodes_export_dirty_ids.clear()
+        return True
 
     @staticmethod
     def _segment_whitelisted_markup(text: str) -> list[dict[str, str]]:
@@ -622,11 +725,48 @@ class WorkFlowyClientCore:
         )
         nodes = data.get("nodes", []) or []
 
+        # On success, persist the fresh snapshot to disk so that future MCP
+        # restarts can warm-start from this state without paying the full
+        # /nodes-export cost again.
+        try:
+            self._nodes_export_cache = data
+            self._nodes_export_cache_timestamp = datetime.now().isoformat()
+            self._nodes_export_dirty_ids.clear()
+            self._save_nodes_export_cache_to_disk()
+        except Exception as exc:  # pragma: no cover - defensive logging only
+            self._log_debug(f"Failed to save /nodes-export cache snapshot after refresh: {exc}")
+
         return {
             "success": True,
             "node_count": len(nodes),
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": self._nodes_export_cache_timestamp or datetime.now().isoformat(),
         }
+
+    async def save_nodes_export_cache(self) -> dict[str, Any]:
+        """Persist the current /nodes-export cache snapshot to disk.
+
+        This does NOT call the Workflowy API. It simply serializes whatever
+        snapshot is currently held in memory so that subsequent MCP restarts
+        can warm-start without a fresh /nodes-export call.
+        """
+        if self._nodes_export_cache is None:
+            return {
+                "success": False,
+                "error": "nodes-export cache is not initialized; refresh it first",
+            }
+
+        try:
+            path = self._save_nodes_export_cache_to_disk()
+            return {
+                "success": True,
+                "snapshot_path": path,
+            }
+        except Exception as exc:  # noqa: BLE001
+            self._log_debug(f"save_nodes_export_cache failed: {exc}")
+            return {
+                "success": False,
+                "error": str(exc),
+            }
 
     async def create_node(
         self, request: NodeCreateRequest, _internal_call: bool = False, max_retries: int = 10

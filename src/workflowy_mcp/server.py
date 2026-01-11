@@ -1212,15 +1212,68 @@ async def websocket_handler(websocket):
                             "action": "refresh_nodes_export_cache_result",
                             **result,
                         }))
-                        log_event(f"Refreshed /nodes-export cache via WebSocket request: {result.get('node_count')} nodes", "WS_HANDLER")
+                        log_event(
+                            f"Refreshed /nodes-export cache via WebSocket request: {result.get('node_count')} nodes",
+                            "WS_HANDLER",
+                        )
                     except Exception as e:
-                        log_event(f"Failed to refresh /nodes-export cache from WebSocket request: {e}", "WS_HANDLER")
+                        log_event(
+                            f"Failed to refresh /nodes-export cache from WebSocket request: {e}",
+                            "WS_HANDLER",
+                        )
                         try:
-                            await websocket.send(json.dumps({
-                                "action": "refresh_nodes_export_cache_result",
-                                "success": False,
-                                "error": str(e),
-                            }))
+                            await websocket.send(
+                                json.dumps(
+                                    {
+                                        "action": "refresh_nodes_export_cache_result",
+                                        "success": False,
+                                        "error": str(e),
+                                    }
+                                )
+                            )
+                        except Exception:
+                            # Best-effort only; don't crash handler
+                            pass
+                    continue
+
+                # Explicit cache snapshot save request from GLIMPSE client (no API calls).
+                if action == 'save_nodes_export_cache':
+                    try:
+                        client = get_client()
+                        result = await client.save_nodes_export_cache()
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "action": "save_nodes_export_cache_result",
+                                    **result,
+                                }
+                            )
+                        )
+                        if result.get("success"):
+                            log_event(
+                                f"Saved /nodes-export cache snapshot via WebSocket request: {result.get('snapshot_path')}",
+                                "WS_HANDLER",
+                            )
+                        else:
+                            log_event(
+                                f"save_nodes_export_cache reported failure: {result.get('error')}",
+                                "WS_HANDLER",
+                            )
+                    except Exception as e:
+                        log_event(
+                            f"Failed to save /nodes-export cache snapshot from WebSocket request: {e}",
+                            "WS_HANDLER",
+                        )
+                        try:
+                            await websocket.send(
+                                json.dumps(
+                                    {
+                                        "action": "save_nodes_export_cache_result",
+                                        "success": False,
+                                        "error": str(e),
+                                    }
+                                )
+                            )
                         except Exception:
                             # Best-effort only; don't crash handler
                             pass
