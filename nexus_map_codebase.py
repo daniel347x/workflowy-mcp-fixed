@@ -11,6 +11,16 @@ import unicodedata
 from markdown_it import MarkdownIt
 import mdformat
 
+try:
+    from tree_sitter import Parser
+    from tree_sitter_language_pack import get_language, get_parser
+    _HAVE_TREE_SITTER = True
+except Exception:
+    Parser = None  # type: ignore[assignment]
+    get_language = None  # type: ignore[assignment]
+    get_parser = None  # type: ignore[assignment]
+    _HAVE_TREE_SITTER = False
+
 # Force UTF-8 output for Windows console
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -27,6 +37,8 @@ EMOJI_CLASS = "📦"
 EMOJI_FUNC = "ƒ"
 EMOJI_ASYNC = "⚡"
 EMOJI_CONST = "💎"
+EMOJI_JS = "🟨"
+EMOJI_TS = "🟦"
 
 # Debug flags (controlled via environment variables)
 DEBUG_MD_BEACONS = bool(os.environ.get("CARTOGRAPHER_MD_BEACONS"))
@@ -269,6 +281,13 @@ def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
     return root_children
 
 
+# @beacon[
+#   id=carto-js-ts@parse_markdown_beacon_blocks,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+# ]
+# Phase 2 JS/TS: Markdown beacon parser template.
+# Reference for JS/TS block-comment beacons (/* @beacon[...] */),
+# which use the same metadata fields and parsing pattern.
 def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     """Parse @beacon[...] HTML comment blocks from Markdown source.
 
@@ -449,6 +468,13 @@ def _extract_markdown_beacon_context(lines: list[str], comment_line: int) -> Lis
     return context
 
 
+# @beacon[
+#   id=carto-js-ts@apply_markdown_beacons,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+# ]
+# Phase 2 JS/TS: Markdown beacon application template.
+# Reference for apply_js_beacons(...) when attaching JS/TS span
+# and AST beacons under headings / AST nodes with context comments.
 def apply_markdown_beacons(
     lines: list[str],
     root_children: List[Dict[str, Any]],
@@ -1148,6 +1174,14 @@ def _canonicalize_slice_labels(slice_labels: str | None, role: str | None) -> st
     return ",".join(tokens)
 
 
+# @beacon[
+#   id=carto-js-ts@parse_python_beacon_blocks,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+# ]
+# Phase 2 JS/TS: Python beacon parser template.
+# Reference for parse_js_beacon_blocks(...) (JS/TS @beacon[...] parser)
+# so JS/TS beacon metadata matches the existing schema (id, role,
+# slice_labels, kind, start_snippet, end_snippet, comment, comment_line).
 def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     """Parse @beacon[...] comment blocks from Python source lines.
 
@@ -1285,6 +1319,14 @@ def _find_enclosing_ast_node_for_line(
     return best
 
 
+# @beacon[
+#   id=carto-js-ts@apply_python_beacons,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+# ]
+# Phase 2 JS/TS: Python beacon attachment template.
+# Reference for apply_js_beacons(...), which will decorate JS/TS
+# Tree-sitter AST nodes (kind=ast) and attach span children
+# (kind=span) in the same way.
 def apply_python_beacons(
     file_path: str,
     lines: list[str],
@@ -1738,6 +1780,15 @@ def get_function_signature(node: ast.FunctionDef) -> str:
         
     return f"{node.name}({', '.join(args)})"
 
+# @beacon[
+#   id=carto-js-ts@parse_file_outline,
+#   slice_labels=carto-js-ts,
+# ]
+# Phase 1 JS/TS: Python AST outline template.
+# Used as the reference shape for the new JS/TS Tree-sitter-based
+# outline builder (parse_js_ts_outline) so JS/TS nodes match the
+# same NEXUS schema (ast_type, ast_name, ast_qualname, file_path,
+# line ranges, priority, children).
 def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
     """Parse a single Python file into a NEXUS outline tree + beacon decorations.
 
@@ -1858,6 +1909,209 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
             "children": []
         }]
 
+# @beacon[
+#   id=carto-js-ts@parse_js_ts_outline,
+#   slice_labels=carto-js-ts,
+# ]
+# Phase 1 JS/TS: placeholder anchor for the future parse_js_ts_outline(...)
+# function. The next agent will define the JS/TS Tree-sitter-based outline
+# builder immediately above or below this beacon so Cartographer can
+# produce JS/TS AST nodes in the same shape as Python.
+
+def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
+    """Parse a single JavaScript / TypeScript file into a NEXUS outline tree.
+
+    This mirrors parse_file_outline for Python but uses Tree-sitter to
+    discover classes, functions, and methods and produces nodes with the
+    same schema (ast_type, ast_name, ast_qualname, file_path,
+    orig_lineno_start_unused, orig_lineno_end_unused, children, priority).
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext not in {".js", ".jsx", ".ts", ".tsx"}:
+        return [{
+            "name": "⚠️ Unsupported JS/TS extension",
+            "note": f"File {file_path!r} does not look like a JS/TS source file.",
+            "children": [],
+        }]
+
+    if not _HAVE_TREE_SITTER:
+        return [{
+            "name": "⚠️ JS/TS parsing not available",
+            "note": (
+                "Tree-sitter / tree_sitter_languages could not be imported. "
+                "Install 'tree_sitter' and 'tree_sitter_languages' in the Windows "
+                "Python environment to enable JS/TS Cartographer support."
+            ),
+            "children": [],
+        }]
+
+    language_name = "javascript"
+    if ext in {".ts", ".tsx"}:
+        language_name = "typescript"
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            source_text = f.read()
+        source_bytes = source_text.encode("utf-8")
+
+        parser = Parser()
+        language = get_language(language_name)  # type: ignore[operator]
+        parser.set_language(language)
+        tree = parser.parse(source_bytes)
+        root = tree.root_node
+
+        priority_counter = [100]
+
+        def node_text(n) -> str:
+            if n is None:
+                return ""
+            return source_bytes[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
+
+        def make_note(qual: str, doc: Optional[str] = None) -> str:
+            note_lines: List[str] = [f"AST_QUALNAME: {qual}"]
+            if doc:
+                note_lines.append("---")
+                note_lines.append(doc)
+            return "\n".join(note_lines)
+
+        def walk(node, qual_prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+            results: List[Dict[str, Any]] = []
+
+            for child in node.children:
+                t = child.type
+
+                if t == "class_declaration":
+                    name_node = child.child_by_field_name("name")
+                    class_name = node_text(name_node).strip() or "AnonymousClass"
+                    qual = class_name if not qual_prefix else f"{qual_prefix}.{class_name}"
+                    start_line = child.start_point[0] + 1
+                    end_line = child.end_point[0] + 1
+
+                    # TODO: in future, harvest JSDoc comments into doc
+                    note_text = make_note(qual)
+
+                    class_node: Dict[str, Any] = {
+                        "name": f"{EMOJI_CLASS} class {class_name}",
+                        "priority": priority_counter[0],
+                        "note": note_text,
+                        "children": [],
+                        "ast_type": "class",
+                        "ast_name": class_name,
+                        "ast_qualname": qual,
+                        "file_path": file_path,
+                        "orig_lineno_start_unused": start_line,
+                        "orig_lineno_end_unused": end_line,
+                    }
+                    priority_counter[0] += 100
+
+                    body = child.child_by_field_name("body")
+                    if body is not None:
+                        class_node["children"] = walk(body, qual_prefix=qual)
+
+                    results.append(class_node)
+                    continue
+
+                if t == "function_declaration":
+                    name_node = child.child_by_field_name("name")
+                    func_name = node_text(name_node).strip() or "anonymous"
+                    qual = func_name if not qual_prefix else f"{qual_prefix}.{func_name}"
+                    start_line = child.start_point[0] + 1
+                    end_line = child.end_point[0] + 1
+
+                    signature = func_name
+                    params_node = child.child_by_field_name("parameters")
+                    if params_node is not None:
+                        params_text = node_text(params_node).strip()
+                        signature = f"{func_name}{params_text}"
+
+                    note_text = make_note(qual)
+
+                    func_node: Dict[str, Any] = {
+                        "name": f"{EMOJI_FUNC} function {signature}",
+                        "priority": priority_counter[0],
+                        "note": note_text,
+                        "children": [],
+                        "ast_type": "function",
+                        "ast_name": func_name,
+                        "ast_qualname": qual,
+                        "file_path": file_path,
+                        "orig_lineno_start_unused": start_line,
+                        "orig_lineno_end_unused": end_line,
+                    }
+                    priority_counter[0] += 100
+
+                    body = child.child_by_field_name("body")
+                    if body is not None:
+                        func_node["children"] = walk(body, qual_prefix=qual)
+
+                    results.append(func_node)
+                    continue
+
+                if t == "method_definition":
+                    name_node = child.child_by_field_name("name")
+                    method_name = node_text(name_node).strip() or "anonymous"
+                    qual = method_name if not qual_prefix else f"{qual_prefix}.{method_name}"
+                    start_line = child.start_point[0] + 1
+                    end_line = child.end_point[0] + 1
+
+                    params_node = child.child_by_field_name("parameters")
+                    signature = method_name
+                    if params_node is not None:
+                        params_text = node_text(params_node).strip()
+                        signature = f"{method_name}{params_text}"
+
+                    note_text = make_note(qual)
+
+                    method_node: Dict[str, Any] = {
+                        "name": f"{EMOJI_FUNC} method {signature}",
+                        "priority": priority_counter[0],
+                        "note": note_text,
+                        "children": [],
+                        "ast_type": "method",
+                        "ast_name": method_name,
+                        "ast_qualname": qual,
+                        "file_path": file_path,
+                        "orig_lineno_start_unused": start_line,
+                        "orig_lineno_end_unused": end_line,
+                    }
+                    priority_counter[0] += 100
+
+                    body = child.child_by_field_name("body")
+                    if body is not None:
+                        method_node["children"] = walk(body, qual_prefix=qual)
+
+                    results.append(method_node)
+                    continue
+
+                # Recurse into other nodes to discover nested declarations
+                if child.children:
+                    results.extend(walk(child, qual_prefix=qual_prefix))
+
+            return results
+
+        outline_nodes = walk(root)
+
+        # Phase 2: JS/TS beacon parsing + attachment
+        lines = source_text.splitlines()
+        js_beacons = parse_js_beacon_blocks(lines)
+        apply_js_beacons(file_path, lines, outline_nodes, js_beacons)
+        return outline_nodes
+
+    except Exception as e:  # pragma: no cover - safety net
+        return [{
+            "name": "⚠️ Parse Error (JS/TS)",
+            "note": str(e),
+            "children": [],
+        }]
+
+
+# @beacon[
+#   id=carto-js-ts@map_codebase,
+#   slice_labels=carto-js-ts,
+# ]
+# Phase 1 JS/TS: directory + single-file dispatcher. This will be extended
+# to call the JS/TS outline builder (parse_js_ts_outline) for .js/.ts/.tsx
+# files alongside parse_file_outline for Python.
 def map_codebase(root_path: str, include_exts: List[str] = None, exclude_patterns: List[str] = None) -> Dict[str, Any]:
     """
     Wraps the inner file parsing into a directory walker.
@@ -1920,6 +2174,14 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
                         icon = EMOJI_MARKDOWN
                         children = parse_markdown_structure(full_path)
                         line_count = _get_line_count(full_path)
+                    elif ext in {'.js', '.jsx'}:
+                        icon = EMOJI_JS
+                        children = parse_js_ts_outline(full_path)
+                        line_count = _get_line_count(full_path)
+                    elif ext in {'.ts', '.tsx'}:
+                        icon = EMOJI_TS
+                        children = parse_js_ts_outline(full_path)
+                        line_count = _get_line_count(full_path)
                     elif ext == '.sql':
                         icon = EMOJI_SQL
                         with open(full_path, 'r', encoding='utf-8') as f:
@@ -1976,6 +2238,24 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
                 "name": f"{EMOJI_MARKDOWN} {os.path.basename(root_path)}",
                 "note": note,
                 "children": children
+            }
+        elif ext in ('.js', '.jsx'):
+            children = parse_js_ts_outline(root_path)
+            lc = _get_line_count(root_path)
+            note = format_file_note(root_path, line_count=lc)
+            return {
+                "name": f"{EMOJI_JS} {os.path.basename(root_path)}",
+                "note": note,
+                "children": children,
+            }
+        elif ext in ('.ts', '.tsx'):
+            children = parse_js_ts_outline(root_path)
+            lc = _get_line_count(root_path)
+            note = format_file_note(root_path, line_count=lc)
+            return {
+                "name": f"{EMOJI_TS} {os.path.basename(root_path)}",
+                "note": note,
+                "children": children,
             }
         elif ext == '.sql':
             with open(root_path, 'r', encoding='utf-8') as f:
@@ -2102,6 +2382,127 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     return beacons
 
 
+# @beacon[
+#   id=carto-js-ts@parse_js_beacon_blocks,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+# ]
+# Phase 2 JS/TS: JS/TS beacon parser.
+# Supports both line-comment (//) and block-comment (/* ... */) forms
+# with the same metadata schema as Python/Markdown beacons.
+def parse_js_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
+    """Parse @beacon[...] comment blocks from JS/TS source lines.
+
+    Supported forms (we control this schema):
+
+        // @beacon[
+        //   id=feature@1234,
+        //   role=glimpse:refresh,
+        //   slice_labels=glimpse-extension,
+        //   kind=ast|span,
+        //   start_snippet="function handleRefresh(",
+        //   end_snippet="}",
+        //   comment=One-line human note,
+        // ]
+
+        /* @beacon[
+           id=feature@1234,
+           slice_labels=glimpse-extension,
+           kind=ast,
+         ] */
+
+    Returns a list of dicts with keys:
+        id, role, slice_labels, kind, start_snippet, end_snippet,
+        comment, comment_line, kind_explicit.
+    """
+    beacons: list[dict[str, Any]] = []
+    n = len(lines)
+    i = 0
+
+    def _strip_js_comment_sugar(text: str) -> str:
+        t = text.lstrip()
+        # Leading JS comment prefixes
+        if t.startswith("//"):
+            t = t[2:].lstrip()
+        if t.startswith("/*"):
+            t = t[2:].lstrip()
+        if t.startswith("*/"):
+            t = t[2:].lstrip()
+        if t.startswith("*"):
+            t = t[1:].lstrip()
+        # Trailing block-comment closer
+        if t.endswith("*/"):
+            t = t[:-2].rstrip()
+        return t
+
+    while i < n:
+        line = lines[i]
+        if "@beacon[" in line:
+            comment_line = i + 1  # 1-based
+            block_lines = [line]
+            i += 1
+            # Collect until a line containing ']' (inclusive)
+            while i < n:
+                block_lines.append(lines[i])
+                if "]" in lines[i]:
+                    i += 1
+                    break
+                i += 1
+
+            # Parse block_lines into key/value pairs (skip first/last structural lines)
+            fields: dict[str, str] = {}
+            inner_lines = block_lines[1:-1] if len(block_lines) >= 2 else []
+            for raw in inner_lines:
+                text = raw.strip()
+                if not text:
+                    continue
+                text = _strip_js_comment_sugar(text)
+                if not text or text.startswith("@beacon"):
+                    continue
+                # Drop trailing ',' or '],' or ']'
+                while text and text[-1] in ",]":
+                    text = text[:-1].rstrip()
+                if not text or "=" not in text:
+                    continue
+                key, val = text.split("=", 1)
+                key = key.strip()
+                val = val.strip()
+                # Strip surrounding quotes if present
+                if (val.startswith("\"") and val.endswith("\"")) or (
+                    val.startswith("'") and val.endswith("'")
+                ):
+                    val = val[1:-1]
+                fields[key] = val
+
+            kind_raw = fields.get("kind")
+            kind = (kind_raw or "span").strip().lower() or "span"
+            if kind not in {"ast", "span"}:
+                continue
+
+            beacon = {
+                "id": fields.get("id"),
+                "role": fields.get("role"),
+                "slice_labels": fields.get("slice_labels"),
+                "kind": kind,
+                "start_snippet": fields.get("start_snippet"),
+                "end_snippet": fields.get("end_snippet"),
+                "comment": fields.get("comment"),
+                "comment_line": comment_line,
+                "kind_explicit": bool(kind_raw),
+            }
+            beacons.append(beacon)
+        else:
+            i += 1
+
+    return beacons
+
+
+# @beacon[
+#   id=carto-js-ts@parse_sh_beacon_blocks,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+# ]
+# Phase 2 JS/TS: shell beacon parser example.
+# Another line-comment @beacon[...] parser useful for cross-checking
+# JS/TS behavior.
 def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     """Parse @beacon[...] blocks from shell scripts using '#'-style comments.
 
@@ -2233,6 +2634,13 @@ def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str
     return context
 
 
+# @beacon[
+#   id=carto-js-ts@apply_sql_beacons,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+# ]
+# Phase 2 JS/TS: SQL beacon attachment example.
+# Secondary template for attaching span-only beacons as children
+# under a FILE node for non-AST languages.
 def apply_sql_beacons(
     lines: list[str],
     file_children: List[Dict[str, Any]],
@@ -2343,6 +2751,12 @@ def _extract_sh_beacon_context(lines: list[str], comment_line: int) -> List[str]
     return context
 
 
+# @beacon[
+#   id=carto-js-ts@apply_sh_beacons,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+# ]
+# Phase 2 JS/TS: shell beacon attachment example.
+# Secondary template similar to SQL for span-only beacons.
 def apply_sh_beacons(
     lines: list[str],
     file_children: List[Dict[str, Any]],
@@ -2400,6 +2814,316 @@ def apply_sh_beacons(
         }
 
         file_children.append(span_node)
+
+
+# @beacon[
+#   id=carto-js-ts@apply_js_beacons,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+# ]
+# Phase 2 JS/TS: JS/TS beacon attachment.
+# Decorates JS/TS AST nodes (kind=ast) and attaches span children
+# (kind=span) similarly to Python beacons.
+def apply_js_beacons(
+    file_path: str,
+    lines: list[str],
+    outline_nodes: List[Dict[str, Any]],
+    beacons: list[dict[str, Any]],
+) -> None:
+    if not outline_nodes or not beacons:
+        return
+
+    ast_nodes = list(_iter_ast_outline_nodes(outline_nodes))
+
+    n = len(lines)
+
+    def _js_next_anchor_line_after(line_no: int) -> Optional[int]:
+        for idx in range(line_no + 1, n + 1):
+            raw = lines[idx - 1]
+            stripped = raw.lstrip()
+            if not stripped:
+                continue
+            if stripped.startswith("//"):
+                continue
+            if stripped.startswith("/*") or stripped.startswith("*") or stripped.startswith("*/"):
+                continue
+            return idx
+        return None
+
+    def _header_line_for_node(node: dict[str, Any]) -> Optional[str]:
+        ln = node.get("orig_lineno_start_unused")
+        if not isinstance(ln, int) or ln <= 0 or ln > len(lines):
+            return None
+        return lines[ln - 1]
+
+    def _extract_js_beacon_context(comment_line: int) -> List[str]:
+        context: List[str] = []
+        j = comment_line
+        block_end = comment_line
+        # Find end of beacon block (first line containing ']')
+        while j <= n:
+            raw = lines[j - 1]
+            if "]" in raw:
+                block_end = j
+                break
+            j += 1
+
+        # Above
+        j = comment_line - 1
+        while j >= 1:
+            raw = lines[j - 1].lstrip()
+            if not raw:
+                j -= 1
+                continue
+            if raw.startswith("//") and "@beacon" not in raw:
+                context.insert(0, raw[2:].lstrip())
+                j -= 1
+                continue
+            if (raw.startswith("/*") or raw.startswith("*") or raw.startswith("*/")) and "@beacon" not in raw:
+                cleaned = raw
+                for prefix in ("/*", "*/", "*"):
+                    if cleaned.startswith(prefix):
+                        cleaned = cleaned[len(prefix):].lstrip()
+                context.insert(0, cleaned)
+                j -= 1
+                continue
+            break
+
+        # Below
+        j = block_end + 1
+        while j <= n:
+            raw = lines[j - 1].lstrip()
+            if not raw:
+                j += 1
+                continue
+            if raw.startswith("//") and "@beacon" not in raw:
+                context.append(raw[2:].lstrip())
+                j += 1
+                continue
+            if (raw.startswith("/*") or raw.startswith("*") or raw.startswith("*/")) and "@beacon" not in raw:
+                cleaned = raw
+                for prefix in ("/*", "*/", "*"):
+                    if cleaned.startswith(prefix):
+                        cleaned = cleaned[len(prefix):].lstrip()
+                context.append(cleaned)
+                j += 1
+                continue
+            break
+
+        return context
+
+    # Pre-pass: for snippet-less span beacons, compute anchor lineno and
+    # auto-upgrade to AST when the anchor is a clean class/function/method start.
+    for beacon in beacons:
+        kind = beacon.get("kind")
+        start_snippet = beacon.get("start_snippet")
+        if kind == "span" and not start_snippet:
+            comment_line = beacon.get("comment_line") or 0
+            if isinstance(comment_line, int) and comment_line > 0:
+                anchor = _js_next_anchor_line_after(comment_line)
+            else:
+                anchor = None
+            if anchor is None:
+                continue
+            beacon["_anchor_lineno"] = anchor
+
+            ast_candidates: list[dict[str, Any]] = []
+            for node in ast_nodes:
+                ast_type = node.get("ast_type")
+                if ast_type not in {"class", "function", "method"}:
+                    continue
+                ln = node.get("orig_lineno_start_unused")
+                if isinstance(ln, int) and ln == anchor:
+                    ast_candidates.append(node)
+
+            if len(ast_candidates) == 1:
+                beacon["kind"] = "ast"
+
+    # Pass 1: AST beacons
+    for beacon in beacons:
+        if beacon.get("kind") != "ast":
+            continue
+        start_snippet = beacon.get("start_snippet")
+        comment_line = beacon.get("comment_line") or 0
+
+        chosen: Optional[dict[str, Any]] = None
+
+        if start_snippet:
+            norm_snip = normalize_for_match(start_snippet)
+            if not norm_snip:
+                continue
+
+            candidates: list[dict[str, Any]] = []
+            for node in ast_nodes:
+                header = _header_line_for_node(node)
+                if header is None:
+                    continue
+                if norm_snip in normalize_for_match(header):
+                    candidates.append(node)
+
+            if not candidates:
+                continue
+
+            if len(candidates) == 1:
+                chosen = candidates[0]
+            else:
+                after = [
+                    n
+                    for n in candidates
+                    if isinstance(n.get("orig_lineno_start_unused"), int)
+                    and n["orig_lineno_start_unused"] > comment_line
+                ]
+                if len(after) == 1:
+                    chosen = after[0]
+                else:
+                    continue
+        else:
+            anchor = beacon.get("_anchor_lineno")
+            if not isinstance(anchor, int):
+                continue
+            ast_candidates = [
+                node
+                for node in ast_nodes
+                if node.get("ast_type") in {"class", "function", "method"}
+                and isinstance(node.get("orig_lineno_start_unused"), int)
+                and node["orig_lineno_start_unused"] == anchor
+            ]
+            if len(ast_candidates) == 1:
+                chosen = ast_candidates[0]
+            else:
+                continue
+
+        if not chosen:
+            continue
+
+        b_id = (beacon.get("id") or "").strip()
+        role = (beacon.get("role") or "").strip()
+        raw_slice_labels = (beacon.get("slice_labels") or "").strip()
+        if not role and b_id and "@" in b_id:
+            role = b_id.split("@", 1)[0]
+        slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
+
+        display_role = role or b_id or "js-ast-beacon"
+        display_slice = slice_labels or "-"
+        tag_suffix = _slice_label_tags(slice_labels or display_slice)
+
+        name = chosen.get("name") or "Untitled"
+        if "🔱" not in name:
+            name = f"{name} 🔱"
+        if tag_suffix:
+            name = f"{name} {tag_suffix}"
+        chosen["name"] = name
+
+        comment = beacon.get("comment")
+        meta_lines = [
+            "BEACON (JS/TS AST)",
+            f"id: {b_id}",
+            f"role: {role}",
+            f"slice_labels: {slice_labels}",
+            "kind: ast",
+        ]
+        if comment:
+            meta_lines.append(f"comment: {comment}")
+        context_lines = _extract_js_beacon_context(comment_line)
+        if context_lines:
+            meta_lines.append("")
+            meta_lines.append("CONTEXT COMMENTS (JS/TS):")
+            meta_lines.extend(context_lines)
+        note = chosen.get("note") or ""
+        meta_block = "\n".join(meta_lines)
+        if note:
+            chosen["note"] = note + "\n\n" + meta_block
+        else:
+            chosen["note"] = meta_block
+
+    # Pass 2: SPAN beacons
+    for beacon in beacons:
+        if beacon.get("kind") != "span":
+            continue
+        start_snippet = beacon.get("start_snippet")
+        comment_line = beacon.get("comment_line") or 0
+
+        start_line: Optional[int] = None
+
+        if start_snippet:
+            norm_snip = normalize_for_match(start_snippet)
+            if not norm_snip:
+                continue
+            start_candidates: list[int] = []
+            for idx, line in enumerate(lines, start=1):
+                stripped = line.lstrip()
+                if stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*") or stripped.startswith("*/"):
+                    continue
+                if norm_snip in normalize_for_match(line):
+                    start_candidates.append(idx)
+            if not start_candidates:
+                continue
+            if len(start_candidates) == 1:
+                start_line = start_candidates[0]
+            else:
+                after = [ln for ln in start_candidates if ln > comment_line]
+                if len(after) == 1:
+                    start_line = after[0]
+                else:
+                    continue
+        else:
+            anchor = beacon.get("_anchor_lineno")
+            if isinstance(anchor, int):
+                start_line = anchor
+            else:
+                if isinstance(comment_line, int) and comment_line > 0:
+                    start_line = _js_next_anchor_line_after(comment_line)
+                else:
+                    start_line = None
+
+        if start_line is None:
+            continue
+
+        enclosing = _find_enclosing_ast_node_for_line(outline_nodes, start_line)
+
+        b_id = (beacon.get("id") or "").strip()
+        role = (beacon.get("role") or "").strip()
+        raw_slice_labels = (beacon.get("slice_labels") or "").strip()
+        if not role and b_id and "@" in b_id:
+            role = b_id.split("@", 1)[0]
+        slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
+
+        display_role = role or b_id or "js-span-beacon"
+        display_slice = slice_labels or "-"
+        tag_suffix = _slice_label_tags(slice_labels or display_slice)
+
+        name = f"🔱 {display_role}"
+        if tag_suffix:
+            name = f"{name} {tag_suffix}"
+
+        context_lines = _extract_js_beacon_context(comment_line)
+        comment = beacon.get("comment")
+
+        note_lines = [
+            "BEACON (JS/TS SPAN)",
+            f"id: {b_id}",
+            f"role: {role}",
+            f"slice_labels: {slice_labels}",
+            "kind: span",
+        ]
+        if comment:
+            note_lines.append(f"comment: {comment}")
+        if context_lines:
+            note_lines.append("")
+            note_lines.append("CONTEXT COMMENTS (JS/TS):")
+            note_lines.extend(context_lines)
+
+        span_node = {
+            "name": name,
+            "note": "\n".join(note_lines),
+            "children": [],
+        }
+
+        if enclosing is not None:
+            children = enclosing.get("children") or []
+            children.append(span_node)
+            enclosing["children"] = children
+        else:
+            outline_nodes.append(span_node)
 
 def reconcile_trees(source_node: Dict[str, Any], ether_node: Dict[str, Any]) -> None:
     """
