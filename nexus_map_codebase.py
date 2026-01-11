@@ -1956,7 +1956,7 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
 
         parser = Parser()
         language = get_language(language_name)  # type: ignore[operator]
-        parser.set_language(language)
+        parser.language = language
         tree = parser.parse(source_bytes)
         root = tree.root_node
 
