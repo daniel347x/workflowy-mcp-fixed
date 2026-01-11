@@ -446,6 +446,50 @@ class WorkFlowyClientCore:
             raise RuntimeError("nodes-export cache is missing 'nodes' list")
         return nodes
 
+    async def update_cached_node_name(self, node_id: str, new_name: str) -> bool:
+        """Update the name for a single node in the cached /nodes-export snapshot.
+
+        This does NOT call the Workflowy API. It only patches the in-memory
+        cache so that subsequent operations (auto-beacon, Cartographer, etc.)
+        see the up-to-date name/tags without requiring a full /nodes-export
+        refresh.
+
+        Returns True if a node was updated, False if the cache is missing
+        or node_id was not found.
+        """
+        if self._nodes_export_cache is None:
+            self._log_debug(
+                f"update_cached_node_name: no cache present, cannot update {node_id}"
+            )
+            return False
+
+        try:
+            nodes = self._get_nodes_export_cache_nodes()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self._log_debug(
+                f"update_cached_node_name: cache malformed when updating {node_id}: {exc}"
+            )
+            return False
+
+        target: dict[str, Any] | None = None
+        for n in nodes:
+            if str(n.get("id")) == str(node_id):
+                target = n
+                break
+
+        if target is None:
+            self._log_debug(
+                f"update_cached_node_name: node_id {node_id} not found in cache"
+            )
+            return False
+
+        # Cache stores dewhitened semantic text; node_name from DOM is already semantic.
+        target["name"] = new_name
+        if "nm" in target:
+            target["nm"] = new_name
+
+        return True
+
     def _normalize_node_for_nodes_export_cache(self, node_dict: dict[str, Any]) -> dict[str, Any]:
         """Normalize a node dict for insertion into the /nodes-export cache.
 
