@@ -981,10 +981,22 @@ async def export_nodes_impl(
     nodes_by_id = {node["id"]: node for node in all_nodes if node.get("id")}
 
     def add_descendants(parent_id: str) -> None:
+        """Recursively add all descendants whose parent matches parent_id.
+
+        IMPORTANT: /nodes-export historically used `parent_id` (snake_case) in
+        its payload, but our in-memory cache may also contain nodes that were
+        appended via single-node operations (create_node, etc.) whose parent
+        linkage lives in `parentId` (camelCase). To avoid losing newly-created
+        children in subtree exports, we must honor BOTH keys here.
+        """
         for node in all_nodes:
-            if node.get("parent_id") == parent_id and node["id"] not in included_ids:
-                included_ids.add(node["id"])
-                add_descendants(node["id"])
+            nid = node.get("id")
+            if not nid:
+                continue
+            pid = node.get("parent_id") or node.get("parentId")
+            if pid == parent_id and nid not in included_ids:
+                included_ids.add(nid)
+                add_descendants(str(nid))
 
     if node_id in nodes_by_id:
         add_descendants(node_id)
