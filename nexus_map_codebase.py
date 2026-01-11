@@ -2911,12 +2911,13 @@ def apply_js_beacons(
 
         return context
 
-    # Pre-pass: for snippet-less span beacons, compute anchor lineno and
-    # auto-upgrade to AST when the anchor is a clean class/function/method start.
+    # Pre-pass: for snippet-less beacons (span OR ast), compute anchor lineno.
+    # For span beacons, auto-upgrade to AST when anchor is a class/function/method.
+    # For ast beacons without start_snippet, we still need _anchor_lineno for matching.
     for beacon in beacons:
         kind = beacon.get("kind")
         start_snippet = beacon.get("start_snippet")
-        if kind == "span" and not start_snippet:
+        if kind in {"span", "ast"} and not start_snippet:
             comment_line = beacon.get("comment_line") or 0
             if isinstance(comment_line, int) and comment_line > 0:
                 anchor = _js_next_anchor_line_after(comment_line)
