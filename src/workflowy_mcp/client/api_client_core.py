@@ -207,6 +207,7 @@ class WorkFlowyClientCore:
         self._nodes_export_cache_timestamp = payload.get("snapshot_timestamp")
         # Start with a clean dirty set; callers may mark regions dirty as needed.
         self._nodes_export_dirty_ids.clear()
+        self._log_debug(f"Loaded /nodes-export cache snapshot from {latest_path}")
         return True
 
     @staticmethod
