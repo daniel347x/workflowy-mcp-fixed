@@ -3271,6 +3271,48 @@ async def beacon_refresh_code_node(
         return {"success": False, "error": str(e)}
 
 
+@mcp.tool(
+    name="update_beacon_from_node",
+    description=(
+        "Update/create/delete a Cartographer beacon based on a single Workflowy "
+        "node's name/note (F12-per-node). This only edits the underlying source "
+        "file; the client should update the cached node name/note separately."
+    ),
+)
+async def update_beacon_from_node(
+    node_id: str,
+    name: str,
+    note: str,
+) -> dict:
+    """MCP wrapper for WorkFlowyClientNexus.update_beacon_from_node.
+
+    The client is expected to:
+    - Call this tool when F12 is pressed on a Cartographer-mapped node.
+    - Use the returned "base_name" to update the cached node name (stripping
+      trailing tags) via update_cached_node_name or equivalent.
+    - Use the returned beacon metadata (role/slice_labels/comment) to
+      rebuild the note's BEACON block for local cache sync.
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.update_beacon_from_node(
+            node_id=node_id,
+            name=name,
+            note=note,
+        )
+        if _rate_limiter:
+            _rate_limiter.on_success()
+        return result
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        return {"success": False, "error": str(e)}
+
+
 # Resource: WorkFlowy Outline
 @mcp.resource(
     uri="workflowy://outline",

@@ -3292,6 +3292,247 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         return legacy_result
 
+    async def update_beacon_from_node(
+        self,
+        node_id: str,
+        name: str,
+        note: str,
+    ) -> dict[str, Any]:
+        """Update/create/delete a Cartographer beacon from a single Workflowy node.
+
+        This is the F12-per-node counterpart to refresh_file_node_beacons. It:
+        - Resolves the enclosing FILE node and its Path: header.
+        - Classifies the node as Python/JS/TS/Markdown via file extension.
+        - Delegates to nexus_map_codebase.update_beacon_from_node_* helpers
+          to decide whether to update an existing beacon, create a new one
+          from tags, or delete a stale beacon.
+        - Returns a small JSON summary for the client.
+
+        NOTE: This method does not mutate Workflowy directly; it only updates
+        the underlying source files. The client should separately update the
+        local /nodes-export cache name (e.g., via update_cached_node_name)
+        based on the "base_name" returned by the helper.
+        """
+        logger = _ClientLogger()
+        log_event(
+            f"update_beacon_from_node start (node_id={node_id})",
+            "BEACON",
+        )
+
+        # 1) Load /nodes-export snapshot and locate the target node.
+        raw = await export_nodes_impl(self, node_id=None, use_cache=True, force_refresh=False)
+        all_nodes = raw.get("nodes", []) or []
+        nodes_by_id: dict[str, dict[str, Any]] = {
+            str(n.get("id")): n for n in all_nodes if n.get("id")
+        }
+        wf_node = nodes_by_id.get(str(node_id))
+        if not wf_node:
+            raise NetworkError(f"update_beacon_from_node: node {node_id!r} not found in /nodes-export cache")
+
+        # 2) Walk ancestors to find FILE node with Path:/Root: in note.
+        current_id = str(node_id)
+        visited: set[str] = set()
+        file_node: dict[str, Any] | None = None
+
+        while current_id and current_id not in visited:
+            visited.add(current_id)
+            n = nodes_by_id.get(current_id)
+            if not n:
+                break
+
+            n_note = n.get("note") or n.get("no") or ""
+            if isinstance(n_note, str) and ("Path:" in n_note or "Root:" in n_note):
+                file_node = n
+                break
+
+            parent_id_val = n.get("parent_id") or n.get("parentId")
+            current_id = str(parent_id_val) if parent_id_val else None
+
+        if not file_node:
+            raise NetworkError(
+                "update_beacon_from_node: could not find ancestor FILE node with Path:/Root: "
+                f"for node {node_id!r} (visited_chain={list(visited)})",
+            )
+
+        file_note = file_node.get("note") or file_node.get("no") or ""
+        source_path = parse_path_or_root_from_note(str(file_note))
+        if not source_path:
+            raise NetworkError(
+                "update_beacon_from_node: ancestor FILE node missing Path:/Root: for "
+                f"node {node_id!r}",
+            )
+
+        ext = os.path.splitext(source_path)[1].lower()
+
+        # 3) Import nexus_map_codebase and delegate to language-specific helper.
+        try:
+            import importlib
+
+            client_dir = os.path.dirname(os.path.abspath(__file__))
+            wf_mcp_dir = os.path.dirname(client_dir)
+            mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+            project_root = os.path.dirname(mcp_servers_dir)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+
+            cartographer = importlib.import_module("nexus_map_codebase")
+        except Exception as e:  # noqa: BLE001
+            raise NetworkError(
+                f"update_beacon_from_node: failed to import nexus_map_codebase: {e}",
+            ) from e
+
+        if ext == ".py":
+            helper = getattr(cartographer, "update_beacon_from_node_python", None)
+        elif ext in {".js", ".jsx", ".ts", ".tsx"}:
+            helper = getattr(cartographer, "update_beacon_from_node_js_ts", None)
+        elif ext in {".md", ".markdown"}:
+            helper = getattr(cartographer, "update_beacon_from_node_markdown", None)
+        else:
+            helper = None
+
+        if helper is None:
+            return {
+                "success": False,
+                "reason": "unsupported_extension",
+                "source_path": source_path,
+                "node_id": node_id,
+                "ext": ext,
+            }
+
+        try:
+            result = helper(source_path, name, note)  # type: ignore[misc]
+        except Exception as e:  # noqa: BLE001
+            raise NetworkError(
+                f"update_beacon_from_node: helper failed for {source_path!r}: {e}",
+            ) from e
+
+        if not isinstance(result, dict):
+            result = {"raw_result": result}
+
+        result.setdefault("success", True)
+        result.setdefault("node_id", node_id)
+        result.setdefault("source_path", source_path)
+
+        # 4) Update local /nodes-export cache name + note to reflect on-disk state.
+        # This is critical so that subsequent operations (WEAVE, F12 file refresh)
+        # see the updated beacon metadata without requiring a full /nodes-export
+        # refresh from the API.
+        base_name_from_helper = result.get("base_name")
+        if base_name_from_helper and isinstance(base_name_from_helper, str):
+            # For AST/beacon nodes, the helper stripped trailing tags.
+            # Update the cached node name to match.
+            try:
+                updated = self.update_cached_node_name(
+                    str(node_id),
+                    base_name_from_helper,
+                )
+                result["cache_name_updated"] = updated
+            except Exception as e:  # noqa: BLE001
+                log_event(
+                    f"update_beacon_from_node: failed to update cached name for {node_id!r}: {e}",
+                    "BEACON",
+                )
+                result["cache_name_updated"] = False
+
+        # 5) Optionally update the cached note with the updated beacon metadata.
+        # This is more involved, so for now we only do it when the helper
+        # explicitly returned beacon metadata in the result.
+        operation = result.get("operation")
+        if operation in {"updated_beacon", "created_beacon"}:
+            beacon_id_from_helper = result.get("beacon_id")
+            role_from_helper = result.get("role") or ""
+            slice_labels_from_helper = result.get("slice_labels") or ""
+            comment_from_helper = result.get("comment") or ""
+
+            if beacon_id_from_helper:
+                # Rebuild the BEACON (...) block that should be in the note.
+                # Match the language-specific header format used by apply_*_beacons.
+                lang = result.get("language") or "python"
+                if lang == "python":
+                    beacon_header = "BEACON (AST)"
+                elif lang == "js_ts":
+                    beacon_header = "BEACON (JS/TS AST)"
+                elif lang == "markdown":
+                    beacon_header = "BEACON (MD AST)"
+                else:
+                    beacon_header = "BEACON (AST)"
+
+                beacon_meta_lines = [
+                    beacon_header,
+                    f"id: {beacon_id_from_helper}",
+                    f"role: {role_from_helper}",
+                    f"slice_labels: {slice_labels_from_helper}",
+                    "kind: ast",
+                ]
+                if comment_from_helper:
+                    beacon_meta_lines.append(f"comment: {comment_from_helper}")
+
+                # For AST nodes, the note structure is:
+                #   AST_QUALNAME: ...
+                #   ---
+                #   [optional docstring or body]
+                #
+                #   BEACON (...)
+                #   id: ...
+                #   role: ...
+                #   slice_labels: ...
+                #   kind: ast
+                #   comment: ...
+                #
+                # We rebuild the note by:
+                # - Keeping the AST_QUALNAME / MD_PATH header and any existing body.
+                # - Replacing or appending the BEACON block.
+                original_note = str(wf_node.get("note") or wf_node.get("no") or "")
+                note_lines = original_note.splitlines()
+
+                # Find the existing BEACON block (if any) and remove it.
+                beacon_start_idx: int | None = None
+                beacon_end_idx: int | None = None
+                for idx, line in enumerate(note_lines):
+                    stripped = line.strip()
+                    if stripped.startswith("BEACON ("):
+                        beacon_start_idx = idx
+                    elif beacon_start_idx is not None and stripped.startswith("kind:"):
+                        # End of beacon block is the line after "kind: ..."
+                        beacon_end_idx = idx
+                        break
+
+                # Rebuild note: keep header/body, replace beacon block.
+                if beacon_start_idx is not None and beacon_end_idx is not None:
+                    # Strip away old beacon block.
+                    new_note_lines = note_lines[:beacon_start_idx] + note_lines[beacon_end_idx + 1 :]
+                else:
+                    new_note_lines = note_lines[:]
+
+                # Append new beacon block.
+                if new_note_lines and new_note_lines[-1].strip():
+                    new_note_lines.append("")  # Blank line separator
+                new_note_lines.extend(beacon_meta_lines)
+
+                new_note = "\n".join(new_note_lines)
+
+                # Update the cached note via _apply_update_to_nodes_export_cache.
+                # This is a bit indirect, but it's the existing mechanism.
+                try:
+                    # Build a minimal node update dict.
+                    from ..models import WorkFlowyNode
+
+                    updated_node = WorkFlowyNode(
+                        id=str(node_id),
+                        name=base_name_from_helper or name,
+                        note=new_note,
+                    )
+                    self._apply_update_to_nodes_export_cache(updated_node)
+                    result["cache_note_updated"] = True
+                except Exception as e:  # noqa: BLE001
+                    log_event(
+                        f"update_beacon_from_node: failed to update cached note for {node_id!r}: {e}",
+                        "BEACON",
+                    )
+                    result["cache_note_updated"] = False
+
+        return result
+
     async def refresh_folder_cartographer_sync(
         self,
         folder_node_id: str,
