@@ -3667,6 +3667,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         missing_paths: list[str] = []
         refreshed_count = 0
         refresh_errors: list[str] = []
+        files_deleted = 0
 
         # Collect file nodes first so we can stash Notes before any per-file refresh.
         file_nodes_info: list[tuple[str, str, bool]] = []  # (node_id, source_path, exists_on_disk)
@@ -3748,6 +3749,22 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     )
             except Exception as e:  # noqa: BLE001
                 refresh_errors.append(f"{s_nid}: {e}")
+
+        # 2b) Delete FILE nodes whose source file no longer exists on disk
+        if not dry_run:
+            for s_nid, source_path, exists in file_nodes_info:
+                if exists:
+                    continue
+                try:
+                    await self.delete_node(s_nid)
+                    files_deleted += 1
+                except Exception as e:  # noqa: BLE001
+                    msg = (
+                        "refresh_folder_cartographer_sync: failed to delete FILE node "
+                        f"{s_nid} for missing Path=\"{source_path}\": {e}"
+                    )
+                    log_event(msg, "BEACON")
+                    refresh_errors.append(msg)
 
         # 3) Optional second phase: filesystem scan + creation of missing FILE nodes
         disk_scan_performed = False
@@ -4037,6 +4054,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "disk_files_only_on_disk": len(only_on_disk_keys) if disk_scan_performed else 0,
             "new_files_created": new_files_created,
             "new_folders_created": new_folders_created,
+            "files_deleted": files_deleted,
             "notes_stashed": total_stashed,
             "notes_moved_to_root": notes_moved_to_root,
             "notes_reattached": notes_reattached,
