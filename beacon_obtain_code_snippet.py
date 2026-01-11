@@ -110,6 +110,14 @@ def _read_lines(path: str) -> List[str]:
         return f.read().splitlines()
 
 
+# @beacon[
+#   id=carto-js-ts@_python_resolve_ast_node_heuristic,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+# ]
+# Phase 3 JS/TS: Python AST heuristic template.
+# Reference for a future JS/TS heuristic helper that will resolve
+# JS/TS AST nodes (by node_name + parent_names) to snippets using
+# Tree-sitter-based outlines.
 def _python_resolve_ast_node_heuristic(
     file_path: str,
     node_name: str,
@@ -323,6 +331,228 @@ def _python_resolve_ast_node_heuristic(
     if not search_text:
         raise RuntimeError(
             "Cannot derive search token from node name %r for AST resolution" % (node_name,)
+        )
+
+    anchor: int | None = None
+    for idx, line in enumerate(lines, start=1):
+        if search_text in line:
+            anchor = idx
+            break
+
+    if anchor is None:
+        raise RuntimeError(
+            f"Search token {search_text!r} not found in file {file_path!r}"
+        )
+
+    core_start = anchor
+    core_end = anchor
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+    metadata["resolution_strategy"] = "token_search"
+    metadata["confidence"] = 0.4
+    metadata["ambiguity"] = "none"
+    metadata["candidates"] = None
+    return start_line, end_line, lines, core_start, core_end, core_start, metadata
+
+
+# @beacon[
+#   id=carto-js-ts@_js_ts_resolve_ast_node_heuristic,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+# ]
+# Phase 3 JS/TS: JS/TS AST heuristic helper.
+# Resolves JS/TS AST nodes (by node_name + parent_names) to snippets using
+# Tree-sitter-based outlines produced by parse_js_ts_outline.
+def _js_ts_resolve_ast_node_heuristic(
+    file_path: str,
+    node_name: str,
+    parent_names: List[str],
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+
+    try:
+        outline_nodes = nexus_map_codebase.parse_js_ts_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse JS/TS AST outline for {file_path}: {e}") from e
+
+    metadata: dict = {
+        "resolution_strategy": None,
+        "confidence": 0.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+
+    def _normalize_core_name(raw: str) -> str:
+        name = (raw or "").strip()
+        if not name:
+            return ""
+        i = 0
+        while i < len(name) and not (name[i].isalnum() or name[i] in {"_", "$"}):
+            i += 1
+        name = name[i:].lstrip()
+        tokens = name.split()
+        while tokens and tokens[-1].startswith("#"):
+            tokens.pop()
+        return " ".join(tokens).strip()
+
+    def _classify_js_ts_node_name(raw: str) -> Tuple[str | None, str | None]:
+        core = _normalize_core_name(raw)
+        if not core:
+            return None, None
+        lower = core.lower()
+        if lower.startswith("class "):
+            rest = core[len("class ") :].strip()
+            simple = rest.split("(", 1)[0].strip() or None
+            return simple, "class"
+        if lower.startswith("function "):
+            rest = core[len("function ") :].strip()
+            simple = rest.split("(", 1)[0].strip() or None
+            return simple, "function"
+        if lower.startswith("method "):
+            rest = core[len("method ") :].strip()
+            simple = rest.split("(", 1)[0].strip() or None
+            return simple, "method"
+        if "(" in core and ")" in core:
+            simple = core.split("(", 1)[0].strip() or None
+            return simple, "function"
+        return core.split()[0].strip(), "const"
+
+    def _extract_parent_classes(raw_parents: List[str]) -> List[str]:
+        classes: List[str] = []
+        for raw in raw_parents:
+            core = _normalize_core_name(raw)
+            if not core:
+                continue
+            lower = core.lower()
+            if lower.startswith("class "):
+                rest = core[len("class ") :].strip()
+                cname = rest.split("(", 1)[0].strip()
+                if cname:
+                    classes.append(cname)
+        return classes
+
+    simple_name, expected_type = _classify_js_ts_node_name(node_name)
+    parent_classes = _extract_parent_classes(parent_names or [])
+
+    qual_parts: List[str] = []
+    if parent_classes:
+        qual_parts.extend(parent_classes)
+    if simple_name:
+        qual_parts.append(simple_name)
+    intended_qualname = ".".join(qual_parts) if qual_parts else None
+
+    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
+        for n in nodes or []:
+            if isinstance(n, dict):
+                yield n
+                for ch in n.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+
+    ast_candidates: List[dict] = []
+    for node in _iter_nodes(outline_nodes):
+        qual = node.get("ast_qualname")
+        if not isinstance(qual, str) or not qual:
+            continue
+        node_type = node.get("ast_type")
+        start = node.get("orig_lineno_start_unused")
+        end = node.get("orig_lineno_end_unused") or start
+        if not isinstance(start, int) or start <= 0:
+            continue
+        if not isinstance(end, int) or end < start:
+            end = start
+        simple = qual.split(".")[-1]
+        parents = qual.split(".")[:-1]
+        ast_candidates.append(
+            {
+                "node": node,
+                "ast_qualname": qual,
+                "ast_type": node_type,
+                "simple_name": simple,
+                "parent_parts": parents,
+                "start": start,
+                "end": end,
+            }
+        )
+
+    def _build_candidates_list(cands: List[dict]) -> List[dict]:
+        out: List[dict] = []
+        for c in cands:
+            out.append(
+                {
+                    "ast_qualname": c.get("ast_qualname"),
+                    "ast_type": c.get("ast_type"),
+                    "start_line": c.get("start"),
+                    "end_line": c.get("end"),
+                }
+            )
+        return out
+
+    def _make_snippet(
+        cand: dict,
+        strategy: str,
+        confidence: float,
+        ambiguity: str,
+        all_candidates: List[dict] | None = None,
+    ) -> Tuple[int, int, List[str], int, int, int, dict]:
+        core_start = int(cand["start"])
+        core_end = int(cand["end"])
+        start_line = max(1, core_start - context)
+        end_line = min(n, core_end + context)
+        meta = {
+            "resolution_strategy": strategy,
+            "confidence": confidence,
+            "ambiguity": ambiguity,
+            "candidates": _build_candidates_list(all_candidates) if all_candidates else None,
+        }
+        return start_line, end_line, lines, core_start, core_end, core_start, meta
+
+    if intended_qualname:
+        exact = [
+            c
+            for c in ast_candidates
+            if c["ast_qualname"] == intended_qualname
+            and (expected_type is None or c.get("ast_type") == expected_type)
+        ]
+        if exact:
+            ambiguity = "none" if len(exact) == 1 else "auto_resolved"
+            return _make_snippet(exact[0], "ast_qualname_exact", 1.0, ambiguity, exact)
+
+    if simple_name and parent_classes:
+        prefix_matches: List[dict] = []
+        for c in ast_candidates:
+            if c["simple_name"] != simple_name:
+                continue
+            parents = c["parent_parts"] or []
+            if len(parents) >= len(parent_classes) and parents[-len(parent_classes) :] == parent_classes:
+                if expected_type is None or c.get("ast_type") == expected_type:
+                    prefix_matches.append(c)
+        if prefix_matches:
+            ambiguity = "none" if len(prefix_matches) == 1 else "auto_resolved"
+            return _make_snippet(prefix_matches[0], "ast_qualname_prefix", 0.9, ambiguity, prefix_matches)
+
+    if simple_name:
+        simple_matches: List[dict] = []
+        for c in ast_candidates:
+            if c["simple_name"] != simple_name:
+                continue
+            if expected_type is not None and c.get("ast_type") != expected_type:
+                continue
+            simple_matches.append(c)
+        if simple_matches:
+            ambiguity = "none" if len(simple_matches) == 1 else "auto_resolved"
+            return _make_snippet(simple_matches[0], "ast_simple_name", 0.7, ambiguity, simple_matches)
+
+    search_text = _normalize_core_name(node_name)
+    if "(" in search_text:
+        search_text = search_text.split("(", 1)[0].strip()
+    if not search_text:
+        raise RuntimeError(
+            "Cannot derive search token from node name %r for JS/TS AST resolution" % (node_name,)
         )
 
     anchor: int | None = None
@@ -591,6 +821,15 @@ def _python_comment_block_span(
     return top, bottom
 
 
+# @beacon[
+#   id=carto-js-ts@_python_snippet_for_beacon,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+# ]
+# Phase 3 JS/TS: Python beacon snippet template.
+# Reference for a future JS/TS beacon helper that will return
+# (start, end, lines, core_start, core_end, beacon_line) with the
+# core region including both the @beacon[...] comment block and the
+# associated JS/TS code span.
 def _python_snippet_for_beacon(
     file_path: str,
     beacon_id: str,
@@ -740,217 +979,143 @@ def _python_snippet_for_beacon(
     return start, end, lines, core_start, core_end, beacon_line
 
 
-def get_snippet_for_ast_qualname(
-    file_path: str,
-    ast_qualname: str,
-    context: int,
-) -> Tuple[int, int, List[str], int, int, int, dict]:
-    """Resolve snippet for a Python AST node identified by its ast_qualname.
+def _js_ts_find_closing_beacon_span(
+    lines: List[str],
+    beacons: List[dict],
+    target_id: str,
+) -> Optional[Tuple[int, int]]:
+    """Open/close span for JS/TS beacons with a matching id.
 
-    This is the primary resolution path for non-beacon Python AST nodes.
+    Semantics mirror the Python/Markdown helpers:
+    - We scan the parsed beacon list for entries whose id matches target_id.
+    - We restrict to beacons that have no start_snippet/end_snippet
+      (snippet-less beacons).
+    - If the first two matches are snippet-less, the first is the opener and
+      the second is the closer.
+    - The content span is:
 
-    Contract:
-    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
-      return a snippet spanning its [start,end] lines with the usual context
-      padding.
-    - If zero or multiple matches, raise RuntimeError to signal an error to
-      the caller (MCP tool should surface this, not silently guess).
+        (end_of_open_block + 1) .. (close_comment_line - 1)
+
+      where end_of_open_block is the line whose text contains ']' in the
+      beacon block that starts at open_comment_line.
     """
+    tid = (target_id or "").strip()
+    if not tid:
+        return None
+
+    snippetless: List[dict] = []
+    for b in beacons:
+        bid = (b.get("id") or "").strip()
+        if bid != tid:
+            continue
+        if b.get("start_snippet") or b.get("end_snippet"):
+            continue
+        snippetless.append(b)
+        if len(snippetless) >= 2:
+            break
+
+    if len(snippetless) < 2:
+        return None
+
+    open_b, close_b = snippetless[0], snippetless[1]
+
+    def _block_end_lineno(comment_line: int) -> int:
+        j = max(1, int(comment_line))
+        n = len(lines)
+        while j <= n:
+            raw = lines[j - 1]
+            if "]" in raw:
+                return j
+            j += 1
+        return int(comment_line) or 1
+
+    open_comment = int(open_b.get("comment_line") or 1)
+    close_comment = int(close_b.get("comment_line") or 1)
+
+    if close_comment <= open_comment:
+        return None
+
+    open_end = _block_end_lineno(open_comment)
+    content_start = open_end + 1
+    content_end = close_comment - 1
+    if content_start > content_end:
+        return None
+
+    return content_start, content_end
+
+
+# @beacon[
+#   id=carto-js-ts@_js_ts_snippet_for_beacon,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+# ]
+# Phase 3 JS/TS: JS/TS beacon snippet helper.
+# Returns (start, end, lines, core_start, core_end, beacon_line) for a JS/TS beacon.
+def _js_ts_snippet_for_beacon(
+    file_path: str,
+    beacon_id: str,
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int]:
     if nexus_map_codebase is None:
         raise RuntimeError("nexus_map_codebase could not be imported")
-
-    ast_qualname = (ast_qualname or "").strip()
-    if not ast_qualname:
-        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
 
     lines = _read_lines(file_path)
     n = len(lines)
 
     try:
-        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
+        beacons = nexus_map_codebase.parse_js_beacon_blocks(lines)  # type: ignore[attr-defined]
     except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
+        raise RuntimeError(f"Failed to parse JS/TS beacon blocks in {file_path}: {e}") from e
 
-    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
-        for node in nodes or []:
-            if isinstance(node, dict):
-                yield node
-                for ch in node.get("children") or []:
-                    if isinstance(ch, dict):
-                        yield from _iter_nodes([ch])
-
-    matches: List[dict] = []
-    for node in _iter_nodes(outline_nodes):
-        qual = node.get("ast_qualname")
-        if isinstance(qual, str) and qual == ast_qualname:
-            matches.append(node)
-
-    if not matches:
-        raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
-        )
-    if len(matches) > 1:
-        raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
-            f"({len(matches)} matches); refresh Cartographer mapping."
-        )
-
-    node = matches[0]
-    start = node.get("orig_lineno_start_unused")
-    end = node.get("orig_lineno_end_unused") or start
-    if not isinstance(start, int) or start <= 0:
-        raise RuntimeError(
-            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
-        )
-    if not isinstance(end, int) or end < start:
-        end = start
-
-    core_start = start
-    core_end = end
-    start_line = max(1, core_start - context)
-    end_line = min(n, core_end + context)
-
-    metadata = {
-        "resolution_strategy": "ast_qualname_exact",
-        "confidence": 1.0,
-        "ambiguity": "none",
-        "candidates": None,
-    }
-    return start_line, end_line, lines, core_start, core_end, core_start, metadata
-
-    # 2) SPAN beacons – use closing-delimiter span if present, otherwise
-    #    single-beacon heuristic with anchor line.
-
-    # First, see if there is a closing-delimiter pair for this id
-    span = _python_find_closing_beacon_span(lines, beacons, target)
-    if span is not None:
-        inner_start, inner_end = span
-        comment_line = _comment_line_for_id(target)
-        if comment_line is not None:
-            cb_span = _python_comment_block_span(lines, comment_line)
-            if cb_span is not None:
-                core_start = cb_span[0]
-            else:
-                core_start = comment_line
-        else:
-            core_start = inner_start
-        core_end = inner_end
-        start = max(1, core_start - context)
-        end = min(n, core_end + context)
-        beacon_line = comment_line if comment_line is not None else inner_start
-        return start, end, lines, core_start, core_end, beacon_line
-
-
-def get_snippet_for_ast_qualname(
-    file_path: str,
-    ast_qualname: str,
-    context: int,
-) -> Tuple[int, int, List[str], int, int, int, dict]:
-    """Resolve snippet for a Python AST node identified by its ast_qualname.
-
-    This is the primary resolution path for non-beacon Python AST nodes.
-
-    Contract:
-    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
-      return a snippet spanning its [start,end] lines with the usual context
-      padding.
-    - If zero or multiple matches, raise RuntimeError to signal an error to
-      the caller (MCP tool should surface this, not silently guess).
-    """
-    if nexus_map_codebase is None:
-        raise RuntimeError("nexus_map_codebase could not be imported")
-
-    ast_qualname = (ast_qualname or "").strip()
-    if not ast_qualname:
-        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
-
-    lines = _read_lines(file_path)
-    n = len(lines)
-
-    try:
-        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
-
-    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
-        for node in nodes or []:
-            if isinstance(node, dict):
-                yield node
-                for ch in node.get("children") or []:
-                    if isinstance(ch, dict):
-                        yield from _iter_nodes([ch])
-
-    matches: List[dict] = []
-    for node in _iter_nodes(outline_nodes):
-        qual = node.get("ast_qualname")
-        if isinstance(qual, str) and qual == ast_qualname:
-            matches.append(node)
-
-    if not matches:
-        raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
-        )
-    if len(matches) > 1:
-        raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
-            f"({len(matches)} matches); refresh Cartographer mapping."
-        )
-
-    node = matches[0]
-    start = node.get("orig_lineno_start_unused")
-    end = node.get("orig_lineno_end_unused") or start
-    if not isinstance(start, int) or start <= 0:
-        raise RuntimeError(
-            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
-        )
-    if not isinstance(end, int) or end < start:
-        end = start
-
-    core_start = start
-    core_end = end
-    start_line = max(1, core_start - context)
-    end_line = min(n, core_end + context)
-
-    metadata = {
-        "resolution_strategy": "ast_qualname_exact",
-        "confidence": 1.0,
-        "ambiguity": "none",
-        "candidates": None,
-    }
-    return start_line, end_line, lines, core_start, core_end, core_start, metadata
-
-    # Otherwise, fall back to the original single-beacon heuristic
-    chosen = None
+    target = beacon_id.strip()
+    chosen: Optional[dict] = None
     for b in beacons:
         if (b.get("id") or "").strip() == target:
             chosen = b
             break
 
     if not chosen:
-        raise RuntimeError(f"Beacon id {beacon_id!r} not found in Python file {file_path!r}")
+        raise RuntimeError(f"Beacon id {beacon_id!r} not found in JS/TS file {file_path!r}")
 
     comment_line = int(chosen.get("comment_line") or 1)
 
-    # Anchor on next non-blank, non-comment, non-decorator line after block
-    anchor = None
-    j = comment_line
-    # Advance until the end of the beacon block (first line containing ']')
-    while j <= n:
-        raw = lines[j - 1]
-        stripped = raw.lstrip()
-        body = stripped.lstrip("#").lstrip() if stripped.startswith("#") else stripped
-        if "]" in body:
+    def _comment_block_span_js(lines: List[str], comment_line: int) -> Tuple[int, int]:
+        j = comment_line
+        block_end = comment_line
+        while j <= len(lines):
+            raw = lines[j - 1]
+            if "]" in raw:
+                block_end = j
+                break
             j += 1
-            break
-        j += 1
+        return comment_line, block_end
 
+    cb_start, cb_end = _comment_block_span_js(lines, comment_line)
+
+    # If this beacon participates in an open/close pair of snippet-less
+    # beacons with the same id, treat that pair as defining the content span.
+    span = None
+    if not (chosen.get("start_snippet") or chosen.get("end_snippet")):
+        span = _js_ts_find_closing_beacon_span(lines, beacons, target)
+
+    if span is not None:
+        content_start, content_end = span
+        core_start = cb_start
+        core_end = content_end
+        start = max(1, core_start - context)
+        end = min(n, core_end + context)
+        beacon_line = comment_line
+        return start, end, lines, core_start, core_end, beacon_line
+
+    # Anchor on next non-blank, non-comment line after the beacon block
+    anchor = None
+    j = cb_end + 1
     while j <= n:
         raw = lines[j - 1]
         stripped = raw.lstrip()
         if not stripped:
             j += 1
             continue
-        if stripped.startswith("#") or stripped.startswith("@"):
+        if stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*") or stripped.startswith("*/"):
             j += 1
             continue
         anchor = j
@@ -959,97 +1124,12 @@ def get_snippet_for_ast_qualname(
     if anchor is None:
         anchor = comment_line
 
-    # Core region: comment block (if any) plus the anchor line
-    cb_span = _python_comment_block_span(lines, comment_line)
-    if cb_span is not None:
-        core_start = cb_span[0]
-    else:
-        core_start = comment_line
+    core_start = cb_start
     core_end = anchor
-
     start = max(1, core_start - context)
     end = min(n, core_end + context)
     beacon_line = comment_line
     return start, end, lines, core_start, core_end, beacon_line
-
-
-def get_snippet_for_ast_qualname(
-    file_path: str,
-    ast_qualname: str,
-    context: int,
-) -> Tuple[int, int, List[str], int, int, int, dict]:
-    """Resolve snippet for a Python AST node identified by its ast_qualname.
-
-    This is the primary resolution path for non-beacon Python AST nodes.
-
-    Contract:
-    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
-      return a snippet spanning its [start,end] lines with the usual context
-      padding.
-    - If zero or multiple matches, raise RuntimeError to signal an error to
-      the caller (MCP tool should surface this, not silently guess).
-    """
-    if nexus_map_codebase is None:
-        raise RuntimeError("nexus_map_codebase could not be imported")
-
-    ast_qualname = (ast_qualname or "").strip()
-    if not ast_qualname:
-        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
-
-    lines = _read_lines(file_path)
-    n = len(lines)
-
-    try:
-        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
-
-    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
-        for node in nodes or []:
-            if isinstance(node, dict):
-                yield node
-                for ch in node.get("children") or []:
-                    if isinstance(ch, dict):
-                        yield from _iter_nodes([ch])
-
-    matches: List[dict] = []
-    for node in _iter_nodes(outline_nodes):
-        qual = node.get("ast_qualname")
-        if isinstance(qual, str) and qual == ast_qualname:
-            matches.append(node)
-
-    if not matches:
-        raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
-        )
-    if len(matches) > 1:
-        raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
-            f"({len(matches)} matches); refresh Cartographer mapping."
-        )
-
-    node = matches[0]
-    start = node.get("orig_lineno_start_unused")
-    end = node.get("orig_lineno_end_unused") or start
-    if not isinstance(start, int) or start <= 0:
-        raise RuntimeError(
-            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
-        )
-    if not isinstance(end, int) or end < start:
-        end = start
-
-    core_start = start
-    core_end = end
-    start_line = max(1, core_start - context)
-    end_line = min(n, core_end + context)
-
-    metadata = {
-        "resolution_strategy": "ast_qualname_exact",
-        "confidence": 1.0,
-        "ambiguity": "none",
-        "candidates": None,
-    }
-    return start_line, end_line, lines, core_start, core_end, core_start, metadata
 
 
 # ---------------------------------------------------------------------------
@@ -1332,118 +1412,6 @@ def _markdown_snippet_for_beacon(
     return start, end, lines, core_start, core_end, beacon_line
 
 
-def get_snippet_for_ast_qualname(
-    file_path: str,
-    ast_qualname: str,
-    context: int,
-) -> Tuple[int, int, List[str], int, int, int, dict]:
-    """Resolve snippet for a Python AST node identified by its ast_qualname.
-
-    This is the primary resolution path for non-beacon Python AST nodes.
-
-    Contract:
-    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
-      return a snippet spanning its [start,end] lines with the usual context
-      padding.
-    - If zero or multiple matches, raise RuntimeError to signal an error to
-      the caller (MCP tool should surface this, not silently guess).
-    """
-    if nexus_map_codebase is None:
-        raise RuntimeError("nexus_map_codebase could not be imported")
-
-    ast_qualname = (ast_qualname or "").strip()
-    if not ast_qualname:
-        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
-
-    lines = _read_lines(file_path)
-    n = len(lines)
-
-    try:
-        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
-
-    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
-        for node in nodes or []:
-            if isinstance(node, dict):
-                yield node
-                for ch in node.get("children") or []:
-                    if isinstance(ch, dict):
-                        yield from _iter_nodes([ch])
-
-    matches: List[dict] = []
-    for node in _iter_nodes(outline_nodes):
-        qual = node.get("ast_qualname")
-        if isinstance(qual, str) and qual == ast_qualname:
-            matches.append(node)
-
-    if not matches:
-        raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
-        )
-    if len(matches) > 1:
-        raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
-            f"({len(matches)} matches); refresh Cartographer mapping."
-        )
-
-    node = matches[0]
-    start = node.get("orig_lineno_start_unused")
-    end = node.get("orig_lineno_end_unused") or start
-    if not isinstance(start, int) or start <= 0:
-        raise RuntimeError(
-            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
-        )
-    if not isinstance(end, int) or end < start:
-        end = start
-
-    core_start = start
-    core_end = end
-    start_line = max(1, core_start - context)
-    end_line = min(n, core_end + context)
-
-    metadata = {
-        "resolution_strategy": "ast_qualname_exact",
-        "confidence": 1.0,
-        "ambiguity": "none",
-        "candidates": None,
-    }
-    return start_line, end_line, lines, core_start, core_end, core_start, metadata
-
-    # Otherwise, fall back to the existing span_lineno/anchor behavior
-    chosen = None
-    for b in beacons:
-        if (b.get("id") or "").strip() == target:
-            chosen = b
-            break
-
-    if not chosen:
-        raise RuntimeError(f"Beacon id {beacon_id!r} not found in Markdown file {file_path!r}")
-
-    start = chosen.get("span_lineno_start")
-    end = chosen.get("span_lineno_end")
-
-    # If no explicit span, anchor around comment line
-    if not isinstance(start, int) or start <= 0:
-        start = int(chosen.get("comment_line") or 1)
-        end = start
-    if not isinstance(end, int) or end < start:
-        end = start
-
-    comment_line = int(chosen.get("comment_line") or start)
-    cb_span = _markdown_comment_block_span(lines, comment_line)
-    if cb_span is not None:
-        core_start = cb_span[0]
-    else:
-        core_start = comment_line
-    core_end = end
-
-    start_line = max(1, core_start - context)
-    end_line = min(n, core_end + context)
-    beacon_line = comment_line
-    return start_line, end_line, lines, core_start, core_end, beacon_line
-
-
 # ---------------------------------------------------------------------------
 # SQL beacon snippet extraction
 # ---------------------------------------------------------------------------
@@ -1695,188 +1663,6 @@ def _sql_snippet_for_beacon(
     end = min(n, comment_line + context)
     beacon_line = comment_line
     return start, end, lines, core_start, core_end, beacon_line
-
-
-def get_snippet_for_ast_qualname(
-    file_path: str,
-    ast_qualname: str,
-    context: int,
-) -> Tuple[int, int, List[str], int, int, int, dict]:
-    """Resolve snippet for a Python AST node identified by its ast_qualname.
-
-    This is the primary resolution path for non-beacon Python AST nodes.
-
-    Contract:
-    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
-      return a snippet spanning its [start,end] lines with the usual context
-      padding.
-    - If zero or multiple matches, raise RuntimeError to signal an error to
-      the caller (MCP tool should surface this, not silently guess).
-    """
-    if nexus_map_codebase is None:
-        raise RuntimeError("nexus_map_codebase could not be imported")
-
-    ast_qualname = (ast_qualname or "").strip()
-    if not ast_qualname:
-        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
-
-    lines = _read_lines(file_path)
-    n = len(lines)
-
-    try:
-        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
-
-    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
-        for node in nodes or []:
-            if isinstance(node, dict):
-                yield node
-                for ch in node.get("children") or []:
-                    if isinstance(ch, dict):
-                        yield from _iter_nodes([ch])
-
-    matches: List[dict] = []
-    for node in _iter_nodes(outline_nodes):
-        qual = node.get("ast_qualname")
-        if isinstance(qual, str) and qual == ast_qualname:
-            matches.append(node)
-
-    if not matches:
-        raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
-        )
-    if len(matches) > 1:
-        raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
-            f"({len(matches)} matches); refresh Cartographer mapping."
-        )
-
-    node = matches[0]
-    start = node.get("orig_lineno_start_unused")
-    end = node.get("orig_lineno_end_unused") or start
-    if not isinstance(start, int) or start <= 0:
-        raise RuntimeError(
-            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
-        )
-    if not isinstance(end, int) or end < start:
-        end = start
-
-    core_start = start
-    core_end = end
-    start_line = max(1, core_start - context)
-    end_line = min(n, core_end + context)
-
-    metadata = {
-        "resolution_strategy": "ast_qualname_exact",
-        "confidence": 1.0,
-        "ambiguity": "none",
-        "candidates": None,
-    }
-    return start_line, end_line, lines, core_start, core_end, core_start, metadata
-
-    # Otherwise, fall back to comment-line anchoring
-    chosen = None
-    for b in beacons:
-        if (b.get("id") or "").strip() == target:
-            chosen = b
-            break
-
-    if not chosen:
-        raise RuntimeError(f"Beacon id {beacon_id!r} not found in SQL file {file_path!r}")
-
-    comment_line = int(chosen.get("comment_line") or 1)
-    cb_span = _sql_comment_block_span(lines, comment_line)
-    if cb_span is not None:
-        core_start = cb_span[0]
-        core_end = cb_span[1]
-    else:
-        core_start = core_end = comment_line
-
-    start = max(1, core_start - context)
-    end = min(n, core_end + context)
-    beacon_line = comment_line
-    return start, end, lines, core_start, core_end, beacon_line
-
-
-def get_snippet_for_ast_qualname(
-    file_path: str,
-    ast_qualname: str,
-    context: int,
-) -> Tuple[int, int, List[str], int, int, int, dict]:
-    """Resolve snippet for a Python AST node identified by its ast_qualname.
-
-    This is the primary resolution path for non-beacon Python AST nodes.
-
-    Contract:
-    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
-      return a snippet spanning its [start,end] lines with the usual context
-      padding.
-    - If zero or multiple matches, raise RuntimeError to signal an error to
-      the caller (MCP tool should surface this, not silently guess).
-    """
-    if nexus_map_codebase is None:
-        raise RuntimeError("nexus_map_codebase could not be imported")
-
-    ast_qualname = (ast_qualname or "").strip()
-    if not ast_qualname:
-        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
-
-    lines = _read_lines(file_path)
-    n = len(lines)
-
-    try:
-        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
-
-    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
-        for node in nodes or []:
-            if isinstance(node, dict):
-                yield node
-                for ch in node.get("children") or []:
-                    if isinstance(ch, dict):
-                        yield from _iter_nodes([ch])
-
-    matches: List[dict] = []
-    for node in _iter_nodes(outline_nodes):
-        qual = node.get("ast_qualname")
-        if isinstance(qual, str) and qual == ast_qualname:
-            matches.append(node)
-
-    if not matches:
-        raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
-        )
-    if len(matches) > 1:
-        raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
-            f"({len(matches)} matches); refresh Cartographer mapping."
-        )
-
-    node = matches[0]
-    start = node.get("orig_lineno_start_unused")
-    end = node.get("orig_lineno_end_unused") or start
-    if not isinstance(start, int) or start <= 0:
-        raise RuntimeError(
-            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
-        )
-    if not isinstance(end, int) or end < start:
-        end = start
-
-    core_start = start
-    core_end = end
-    start_line = max(1, core_start - context)
-    end_line = min(n, core_end + context)
-
-    metadata = {
-        "resolution_strategy": "ast_qualname_exact",
-        "confidence": 1.0,
-        "ambiguity": "none",
-        "candidates": None,
-    }
-    return start_line, end_line, lines, core_start, core_end, core_start, metadata
-
 
 # ---------------------------------------------------------------------------
 # Public CLI: beacon snippet extraction (print helper)
@@ -2132,7 +1918,15 @@ def _sh_snippet_for_beacon(
         beacon_line = comment_line if comment_line is not None else inner_start
         return start, end, lines, core_start, core_end, beacon_line
 
-
+# @beacon[
+#   id=carto-js-ts@get_snippet_for_ast_qualname,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+# ]
+# Phase 3 JS/TS: AST-qualname snippet template.
+# Reference for a future get_snippet_for_ast_qualname_js_ts(...)
+# that will locate JS/TS AST nodes by Tree-sitter ast_qualname and
+# return snippets with the same (start,end,core,beacon_line,metadata)
+# contract.
 def get_snippet_for_ast_qualname(
     file_path: str,
     ast_qualname: str,
@@ -2211,60 +2005,33 @@ def get_snippet_for_ast_qualname(
     }
     return start_line, end_line, lines, core_start, core_end, core_start, metadata
 
-    # Otherwise, fall back to comment-line anchoring
-    chosen = None
-    for b in beacons:
-        if (b.get("id") or "").strip() == target:
-            chosen = b
-            break
 
-    if not chosen:
-        raise RuntimeError(f"Beacon id {beacon_id!r} not found in shell file {file_path!r}")
-
-    comment_line = int(chosen.get("comment_line") or 1)
-    cb_span = _sh_comment_block_span(lines, comment_line)
-    if cb_span is not None:
-        core_start = cb_span[0]
-        core_end = cb_span[1]
-    else:
-        core_start = core_end = comment_line
-
-    start = max(1, core_start - context)
-    end = min(n, core_end + context)
-    beacon_line = comment_line
-    return start, end, lines, core_start, core_end, beacon_line
-
-
-def get_snippet_for_ast_qualname(
+# @beacon[
+#   id=carto-js-ts@get_snippet_for_ast_qualname_js_ts,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+# ]
+# JS/TS AST-qualname snippet helper.
+# Locates JS/TS AST nodes by ast_qualname and returns a snippet
+# using the same contract as the Python version.
+def get_snippet_for_ast_qualname_js_ts(
     file_path: str,
     ast_qualname: str,
     context: int,
 ) -> Tuple[int, int, List[str], int, int, int, dict]:
-    """Resolve snippet for a Python AST node identified by its ast_qualname.
-
-    This is the primary resolution path for non-beacon Python AST nodes.
-
-    Contract:
-    - If exactly one AST node in the outline has `ast_qualname == ast_qualname`,
-      return a snippet spanning its [start,end] lines with the usual context
-      padding.
-    - If zero or multiple matches, raise RuntimeError to signal an error to
-      the caller (MCP tool should surface this, not silently guess).
-    """
     if nexus_map_codebase is None:
         raise RuntimeError("nexus_map_codebase could not be imported")
 
     ast_qualname = (ast_qualname or "").strip()
     if not ast_qualname:
-        raise RuntimeError("Empty ast_qualname for AST snippet resolution")
+        raise RuntimeError("Empty ast_qualname for AST snippet resolution (JS/TS)")
 
     lines = _read_lines(file_path)
     n = len(lines)
 
     try:
-        outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
+        outline_nodes = nexus_map_codebase.parse_js_ts_outline(file_path)  # type: ignore[attr-defined]
     except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"Failed to parse Python AST for {file_path}: {e}") from e
+        raise RuntimeError(f"Failed to parse JS/TS AST for {file_path}: {e}") from e
 
     def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
         for node in nodes or []:
@@ -2282,11 +2049,11 @@ def get_snippet_for_ast_qualname(
 
     if not matches:
         raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} not found in Python file {file_path!r}"
+            f"AST_QUALNAME {ast_qualname!r} not found in JS/TS file {file_path!r}"
         )
     if len(matches) > 1:
         raise RuntimeError(
-            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Python file {file_path!r} "
+            f"AST_QUALNAME {ast_qualname!r} is ambiguous in JS/TS file {file_path!r} "
             f"({len(matches)} matches); refresh Cartographer mapping."
         )
 
@@ -2306,7 +2073,7 @@ def get_snippet_for_ast_qualname(
     end_line = min(n, core_end + context)
 
     metadata = {
-        "resolution_strategy": "ast_qualname_exact",
+        "resolution_strategy": "js_ts_ast_qualname_exact",
         "confidence": 1.0,
         "ambiguity": "none",
         "candidates": None,
@@ -2319,6 +2086,18 @@ def get_snippet_for_ast_qualname(
 # ---------------------------------------------------------------------------
 
 
+# @beacon[
+#   id=carto-js-ts@get_snippet_data,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+# ]
+# Phase 3 JS/TS: central dispatch point for snippet resolution.
+# This will be extended so that .js/.ts/.tsx files route to JS/TS-
+# specific helpers alongside the existing Python/Markdown/SQL/SH
+# paths.
+# Likely new helpers (names tentative):
+#   - _js_ts_snippet_for_beacon(file_path, beacon_id, context)
+#   - _js_ts_resolve_ast_node_heuristic(file_path, node_name, parent_names, context)
+#   - get_snippet_for_ast_qualname_js_ts(file_path, ast_qualname, context)
 def get_snippet_data(
     file_path: str,
     beacon_id: str,
@@ -2347,7 +2126,7 @@ def get_snippet_data(
     if not os.path.isfile(file_path):
         raise RuntimeError(f"Source file not found: {file_path}")
 
-    # Non-beacon Python AST node path: node_name provided → use AST-first
+    # Non-beacon AST node path: node_name provided → use AST-first
     # resolver. For beacon-based lookups we call this function without
     # node_name, which triggers the original beacon-centric behavior.
     if ext == ".py" and node_name is not None:
@@ -2357,9 +2136,20 @@ def get_snippet_data(
             parent_names or [],
             context,
         )
+    if ext in {".js", ".jsx", ".ts", ".tsx"} and node_name is not None:
+        return _js_ts_resolve_ast_node_heuristic(
+            file_path,
+            node_name,
+            parent_names or [],
+            context,
+        )
 
     if ext == ".py":
         start, end, lines, core_start, core_end, beacon_line = _python_snippet_for_beacon(
+            file_path, beacon_id, context
+        )
+    elif ext in {".js", ".jsx", ".ts", ".tsx"}:
+        start, end, lines, core_start, core_end, beacon_line = _js_ts_snippet_for_beacon(
             file_path, beacon_id, context
         )
     elif ext in {".md", ".markdown"}:
