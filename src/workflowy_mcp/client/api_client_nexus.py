@@ -3694,10 +3694,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 present_files.add(canonical)
                 # Prefer first-seen raw path for reporting
                 present_paths_raw.setdefault(canonical, source_path)
+                log_event(
+                    "refresh_folder_cartographer_sync: FILE present on disk "
+                    f"node_id={s_nid} Path=\"{source_path}\" canonical=\"{canonical}\"",
+                    "BEACON",
+                )
             else:
                 missing_paths.append(source_path)
+                log_event(
+                    "refresh_folder_cartographer_sync: FILE missing on disk "
+                    f"node_id={s_nid} Path=\"{source_path}\" canonical=\"{canonical}\"",
+                    "BEACON",
+                )
 
-            # Record this FILE node for later refresh
+            # Record this FILE node for later refresh/deletion
             file_nodes_info.append((s_nid, source_path, exists))
 
             # Stash immediate Notes[...] children for this FILE node by its Path.
@@ -3734,30 +3744,71 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 continue
 
             try:
+                log_event(
+                    "refresh_folder_cartographer_sync: per-file refresh start "
+                    f"node_id={s_nid} Path=\"{source_path}\" dry_run={dry_run}",
+                    "BEACON",
+                )
                 result = await self.refresh_file_node_beacons(
                     file_node_id=s_nid,
                     dry_run=dry_run,
                 )
                 if isinstance(result, dict) and result.get("success"):
                     refreshed_count += 1
+                    log_event(
+                        "refresh_folder_cartographer_sync: per-file refresh success "
+                        f"node_id={s_nid} Path=\"{source_path}\" stats="
+                        f"nodes_created={result.get('nodes_created')} "
+                        f"nodes_updated={result.get('nodes_updated')} "
+                        f"nodes_deleted={result.get('nodes_deleted')} "
+                        f"nodes_moved={result.get('nodes_moved')}",
+                        "BEACON",
+                    )
                 else:
                     err_msg = None
                     if isinstance(result, dict):
                         err_msg = result.get("error") or result.get("message")
-                    refresh_errors.append(
-                        f"{s_nid}: {err_msg or 'unknown error from refresh_file_node_beacons'}",
+                    msg = (
+                        "refresh_folder_cartographer_sync: per-file refresh error "
+                        f"node_id={s_nid} Path=\"{source_path}\": "
+                        f"{err_msg or 'unknown error from refresh_file_node_beacons'}"
                     )
+                    log_event(msg, "BEACON")
+                    refresh_errors.append(msg)
             except Exception as e:  # noqa: BLE001
-                refresh_errors.append(f"{s_nid}: {e}")
+                msg = (
+                    "refresh_folder_cartographer_sync: exception during per-file refresh "
+                    f"node_id={s_nid} Path=\"{source_path}\": {e}"
+                )
+                log_event(msg, "BEACON")
+                refresh_errors.append(msg)
 
         # 2b) Delete FILE nodes whose source file no longer exists on disk
         if not dry_run:
+            missing_count = sum(1 for _nid, _path, _exists in file_nodes_info if not _exists)
+            log_event(
+                "refresh_folder_cartographer_sync: starting deletion pass for "
+                f"{missing_count} missing FILE nodes (folder_node_id={folder_node_id})",
+                "BEACON",
+            )
             for s_nid, source_path, exists in file_nodes_info:
                 if exists:
                     continue
                 try:
-                    await self.delete_node(s_nid)
-                    files_deleted += 1
+                    deleted_ok = await self.delete_node(s_nid)
+                    if deleted_ok:
+                        files_deleted += 1
+                        log_event(
+                            "refresh_folder_cartographer_sync: deleted FILE node "
+                            f"node_id={s_nid} Path=\"{source_path}\"", "BEACON",
+                        )
+                    else:
+                        msg = (
+                            "refresh_folder_cartographer_sync: delete_node returned False for FILE "
+                            f"node_id={s_nid} Path=\"{source_path}\""
+                        )
+                        log_event(msg, "BEACON")
+                        refresh_errors.append(msg)
                 except Exception as e:  # noqa: BLE001
                     msg = (
                         "refresh_folder_cartographer_sync: failed to delete FILE node "
@@ -4034,8 +4085,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         log_event(
             "refresh_folder_cartographer_sync complete for "
             f"{folder_node_id} (refreshed_files={refreshed_count}, new_files={new_files_created}, "
-            f"new_folders={new_folders_created}, notes_stashed={total_stashed}, "
-            f"notes_reattached={notes_reattached}, notes_unmatched={notes_unmatched})",
+            f"new_folders={new_folders_created}, files_deleted={files_deleted}, "
+            f"notes_stashed={total_stashed}, notes_reattached={notes_reattached}, "
+            f"notes_unmatched={notes_unmatched})",
             "BEACON",
         )
 
