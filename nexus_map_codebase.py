@@ -3621,6 +3621,7 @@ def update_beacon_from_node_js_ts(
 
     Mirrors the Python helper but uses JS/TS beacons and Tree-sitter outlines.
     """
+    print(f"[CARTO-JS-TS-DEBUG] update_beacon_from_node_js_ts ENTRY: file_path={file_path!r}, name={name!r}", file=sys.stderr, flush=True)
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
     ast_qualname = _extract_ast_qualname_from_note(note)
