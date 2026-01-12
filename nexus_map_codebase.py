@@ -1248,8 +1248,9 @@ def _canonicalize_slice_labels(slice_labels: str | None, role: str | None) -> st
     """Canonicalize slice_labels for tags and display.
 
     - If slice_labels is empty and role is provided, derive labels from role.
-    - Replaces ':' with '-' in every label to match tag convention
-      (e.g. model:mert:production → model-mert-production).
+    - Replaces ':', '.', and other non-tag-safe characters with '-' to ensure
+      Workflowy tags render correctly (e.g. model:mert:production → model-mert-production,
+      Class.method → Class-method).
     - Accepts comma/whitespace separated labels and normalizes each token.
     """
     raw = (slice_labels or "").strip()
@@ -1261,9 +1262,20 @@ def _canonicalize_slice_labels(slice_labels: str | None, role: str | None) -> st
             part = part.strip()
             if not part:
                 continue
-            tokens.append(part.replace(":", "-"))
+            # Replace dots, colons, and other non-tag-safe chars with hyphens.
+            sanitized = part.replace(":", "-").replace(".", "-")
+            # Also replace slashes, spaces, and other problematic characters.
+            sanitized = re.sub(r"[^A-Za-z0-9_-]+", "-", sanitized)
+            sanitized = sanitized.strip("-")
+            if sanitized:
+                tokens.append(sanitized)
     elif base_role:
-        tokens.append(base_role.replace(":", "-"))
+        # Apply same sanitization to role-derived labels.
+        sanitized = base_role.replace(":", "-").replace(".", "-")
+        sanitized = re.sub(r"[^A-Za-z0-9_-]+", "-", sanitized)
+        sanitized = sanitized.strip("-")
+        if sanitized:
+            tokens.append(sanitized)
 
     return ",".join(tokens)
 
@@ -3246,23 +3258,12 @@ def split_name_and_tags(raw_name: str) -> tuple[str, list[str]]:
     return base, tags
 
 
-def _sanitize_auto_beacon_id(base_name: str) -> str:
-    """Sanitize AST_QUALNAME or MD_PATH heading for use in auto-beacon IDs.
-
-    Replaces characters that break Workflowy tags (., :, and other non-tag-safe chars)
-    with hyphens, and appends a short random hash for collision resistance.
-
-    Returns a tag-safe ID suffix suitable for use after 'auto-beacon@'.
+def _generate_auto_beacon_hash() -> str:
+    """Generate a short random hash for auto-beacon collision resistance.
+    
+    Returns a 4-character lowercase alphanumeric string.
     """
-    # Replace dots, colons, and other problematic chars with hyphens.
-    sanitized = base_name.replace(".", "-").replace(":", "-")
-    # Also replace slashes, spaces, and other non-alphanumeric (except hyphens/underscores).
-    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "-", sanitized)
-    # Strip leading/trailing hyphens for cleanliness.
-    sanitized = sanitized.strip("-")
-    # Append a 4-char random hash for collision resistance.
-    hash_suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
-    return f"{sanitized}-{hash_suffix}"
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
 
 
 # @beacon[
@@ -3488,18 +3489,17 @@ def update_beacon_from_node_python(
 
     # Case 1c: DELETE auto-beacon when note has no BEACON metadata and no tags.
     # This covers the common Python F12 path where F12-per-node originally created
-    # an auto-beacon@<AST_QUALNAME> block and the user later deletes the tags and
+    # an auto-beacon@<AST_QUALNAME>-<hash> block and the user later deletes the tags and
     # BEACON block from the Workflowy note (leaving only AST_QUALNAME).
     if ast_qualname and not tags:
-        # Try to find any auto-beacon for this AST_QUALNAME (with any hash suffix).
-        # We scan all beacons whose id starts with 'auto-beacon@{sanitized_base}-'.
-        sanitized_base = ast_qualname.replace(".", "-").replace(":", "-")
-        sanitized_base = re.sub(r"[^A-Za-z0-9_-]+", "-", sanitized_base).strip("-")
+        # Scan for any auto-beacon whose id starts with 'auto-beacon@{ast_qualname}-'.
+        # The hash suffix varies, so we use a prefix match.
         block_span = None
         matched_beacon_id = None
+        prefix = f"auto-beacon@{ast_qualname}-"
         for b in beacons:
             bid = (b.get("id") or "").strip()
-            if bid.startswith(f"auto-beacon@{sanitized_base}-"):
+            if bid.startswith(prefix):
                 matched_beacon_id = bid
                 block_span = _find_beacon_block_by_id(bid)
                 break
@@ -3525,8 +3525,10 @@ def update_beacon_from_node_python(
 
     # Case 2: no beacon_id, but AST_QUALNAME + tags → create a new beacon.
     if ast_qualname and tags:
-        # Build a synthetic id and role from the AST_QUALNAME.
-        simple_id = f"auto-beacon@{_sanitize_auto_beacon_id(ast_qualname)}"
+        # Build a synthetic id with a hash suffix for collision resistance.
+        # The role and slice_labels are canonicalized separately so tags are Workflowy-safe.
+        hash_suffix = _generate_auto_beacon_hash()
+        simple_id = f"auto-beacon@{ast_qualname}-{hash_suffix}"
         role_display = ast_qualname
         slice_labels_canon = _canonicalize_slice_labels(None, role_display)
         extra = [t.lstrip("#") for t in tags]
@@ -3787,17 +3789,17 @@ def update_beacon_from_node_js_ts(
 
     # Case 1c: DELETE auto-beacon when note has no BEACON metadata and no tags.
     # This covers the common JS/TS F12 path where F12-per-node originally created
-    # an auto-beacon@<AST_QUALNAME> block and the user later deletes the tags and
+    # an auto-beacon@<AST_QUALNAME>-<hash> block and the user later deletes the tags and
     # BEACON block from the Workflowy note (leaving only AST_QUALNAME).
     if ast_qualname and not tags:
-        # Try to find any auto-beacon for this AST_QUALNAME (with any hash suffix).
-        sanitized_base = ast_qualname.replace(".", "-").replace(":", "-")
-        sanitized_base = re.sub(r"[^A-Za-z0-9_-]+", "-", sanitized_base).strip("-")
+        # Scan for any auto-beacon whose id starts with 'auto-beacon@{ast_qualname}-'.
+        # The hash suffix varies, so we use a prefix match.
         block_span = None
         matched_beacon_id = None
+        prefix = f"auto-beacon@{ast_qualname}-"
         for b in beacons:
             bid = (b.get("id") or "").strip()
-            if bid.startswith(f"auto-beacon@{sanitized_base}-"):
+            if bid.startswith(prefix):
                 matched_beacon_id = bid
                 block_span = _find_beacon_block_by_id(bid)
                 break
@@ -4115,8 +4117,12 @@ def update_beacon_from_node_markdown(
 
     # Case 2: create from MD_PATH + tags.
     if md_path and tags:
-        simple_id = f"auto-beacon@{_sanitize_auto_beacon_id(md_path[0] if md_path else 'md')}"
-        role_display = (md_path[0] if md_path else "md")
+        # Build a synthetic id with a hash suffix for collision resistance.
+        # The role and slice_labels are canonicalized separately so tags are Workflowy-safe.
+        heading = md_path[0] if md_path else "md"
+        hash_suffix = _generate_auto_beacon_hash()
+        simple_id = f"auto-beacon@{heading}-{hash_suffix}"
+        role_display = heading
         slice_labels_canon = _canonicalize_slice_labels(None, role_display)
         extra = [t.lstrip("#") for t in tags]
         existing = [x for x in (slice_labels_canon.split(",") if slice_labels_canon else []) if x]
