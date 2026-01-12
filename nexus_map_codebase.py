@@ -13,6 +13,9 @@ import unicodedata
 from markdown_it import MarkdownIt
 import mdformat
 
+# DEBUG: Print which nexus_map_codebase.py file is actually being loaded
+print(f"[CARTO-LOAD-DEBUG] nexus_map_codebase loaded from: {__file__}", file=sys.stderr, flush=True)
+
 try:
     from tree_sitter import Parser
     from tree_sitter_language_pack import get_language, get_parser
