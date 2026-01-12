@@ -643,6 +643,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "_api_merge_performed": api_merge_performed,
         }
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus.beacon_get_code_snippet-c2ov,
+    #   role=WorkFlowyClientNexus.beacon_get_code_snippet,
+    #   slice_labels=nexus-md-header-path,ra-snippet-range,
+    #   kind=ast,
+    # ]
     async def beacon_get_code_snippet(
         self,
         beacon_node_id: str,
@@ -870,7 +876,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             )
 
         # Step 4A: Beacon-aware snippet (AST/span) using helper module
-        if has_beacon_metadata and beacon_id:
+        # For Markdown AST headings with MD_PATH, prefer MD_PATH semantics (same as non-beacon AST nodes)
+        if has_beacon_metadata and beacon_id and not (
+            Path(file_path).suffix.lower() in {".md", ".markdown"} and (kind or "").strip().lower() == "ast"
+        ):
             try:
                 import importlib
 
