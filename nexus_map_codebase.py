@@ -3863,9 +3863,11 @@ def update_beacon_from_node_js_ts(
         existing = [x for x in (slice_labels_canon.split(",") if slice_labels_canon else []) if x]
         merged = existing + [e for e in extra if e not in existing]
         slice_labels_canon = ",".join(merged)
+        print(f"[CARTO-JS-TS-DEBUG] Case 2: simple_id={simple_id!r}, slice_labels_canon={slice_labels_canon!r}", file=sys.stderr, flush=True)
 
         target_line: Optional[int] = None
         try:
+            print(f"[CARTO-JS-TS-DEBUG] Case 2: about to parse_js_ts_outline", file=sys.stderr, flush=True)
             outline_nodes = parse_js_ts_outline(file_path)
         except Exception:
             outline_nodes = []
