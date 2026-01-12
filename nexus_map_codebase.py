@@ -3852,6 +3852,7 @@ def update_beacon_from_node_js_ts(
 
     # Case 2: create from AST_QUALNAME + tags.
     if ast_qualname and tags:
+        print(f"[CARTO-JS-TS-DEBUG] ENTERED Case 2 (create from AST + tags)", file=sys.stderr, flush=True)
         # Build a synthetic id with a hash suffix for collision resistance.
         # The role and slice_labels are canonicalized separately so tags are Workflowy-safe.
         hash_suffix = _generate_auto_beacon_hash()
