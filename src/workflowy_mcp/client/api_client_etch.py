@@ -972,7 +972,9 @@ async def export_nodes_impl(
 
     # >>> CARTO-DEBUG-EXPORT <<<
     # Check if target function exists in the raw cache before filtering
-    TARGET_FUNC = "pruneNestedNexusRoots"
+    # CARTO-DEBUG-EXPORT targeting is disabled by default; set this to a real
+    # function name when focused instrumentation is needed.
+    TARGET_FUNC = "__CARTO_DEBUG_EXPORT_UNUSED__"
     import sys as _etch_debug_sys
     
     _debug_nodes_map = {n['id']: n for n in all_nodes if n.get('id')}

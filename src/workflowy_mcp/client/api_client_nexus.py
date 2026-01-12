@@ -3539,6 +3539,21 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     )
                     result["cache_note_updated"] = False
 
+        # Emit a concise summary log for this beacon operation.
+        try:
+            op = result.get("operation")
+            lang = result.get("language") or "unknown"
+            beacon_id_from_helper = result.get("beacon_id")
+            base_name_logged = result.get("base_name") or name
+            log_event(
+                f"update_beacon_from_node done (op={op}, lang={lang}, node_id={node_id}, "
+                f"name={base_name_logged!r}, beacon_id={beacon_id_from_helper!r})",
+                "BEACON",
+            )
+        except Exception:
+            # Logging must never interfere with tool behavior.
+            pass
+
         return result
 
     async def refresh_folder_cartographer_sync(

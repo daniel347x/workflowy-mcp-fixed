@@ -1058,7 +1058,9 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
     ether_by_mdpath: dict[tuple[str, ...], dict[str, Any]] = {}
     ether_by_name: dict[str, dict[str, Any]] = {}
 
-    TARGET_FUNC = "pruneNestedNexusRoots"
+    # CARTO-DEBUG targeting is disabled by default; set this to a real
+    # function name when focused instrumentation is needed.
+    TARGET_FUNC = "__CARTO_DEBUG_TARGET_UNUSED__"
     import sys as _carto_debug_sys
 
     for e in ether_children:
@@ -1634,7 +1636,6 @@ def apply_python_beacons(
         start_snippet = beacon.get("start_snippet")
         comment_line = beacon.get("comment_line") or 0
         anchor_lineno = beacon.get("_anchor_lineno")
-        print(f"[CARTOGRAPHER] apply_js_beacons Pass1: id={b_id} start_snippet={start_snippet!r} _anchor_lineno={anchor_lineno}", file=sys.stderr)
 
         chosen: Optional[dict[str, Any]] = None
 
@@ -3011,14 +3012,12 @@ def apply_js_beacons(
         kind = beacon.get("kind")
         start_snippet = beacon.get("start_snippet")
         b_id = beacon.get("id") or "(no-id)"
-        print(f"[CARTOGRAPHER] apply_js_beacons pre-pass: id={b_id} kind={kind} start_snippet={start_snippet!r}", file=sys.stderr)
         if kind in {"span", "ast"} and not start_snippet:
             comment_line = beacon.get("comment_line") or 0
             if isinstance(comment_line, int) and comment_line > 0:
                 anchor = _js_next_anchor_line_after(comment_line)
             else:
                 anchor = None
-            print(f"[CARTOGRAPHER] apply_js_beacons pre-pass: id={b_id} comment_line={comment_line} anchor={anchor}", file=sys.stderr)
             if anchor is None:
                 continue
             beacon["_anchor_lineno"] = anchor
@@ -3031,8 +3030,6 @@ def apply_js_beacons(
                 ln = node.get("orig_lineno_start_unused")
                 if isinstance(ln, int) and ln == anchor:
                     ast_candidates.append(node)
-
-            print(f"[CARTOGRAPHER] apply_js_beacons pre-pass: id={b_id} ast_candidates={len(ast_candidates)}", file=sys.stderr)
             if len(ast_candidates) == 1:
                 beacon["kind"] = "ast"
 
@@ -3384,9 +3381,6 @@ def update_beacon_from_node_python(
             slice_labels_canon = ",".join(merged)
 
         block_span = _find_beacon_block_by_id(beacon_id)
-        # DEBUG: Log beacon lookup result
-        print(f"[CARTOGRAPHER] update_beacon_from_node_js_ts: block_span={block_span}", file=sys.stderr)
-        
         if block_span is not None:
             # Case 1a: UPDATE existing beacon on disk.
             start_idx, end_idx, _cl = block_span
@@ -3558,14 +3552,9 @@ def update_beacon_from_node_js_ts(
 
     Mirrors the Python helper but uses JS/TS beacons and Tree-sitter outlines.
     """
-    # DEBUG: Log entry
-    print(f"[CARTOGRAPHER] update_beacon_from_node_js_ts: file={file_path!r} name={name!r}", file=sys.stderr)
-    print(f"[CARTOGRAPHER] update_beacon_from_node_js_ts: note={note!r}", file=sys.stderr)
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
     ast_qualname = _extract_ast_qualname_from_note(note)
-    # DEBUG: Log extracted metadata
-    print(f"[CARTOGRAPHER] update_beacon_from_node_js_ts: base_name={base_name!r} tags={tags} beacon_id={beacon_id!r} ast_qualname={ast_qualname!r}", file=sys.stderr)
 
     result: Dict[str, Any] = {
         "language": "js_ts",
