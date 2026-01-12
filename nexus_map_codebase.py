@@ -4,6 +4,8 @@ import os
 import sys
 import argparse
 import tempfile
+import random
+import string
 from typing import List, Dict, Any, Optional
 
 import re
@@ -3244,6 +3246,25 @@ def split_name_and_tags(raw_name: str) -> tuple[str, list[str]]:
     return base, tags
 
 
+def _sanitize_auto_beacon_id(base_name: str) -> str:
+    """Sanitize AST_QUALNAME or MD_PATH heading for use in auto-beacon IDs.
+
+    Replaces characters that break Workflowy tags (., :, and other non-tag-safe chars)
+    with hyphens, and appends a short random hash for collision resistance.
+
+    Returns a tag-safe ID suffix suitable for use after 'auto-beacon@'.
+    """
+    # Replace dots, colons, and other problematic chars with hyphens.
+    sanitized = base_name.replace(".", "-").replace(":", "-")
+    # Also replace slashes, spaces, and other non-alphanumeric (except hyphens/underscores).
+    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "-", sanitized)
+    # Strip leading/trailing hyphens for cleanliness.
+    sanitized = sanitized.strip("-")
+    # Append a 4-char random hash for collision resistance.
+    hash_suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    return f"{sanitized}-{hash_suffix}"
+
+
 # @beacon[
 #   id=carto-js-ts@update_beacon_from_node_python,
 #   slice_labels=carto-js-ts,carto-js-ts-beacons,
@@ -3470,8 +3491,18 @@ def update_beacon_from_node_python(
     # an auto-beacon@<AST_QUALNAME> block and the user later deletes the tags and
     # BEACON block from the Workflowy note (leaving only AST_QUALNAME).
     if ast_qualname and not tags:
-        simple_id = f"auto-beacon@{ast_qualname}"
-        block_span = _find_beacon_block_by_id(simple_id)
+        # Try to find any auto-beacon for this AST_QUALNAME (with any hash suffix).
+        # We scan all beacons whose id starts with 'auto-beacon@{sanitized_base}-'.
+        sanitized_base = ast_qualname.replace(".", "-").replace(":", "-")
+        sanitized_base = re.sub(r"[^A-Za-z0-9_-]+", "-", sanitized_base).strip("-")
+        block_span = None
+        matched_beacon_id = None
+        for b in beacons:
+            bid = (b.get("id") or "").strip()
+            if bid.startswith(f"auto-beacon@{sanitized_base}-"):
+                matched_beacon_id = bid
+                block_span = _find_beacon_block_by_id(bid)
+                break
         if block_span is not None:
             start_idx, end_idx, _cl = block_span
             new_lines = lines[:start_idx] + lines[end_idx + 1 :]
@@ -3485,7 +3516,7 @@ def update_beacon_from_node_python(
             result.update(
                 {
                     "operation": "deleted_beacon",
-                    "beacon_id": simple_id,
+                    "beacon_id": matched_beacon_id,
                     "role": ast_qualname,
                     "slice_labels": "",
                 }
@@ -3495,7 +3526,7 @@ def update_beacon_from_node_python(
     # Case 2: no beacon_id, but AST_QUALNAME + tags → create a new beacon.
     if ast_qualname and tags:
         # Build a synthetic id and role from the AST_QUALNAME.
-        simple_id = f"auto-beacon@{ast_qualname}"
+        simple_id = f"auto-beacon@{_sanitize_auto_beacon_id(ast_qualname)}"
         role_display = ast_qualname
         slice_labels_canon = _canonicalize_slice_labels(None, role_display)
         extra = [t.lstrip("#") for t in tags]
@@ -3759,8 +3790,17 @@ def update_beacon_from_node_js_ts(
     # an auto-beacon@<AST_QUALNAME> block and the user later deletes the tags and
     # BEACON block from the Workflowy note (leaving only AST_QUALNAME).
     if ast_qualname and not tags:
-        simple_id = f"auto-beacon@{ast_qualname}"
-        block_span = _find_beacon_block_by_id(simple_id)
+        # Try to find any auto-beacon for this AST_QUALNAME (with any hash suffix).
+        sanitized_base = ast_qualname.replace(".", "-").replace(":", "-")
+        sanitized_base = re.sub(r"[^A-Za-z0-9_-]+", "-", sanitized_base).strip("-")
+        block_span = None
+        matched_beacon_id = None
+        for b in beacons:
+            bid = (b.get("id") or "").strip()
+            if bid.startswith(f"auto-beacon@{sanitized_base}-"):
+                matched_beacon_id = bid
+                block_span = _find_beacon_block_by_id(bid)
+                break
         if block_span is not None:
             start_idx, end_idx, _cl = block_span
             new_lines = lines[:start_idx] + lines[end_idx + 1 :]
@@ -3774,7 +3814,7 @@ def update_beacon_from_node_js_ts(
             result.update(
                 {
                     "operation": "deleted_beacon",
-                    "beacon_id": simple_id,
+                    "beacon_id": matched_beacon_id,
                     "role": ast_qualname,
                     "slice_labels": "",
                 }
@@ -3783,7 +3823,7 @@ def update_beacon_from_node_js_ts(
 
     # Case 2: create from AST_QUALNAME + tags.
     if ast_qualname and tags:
-        simple_id = f"auto-beacon@{ast_qualname}"
+        simple_id = f"auto-beacon@{_sanitize_auto_beacon_id(ast_qualname)}"
         role_display = ast_qualname
         slice_labels_canon = _canonicalize_slice_labels(None, role_display)
         extra = [t.lstrip("#") for t in tags]
@@ -4042,8 +4082,17 @@ def update_beacon_from_node_markdown(
     # an auto-beacon@<heading> block and the user later deletes the tags and
     # BEACON block from the Workflowy note (leaving only MD_PATH).
     if md_path and not tags:
-        simple_id = f"auto-beacon@{md_path[0] if md_path else 'md'}"
-        block_span = _find_beacon_block_by_id(simple_id)
+        # Try to find any auto-beacon for this MD_PATH (with any hash suffix).
+        sanitized_base = (md_path[0] if md_path else "md").replace(".", "-").replace(":", "-")
+        sanitized_base = re.sub(r"[^A-Za-z0-9_-]+", "-", sanitized_base).strip("-")
+        block_span = None
+        matched_beacon_id = None
+        for b in beacons:
+            bid = (b.get("id") or "").strip()
+            if bid.startswith(f"auto-beacon@{sanitized_base}-"):
+                matched_beacon_id = bid
+                block_span = _find_beacon_block_by_id(bid)
+                break
         if block_span is not None:
             start_idx, end_idx, _cl = block_span
             new_lines = lines[:start_idx] + lines[end_idx + 1 :]
@@ -4057,8 +4106,8 @@ def update_beacon_from_node_markdown(
             result.update(
                 {
                     "operation": "deleted_beacon",
-                    "beacon_id": simple_id,
-                    "role": simple_id.split("@", 1)[0],
+                    "beacon_id": matched_beacon_id,
+                    "role": (md_path[0] if md_path else "md"),
                     "slice_labels": "",
                 }
             )
@@ -4066,8 +4115,8 @@ def update_beacon_from_node_markdown(
 
     # Case 2: create from MD_PATH + tags.
     if md_path and tags:
-        simple_id = f"auto-beacon@{md_path[0] if md_path else 'md'}"
-        role_display = simple_id.split("@", 1)[0]
+        simple_id = f"auto-beacon@{_sanitize_auto_beacon_id(md_path[0] if md_path else 'md')}"
+        role_display = (md_path[0] if md_path else "md")
         slice_labels_canon = _canonicalize_slice_labels(None, role_display)
         extra = [t.lstrip("#") for t in tags]
         existing = [x for x in (slice_labels_canon.split(",") if slice_labels_canon else []) if x]
