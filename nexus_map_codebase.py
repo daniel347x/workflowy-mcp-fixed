@@ -13,9 +13,6 @@ import unicodedata
 from markdown_it import MarkdownIt
 import mdformat
 
-# DEBUG: Print which nexus_map_codebase.py file is actually being loaded
-print(f"[CARTO-LOAD-DEBUG] nexus_map_codebase loaded from: {__file__}", file=sys.stderr, flush=True)
-
 try:
     from tree_sitter import Parser
     from tree_sitter_language_pack import get_language, get_parser
@@ -3408,7 +3405,6 @@ def update_beacon_from_node_python(
         block_span = _find_beacon_block_by_id(beacon_id)
         if block_span is not None:
             # Case 1a: UPDATE existing beacon on disk.
-            print(f"[INDENT-DEBUG-PATH] Entering Case 1a (update existing beacon), beacon_id={beacon_id!r}", file=sys.stderr, flush=True)
             start_idx, end_idx, _cl = block_span
             new_block = _build_beacon_block(
                 bid=beacon_id,
@@ -3437,7 +3433,6 @@ def update_beacon_from_node_python(
             return result
         else:
             # Case 1b: CREATE beacon from note metadata (beacon_id in note, not on disk).
-            print(f"[INDENT-DEBUG-PATH] Entering Case 1b (create from note metadata), beacon_id={beacon_id!r}, ast_qualname={ast_qualname!r}", file=sys.stderr, flush=True)
             # Use AST_QUALNAME to find insertion point.
             target_line: Optional[int] = None
             if ast_qualname:
@@ -3621,11 +3616,9 @@ def update_beacon_from_node_js_ts(
 
     Mirrors the Python helper but uses JS/TS beacons and Tree-sitter outlines.
     """
-    print(f"[CARTO-JS-TS-DEBUG] update_beacon_from_node_js_ts ENTRY: file_path={file_path!r}, name={name!r}", file=sys.stderr, flush=True)
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
     ast_qualname = _extract_ast_qualname_from_note(note)
-    print(f"[CARTO-JS-TS-DEBUG] After extraction: base_name={base_name!r}, tags={tags}, beacon_id={beacon_id!r}, ast_qualname={ast_qualname!r}", file=sys.stderr, flush=True)
 
     result: Dict[str, Any] = {
         "language": "js_ts",
@@ -3699,12 +3692,9 @@ def update_beacon_from_node_js_ts(
             if line.strip():
                 # Measure leading whitespace.
                 indent = line[:len(line) - len(line.lstrip())]
-                print(f"[INDENT-DEBUG] insert_idx={insert_idx}, found_line_idx={idx}, indent_len={len(indent)}, line_preview={line[:60]!r}", file=sys.stderr, flush=True)
                 break
         # Apply indent to every line in the block.
-        indented = [indent + line for line in block_lines]
-        print(f"[INDENT-DEBUG] first_result_line={indented[0]!r}", file=sys.stderr, flush=True)
-        return indented
+        return [indent + line for line in block_lines]
 
     # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
@@ -3852,7 +3842,6 @@ def update_beacon_from_node_js_ts(
 
     # Case 2: create from AST_QUALNAME + tags.
     if ast_qualname and tags:
-        print(f"[CARTO-JS-TS-DEBUG] ENTERED Case 2 (create from AST + tags)", file=sys.stderr, flush=True)
         # Build a synthetic id with a hash suffix for collision resistance.
         # The role and slice_labels are canonicalized separately so tags are Workflowy-safe.
         hash_suffix = _generate_auto_beacon_hash()
@@ -3863,18 +3852,13 @@ def update_beacon_from_node_js_ts(
         existing = [x for x in (slice_labels_canon.split(",") if slice_labels_canon else []) if x]
         merged = existing + [e for e in extra if e not in existing]
         slice_labels_canon = ",".join(merged)
-        print(f"[CARTO-JS-TS-DEBUG] Case 2: simple_id={simple_id!r}, slice_labels_canon={slice_labels_canon!r}", file=sys.stderr, flush=True)
 
         target_line: Optional[int] = None
         try:
-            print(f"[CARTO-JS-TS-DEBUG] Case 2: about to parse_js_ts_outline", file=sys.stderr, flush=True)
             outline_nodes = parse_js_ts_outline(file_path)
-            print(f"[CARTO-JS-TS-DEBUG] Case 2: parse_js_ts_outline returned {len(outline_nodes)} nodes", file=sys.stderr, flush=True)
         except Exception as e:
-            print(f"[CARTO-JS-TS-DEBUG] Case 2: parse_js_ts_outline raised {e!r}", file=sys.stderr, flush=True)
             outline_nodes = []
 
-        print(f"[CARTO-JS-TS-DEBUG] Case 2: outline_nodes is {'truthy' if outline_nodes else 'falsy'}, about to search for AST match", file=sys.stderr, flush=True)
         if outline_nodes:
             def _iter_nodes(nodes_list: list[dict[str, Any]]):
                 for n in nodes_list:
@@ -3891,12 +3875,10 @@ def update_beacon_from_node_js_ts(
                         target_line = ln
                         break
 
-        print(f"[CARTO-JS-TS-DEBUG] Case 2: target_line={target_line}, will set insert_idx", file=sys.stderr, flush=True)
         if not isinstance(target_line, int) or target_line <= 0 or target_line > len(lines):
             insert_idx = 0
         else:
             insert_idx = target_line - 1
-        print(f"[CARTO-JS-TS-DEBUG] Case 2: insert_idx={insert_idx}, about to build beacon block", file=sys.stderr, flush=True)
 
         new_block = _build_beacon_block(
             bid=simple_id,
@@ -3905,9 +3887,7 @@ def update_beacon_from_node_js_ts(
             kind="ast",
             comment_text=None,
         )
-        print(f"[CARTO-JS-TS-DEBUG] Case 2: about to indent beacon block", file=sys.stderr, flush=True)
         new_block = _indent_beacon_block(new_block, insert_idx)
-        print(f"[CARTO-JS-TS-DEBUG] Case 2: indented, about to write file", file=sys.stderr, flush=True)
         new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
         try:
             with open(file_path, "w", encoding="utf-8") as f:
