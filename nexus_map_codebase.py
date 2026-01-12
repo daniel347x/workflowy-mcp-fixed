@@ -3576,6 +3576,7 @@ def update_beacon_from_node_python(
             kind="ast",
             comment_text=None,
         )
+        print(f"[INDENT-DEBUG-PRE] About to call _indent_beacon_block for Case 2 create, insert_idx={insert_idx}", file=sys.stderr, flush=True)
         new_block = _indent_beacon_block(new_block, insert_idx)
         new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
         try:
