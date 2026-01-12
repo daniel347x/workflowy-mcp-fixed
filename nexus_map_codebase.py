@@ -4366,11 +4366,12 @@ def update_beacon_from_node_markdown(
 
     # Case 2: create from MD_PATH + tags.
     if md_path and tags:
-        # Build a synthetic id with a hash suffix for collision resistance.
-        # The role and slice_labels are canonicalized separately so tags are Workflowy-safe.
-        heading = md_path[0] if md_path else "md"
-        hash_suffix = _generate_auto_beacon_hash()
-        simple_id = f"auto-beacon@{heading}-{hash_suffix}"
+        # Build a synthetic id with a random hash suffix. Unlike Python/JS,
+        # Markdown beacons do not encode the heading name in the id; MD_PATH
+        # is the structural anchor.
+        heading = md_path[-1] if md_path else "md"
+        hash_suffix = _generate_auto_beacon_hash() + _generate_auto_beacon_hash()
+        simple_id = f"auto-beacon@{hash_suffix}"
         role_display = heading
         slice_labels_canon = _canonicalize_slice_labels(None, role_display)
         extra = [t.lstrip("#") for t in tags]
@@ -4378,9 +4379,16 @@ def update_beacon_from_node_markdown(
         merged = existing + [e for e in extra if e not in existing]
         slice_labels_canon = ",".join(merged)
 
-        # Best-effort insertion: prepend at top of file for now. A later pass
-        # can refine this to insert near the MD_PATH heading.
+        # Insert the beacon block directly above the target heading when
+        # possible; fall back to top-of-file if the heading line cannot be
+        # found. We match against the last MD_PATH entry, which corresponds to
+        # the innermost heading.
+        target_heading = heading.strip()
         insert_idx = 0
+        for idx, line in enumerate(lines):
+            if line.strip() == target_heading:
+                insert_idx = idx
+                break
         new_block = _build_beacon_block(
             bid=simple_id,
             role=role_display,
