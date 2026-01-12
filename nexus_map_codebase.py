@@ -3614,15 +3614,18 @@ def update_beacon_from_node_python(
     # Case 2: no beacon_id, but AST_QUALNAME + tags → create a new beacon.
     if ast_qualname and tags:
         # Build a synthetic id with a hash suffix for collision resistance.
-        # The role and slice_labels are canonicalized separately so tags are Workflowy-safe.
         hash_suffix = _generate_auto_beacon_hash()
         simple_id = f"auto-beacon@{ast_qualname}-{hash_suffix}"
         role_display = ast_qualname
-        slice_labels_canon = _canonicalize_slice_labels(None, role_display)
-        extra = [t.lstrip("#") for t in tags]
-        existing = [x for x in (slice_labels_canon.split(",") if slice_labels_canon else []) if x]
-        merged = existing + [e for e in extra if e not in existing]
-        slice_labels_canon = ",".join(merged)
+
+        # Slice labels come **only** from Workflowy tags; we do not auto-derive
+        # additional labels from role/id/AST_QUALNAME.
+        extra_label_tokens = [t.lstrip("#") for t in tags]
+        slice_labels_canon = (
+            _canonicalize_slice_labels(",".join(extra_label_tokens), None)
+            if extra_label_tokens
+            else ""
+        )
 
         # Insert above the AST node header line (best-effort): use
         # parse_file_outline to discover the node and its start line.
@@ -3980,15 +3983,18 @@ def update_beacon_from_node_js_ts(
     # Case 2: create from AST_QUALNAME + tags.
     if ast_qualname and tags:
         # Build a synthetic id with a hash suffix for collision resistance.
-        # The role and slice_labels are canonicalized separately so tags are Workflowy-safe.
         hash_suffix = _generate_auto_beacon_hash()
         simple_id = f"auto-beacon@{ast_qualname}-{hash_suffix}"
         role_display = ast_qualname
-        slice_labels_canon = _canonicalize_slice_labels(None, role_display)
-        extra = [t.lstrip("#") for t in tags]
-        existing = [x for x in (slice_labels_canon.split(",") if slice_labels_canon else []) if x]
-        merged = existing + [e for e in extra if e not in existing]
-        slice_labels_canon = ",".join(merged)
+
+        # Slice labels come **only** from Workflowy tags; we do not auto-derive
+        # additional labels from role/id/AST_QUALNAME.
+        extra_label_tokens = [t.lstrip("#") for t in tags]
+        slice_labels_canon = (
+            _canonicalize_slice_labels(",".join(extra_label_tokens), None)
+            if extra_label_tokens
+            else ""
+        )
 
         target_line: Optional[int] = None
         try:
@@ -4406,11 +4412,15 @@ def update_beacon_from_node_markdown(
         hash_suffix = _generate_auto_beacon_hash() + _generate_auto_beacon_hash()
         simple_id = f"auto-beacon@{hash_suffix}"
         role_display = heading
-        slice_labels_canon = _canonicalize_slice_labels(None, role_display)
-        extra = [t.lstrip("#") for t in tags]
-        existing = [x for x in (slice_labels_canon.split(",") if slice_labels_canon else []) if x]
-        merged = existing + [e for e in extra if e not in existing]
-        slice_labels_canon = ",".join(merged)
+
+        # Slice labels come **only** from Workflowy tags; we do not auto-derive
+        # additional labels from heading text/MD_PATH.
+        extra_label_tokens = [t.lstrip("#") for t in tags]
+        slice_labels_canon = (
+            _canonicalize_slice_labels(",".join(extra_label_tokens), None)
+            if extra_label_tokens
+            else ""
+        )
 
         # Insert the beacon block directly above the target heading when
         # possible; fall back to top-of-file if the heading line cannot be
