@@ -3825,7 +3825,10 @@ def update_beacon_from_node_js_ts(
 
     # Case 2: create from AST_QUALNAME + tags.
     if ast_qualname and tags:
-        simple_id = f"auto-beacon@{_sanitize_auto_beacon_id(ast_qualname)}"
+        # Build a synthetic id with a hash suffix for collision resistance.
+        # The role and slice_labels are canonicalized separately so tags are Workflowy-safe.
+        hash_suffix = _generate_auto_beacon_hash()
+        simple_id = f"auto-beacon@{ast_qualname}-{hash_suffix}"
         role_display = ast_qualname
         slice_labels_canon = _canonicalize_slice_labels(None, role_display)
         extra = [t.lstrip("#") for t in tags]
