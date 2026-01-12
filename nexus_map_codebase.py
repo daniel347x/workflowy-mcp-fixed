@@ -3625,6 +3625,7 @@ def update_beacon_from_node_js_ts(
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
     ast_qualname = _extract_ast_qualname_from_note(note)
+    print(f"[CARTO-JS-TS-DEBUG] After extraction: base_name={base_name!r}, tags={tags}, beacon_id={beacon_id!r}, ast_qualname={ast_qualname!r}", file=sys.stderr, flush=True)
 
     result: Dict[str, Any] = {
         "language": "js_ts",
