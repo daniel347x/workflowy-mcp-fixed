@@ -1058,8 +1058,11 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
     ether_by_mdpath: dict[tuple[str, ...], dict[str, Any]] = {}
     ether_by_name: dict[str, dict[str, Any]] = {}
 
+    TARGET_FUNC = "buildFullMarkdownPathFromDom"
+
     for e in ether_children:
         note_e = e.get("note") or ""
+        name_e = e.get("name") or ""
         # 1) Beacon id
         b_id = _extract_beacon_id_from_note(note_e)
         if b_id and b_id not in ether_by_beacon:
@@ -1075,24 +1078,67 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
             if key and key not in ether_by_mdpath:
                 ether_by_mdpath[key] = e
         # 4) Raw name fallback
-        name_e = e.get("name")
         if isinstance(name_e, str) and name_e not in ether_by_name:
             ether_by_name[name_e] = e
+
+        # Debug: log any ETHER child that looks like our target function
+        if (
+            isinstance(name_e, str)
+            and TARGET_FUNC in name_e
+        ) or (
+            isinstance(qual, str)
+            and qual == TARGET_FUNC
+        ):
+            print(
+                "[CARTO-DEBUG] ether child candidate for TARGET_FUNC:",
+                {"name": name_e, "id": e.get("id"), "qual": qual},
+            )
 
     for s in source_children:
         note_s = s.get("note") or ""
         name_s = s.get("name") or ""
         match: dict[str, Any] | None = None
 
-        # 1) Beacon id
         b_id_s = _extract_beacon_id_from_note(note_s)
+        qual_s = _extract_ast_qualname_from_note(note_s)
+        debug_hit = (
+            (isinstance(name_s, str) and TARGET_FUNC in name_s)
+            or (isinstance(qual_s, str) and qual_s == TARGET_FUNC)
+        )
+
+        if debug_hit:
+            print("[CARTO-DEBUG] SOURCE child before matching:")
+            print(
+                "[CARTO-DEBUG]   name_s=", repr(name_s),
+                "qual_s=", repr(qual_s),
+                "b_id_s=", repr(b_id_s),
+            )
+            print(
+                "[CARTO-DEBUG]   ether_by_ast keys=",
+                list(ether_by_ast.keys()),
+            )
+            print(
+                "[CARTO-DEBUG]   ether_by_beacon keys=",
+                list(ether_by_beacon.keys()),
+            )
+
+        # 1) Beacon id
         if b_id_s and b_id_s in ether_by_beacon:
             match = ether_by_beacon[b_id_s]
+            if debug_hit:
+                print(
+                    "[CARTO-DEBUG]   MATCH via BEACON id:",
+                    {"b_id_s": b_id_s, "match_id": match.get("id")},
+                )
         else:
             # 2) AST_QUALNAME
-            qual_s = _extract_ast_qualname_from_note(note_s)
             if qual_s and qual_s in ether_by_ast:
                 match = ether_by_ast[qual_s]
+                if debug_hit:
+                    print(
+                        "[CARTO-DEBUG]   MATCH via AST_QUALNAME:",
+                        {"qual_s": qual_s, "match_id": match.get("id")},
+                    )
             else:
                 # 3) MD_PATH (whitened per-line comparison)
                 md_path_s = _extract_md_path_from_note(note_s)
@@ -1102,17 +1148,34 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                     )
                     if key_s and key_s in ether_by_mdpath:
                         match = ether_by_mdpath[key_s]
+                        if debug_hit:
+                            print(
+                                "[CARTO-DEBUG]   MATCH via MD_PATH:",
+                                {"key_s": key_s, "match_id": match.get("id")},
+                            )
                 # 4) Raw name fallback
                 if match is None and isinstance(name_s, str) and name_s in ether_by_name:
                     match = ether_by_name[name_s]
+                    if debug_hit:
+                        print(
+                            "[CARTO-DEBUG]   MATCH via raw name:",
+                            {"name_s": name_s, "match_id": match.get("id")},
+                        )
 
         if match is None:
+            if debug_hit:
+                print("[CARTO-DEBUG]   NO MATCH for source child")
             # No identity match at this level; we do not attempt to force ids.
             continue
 
         # Seed id from the matched Ether node.
         if "id" in match:
             s["id"] = match["id"]
+            if debug_hit:
+                print(
+                    "[CARTO-DEBUG]   Seeded id from match:",
+                    {"seed_id": s["id"]},
+                )
 
         # Whiten-based no-op suppression: if name/note are semantically equal
         # after whitening, preserve the ETHER values so WEAVE sees no change.
@@ -1124,6 +1187,12 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
         if isinstance(note_s, str) and isinstance(note_e, str):
             if whiten_text_for_header_compare(note_s) == whiten_text_for_header_compare(note_e):
                 s["note"] = note_e
+
+        if debug_hit:
+            print(
+                "[CARTO-DEBUG]   FINAL source child after matching:",
+                {"name": s.get("name"), "id": s.get("id"), "note": s.get("note")},
+            )
 
         # Recurse into children with the same Cartographer-aware logic.
         reconcile_trees_cartographer(s, match)
