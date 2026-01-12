@@ -3869,9 +3869,12 @@ def update_beacon_from_node_js_ts(
         try:
             print(f"[CARTO-JS-TS-DEBUG] Case 2: about to parse_js_ts_outline", file=sys.stderr, flush=True)
             outline_nodes = parse_js_ts_outline(file_path)
-        except Exception:
+            print(f"[CARTO-JS-TS-DEBUG] Case 2: parse_js_ts_outline returned {len(outline_nodes)} nodes", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[CARTO-JS-TS-DEBUG] Case 2: parse_js_ts_outline raised {e!r}", file=sys.stderr, flush=True)
             outline_nodes = []
 
+        print(f"[CARTO-JS-TS-DEBUG] Case 2: outline_nodes is {'truthy' if outline_nodes else 'falsy'}, about to search for AST match", file=sys.stderr, flush=True)
         if outline_nodes:
             def _iter_nodes(nodes_list: list[dict[str, Any]]):
                 for n in nodes_list:
@@ -3888,10 +3891,12 @@ def update_beacon_from_node_js_ts(
                         target_line = ln
                         break
 
+        print(f"[CARTO-JS-TS-DEBUG] Case 2: target_line={target_line}, will set insert_idx", file=sys.stderr, flush=True)
         if not isinstance(target_line, int) or target_line <= 0 or target_line > len(lines):
             insert_idx = 0
         else:
             insert_idx = target_line - 1
+        print(f"[CARTO-JS-TS-DEBUG] Case 2: insert_idx={insert_idx}, about to build beacon block", file=sys.stderr, flush=True)
 
         new_block = _build_beacon_block(
             bid=simple_id,
