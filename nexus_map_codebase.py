@@ -3408,6 +3408,7 @@ def update_beacon_from_node_python(
         block_span = _find_beacon_block_by_id(beacon_id)
         if block_span is not None:
             # Case 1a: UPDATE existing beacon on disk.
+            print(f"[INDENT-DEBUG-PATH] Entering Case 1a (update existing beacon), beacon_id={beacon_id!r}", file=sys.stderr, flush=True)
             start_idx, end_idx, _cl = block_span
             new_block = _build_beacon_block(
                 bid=beacon_id,
@@ -3436,6 +3437,7 @@ def update_beacon_from_node_python(
             return result
         else:
             # Case 1b: CREATE beacon from note metadata (beacon_id in note, not on disk).
+            print(f"[INDENT-DEBUG-PATH] Entering Case 1b (create from note metadata), beacon_id={beacon_id!r}, ast_qualname={ast_qualname!r}", file=sys.stderr, flush=True)
             # Use AST_QUALNAME to find insertion point.
             target_line: Optional[int] = None
             if ast_qualname:
