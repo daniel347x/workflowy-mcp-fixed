@@ -3349,8 +3349,15 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 break
 
             n_note = n.get("note") or n.get("no") or ""
-            if isinstance(n_note, str) and ("Path:" in n_note or "Root:" in n_note):
-                file_node = n
+            # Check if note has Path: or Root: as a line prefix (not just anywhere in note).
+            # This prevents false matches on method/class nodes whose docstrings mention "Path:".
+            if isinstance(n_note, str):
+                for line in n_note.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("Path:") or stripped.startswith("Root:"):
+                        file_node = n
+                        break
+            if file_node is not None:
                 break
 
             parent_id_val = n.get("parent_id") or n.get("parentId")
