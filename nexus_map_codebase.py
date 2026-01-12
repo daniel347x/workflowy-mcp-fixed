@@ -1618,7 +1618,7 @@ def apply_python_beacons(
     for beacon in beacons:
         kind = beacon.get("kind")
         start_snippet = beacon.get("start_snippet")
-        if kind == "span" and not start_snippet:
+        if not start_snippet:
             comment_line = beacon.get("comment_line") or 0
             if isinstance(comment_line, int) and comment_line > 0:
                 anchor = _next_anchor_line_after(comment_line)
