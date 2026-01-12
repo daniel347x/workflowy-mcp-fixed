@@ -3413,6 +3413,7 @@ def update_beacon_from_node_python(
                 kind="ast",
                 comment_text=comment_val,
             )
+            new_block = _indent_beacon_block(new_block, start_idx)
             new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
@@ -3468,6 +3469,7 @@ def update_beacon_from_node_python(
                 kind="ast",
                 comment_text=comment_val,
             )
+            new_block = _indent_beacon_block(new_block, insert_idx)
             new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
@@ -3574,6 +3576,7 @@ def update_beacon_from_node_python(
             kind="ast",
             comment_text=None,
         )
+        new_block = _indent_beacon_block(new_block, insert_idx)
         new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
         try:
             with open(file_path, "w", encoding="utf-8") as f:
@@ -3678,6 +3681,19 @@ def update_beacon_from_node_js_ts(
             meta_lines.append(f"//   comment={comment_text},")
         meta_lines.append("// ]")
         return meta_lines
+
+    def _indent_beacon_block(block_lines: list[str], insert_idx: int) -> list[str]:
+        """Indent beacon block to match the following non-blank line's indentation."""
+        # Scan forward from insert_idx to find first non-blank line.
+        indent = ""
+        for idx in range(insert_idx, len(lines)):
+            line = lines[idx]
+            if line.strip():
+                # Measure leading whitespace.
+                indent = line[:len(line) - len(line.lstrip())]
+                break
+        # Apply indent to every line in the block.
+        return [indent + line for line in block_lines]
 
     # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
