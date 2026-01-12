@@ -3258,6 +3258,29 @@ def split_name_and_tags(raw_name: str) -> tuple[str, list[str]]:
     return base, tags
 
 
+def _indent_beacon_block(block_lines: list[str], source_lines: list[str], insert_idx: int) -> list[str]:
+    """Indent beacon block to match the following non-blank line's indentation.
+    
+    Args:
+        block_lines: The beacon comment block lines (unindented).
+        source_lines: The full source file lines array.
+        insert_idx: The line index where the beacon will be inserted.
+    
+    Returns:
+        The beacon block with indentation applied.
+    """
+    # Scan forward from insert_idx to find first non-blank line.
+    indent = ""
+    for idx in range(insert_idx, len(source_lines)):
+        line = source_lines[idx]
+        if line.strip():
+            # Measure leading whitespace.
+            indent = line[:len(line) - len(line.lstrip())]
+            break
+    # Apply indent to every line in the block.
+    return [indent + line for line in block_lines]
+
+
 def _generate_auto_beacon_hash() -> str:
     """Generate a short random hash for auto-beacon collision resistance.
     
@@ -3413,7 +3436,7 @@ def update_beacon_from_node_python(
                 kind="ast",
                 comment_text=comment_val,
             )
-            new_block = _indent_beacon_block(new_block, start_idx)
+            new_block = _indent_beacon_block(new_block, lines, start_idx)
             new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
@@ -3469,7 +3492,7 @@ def update_beacon_from_node_python(
                 kind="ast",
                 comment_text=comment_val,
             )
-            new_block = _indent_beacon_block(new_block, insert_idx)
+            new_block = _indent_beacon_block(new_block, lines, insert_idx)
             new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
@@ -3576,8 +3599,7 @@ def update_beacon_from_node_python(
             kind="ast",
             comment_text=None,
         )
-        print(f"[INDENT-DEBUG-PRE] About to call _indent_beacon_block for Case 2 create, insert_idx={insert_idx}", file=sys.stderr, flush=True)
-        new_block = _indent_beacon_block(new_block, insert_idx)
+        new_block = _indent_beacon_block(new_block, lines, insert_idx)
         new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
         try:
             with open(file_path, "w", encoding="utf-8") as f:
@@ -3683,19 +3705,6 @@ def update_beacon_from_node_js_ts(
         meta_lines.append("// ]")
         return meta_lines
 
-    def _indent_beacon_block(block_lines: list[str], insert_idx: int) -> list[str]:
-        """Indent beacon block to match the following non-blank line's indentation."""
-        # Scan forward from insert_idx to find first non-blank line.
-        indent = ""
-        for idx in range(insert_idx, len(lines)):
-            line = lines[idx]
-            if line.strip():
-                # Measure leading whitespace.
-                indent = line[:len(line) - len(line.lstrip())]
-                break
-        # Apply indent to every line in the block.
-        return [indent + line for line in block_lines]
-
     # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
         role_val: str | None = None
@@ -3730,6 +3739,7 @@ def update_beacon_from_node_js_ts(
                 kind="ast",
                 comment_text=comment_val,
             )
+            new_block = _indent_beacon_block(new_block, lines, start_idx)
             new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
@@ -3785,6 +3795,7 @@ def update_beacon_from_node_js_ts(
                 kind="ast",
                 comment_text=comment_val,
             )
+            new_block = _indent_beacon_block(new_block, lines, insert_idx)
             new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
@@ -4160,6 +4171,7 @@ def update_beacon_from_node_markdown(
             kind="ast",
             comment_text=None,
         )
+        new_block = _indent_beacon_block(new_block, lines, insert_idx)
         new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
         try:
             with open(file_path, "w", encoding="utf-8") as f:
