@@ -3691,9 +3691,12 @@ def update_beacon_from_node_js_ts(
             if line.strip():
                 # Measure leading whitespace.
                 indent = line[:len(line) - len(line.lstrip())]
+                print(f"[INDENT-DEBUG] insert_idx={insert_idx}, found_line_idx={idx}, indent_len={len(indent)}, line_preview={line[:60]!r}", file=sys.stderr, flush=True)
                 break
         # Apply indent to every line in the block.
-        return [indent + line for line in block_lines]
+        indented = [indent + line for line in block_lines]
+        print(f"[INDENT-DEBUG] first_result_line={indented[0]!r}", file=sys.stderr, flush=True)
+        return indented
 
     # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
