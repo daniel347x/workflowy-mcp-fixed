@@ -209,8 +209,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     """NEXUS pipeline operations - extends Etch."""
 
     # @beacon[
-    #   id=ra-tracking@6bj2zv004,
-    #   slice_labels=ra-tracking,ra-nexus-test-7
+    #   id=auto-beacon@WorkFlowyClientNexus._get_nexus_dir-cx33,
+    #   role=WorkFlowyClientNexus._get_nexus_dir,
+    #   slice_labels=WorkFlowyClientNexus-_get_nexus_dir,nexus-foo,
+    #   kind=ast,
+    #   comment=Nice [idea] here,
     # ]
     def _get_nexus_dir(self, nexus_tag: str) -> str:
         """Resolve base directory for a CORINTHIAN NEXUS run."""
@@ -239,6 +242,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         chosen = sorted(candidates, key=lambda p: p.name)[-1]
         return str(chosen)
 
+    # @beacon[
+    #   id=ra-tracking@6bj2zwww,
+    #   slice_labels=ra-tracking,ra-nexus-test
+    # ]
     async def workflowy_glimpse(
         self, node_id: str, use_efficient_traversal: bool = False,
         output_file: str | None = None, _ws_connection=None, _ws_queue=None
@@ -428,6 +435,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # Therefore, we can safely mark children_status='complete' for all nodes we actually have.
         # NOTE: If a depth limit is applied below, those nodes will be truncated structurally
         # and must NOT remain marked complete (handled after depth limiting).
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.workflowy_scry._stamp_children_status_complete-cl74,
+        #   role=WorkFlowyClientNexus.workflowy_scry._stamp_children_status_complete,
+        #   slice_labels=WorkFlowyClientNexus-workflowy_scry-_stamp_children_status_complete,nexus-foo,
+        #   kind=ast,
+        # ]
         def _stamp_children_status_complete(nodes: list[dict[str, Any]]) -> None:
             for n in nodes or []:
                 if not isinstance(n, dict):
@@ -2253,6 +2266,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             stats["api_calls"] += 1
             stats["nodes_deleted"] += 1
         
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.bulk_import_from_file.move_wrapper-f1w3,
+        #   role=WorkFlowyClientNexus.bulk_import_from_file.move_wrapper,
+        #   slice_labels=WorkFlowyClientNexus-bulk_import_from_file-move_wrapper,nexus-text,
+        #   kind=ast,
+        # ]
         async def move_wrapper(node_uuid: str, new_parent: str, position: str = "top") -> None:
             _log_to_file_helper(f"WEAVE MOVE: {node_uuid}", "reconcile")
             await self.move_node(node_uuid, new_parent, position)
@@ -2398,6 +2417,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "errors": [error_msg]
             }
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus.nexus_list_keystones-mzxs,
+    #   role=WorkFlowyClientNexus.nexus_list_keystones,
+    #   slice_labels=WorkFlowyClientNexus-nexus_list_keystones,nexus-test,
+    #   kind=ast,
+    # ]
     def nexus_list_keystones(self) -> dict[str, Any]:
         """List NEXUS Keystone backups."""
         backup_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_backups"
@@ -3506,12 +3531,25 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 else:
                     beacon_header = "BEACON (AST)"
 
+                # Preserve "kind: span" if already present in the original note.
+                # Otherwise default to "kind: ast" (for AST-backed beacons).
+                original_kind = "ast"
+                if isinstance(note, str):
+                    for line in note.splitlines():
+                        stripped = line.strip()
+                        if stripped.startswith("kind:"):
+                            # Extract the kind value (e.g., "span" or "ast")
+                            kind_val = stripped.split(":", 1)[1].strip()
+                            if kind_val:
+                                original_kind = kind_val
+                            break
+
                 beacon_meta_lines = [
                     beacon_header,
                     f"id: {beacon_id_from_helper}",
                     f"role: {role_from_helper}",
                     f"slice_labels: {slice_labels_from_helper}",
-                    "kind: ast",
+                    f"kind: {original_kind}",
                 ]
                 if comment_from_helper:
                     beacon_meta_lines.append(f"comment: {comment_from_helper}")
