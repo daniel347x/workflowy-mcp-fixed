@@ -3531,11 +3531,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 else:
                     beacon_header = "BEACON (AST)"
 
-                # Preserve "kind: span" if already present in the original note.
+                # Preserve "kind: span" if already present in the original cached note.
                 # Otherwise default to "kind: ast" (for AST-backed beacons).
                 original_kind = "ast"
-                if isinstance(note, str):
-                    for line in note.splitlines():
+                original_note = str(wf_node.get("note") or wf_node.get("no") or "")
+                if isinstance(original_note, str):
+                    for line in original_note.splitlines():
                         stripped = line.strip()
                         if stripped.startswith("kind:"):
                             # Extract the kind value (e.g., "span" or "ast")
