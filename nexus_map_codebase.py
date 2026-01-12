@@ -3364,8 +3364,13 @@ def update_beacon_from_node_python(
             cl = b.get("comment_line")
             if not isinstance(cl, int) or cl <= 0:
                 continue
-            # Walk forward to find the ']' line; include all lines that start
-            # with '#' and belong to this metadata block.
+            # Walk forward to find the closing ']' line; include all lines that
+            # start with '#' and belong to this metadata block.
+            #
+            # We treat a line as the closing delimiter only when the metadata
+            # body is exactly a single ']' after stripping the leading '#' and
+            # whitespace. This prevents an incidental ']' inside a comment
+            # field from terminating the block prematurely.
             start_idx = cl - 1
             j = cl
             end_idx = start_idx
@@ -3376,7 +3381,7 @@ def update_beacon_from_node_python(
                     body = stripped.lstrip("#").lstrip()
                 else:
                     body = stripped
-                if "]" in body:
+                if body == "]":
                     end_idx = j - 1
                     break
                 j += 1
@@ -3519,36 +3524,76 @@ def update_beacon_from_node_python(
             )
             return result
 
-    # Case 1c: DELETE auto-beacon when note has no BEACON metadata and no tags.
-    # This covers the common Python F12 path where F12-per-node originally created
-    # an auto-beacon@<AST_QUALNAME>-<hash> block and the user later deletes the tags and
-    # BEACON block from the Workflowy note (leaving only AST_QUALNAME).
-    if ast_qualname and not tags:
-        # Scan for any auto-beacon whose id starts with 'auto-beacon@{ast_qualname}-'.
-        # The hash suffix varies, so we use a prefix match.
-        block_span = None
-        matched_beacon_id = None
-        prefix = f"auto-beacon@{ast_qualname}-"
-        for b in beacons:
-            bid = (b.get("id") or "").strip()
-            if bid.startswith(prefix):
-                matched_beacon_id = bid
-                block_span = _find_beacon_block_by_id(bid)
-                break
-        if block_span is not None:
-            start_idx, end_idx, _cl = block_span
-            new_lines = lines[:start_idx] + lines[end_idx + 1 :]
-            try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(new_lines) + "\n")
-            except Exception as e:  # noqa: BLE001
-                result["error"] = f"failed_to_write_file: {e}"
-                return result
+    # Helper: delete beacon(s) for this AST_QUALNAME using Cartographer outline.
+    #
+    # We intentionally fail closed: if we cannot unambiguously map the
+    # AST_QUALNAME to exactly one AST node (with a BEACON block in its note),
+    # we do not delete anything.
+    def _delete_beacon_for_ast_qualname(target_ast_qualname: str) -> Optional[str]:
+        try:
+            outline_nodes = parse_file_outline(file_path)
+        except Exception as e:  # noqa: BLE001
+            print(
+                "[CARTOGRAPHER] update_beacon_from_node_python delete-abort "
+                f"(file_path={file_path!r}, ast_qualname={target_ast_qualname!r}, error={e!r})",
+                file=sys.stderr,
+            )
+            return None
 
+        if not outline_nodes:
+            return None
+
+        # Find the unique AST node for this qualname.
+        matches: list[dict[str, Any]] = [
+            n
+            for n in _iter_ast_outline_nodes(outline_nodes)
+            if n.get("ast_qualname") == target_ast_qualname
+        ]
+        if len(matches) != 1:
+            # Ambiguous or missing mapping – do nothing.
+            print(
+                "[CARTOGRAPHER] update_beacon_from_node_python delete-abort "
+                f"(file_path={file_path!r}, ast_qualname={target_ast_qualname!r}, "
+                f"matches={len(matches)})",
+                file=sys.stderr,
+            )
+            return None
+
+        node = matches[0]
+        node_note = node.get("note") or ""
+        if "BEACON (" not in node_note:
+            return None
+
+        bid = _extract_beacon_id_from_note(node_note)
+        if not bid:
+            return None
+
+        span = _find_beacon_block_by_id(bid)
+        if span is None:
+            return None
+
+        start_idx, end_idx, _cl = span
+        new_lines = lines[:start_idx] + lines[end_idx + 1 :]
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(new_lines) + "\n")
+        except Exception as e:  # noqa: BLE001
+            result["error"] = f"failed_to_write_file: {e}"
+            return None
+
+        return bid
+
+    # Case 1c: DELETE beacon when note has no BEACON metadata and no tags.
+    # This covers the common Python F12 path where F12-per-node originally created
+    # a beacon for this AST_QUALNAME and the user later deletes the tags and
+    # BEACON block from the Workflowy note (leaving only AST_QUALNAME).
+    if ast_qualname and not tags and not beacon_id:
+        deleted_id = _delete_beacon_for_ast_qualname(ast_qualname)
+        if deleted_id:
             result.update(
                 {
                     "operation": "deleted_beacon",
-                    "beacon_id": matched_beacon_id,
+                    "beacon_id": deleted_id,
                     "role": ast_qualname,
                     "slice_labels": "",
                 }
@@ -3684,12 +3729,21 @@ def update_beacon_from_node_js_ts(
             cl = b.get("comment_line")
             if not isinstance(cl, int) or cl <= 0:
                 continue
+            # Walk forward to find the closing ']' line; allow for leading
+            # '//' comment markers. As with Python, we require the metadata
+            # body (after stripping comment sugar and whitespace) to be
+            # exactly ']'.
             start_idx = cl - 1
             j = cl
             end_idx = start_idx
             while j <= len(lines):
                 raw = lines[j - 1]
-                if "]" in raw:
+                stripped = raw.lstrip()
+                if stripped.startswith("//"):
+                    body = stripped[2:].lstrip()
+                else:
+                    body = stripped
+                if body == "]":
                     end_idx = j - 1
                     break
                 j += 1
@@ -3828,36 +3882,73 @@ def update_beacon_from_node_js_ts(
             )
             return result
 
-    # Case 1c: DELETE auto-beacon when note has no BEACON metadata and no tags.
-    # This covers the common JS/TS F12 path where F12-per-node originally created
-    # an auto-beacon@<AST_QUALNAME>-<hash> block and the user later deletes the tags and
-    # BEACON block from the Workflowy note (leaving only AST_QUALNAME).
-    if ast_qualname and not tags:
-        # Scan for any auto-beacon whose id starts with 'auto-beacon@{ast_qualname}-'.
-        # The hash suffix varies, so we use a prefix match.
-        block_span = None
-        matched_beacon_id = None
-        prefix = f"auto-beacon@{ast_qualname}-"
-        for b in beacons:
-            bid = (b.get("id") or "").strip()
-            if bid.startswith(prefix):
-                matched_beacon_id = bid
-                block_span = _find_beacon_block_by_id(bid)
-                break
-        if block_span is not None:
-            start_idx, end_idx, _cl = block_span
-            new_lines = lines[:start_idx] + lines[end_idx + 1 :]
-            try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(new_lines) + "\n")
-            except Exception as e:  # noqa: BLE001
-                result["error"] = f"failed_to_write_file: {e}"
-                return result
+    # Helper: delete beacon(s) for this AST_QUALNAME using JS/TS Cartographer outline.
+    #
+    # As with Python, we fail closed: ambiguous or missing mappings result in
+    # no deletion.
+    def _delete_beacon_for_ast_qualname_js_ts(target_ast_qualname: str) -> Optional[str]:
+        try:
+            outline_nodes = parse_js_ts_outline(file_path)
+        except Exception as e:  # noqa: BLE001
+            print(
+                "[CARTOGRAPHER] update_beacon_from_node_js_ts delete-abort "
+                f"(file_path={file_path!r}, ast_qualname={target_ast_qualname!r}, error={e!r})",
+                file=sys.stderr,
+            )
+            return None
 
+        if not outline_nodes:
+            return None
+
+        matches: list[dict[str, Any]] = [
+            n
+            for n in _iter_ast_outline_nodes(outline_nodes)
+            if n.get("ast_qualname") == target_ast_qualname
+        ]
+        if len(matches) != 1:
+            print(
+                "[CARTOGRAPHER] update_beacon_from_node_js_ts delete-abort "
+                f"(file_path={file_path!r}, ast_qualname={target_ast_qualname!r}, "
+                f"matches={len(matches)})",
+                file=sys.stderr,
+            )
+            return None
+
+        node = matches[0]
+        node_note = node.get("note") or ""
+        if "BEACON (" not in node_note:
+            return None
+
+        bid = _extract_beacon_id_from_note(node_note)
+        if not bid:
+            return None
+
+        span = _find_beacon_block_by_id(bid)
+        if span is None:
+            return None
+
+        start_idx, end_idx, _cl = span
+        new_lines = lines[:start_idx] + lines[end_idx + 1 :]
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(new_lines) + "\n")
+        except Exception as e:  # noqa: BLE001
+            result["error"] = f"failed_to_write_file: {e}"
+            return None
+
+        return bid
+
+    # Case 1c: DELETE beacon when note has no BEACON metadata and no tags.
+    # This covers the common JS/TS F12 path where F12-per-node originally created
+    # a beacon for this AST_QUALNAME and the user later deletes the tags and
+    # BEACON block from the Workflowy note (leaving only AST_QUALNAME).
+    if ast_qualname and not tags and not beacon_id:
+        deleted_id = _delete_beacon_for_ast_qualname_js_ts(ast_qualname)
+        if deleted_id:
             result.update(
                 {
                     "operation": "deleted_beacon",
-                    "beacon_id": matched_beacon_id,
+                    "beacon_id": deleted_id,
                     "role": ast_qualname,
                     "slice_labels": "",
                 }
