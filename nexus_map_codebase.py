@@ -1058,7 +1058,7 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
     ether_by_mdpath: dict[tuple[str, ...], dict[str, Any]] = {}
     ether_by_name: dict[str, dict[str, Any]] = {}
 
-    TARGET_FUNC = "extractUuidFromText"
+    TARGET_FUNC = "pruneNestedNexusRoots"
     import sys as _carto_debug_sys
 
     for e in ether_children:

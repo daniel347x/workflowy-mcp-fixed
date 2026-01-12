@@ -972,7 +972,7 @@ async def export_nodes_impl(
 
     # >>> CARTO-DEBUG-EXPORT <<<
     # Check if target function exists in the raw cache before filtering
-    TARGET_FUNC = "extractUuidFromText"
+    TARGET_FUNC = "pruneNestedNexusRoots"
     import sys as _etch_debug_sys
     
     _debug_nodes_map = {n['id']: n for n in all_nodes if n.get('id')}
