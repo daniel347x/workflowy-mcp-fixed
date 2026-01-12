@@ -4215,36 +4215,149 @@ def update_beacon_from_node_markdown(
             )
             return result
 
-    # Case 1c: DELETE auto-beacon when note has no BEACON metadata and no tags.
-    # This covers the common Markdown F12 path where F12-per-node originally created
-    # an auto-beacon@<heading> block and the user later deletes the tags and
-    # BEACON block from the Workflowy note (leaving only MD_PATH).
-    if md_path and not tags:
-        # Try to find any auto-beacon for this MD_PATH (with any hash suffix).
-        sanitized_base = (md_path[0] if md_path else "md").replace(".", "-").replace(":", "-")
-        sanitized_base = re.sub(r"[^A-Za-z0-9_-]+", "-", sanitized_base).strip("-")
-        block_span = None
-        matched_beacon_id = None
-        for b in beacons:
-            bid = (b.get("id") or "").strip()
-            if bid.startswith(f"auto-beacon@{sanitized_base}-"):
-                matched_beacon_id = bid
-                block_span = _find_beacon_block_by_id(bid)
-                break
-        if block_span is not None:
-            start_idx, end_idx, _cl = block_span
-            new_lines = lines[:start_idx] + lines[end_idx + 1 :]
-            try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(new_lines) + "\n")
-            except Exception as e:  # noqa: BLE001
-                result["error"] = f"failed_to_write_file: {e}"
-                return result
+    # Helper: delete beacon(s) for this MD_PATH using Cartographer Markdown outline.
+    #
+    # We intentionally fail closed: if we cannot unambiguously map the MD_PATH
+    # to exactly one heading node (with a BEACON block in its note), we do not
+    # delete anything.
+    def _delete_beacon_for_md_path(md_path_lines: list[str]) -> Optional[str]:
+        if not md_path_lines:
+            return None
 
+        try:
+            outline_nodes = parse_markdown_structure(file_path)
+        except Exception as e:  # noqa: BLE001
+            print(
+                "[CARTOGRAPHER] update_beacon_from_node_markdown delete-abort "
+                f"(file_path={file_path!r}, md_path={md_path_lines!r}, error={e!r})",
+                file=sys.stderr,
+            )
+            return None
+
+        if not outline_nodes:
+            return None
+
+        def _iter_nodes(nodes_list: list[dict[str, Any]]):
+            for n in nodes_list:
+                if isinstance(n, dict):
+                    yield n
+                    for ch in n.get("children") or []:
+                        if isinstance(ch, dict):
+                            yield from _iter_nodes([ch])
+
+        # Normalize target MD_PATH with header whitener to ignore decoration.
+        target = [
+            whiten_text_for_header_compare(line)
+            for line in md_path_lines
+            if isinstance(line, str) and line.strip()
+        ]
+        if not target:
+            return None
+
+        matches: list[dict[str, Any]] = []
+        for n in _iter_nodes(outline_nodes):
+            node_note = n.get("note") or ""
+            node_md_path = _extract_md_path_from_note(node_note)
+            if not node_md_path:
+                continue
+            node_norm = [
+                whiten_text_for_header_compare(line)
+                for line in node_md_path
+                if isinstance(line, str) and line.strip()
+            ]
+            if node_norm == target:
+                matches.append(n)
+
+        if len(matches) != 1:
+            print(
+                "[CARTOGRAPHER] update_beacon_from_node_markdown delete-abort "
+                f"(file_path={file_path!r}, md_path={md_path_lines!r}, matches={len(matches)})",
+                file=sys.stderr,
+            )
+            return None
+
+        node = matches[0]
+        node_note = node.get("note") or ""
+        if "BEACON (" not in node_note:
+            return None
+
+        bid = _extract_beacon_id_from_note(node_note)
+        if not bid:
+            return None
+
+        # Re-open file after parse_markdown_structure (which may have rewritten it)
+        # and compute fresh beacon locations.
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                current_lines = f.read().splitlines()
+        except Exception as e:  # noqa: BLE001
+            result["error"] = f"failed_to_read_file: {e}"
+            return None
+
+        current_beacons = parse_markdown_beacon_blocks(current_lines)
+
+        def _find_block_by_id(local_bid: str) -> Optional[tuple[int, int, int]]:
+            local_bid = (local_bid or "").strip()
+            if not local_bid:
+                return None
+            for b in current_beacons:
+                if (b.get("id") or "").strip() != local_bid:
+                    continue
+                cl = b.get("comment_line")
+                if not isinstance(cl, int) or cl <= 0:
+                    continue
+                # For Markdown, comment_line refers to the line containing '@beacon['.
+                # We treat the block as everything from the first '<!--' before it
+                # through the matching '-->' after it.
+                start_idx = cl - 1
+                # Walk backward to include the opening '<!--' if present.
+                j = cl - 1
+                while j >= 1:
+                    raw = current_lines[j - 1]
+                    if "<!--" in raw:
+                        start_idx = j - 1
+                        break
+                    if raw.strip():
+                        break
+                    j -= 1
+                # Walk forward to include the closing '-->'.
+                j = cl
+                end_idx = cl - 1
+                while j <= len(current_lines):
+                    raw = current_lines[j - 1]
+                    end_idx = j - 1
+                    if "-->" in raw:
+                        break
+                    j += 1
+                return start_idx, end_idx, cl
+            return None
+
+        span = _find_block_by_id(bid)
+        if span is None:
+            return None
+
+        start_idx, end_idx, _cl = span
+        new_lines = current_lines[:start_idx] + current_lines[end_idx + 1 :]
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(new_lines) + "\n")
+        except Exception as e:  # noqa: BLE001
+            result["error"] = f"failed_to_write_file: {e}"
+            return None
+
+        return bid
+
+    # Case 1c: DELETE beacon when note has no BEACON metadata and no tags.
+    # This covers the common Markdown F12 path where F12-per-node originally created
+    # a beacon block for this MD_PATH and the user later deletes the tags and
+    # BEACON block from the Workflowy note (leaving only MD_PATH).
+    if md_path and not tags and not beacon_id:
+        deleted_id = _delete_beacon_for_md_path(md_path)
+        if deleted_id:
             result.update(
                 {
                     "operation": "deleted_beacon",
-                    "beacon_id": matched_beacon_id,
+                    "beacon_id": deleted_id,
                     "role": (md_path[0] if md_path else "md"),
                     "slice_labels": "",
                 }
