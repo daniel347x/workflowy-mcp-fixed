@@ -3727,6 +3727,33 @@ def update_beacon_from_node_js_ts(
             )
             return result
 
+    # Case 1c: DELETE auto-beacon when note has no BEACON metadata and no tags.
+    # This covers the common JS/TS F12 path where F12-per-node originally created
+    # an auto-beacon@<AST_QUALNAME> block and the user later deletes the tags and
+    # BEACON block from the Workflowy note (leaving only AST_QUALNAME).
+    if ast_qualname and not tags:
+        simple_id = f"auto-beacon@{ast_qualname}"
+        block_span = _find_beacon_block_by_id(simple_id)
+        if block_span is not None:
+            start_idx, end_idx, _cl = block_span
+            new_lines = lines[:start_idx] + lines[end_idx + 1 :]
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(new_lines) + "\n")
+            except Exception as e:  # noqa: BLE001
+                result["error"] = f"failed_to_write_file: {e}"
+                return result
+
+            result.update(
+                {
+                    "operation": "deleted_beacon",
+                    "beacon_id": simple_id,
+                    "role": ast_qualname,
+                    "slice_labels": "",
+                }
+            )
+            return result
+
     # Case 2: create from AST_QUALNAME + tags.
     if ast_qualname and tags:
         simple_id = f"auto-beacon@{ast_qualname}"
