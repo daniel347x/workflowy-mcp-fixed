@@ -3441,6 +3441,10 @@ def update_beacon_from_node_python(
         if block_span is not None:
             # Case 1a: UPDATE existing beacon on disk.
             start_idx, end_idx, _cl = block_span
+            # New Markdown beacons created from note metadata default to AST kind.
+            # (SPAN beacons are only preserved when they already exist on disk.)
+            # New Markdown beacons created from note metadata default to AST kind.
+            # (SPAN beacons are only preserved when they already exist on disk.)
             new_block = _build_beacon_block(
                 bid=beacon_id,
                 role=role_display or "",
@@ -3799,11 +3803,22 @@ def update_beacon_from_node_js_ts(
         if block_span is not None:
             # Case 1a: UPDATE existing beacon on disk.
             start_idx, end_idx, _cl = block_span
+
+            # Preserve existing kind (span vs ast) when updating an on-disk beacon.
+            existing_kind = "ast"
+            for b in beacons:
+                if (b.get("id") or "").strip() != (beacon_id or "").strip():
+                    continue
+                k_val = (b.get("kind") or "").strip().lower()
+                if k_val in {"ast", "span"}:
+                    existing_kind = k_val
+                break
+
             new_block = _build_beacon_block(
                 bid=beacon_id,
                 role=role_display or "",
                 slice_labels=slice_labels_canon,
-                kind="ast",
+                kind=existing_kind,
                 comment_text=comment_val,
             )
             new_block = _indent_beacon_block(new_block, lines, start_idx)
@@ -4151,11 +4166,22 @@ def update_beacon_from_node_markdown(
         if block_span is not None:
             # Case 1a: UPDATE existing beacon on disk.
             start_idx, end_idx, _cl = block_span
+
+            # Preserve existing kind (span vs ast) when updating an on-disk beacon.
+            existing_kind = "ast"
+            for b in beacons:
+                if (b.get("id") or "").strip() != (beacon_id or "").strip():
+                    continue
+                k_val = (b.get("kind") or "").strip().lower()
+                if k_val in {"ast", "span"}:
+                    existing_kind = k_val
+                break
+
             new_block = _build_beacon_block(
                 bid=beacon_id,
                 role=role_display or "",
                 slice_labels=slice_labels_canon,
-                kind="ast",
+                kind=existing_kind,
                 comment_text=comment_val,
             )
             new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
