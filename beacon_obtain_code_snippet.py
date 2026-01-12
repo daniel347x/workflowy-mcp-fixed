@@ -2219,7 +2219,9 @@ def get_snippet_for_ast_qualname_js_ts(
 
 # @beacon[
 #   id=carto-js-ts@get_snippet_data,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,nexus-md-header-path,
+#   kind=span,
 # ]
 # Phase 3 JS/TS: central dispatch point for snippet resolution.
 # This will be extended so that .js/.ts/.tsx files route to JS/TS-
@@ -2358,6 +2360,12 @@ if __name__ == "__main__":  # pragma: no cover
     main()
 
 
+# @beacon[
+#   id=auto-beacon@get_snippet_for_md_path-8iyg,
+#   role=get_snippet_for_md_path,
+#   slice_labels=nexus-md-header-path,
+#   kind=ast,
+# ]
 def get_snippet_for_md_path(
     file_path: str,
     md_path_lines: List[str],
@@ -2386,11 +2394,17 @@ def get_snippet_for_md_path(
       surface a clear error (we do *not* guess).
     """
     import re
+    from markdown_it import MarkdownIt
+    from nexus_map_codebase import whiten_text_for_header_compare
 
+    # Read the Markdown file once; reuse these lines for snippet construction.
     lines = _read_lines(file_path)
     n = len(lines)
 
-    # Parse desired MD_PATH into a list of (level, text) tuples.
+    # ------------------------------------------------------------------
+    # 1. Normalize desired MD_PATH using the same whitening semantics
+    #    used by Cartographer for header comparison.
+    # ------------------------------------------------------------------
     desired: List[tuple[int, str]] = []
     for raw in md_path_lines:
         s = (raw or "").strip()
@@ -2401,7 +2415,9 @@ def get_snippet_for_md_path(
             raise RuntimeError(f"Invalid MD_PATH component {raw!r} in note")
         level = len(m.group(1))
         text = (m.group(2) or "").strip()
-        desired.append((level, text))
+        # Whiten + casefold so comparisons are robust to markup/emoji/spacing.
+        norm = whiten_text_for_header_compare(text).casefold()
+        desired.append((level, norm))
 
     if not desired:
         raise RuntimeError("Empty MD_PATH for Markdown snippet resolution")
@@ -2409,31 +2425,75 @@ def get_snippet_for_md_path(
     target_depth = len(desired)
     target_level = desired[-1][0]
 
-    # Scan headings in the actual Markdown file, tracking their hierarchical
-    # paths using the same semantics Cartographer uses when building the
-    # Workflowy tree (nearest preceding heading with a lower level is parent).
-    candidates: List[tuple[int, int]] = []  # (heading_line, heading_level)
-    stack: List[tuple[int, str]] = []  # (level, text)
+    # ------------------------------------------------------------------
+    # 2. Parse the actual Markdown with markdown-it-py to obtain a
+    #    heading stream that matches Cartographer's view of structure.
+    # ------------------------------------------------------------------
+    md_text = "\n".join(lines)
+    md = MarkdownIt("commonmark")
+    tokens = md.parse(md_text)
 
-    for lineno, raw in enumerate(lines, start=1):
-        stripped = raw.strip()
-        m = re.match(r"^(#{1,32})\s*(.*)$", stripped)
-        if not m:
+    headings: List[dict[str, Any]] = []
+    stack: List[tuple[int, str]] = []  # (level, normalized_text)
+
+    for idx, token in enumerate(tokens):
+        if token.type != "heading_open":
             continue
-        level = len(m.group(1))
-        text = (m.group(2) or "").strip()
 
-        # Maintain heading stack
+        # Derive heading level from <hN> tag; fall back to level 1 on anomalies.
+        try:
+            level = int(token.tag[1]) if token.tag and len(token.tag) > 1 else 1
+        except Exception:  # noqa: BLE001
+            level = 1
+
+        # Heading text is carried by the following inline token.
+        text = ""
+        if idx + 1 < len(tokens) and tokens[idx + 1].type == "inline":
+            text = tokens[idx + 1].content or ""
+        norm = whiten_text_for_header_compare(text).casefold()
+
+        # Maintain a stack of (level, norm_text) following the same
+        # semantics as Cartographer's MD_PATH generation: the nearest
+        # preceding heading with a *lower* level is the parent.
         while stack and stack[-1][0] >= level:
             stack.pop()
-        stack.append((level, text))
+        stack.append((level, norm))
 
-        if len(stack) != target_depth:
+        # Compute the starting line for this heading from token.map when
+        # available; fall back to 1-based index 1 if mapping is missing.
+        start0 = None
+        if getattr(token, "map", None):  # type: ignore[attr-defined]
+            start0 = token.map[0]  # 0-based
+        elif idx + 1 < len(tokens) and getattr(tokens[idx + 1], "map", None):  # type: ignore[attr-defined]
+            start0 = tokens[idx + 1].map[0]
+        if start0 is None:
+            start0 = 0
+        start_line = start0 + 1
+
+        headings.append(
+            {
+                "level": level,
+                "path": list(stack),  # copy of current (level, norm_text) chain
+                "start_line": start_line,
+            }
+        )
+
+    if not headings:
+        raise RuntimeError(f"No headings found while resolving MD_PATH for {file_path!r}")
+
+    # ------------------------------------------------------------------
+    # 3. Match MD_PATH against the normalized heading paths.
+    # ------------------------------------------------------------------
+    candidates: List[tuple[int, dict[str, Any]]] = []
+    for i, h in enumerate(headings):
+        path_chain = h.get("path") or []
+        if len(path_chain) != target_depth:
             continue
-
-        # Compare (level, text) chain
-        if all(stack[i][0] == desired[i][0] and stack[i][1] == desired[i][1] for i in range(target_depth)):
-            candidates.append((lineno, level))
+        if all(
+            path_chain[j][0] == desired[j][0] and path_chain[j][1] == desired[j][1]
+            for j in range(target_depth)
+        ):
+            candidates.append((i, h))
 
     if not candidates:
         raise RuntimeError(
@@ -2445,20 +2505,23 @@ def get_snippet_for_md_path(
             f"({len(candidates)} matches); refresh Cartographer mapping."
         )
 
-    heading_line, heading_level = candidates[0]
+    match_index, match = candidates[0]
+    heading_line = int(match.get("start_line") or 1)
+    heading_level = int(match.get("level") or target_level)
 
-    # Core span: from this heading down to just before the next heading of the
-    # same or higher level.
+    # ------------------------------------------------------------------
+    # 4. Core span: from this heading down to just before the next
+    #    heading of the same or higher level in the AST stream.
+    # ------------------------------------------------------------------
     core_start = heading_line
     core_end = n
-    for j in range(heading_line + 1, n + 1):
-        s = lines[j - 1].strip()
-        m = re.match(r"^(#{1,32})\s*(.*)$", s)
-        if not m:
-            continue
-        lvl = len(m.group(1))
-        if lvl <= heading_level:
-            core_end = j - 1
+
+    for j in range(match_index + 1, len(headings)):
+        other = headings[j]
+        other_level = int(other.get("level") or 0)
+        other_start = int(other.get("start_line") or 0)
+        if other_level <= heading_level and other_start > 0:
+            core_end = other_start - 1
             break
 
     if core_end < core_start:
@@ -2468,7 +2531,7 @@ def get_snippet_for_md_path(
     end_line = min(n, core_end + context)
 
     metadata = {
-        "resolution_strategy": "md_path_exact",
+        "resolution_strategy": "md_path_ast",
         "confidence": 1.0,
         "ambiguity": "none",
         "candidates": None,
