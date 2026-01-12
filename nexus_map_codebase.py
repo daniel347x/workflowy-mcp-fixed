@@ -3905,6 +3905,9 @@ def update_beacon_from_node_js_ts(
             kind="ast",
             comment_text=None,
         )
+        print(f"[CARTO-JS-TS-DEBUG] Case 2: about to indent beacon block", file=sys.stderr, flush=True)
+        new_block = _indent_beacon_block(new_block, insert_idx)
+        print(f"[CARTO-JS-TS-DEBUG] Case 2: indented, about to write file", file=sys.stderr, flush=True)
         new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
         try:
             with open(file_path, "w", encoding="utf-8") as f:
