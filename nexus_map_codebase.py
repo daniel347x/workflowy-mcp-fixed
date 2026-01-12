@@ -1058,7 +1058,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
     ether_by_mdpath: dict[tuple[str, ...], dict[str, Any]] = {}
     ether_by_name: dict[str, dict[str, Any]] = {}
 
-    TARGET_FUNC = "buildFullMarkdownPathFromDom"
+    TARGET_FUNC = "extractUuidFromText"
+    import sys as _carto_debug_sys
 
     for e in ether_children:
         note_e = e.get("note") or ""
@@ -1092,6 +1093,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
             print(
                 "[CARTO-DEBUG] ether child candidate for TARGET_FUNC:",
                 {"name": name_e, "id": e.get("id"), "qual": qual},
+                file=_carto_debug_sys.stderr,
+                flush=True,
             )
 
     for s in source_children:
@@ -1107,19 +1110,25 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
         )
 
         if debug_hit:
-            print("[CARTO-DEBUG] SOURCE child before matching:")
+            print("[CARTO-DEBUG] SOURCE child before matching:", file=_carto_debug_sys.stderr, flush=True)
             print(
                 "[CARTO-DEBUG]   name_s=", repr(name_s),
                 "qual_s=", repr(qual_s),
                 "b_id_s=", repr(b_id_s),
+                file=_carto_debug_sys.stderr,
+                flush=True,
             )
             print(
                 "[CARTO-DEBUG]   ether_by_ast keys=",
                 list(ether_by_ast.keys()),
+                file=_carto_debug_sys.stderr,
+                flush=True,
             )
             print(
                 "[CARTO-DEBUG]   ether_by_beacon keys=",
                 list(ether_by_beacon.keys()),
+                file=_carto_debug_sys.stderr,
+                flush=True,
             )
 
         # 1) Beacon id
@@ -1129,6 +1138,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                 print(
                     "[CARTO-DEBUG]   MATCH via BEACON id:",
                     {"b_id_s": b_id_s, "match_id": match.get("id")},
+                    file=_carto_debug_sys.stderr,
+                    flush=True,
                 )
         else:
             # 2) AST_QUALNAME
@@ -1138,6 +1149,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                     print(
                         "[CARTO-DEBUG]   MATCH via AST_QUALNAME:",
                         {"qual_s": qual_s, "match_id": match.get("id")},
+                        file=_carto_debug_sys.stderr,
+                        flush=True,
                     )
             else:
                 # 3) MD_PATH (whitened per-line comparison)
@@ -1152,6 +1165,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                             print(
                                 "[CARTO-DEBUG]   MATCH via MD_PATH:",
                                 {"key_s": key_s, "match_id": match.get("id")},
+                                file=_carto_debug_sys.stderr,
+                                flush=True,
                             )
                 # 4) Raw name fallback
                 if match is None and isinstance(name_s, str) and name_s in ether_by_name:
@@ -1160,11 +1175,13 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                         print(
                             "[CARTO-DEBUG]   MATCH via raw name:",
                             {"name_s": name_s, "match_id": match.get("id")},
+                            file=_carto_debug_sys.stderr,
+                            flush=True,
                         )
 
         if match is None:
             if debug_hit:
-                print("[CARTO-DEBUG]   NO MATCH for source child")
+                print("[CARTO-DEBUG]   NO MATCH for source child", file=_carto_debug_sys.stderr, flush=True)
             # No identity match at this level; we do not attempt to force ids.
             continue
 
@@ -1175,6 +1192,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                 print(
                     "[CARTO-DEBUG]   Seeded id from match:",
                     {"seed_id": s["id"]},
+                    file=_carto_debug_sys.stderr,
+                    flush=True,
                 )
 
         # Whiten-based no-op suppression: if name/note are semantically equal
@@ -1192,6 +1211,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
             print(
                 "[CARTO-DEBUG]   FINAL source child after matching:",
                 {"name": s.get("name"), "id": s.get("id"), "note": s.get("note")},
+                file=_carto_debug_sys.stderr,
+                flush=True,
             )
 
         # Recurse into children with the same Cartographer-aware logic.
