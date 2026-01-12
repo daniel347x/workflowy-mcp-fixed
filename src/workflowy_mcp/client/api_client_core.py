@@ -627,7 +627,12 @@ class WorkFlowyClientCore:
         """
         nodes = self._get_nodes_export_cache_nodes()
         node_id = node.id
-        updated = self._normalize_node_for_nodes_export_cache(node.model_dump())
+        # Use exclude_none=True so partial updates (e.g. name/note-only beacon
+        # refreshes) do not clobber existing metadata like parent_id/priority
+        # with None.
+        updated = self._normalize_node_for_nodes_export_cache(
+            node.model_dump(exclude_none=True)
+        )
         for idx, existing in enumerate(nodes):
             if str(existing.get("id")) == node_id:
                 # Preserve any extraneous keys from the existing snapshot but
