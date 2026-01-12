@@ -969,6 +969,43 @@ async def export_nodes_impl(
 
     # Filter if needed
     all_nodes = data.get("nodes", []) or []
+
+    # >>> CARTO-DEBUG-EXPORT <<<
+    # Check if target function exists in the raw cache before filtering
+    TARGET_FUNC = "extractUuidFromText"
+    import sys as _etch_debug_sys
+    
+    _debug_nodes_map = {n['id']: n for n in all_nodes if n.get('id')}
+    
+    for n in all_nodes:
+        name = n.get("name") or ""
+        note = n.get("note") or ""
+        if TARGET_FUNC in name or TARGET_FUNC in note:
+            print(f"[CARTO-DEBUG-EXPORT] Found TARGET_FUNC in export_nodes_impl (raw cache)", file=_etch_debug_sys.stderr, flush=True)
+            print(f"[CARTO-DEBUG-EXPORT] Node: id={n.get('id')} name={name!r} parent_id={n.get('parent_id') or n.get('parentId')}", file=_etch_debug_sys.stderr, flush=True)
+            print(f"[CARTO-DEBUG-EXPORT] Note: {note!r}", file=_etch_debug_sys.stderr, flush=True)
+            
+            # Walk up parents
+            chain = []
+            curr = n
+            depth = 0
+            while curr and depth < 20:
+                pid = curr.get("parent_id") or curr.get("parentId")
+                if not pid:
+                    chain.append("ROOT_OR_DETACHED")
+                    break
+                parent = _debug_nodes_map.get(pid)
+                if parent:
+                    pname = parent.get("name", "???")
+                    chain.append(f"{pname} ({pid})")
+                    curr = parent
+                else:
+                    chain.append(f"MISSING_PARENT ({pid})")
+                    break
+                depth += 1
+            
+            print(f"[CARTO-DEBUG-EXPORT] Parent Chain: {' -> '.join(chain)}", file=_etch_debug_sys.stderr, flush=True)
+    # >>> END CARTO-DEBUG-EXPORT <<<
     total_before_filter = len(all_nodes)
 
     if node_id is None:
