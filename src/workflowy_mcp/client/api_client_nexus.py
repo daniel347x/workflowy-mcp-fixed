@@ -3554,6 +3554,56 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             # Logging must never interfere with tool behavior.
             pass
 
+        # 6) Auto-refresh the enclosing FILE node so the Ether rendering updates immediately.
+        # This mirrors the manual F12-on-FILE workflow but happens automatically after
+        # the beacon update completes, giving immediate visual feedback in Workflowy.
+        file_node_id_for_refresh = str(file_node.get("id"))
+        try:
+            # Safety check: ensure source_path points to a file, not a directory.
+            if os.path.isfile(source_path):
+                log_event(
+                    f"update_beacon_from_node: auto-refreshing FILE node {file_node_id_for_refresh} "
+                    f"(path={source_path!r})",
+                    "BEACON",
+                )
+                refresh_result = await self.refresh_file_node_beacons(
+                    file_node_id=file_node_id_for_refresh,
+                    dry_run=False,
+                )
+                result["auto_refresh"] = {
+                    "success": True,
+                    "file_node_id": file_node_id_for_refresh,
+                    "stats": {
+                        "nodes_created": refresh_result.get("nodes_created"),
+                        "nodes_updated": refresh_result.get("nodes_updated"),
+                        "nodes_deleted": refresh_result.get("nodes_deleted"),
+                        "nodes_moved": refresh_result.get("nodes_moved"),
+                    },
+                }
+            else:
+                # source_path is not a file (possibly a directory or missing);
+                # skip auto-refresh without error.
+                log_event(
+                    f"update_beacon_from_node: skipping auto-refresh (source_path={source_path!r} "
+                    f"is not a file)",
+                    "BEACON",
+                )
+                result["auto_refresh"] = {
+                    "success": False,
+                    "reason": "source_path_not_a_file",
+                }
+        except Exception as e:  # noqa: BLE001
+            # Auto-refresh is best-effort; failures are logged but do not break
+            # the beacon update itself.
+            log_event(
+                f"update_beacon_from_node: auto-refresh failed for FILE {file_node_id_for_refresh}: {e}",
+                "BEACON",
+            )
+            result["auto_refresh"] = {
+                "success": False,
+                "error": str(e),
+            }
+
         return result
 
     async def refresh_folder_cartographer_sync(
