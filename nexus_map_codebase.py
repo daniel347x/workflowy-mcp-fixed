@@ -3326,6 +3326,13 @@ def update_beacon_from_node_python(
     beacon_id = _extract_beacon_id_from_note(note)
     ast_qualname = _extract_ast_qualname_from_note(note)
 
+    print(
+        f"[CARTOGRAPHER] update_beacon_from_node_python start "
+        f"(file_path={file_path!r}, base_name={base_name!r}, "
+        f"tags={tags}, beacon_id={beacon_id!r}, ast_qualname={ast_qualname!r})",
+        file=sys.stderr,
+    )
+
     result: Dict[str, Any] = {
         "language": "python",
         "file_path": file_path,
@@ -3460,7 +3467,7 @@ def update_beacon_from_node_python(
             target_line: Optional[int] = None
             if ast_qualname:
                 try:
-                    outline_nodes = parse_js_ts_outline(file_path)
+                    outline_nodes = parse_file_outline(file_path)
                 except Exception:
                     outline_nodes = []
 
@@ -3619,6 +3626,12 @@ def update_beacon_from_node_python(
         return result
 
     # Otherwise, noop for now.
+    print(
+        "[CARTOGRAPHER] update_beacon_from_node_python noop "
+        f"(file_path={file_path!r}, base_name={base_name!r}, "
+        f"tags={tags}, beacon_id={beacon_id!r}, ast_qualname={ast_qualname!r})",
+        file=sys.stderr,
+    )
     return result
 
 

@@ -63,6 +63,12 @@ def _log_glimpse_to_file(operation_type: str, node_id: str, result: dict[str, An
         pass
 
 
+# @beacon[
+#   id=auto-beacon@parse_path_or_root_from_note-cw31,
+#   role=parse_path_or_root_from_note,
+#   slice_labels=parse_path_or_root_from_note,nexus-test,
+#   kind=ast,
+# ]
 def parse_path_or_root_from_note(note_str: str | None) -> str | None:
     """Extract a filesystem path from a Cartographer note header.
 
@@ -653,6 +659,18 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         logger = _ClientLogger()
 
         # Helper: derive a quick-and-dirty search token from a Cartographer node name.
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.beacon_get_code_snippet._derive_search_text_from_node_name-qsxf,
+        #   role=WorkFlowyClientNexus.beacon_get_code_snippet._derive_search_text_from_node_name,
+        #   slice_labels=WorkFlowyClientNexus-beacon_get_code_snippet-_derive_search_text_from_node_name,nexus-test,
+        #   kind=ast,
+        # ]
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.beacon_get_code_snippet._derive_search_text_from_node_name-beqx,
+        #   role=WorkFlowyClientNexus.beacon_get_code_snippet._derive_search_text_from_node_name,
+        #   slice_labels=WorkFlowyClientNexus-beacon_get_code_snippet-_derive_search_text_from_node_name,nexus-foo,
+        #   kind=ast,
+        # ]
         def _derive_search_text_from_node_name(raw_name: str) -> str:
             if not raw_name:
                 return ""
@@ -3414,6 +3432,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "ext": ext,
             }
 
+        log_event(
+            f"update_beacon_from_node dispatch (node_id={node_id}, "
+            f"source_path={source_path!r}, ext={ext}, name={name!r})",
+            "BEACON",
+        )
+
         try:
             result = helper(source_path, name, note)  # type: ignore[misc]
         except Exception as e:  # noqa: BLE001
@@ -3427,6 +3451,16 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         result.setdefault("success", True)
         result.setdefault("node_id", node_id)
         result.setdefault("source_path", source_path)
+
+        log_event(
+            "update_beacon_from_node helper_result "
+            f"(op={result.get('operation')}, "
+            f"lang={result.get('language')}, "
+            f"beacon_id={result.get('beacon_id')!r}, "
+            f"ast_qualname={result.get('ast_qualname')!r}, "
+            f"tags={result.get('tags')})",
+            "BEACON",
+        )
 
         # 4) Update local /nodes-export cache name + note to reflect on-disk state.
         # This is critical so that subsequent operations (WEAVE, F12 file refresh)
