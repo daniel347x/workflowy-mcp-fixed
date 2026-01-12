@@ -848,6 +848,52 @@ async def reconcile_tree(
         log("   REORDER phase skipped: no creates or moves; sibling order assumed correct")
     else:
         reorder_count = 0
+
+        def _compute_lis_indices(desired_seq: list[str], current_seq: list[str]) -> set[int]:
+            """Return indices in desired_seq that form a longest increasing subsequence.
+
+            We map each desired ID to its position in the current sibling list, producing
+            a sequence of integers. A longest increasing subsequence (LIS) in that
+            integer sequence corresponds to a maximal set of children that already
+            appear in the correct relative order. Elements *not* in the LIS are the
+            minimal set that must be moved-to-TOP to realize the desired order when
+            using only move_node(..., position="top").
+            """
+            index_in_current: dict[str, int] = {cid: idx for idx, cid in enumerate(current_seq)}
+
+            pos_seq: list[int] = []
+            valid_indices: list[int] = []
+            for i, cid in enumerate(desired_seq):
+                if cid in index_in_current:
+                    pos_seq.append(index_in_current[cid])
+                    valid_indices.append(i)
+
+            n = len(pos_seq)
+            if n == 0:
+                return set()
+
+            # O(n^2) DP is fine for typical sibling counts (tens, not thousands)
+            dp = [1] * n
+            prev = [-1] * n
+            best_end = 0
+            for i in range(n):
+                for j in range(i):
+                    if pos_seq[j] < pos_seq[i] and dp[j] + 1 > dp[i]:
+                        dp[i] = dp[j] + 1
+                        prev[i] = j
+                if dp[i] > dp[best_end]:
+                    best_end = i
+
+            lis_positions: list[int] = []
+            k = best_end
+            while k != -1:
+                lis_positions.append(k)
+                k = prev[k]
+            lis_positions.reverse()
+
+            # Map LIS positions back to indices in desired_seq
+            return {valid_indices[pos] for pos in lis_positions}
+
         for p, desired in Order_S.items():
             if p is None:
                 continue
@@ -855,38 +901,91 @@ async def reconcile_tree(
             if not desired_ids:
                 continue
 
-        # If this parent has truncated children in the source JSON, we treat its
-        # existing children as an opaque blob: we can still move/delete the parent
-        # as a whole, and we can append new children, but we do NOT try to
-        # selectively reorder potentially-hidden originals.
+            # If this parent has truncated children in the source JSON, we treat its
+            # existing children as an opaque blob: we can still move/delete the parent
+            # as a whole, and we can append new children, but we do NOT try to
+            # selectively reorder potentially-hidden originals.
             if p in truncated_parents:
-                log(f"   Parent {p}: children_status != 'complete' in source; skipping REORDER to avoid touching hidden children")
+                log(
+                    "   Parent %s: children_status != 'complete' in source; "
+                    "skipping REORDER to avoid touching hidden children" % p
+                )
                 continue
 
-        # Compare current order vs desired order. If they already match, skip
-        # emitting no-op move operations that would just burn rate limit.
+            # Compare current order vs desired order. If they already match exactly,
+            # skip emitting any move operations.
             current_children = Children_T.get(p, [])
             current_ids = [cid for cid in current_children if cid in desired_ids]
             if current_ids == desired_ids:
                 log(f"   Parent {p}: children already in desired order; skipping REORDER")
                 continue
 
-            log(f"   Parent {p}: Reordering {len(desired_ids)} children")
-            log(f"      Desired order (reversed for TOP positioning): {list(reversed(desired_ids))}")
-            for idx, cid in enumerate(reversed(desired_ids)):
+            # Compute LIS of desired_ids mapped into current_ids. Nodes that are part of
+            # the LIS already appear in the correct relative order and do not need to be
+            # moved. Only the complement (desired positions not in the LIS) require
+            # move_node(..., position="top") operations.
+            lis_indices = _compute_lis_indices(desired_ids, current_ids)
+
+            if not lis_indices:
+                # Fallback: no usable LIS; preserve existing behavior (move all children).
+                to_move_indices = list(range(len(desired_ids)))
+                log(
+                    "   Parent %s: no LIS found, falling back to full REORDER of %d children"
+                    % (p, len(desired_ids))
+                )
+            else:
+                to_move_indices = [i for i in range(len(desired_ids)) if i not in lis_indices]
+                log(
+                    "   Parent %s: REORDER will move %d of %d children (LIS anchors=%d)"
+                    % (p, len(to_move_indices), len(desired_ids), len(lis_indices))
+                )
+
+            if not to_move_indices:
+                log(f"   Parent {p}: no children require moves after LIS analysis; skipping REORDER")
+                continue
+
+            # Process moves from right to left in desired order so that the final
+            # sequence after a series of move-to-TOP operations matches desired_ids.
+            log(f"      Desired order: {desired_ids}")
+            log(f"      Indices to move (right-to-left): {list(reversed(to_move_indices))}")
+
+            for seq_index, i in enumerate(reversed(to_move_indices)):
+                cid = desired_ids[i]
                 reorder_count += 1
                 if dry_run:
-                    log(f"      [DRY-RUN] Would REORDER: move {cid} to TOP of parent {p}")
+                    log(
+                        "      [DRY-RUN] Would REORDER: move %s (desired_index=%d) "
+                        "to TOP of parent %s" % (cid, i, p)
+                    )
                 else:
                     try:
-                        log(f"      >>> REORDER: Moving {cid} to TOP of parent {p}")
+                        log(
+                            "      >>> REORDER: Moving %s (desired_index=%d) "
+                            "to TOP of parent %s" % (cid, i, p)
+                        )
                         await move_node(cid, p, position="top")
                         log(f"      >>> REORDER SUCCESS for {cid}")
                     except Exception as e:
-                        log(f"      >>> REORDER FAILED for {cid}: {type(e).__name__}: {str(e)}")
+                        log(
+                            f"      >>> REORDER FAILED for {cid}: "
+                            f"{type(e).__name__}: {str(e)}"
+                        )
                         raise
-                planned_reorders.append({'id': cid, 'parent': p, 'position': 'top', 'sequence_index': idx})
-        log(f"   REORDER phase complete - processed {len(Order_S)} parents, {reorder_count} reorder moves")
+
+                planned_reorders.append(
+                    {
+                        'id': cid,
+                        'parent': p,
+                        'position': 'top',
+                        'sequence_index': seq_index,
+                        'desired_index': i,
+                    }
+                )
+
+        log(
+            f"   REORDER phase complete - processed {len(Order_S)} parents, "
+            f"{reorder_count} reorder moves"
+        )
 
     # ------------- phase 4: UPDATE content -------------
     log(f"\n[PHASE 4] START - UPDATE content")
