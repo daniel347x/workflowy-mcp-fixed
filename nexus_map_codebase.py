@@ -3471,6 +3471,13 @@ def update_beacon_from_node_python(
             )
             return result
         else:
+            # DEBUG log create path
+            try:
+                with open(debug_log_path, "a", encoding="utf-8") as f:
+                    f.write(f"  block_span is NONE -> falling to CREATE (defaulting to AST)\n")
+            except Exception:
+                pass
+
             # Case 1b: CREATE beacon from note metadata (beacon_id in note, not on disk).
             # Use AST_QUALNAME to find insertion point.
             target_line: Optional[int] = None
@@ -3806,13 +3813,30 @@ def update_beacon_from_node_js_ts(
 
             # Preserve existing kind (span vs ast) when updating an on-disk beacon.
             existing_kind = "ast"
+            found_beacon_debug = False
             for b in beacons:
                 if (b.get("id") or "").strip() != (beacon_id or "").strip():
                     continue
                 k_val = (b.get("kind") or "").strip().lower()
+                
+                # DEBUG log match
+                try:
+                    with open(debug_log_path, "a", encoding="utf-8") as f:
+                        f.write(f"  MATCH FOUND: id={b.get('id')!r}, kind={k_val!r}\n")
+                except Exception:
+                    pass
+                found_beacon_debug = True
+
                 if k_val in {"ast", "span"}:
                     existing_kind = k_val
                 break
+            
+            if not found_beacon_debug:
+                try:
+                    with open(debug_log_path, "a", encoding="utf-8") as f:
+                        f.write(f"  NO MATCH FOUND in loop for id={beacon_id!r}\n")
+                except Exception:
+                    pass
 
             new_block = _build_beacon_block(
                 bid=beacon_id,
@@ -4078,6 +4102,21 @@ def update_beacon_from_node_markdown(
         return result
 
     beacons = parse_markdown_beacon_blocks(lines)
+
+    # DEBUG: Log beacon resolution attempts to file
+    try:
+        debug_log_path = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log"
+        with open(debug_log_path, "a", encoding="utf-8") as f:
+            import datetime
+            ts = datetime.datetime.now().isoformat()
+            f.write(f"\n[{ts}] DEBUG: update_beacon_from_node_markdown\n")
+            f.write(f"  file_path: {file_path}\n")
+            f.write(f"  beacon_id (from note): {beacon_id!r}\n")
+            f.write(f"  beacons found in file: {len(beacons)}\n")
+            # f.write(f"  beacons: {[b.get('id') for b in beacons]}\n") # Verbose
+    except Exception:
+        pass
+
 
     def _find_beacon_block_by_id(bid: str) -> Optional[tuple[int, int, int]]:
         bid = (bid or "").strip()
