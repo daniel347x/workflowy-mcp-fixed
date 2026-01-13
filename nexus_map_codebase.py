@@ -6,7 +6,7 @@ import argparse
 import tempfile
 import random
 import string
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import re
 import unicodedata
