@@ -164,17 +164,57 @@ def scan_active_weaves(nexus_runs_base: str) -> list[dict[str, Any]]:
     return active
 
 
+# @beacon[
+#   id=auto-beacon@_is_notes_name-bpic,
+#   role=_is_notes_name,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=ast,
+# ]
 def _is_notes_name(raw_name: str) -> bool:
-    """Detect Notes[...] roots (strip leading emoji/bullets)."""
+    """Detect Notes[...] roots (strip leading emoji/bullets).
+
+    IMPORTANT (Jan 2026):
+    We now require an explicit NOTES emoji/badge prefix so that ordinary
+    headings like "Notes on X" in source files are not treated as persistent
+    NOTES subtrees during Cartographer refresh/reconcile.
+
+    Recognized prefixes:
+    - 📝  user-authored persistent NOTES roots
+    - 🅿️  internal "Notes (parking)" nodes
+    - 🧩  internal "Notes (salvaged)" nodes
+    """
     name = (raw_name or "").strip()
     if not name:
         return False
-    if not name[0].isalnum():
-        name = name[1:].lstrip()
-    return name.lower().startswith("notes")
+
+    # Require one of the known NOTES markers as the leading character.
+    # This gates out plain headings like "Notes on ..." that are part of the
+    # source syntax tree rather than persistent NOTES subtrees.
+    first = name[0]
+    if first not in {"📝", "🅿️", "🧩"}:
+        return False
+
+    # Strip the leading marker and any immediate non-alphanumeric decoration
+    # (bullets, arrows, etc.), then look for a "notes..." prefix in the
+    # remaining text.
+    candidate = name[1:].lstrip()
+    if not candidate:
+        return False
+    if not candidate[0].isalnum():
+        candidate = candidate[1:].lstrip()
+        if not candidate:
+            return False
+
+    return candidate.lower().startswith("notes")
 
 
 @dataclass
+# @beacon[
+#   id=auto-beacon@NotesSalvageContext-rkks,
+#   role=NotesSalvageContext,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=ast,
+# ]
 class NotesSalvageContext:
     """Shared NOTES salvage/restore metadata for a single FILE node.
 
@@ -2497,6 +2537,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "errors": errors
         }
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus._refresh_file_node_beacons_legacy-zjoy,
+    #   role=WorkFlowyClientNexus._refresh_file_node_beacons_legacy,
+    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,
+    #   kind=ast,
+    # ]
     async def _refresh_file_node_beacons_legacy(
         self,
         file_node_id: str,
@@ -2869,6 +2915,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "notes_path_unmatched": notes_path_unmatched,
         }
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus.refresh_file_node_beacons-wgth,
+    #   role=WorkFlowyClientNexus.refresh_file_node_beacons,
+    #   slice_labels=ra-notes,ra-notes-cartographer,
+    #   kind=ast,
+    # ]
     async def refresh_file_node_beacons(
         self,
         file_node_id: str,
@@ -3695,6 +3747,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         return result
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync-62ih,
+    #   role=WorkFlowyClientNexus.refresh_folder_cartographer_sync,
+    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,
+    #   kind=ast,
+    # ]
     async def refresh_folder_cartographer_sync(
         self,
         folder_node_id: str,
@@ -3766,6 +3824,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         root_node = node_by_id.get(str(folder_node_id))
         note_text_root = str(root_node.get("note") or "") if root_node else ""
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync._parse_path_from_note-cm7o,
+        #   role=WorkFlowyClientNexus.refresh_folder_cartographer_sync._parse_path_from_note,
+        #   slice_labels=ra-notes,
+        #   kind=ast,
+        # ]
         def _parse_path_from_note(note_str: str) -> str | None:
             for line in note_str.splitlines():
                 stripped = line.strip()
@@ -3778,10 +3842,22 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     return val or None
             return None
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync._is_folder_node-6j3u,
+        #   role=WorkFlowyClientNexus.refresh_folder_cartographer_sync._is_folder_node,
+        #   slice_labels=ra-notes,
+        #   kind=ast,
+        # ]
         def _is_folder_node(node: dict[str, Any]) -> bool:
             name = str(node.get("name") or "").strip()
             return name.startswith("📂")
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync._canonical_path-z2s0,
+        #   role=WorkFlowyClientNexus.refresh_folder_cartographer_sync._canonical_path,
+        #   slice_labels=ra-notes,
+        #   kind=ast,
+        # ]
         def _canonical_path(path: str) -> str:
             return os.path.normcase(os.path.normpath(path))
 
@@ -3803,6 +3879,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         stashed_notes_by_path: dict[str | None, list[str]] = {}
         notes_moved_to_root = 0
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync._stash_notes_node-kj4d,
+        #   role=WorkFlowyClientNexus.refresh_folder_cartographer_sync._stash_notes_node,
+        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,
+        #   kind=ast,
+        # ]
         def _stash_notes_node(notes_node_id: str, owner_path: str | None) -> None:
             key = _canonical_path(owner_path) if owner_path else None
             stashed_notes_by_path.setdefault(key, []).append(notes_node_id)
@@ -4286,6 +4368,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "notes_unmatched": notes_unmatched,
         }
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus._collect_notes_salvage_context_for_file-u655,
+    #   role=WorkFlowyClientNexus._collect_notes_salvage_context_for_file,
+    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,
+    #   kind=ast,
+    # ]
     async def _collect_notes_salvage_context_for_file(
         self,
         *,
@@ -4312,6 +4400,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         primary deletion guard.
         """
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus._collect_notes_salvage_context_for_file._canonical_path-uhh8,
+        #   role=WorkFlowyClientNexus._collect_notes_salvage_context_for_file._canonical_path,
+        #   slice_labels=ra-notes,
+        #   kind=ast,
+        # ]
         def _canonical_path(path: str) -> str:
             return os.path.normcase(os.path.normpath(path))
 
@@ -4497,6 +4591,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         return ctx
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus._restore_notes_for_file-aya1,
+    #   role=WorkFlowyClientNexus._restore_notes_for_file,
+    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,
+    #   kind=ast,
+    # ]
     async def _restore_notes_for_file(
         self,
         *,
@@ -4523,6 +4623,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         explicitly_preserved_ids).
         """
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus._restore_notes_for_file._canonical_path-cnpc,
+        #   role=WorkFlowyClientNexus._restore_notes_for_file._canonical_path,
+        #   slice_labels=ra-notes,
+        #   kind=ast,
+        # ]
         def _canonical_path(path: str) -> str:
             return os.path.normcase(os.path.normpath(path))
 
@@ -4551,6 +4657,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         salvaged_root_id: str | None = None
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus._restore_notes_for_file._ensure_salvaged_root-s2b8,
+        #   role=WorkFlowyClientNexus._restore_notes_for_file._ensure_salvaged_root,
+        #   slice_labels=ra-notes,
+        #   kind=ast,
+        # ]
         async def _ensure_salvaged_root() -> str | None:
             """Locate or create the 🧩 Notes (salvaged) root under the FILE node."""
             nonlocal salvaged_root_id
