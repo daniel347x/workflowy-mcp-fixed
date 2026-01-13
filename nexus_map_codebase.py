@@ -81,6 +81,12 @@ def format_file_note(path: str, line_count: int | None = None, sha1: str | None 
 
 # --- Parsers ---
 
+# @beacon[
+#   id=auto-beacon@tokens_to_nexus_tree-fcan,
+#   role=tokens_to_nexus_tree,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,
+#   kind=ast,
+# ]
 def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
     """Convert markdown-it-py token stream to NEXUS hierarchical tree.
     
@@ -472,7 +478,9 @@ def _extract_markdown_beacon_context(lines: list[str], comment_line: int) -> Lis
 
 # @beacon[
 #   id=carto-js-ts@apply_markdown_beacons,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-md,
+#   kind=span,
 # ]
 # Phase 2 JS/TS: Markdown beacon application template.
 # Reference for apply_js_beacons(...) when attaching JS/TS span
@@ -836,6 +844,21 @@ def apply_markdown_beacons(
             note_lines.append("CONTEXT COMMENTS (MD):")
             note_lines.extend(context_lines)
 
+        # Raw Markdown span text between @beacon[...] and @beacon-close[...]
+        span_text_lines: list[str] = []
+        if isinstance(span_start, int) and isinstance(span_end, int):
+            if 1 <= span_start <= span_end <= len(lines):
+                span_text_lines = lines[span_start - 1 : span_end]
+                # Trim leading/trailing blank lines inside the span
+                while span_text_lines and not span_text_lines[0].strip():
+                    span_text_lines.pop(0)
+                while span_text_lines and not span_text_lines[-1].strip():
+                    span_text_lines.pop()
+        if span_text_lines:
+            note_lines.append("")
+            note_lines.append("SPAN TEXT:")
+            note_lines.extend(span_text_lines)
+
         span_node = {
             "name": name,
             "note": "\n".join(note_lines),
@@ -850,6 +873,12 @@ def apply_markdown_beacons(
             root_children.append(span_node)
 
 
+# @beacon[
+#   id=auto-beacon@parse_markdown_structure-z918,
+#   role=parse_markdown_structure,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,
+#   kind=ast,
+# ]
 def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
     """Parses Markdown into NEXUS node tree using markdown-it-py.
     
@@ -924,6 +953,12 @@ def normalize_for_match(s: str) -> str:
 _TAG_LIKE_PATTERN = re.compile(r"<[A-Za-z_/][-A-Za-z0-9_/]*>")
 
 
+# @beacon[
+#   id=auto-beacon@whiten_text_for_header_compare-56c5,
+#   role=whiten_text_for_header_compare,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,
+#   kind=ast,
+# ]
 def whiten_text_for_header_compare(text: str | None) -> str:
     """Whiten heading-like text for structural comparison.
 
@@ -1000,6 +1035,12 @@ def _extract_ast_qualname_from_note(note: str | None) -> str | None:
     return None
 
 
+# @beacon[
+#   id=auto-beacon@_extract_md_path_from_note-eihl,
+#   role=_extract_md_path_from_note,
+#   slice_labels=ra-snippet-range-ast-md,
+#   kind=ast,
+# ]
 def _extract_md_path_from_note(note: str | None) -> list[str] | None:
     """Extract MD_PATH heading lines from a Markdown node's note, if any.
 
@@ -1025,6 +1066,12 @@ def _extract_md_path_from_note(note: str | None) -> list[str] | None:
     return path_lines or None
 
 
+# @beacon[
+#   id=auto-beacon@reconcile_trees_cartographer-2hsq,
+#   role=reconcile_trees_cartographer,
+#   slice_labels=ra-snippet-range-ast-md,
+#   kind=ast,
+# ]
 def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[str, Any]) -> None:
     """Reconcile a Cartographer-derived subtree against an existing ETHER tree.
 
@@ -1427,7 +1474,9 @@ def _find_enclosing_ast_node_for_line(
 
 # @beacon[
 #   id=carto-js-ts@apply_python_beacons,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-py,
+#   kind=span,
 # ]
 # Phase 2 JS/TS: Python beacon attachment template.
 # Reference for apply_js_beacons(...), which will decorate JS/TS
@@ -1890,7 +1939,9 @@ def get_function_signature(node: ast.FunctionDef) -> str:
 
 # @beacon[
 #   id=carto-js-ts@parse_file_outline,
-#   slice_labels=carto-js-ts,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,ra-snippet-range-ast-py,
+#   kind=span,
 # ]
 # Phase 1 JS/TS: Python AST outline template.
 # Used as the reference shape for the new JS/TS Tree-sitter-based
@@ -2019,7 +2070,9 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
 
 # @beacon[
 #   id=carto-js-ts@parse_js_ts_outline,
-#   slice_labels=carto-js-ts,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,
+#   kind=span,
 # ]
 # Phase 1 JS/TS: placeholder anchor for the future parse_js_ts_outline(...)
 # function. The next agent will define the JS/TS Tree-sitter-based outline
@@ -2687,6 +2740,77 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     return beacons
 
 
+def _sql_compute_span(
+    lines: list[str],
+    beacons: list[dict[str, Any]],
+    beacon: dict[str, Any],
+) -> Optional[Tuple[int, int]]:
+    """Compute inner span for a SQL span beacon (open/close pair).
+
+    Semantics mirror the SQL snippet helper:
+    - We look for two snippet-less beacons with the same id:
+      the first is treated as the opener, the second as the closer.
+    - The inner span is the lines strictly between the end of the opener's
+      metadata block and the start of the closer's comment line.
+    - Returns (inner_start, inner_end) in 1-based line indices, or None
+      if no valid span can be found.
+    """
+
+    n = len(lines)
+    b_id = (beacon.get("id") or "").strip()
+    if not b_id:
+        return None
+
+    comment_line = beacon.get("comment_line")
+    if not isinstance(comment_line, int) or not (1 <= comment_line <= n):
+        return None
+
+    def _block_end_lineno(comment_line: int) -> int:
+        j = max(1, int(comment_line))
+        while j <= n:
+            raw = lines[j - 1].lstrip()
+            if raw.startswith("--"):
+                body = raw.lstrip("-").lstrip()
+            else:
+                body = raw
+            if "]" in body:
+                return j
+            j += 1
+        return int(comment_line) or 1
+
+    open_end = _block_end_lineno(comment_line)
+
+    # Find the *next* snippet-less beacon with the same id after this one.
+    found_open = False
+    close_comment_line: Optional[int] = None
+    for b in beacons:
+        if (b.get("id") or "").strip() != b_id:
+            continue
+        cl = b.get("comment_line")
+        if not isinstance(cl, int):
+            continue
+        if not found_open:
+            # First occurrence (the opener)
+            if cl == comment_line:
+                found_open = True
+            continue
+        # After opener: treat as closer if it has no explicit snippet hints
+        if b.get("start_snippet") or b.get("end_snippet"):
+            continue
+        close_comment_line = cl
+        break
+
+    if close_comment_line is None:
+        return None
+
+    inner_start = open_end + 1
+    inner_end = close_comment_line - 1
+    if inner_start > inner_end:
+        return None
+
+    return inner_start, inner_end
+
+
 def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str]:
     """Extract nearby SQL comments (non-beacon) around a SQL beacon.
 
@@ -2763,6 +2887,8 @@ def apply_sql_beacons(
     if not beacons:
         return
 
+    n = len(lines)
+
     for beacon in beacons:
         if beacon.get("kind") != "span":
             continue
@@ -2801,6 +2927,28 @@ def apply_sql_beacons(
             note_lines.append("CONTEXT COMMENTS (SQL):")
             note_lines.extend(context_lines)
 
+        # Raw SQL span text between paired beacons (if any)
+        span_text_lines: List[str] = []
+        try:
+            span = _sql_compute_span(lines, beacons, beacon)
+        except Exception:  # noqa: BLE001
+            span = None
+        if span is not None:
+            span_start, span_end = span
+            span_start = max(1, span_start)
+            span_end = min(n, span_end)
+            if span_start <= span_end:
+                span_text_lines = lines[span_start - 1 : span_end]
+                # Trim leading/trailing blank lines inside the span
+                while span_text_lines and not span_text_lines[0].strip():
+                    span_text_lines.pop(0)
+                while span_text_lines and not span_text_lines[-1].strip():
+                    span_text_lines.pop()
+        if span_text_lines:
+            note_lines.append("")
+            note_lines.append("SPAN TEXT:")
+            note_lines.extend(span_text_lines)
+
         span_node = {
             "name": name,
             "note": "\n".join(note_lines),
@@ -2808,6 +2956,69 @@ def apply_sql_beacons(
         }
 
         file_children.append(span_node)
+
+
+def _sh_compute_span(
+    lines: list[str],
+    beacons: list[dict[str, Any]],
+    beacon: dict[str, Any],
+) -> Optional[Tuple[int, int]]:
+    """Compute inner span for a shell span beacon (open/close pair).
+
+    Semantics mirror the SQL helper but for '#' comments.
+    Returns (inner_start, inner_end) in 1-based indices or None.
+    """
+
+    n = len(lines)
+    b_id = (beacon.get("id") or "").strip()
+    if not b_id:
+        return None
+
+    comment_line = beacon.get("comment_line")
+    if not isinstance(comment_line, int) or not (1 <= comment_line <= n):
+        return None
+
+    def _block_end_lineno(comment_line: int) -> int:
+        j = max(1, int(comment_line))
+        while j <= n:
+            raw = lines[j - 1].lstrip()
+            if raw.startswith("#"):
+                body = raw.lstrip("#").lstrip()
+            else:
+                body = raw
+            if "]" in body:
+                return j
+            j += 1
+        return int(comment_line) or 1
+
+    open_end = _block_end_lineno(comment_line)
+
+    found_open = False
+    close_comment_line: Optional[int] = None
+    for b in beacons:
+        if (b.get("id") or "").strip() != b_id:
+            continue
+        cl = b.get("comment_line")
+        if not isinstance(cl, int):
+            continue
+        if not found_open:
+            if cl == comment_line:
+                found_open = True
+            continue
+        if b.get("start_snippet") or b.get("end_snippet"):
+            continue
+        close_comment_line = cl
+        break
+
+    if close_comment_line is None:
+        return None
+
+    inner_start = open_end + 1
+    inner_end = close_comment_line - 1
+    if inner_start > inner_end:
+        return None
+
+    return inner_start, inner_end
 
 
 def _extract_sh_beacon_context(lines: list[str], comment_line: int) -> List[str]:
@@ -2878,6 +3089,8 @@ def apply_sh_beacons(
     if not beacons:
         return
 
+    n = len(lines)
+
     for beacon in beacons:
         if beacon.get("kind") != "span":
             continue
@@ -2915,6 +3128,27 @@ def apply_sh_beacons(
             note_lines.append("CONTEXT COMMENTS (SH):")
             note_lines.extend(context_lines)
 
+        # Raw shell span text between paired beacons (if any)
+        span_text_lines: List[str] = []
+        try:
+            span = _sh_compute_span(lines, beacons, beacon)
+        except Exception:  # noqa: BLE001
+            span = None
+        if span is not None:
+            span_start, span_end = span
+            span_start = max(1, span_start)
+            span_end = min(n, span_end)
+            if span_start <= span_end:
+                span_text_lines = lines[span_start - 1 : span_end]
+                while span_text_lines and not span_text_lines[0].strip():
+                    span_text_lines.pop(0)
+                while span_text_lines and not span_text_lines[-1].strip():
+                    span_text_lines.pop()
+        if span_text_lines:
+            note_lines.append("")
+            note_lines.append("SPAN TEXT:")
+            note_lines.extend(span_text_lines)
+
         span_node = {
             "name": name,
             "note": "\n".join(note_lines),
@@ -2926,7 +3160,9 @@ def apply_sh_beacons(
 
 # @beacon[
 #   id=carto-js-ts@apply_js_beacons,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-js-ts,
+#   kind=span,
 # ]
 # Phase 2 JS/TS: JS/TS beacon attachment.
 # Decorates JS/TS AST nodes (kind=ast) and attaches span children

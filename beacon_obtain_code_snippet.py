@@ -112,7 +112,9 @@ def _read_lines(path: str) -> List[str]:
 
 # @beacon[
 #   id=carto-js-ts@_python_resolve_ast_node_heuristic,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,
+#   kind=span,
 # ]
 # Phase 3 JS/TS: Python AST heuristic template.
 # Reference for a future JS/TS heuristic helper that will resolve
@@ -357,7 +359,9 @@ def _python_resolve_ast_node_heuristic(
 
 # @beacon[
 #   id=carto-js-ts@_js_ts_resolve_ast_node_heuristic,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-js-ts,
+#   kind=span,
 # ]
 # Phase 3 JS/TS: JS/TS AST heuristic helper.
 # Resolves JS/TS AST nodes (by node_name + parent_names) to snippets using
@@ -582,6 +586,12 @@ def _js_ts_resolve_ast_node_heuristic(
 # ---------------------------------------------------------------------------
 
 
+# @beacon[
+#   id=auto-beacon@_python_find_closing_beacon_span-6az7,
+#   role=_python_find_closing_beacon_span,
+#   slice_labels=ra-snippet-range-span-beacon,
+#   kind=ast,
+# ]
 def _python_find_closing_beacon_span(
     lines: List[str],
     beacons: List[dict],
@@ -697,6 +707,12 @@ def _python_find_closing_beacon_span(
     return None
 
 
+# @beacon[
+#   id=model:forward@1,
+#   role=model:forward,
+#   slice_labels=model-forward,ra-snippet-range-ast-beacon-py,
+#   kind=ast,
+# ]
 def _python_find_ast_node_for_beacon(
     outline_nodes: List[dict], beacon_id: str
 ) -> Optional[dict]:
@@ -738,6 +754,12 @@ def _python_find_ast_node_for_beacon(
     return None
 
 
+# @beacon[
+#   id=auto-beacon@_python_comment_block_span-7bt5,
+#   role=_python_comment_block_span,
+#   slice_labels=ra-snippet-range-span-beacon,
+#   kind=ast,
+# ]
 def _python_comment_block_span(
     lines: List[str],
     comment_line: int,
@@ -823,7 +845,9 @@ def _python_comment_block_span(
 
 # @beacon[
 #   id=carto-js-ts@_python_snippet_for_beacon,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-py,
+#   kind=span,
 # ]
 # Phase 3 JS/TS: Python beacon snippet template.
 # Reference for a future JS/TS beacon helper that will return
@@ -979,6 +1003,12 @@ def _python_snippet_for_beacon(
     return start, end, lines, core_start, core_end, beacon_line
 
 
+# @beacon[
+#   id=auto-beacon@_js_ts_find_closing_beacon_span-9kja,
+#   role=_js_ts_find_closing_beacon_span,
+#   slice_labels=ra-snippet-range-span-beacon,
+#   kind=ast,
+# ]
 def _js_ts_find_closing_beacon_span(
     lines: List[str],
     beacons: List[dict],
@@ -1087,7 +1117,9 @@ def _js_ts_find_closing_beacon_span(
 
 # @beacon[
 #   id=carto-js-ts@_js_ts_find_ast_node_for_beacon,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-beacon-js-ts,
+#   kind=span,
 # ]
 # Phase 3 JS/TS: JS/TS AST node finder for beacons.
 # Searches recursively through the outline tree for AST nodes with matching beacon IDs.
@@ -1128,7 +1160,9 @@ def _js_ts_find_ast_node_for_beacon(
 
 # @beacon[
 #   id=carto-js-ts@_js_ts_snippet_for_beacon,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-js-ts,
+#   kind=span,
 # ]
 # Phase 3 JS/TS: JS/TS beacon snippet helper.
 # Returns (start, end, lines, core_start, core_end, beacon_line) for a JS/TS beacon.
@@ -1268,6 +1302,12 @@ def _js_ts_snippet_for_beacon(
 # ---------------------------------------------------------------------------
 
 
+# @beacon[
+#   id=auto-beacon@_markdown_find_closing_beacon_span-r36i,
+#   role=_markdown_find_closing_beacon_span,
+#   slice_labels=ra-snippet-range-span-beacon,
+#   kind=ast,
+# ]
 def _markdown_find_closing_beacon_span(
     lines: List[str],
     beacons: List[dict],
@@ -1371,6 +1411,12 @@ def _markdown_find_closing_beacon_span(
     return None
 
 
+# @beacon[
+#   id=auto-beacon@_markdown_comment_block_span-y6pq,
+#   role=_markdown_comment_block_span,
+#   slice_labels=ra-snippet-range-span-beacon,
+#   kind=ast,
+# ]
 def _markdown_comment_block_span(
     lines: List[str],
     comment_line: int,
@@ -1439,6 +1485,12 @@ def _markdown_comment_block_span(
     return top, bottom
 
 
+# @beacon[
+#   id=auto-beacon@_markdown_snippet_for_beacon-1whb,
+#   role=_markdown_snippet_for_beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-md,
+#   kind=ast,
+# ]
 def _markdown_snippet_for_beacon(
     file_path: str,
     beacon_id: str,
@@ -1548,6 +1600,12 @@ def _markdown_snippet_for_beacon(
 # ---------------------------------------------------------------------------
 
 
+# @beacon[
+#   id=auto-beacon@_sql_find_closing_beacon_span-1obv,
+#   role=_sql_find_closing_beacon_span,
+#   slice_labels=ra-snippet-range-span-beacon,
+#   kind=ast,
+# ]
 def _sql_find_closing_beacon_span(
     lines: List[str],
     beacons: List[dict],
@@ -1650,6 +1708,12 @@ def _sql_find_closing_beacon_span(
     return None
 
 
+# @beacon[
+#   id=auto-beacon@_sql_comment_block_span-mrwt,
+#   role=_sql_comment_block_span,
+#   slice_labels=ra-snippet-range-span-beacon,
+#   kind=ast,
+# ]
 def _sql_comment_block_span(
     lines: List[str],
     comment_line: int,
@@ -1718,6 +1782,12 @@ def _sql_comment_block_span(
     return top, bottom
 
 
+# @beacon[
+#   id=auto-beacon@_sql_snippet_for_beacon-7pxi,
+#   role=_sql_snippet_for_beacon,
+#   slice_labels=ra-snippet-range-span-beacon,
+#   kind=ast,
+# ]
 def _sql_snippet_for_beacon(
     file_path: str,
     beacon_id: str,
@@ -1725,11 +1795,13 @@ def _sql_snippet_for_beacon(
 ) -> Tuple[int, int, List[str], int, int, int]:
     """Return (start_line, end_line, lines, core_start, core_end) for a SQL beacon.
 
-    We only have span-style beacons in SQL. For v1 we:
-      - Use parse_sql_beacon_blocks() to find the beacon block.
+    Preferred path (v2):
+      - Use Cartographer's _sql_compute_span (if available) to compute the inner
+        span between paired beacons.
       - Treat the comment block around the beacon as part of the core region.
-      - For open/close delimiter pairs, the core region covers that inner span
-        plus the surrounding comment block; otherwise it is comment-centric.
+    Fallback path (legacy v1):
+      - Use _sql_find_closing_beacon_span with the same semantics as before when
+        Cartographer has not yet been upgraded.
     """
 
     if nexus_map_codebase is None:
@@ -1757,8 +1829,29 @@ def _sql_snippet_for_beacon(
                 return cl
         return None
 
-    # First, try closing-delimiter pairing
-    span = _sql_find_closing_beacon_span(lines, beacons, target)
+    # Locate the primary beacon entry (required for all paths)
+    chosen: Optional[dict] = None
+    for b in beacons:
+        if (b.get("id") or "").strip() == target:
+            chosen = b
+            break
+
+    if not chosen:
+        raise RuntimeError(f"Beacon id {beacon_id!r} not found in SQL file {file_path!r}")
+
+    # First, prefer Cartographer-driven span semantics when available
+    span: Optional[Tuple[int, int]] = None
+    compute_span = getattr(nexus_map_codebase, "_sql_compute_span", None)
+    if callable(compute_span):  # type: ignore[truthy-function]
+        try:
+            span = compute_span(lines, beacons, chosen)  # type: ignore[misc]
+        except Exception:  # noqa: BLE001
+            span = None
+
+    # Fallback: legacy closing-delimiter pairing
+    if span is None:
+        span = _sql_find_closing_beacon_span(lines, beacons, target)
+
     if span is not None:
         inner_start, inner_end = span
         comment_line = _comment_line_for_id(target)
@@ -1776,17 +1869,8 @@ def _sql_snippet_for_beacon(
         beacon_line = comment_line if comment_line is not None else inner_start
         return start, end, lines, core_start, core_end, beacon_line
 
-    # No closing delimiter found: default to symmetric context around the
+    # No closing delimiter span: default to symmetric context around the
     # opening beacon comment line (context lines above and below).
-    chosen = None
-    for b in beacons:
-        if (b.get("id") or "").strip() == target:
-            chosen = b
-            break
-
-    if not chosen:
-        raise RuntimeError(f"Beacon id {beacon_id!r} not found in SQL file {file_path!r}")
-
     comment_line = int(chosen.get("comment_line") or 1)
     core_start = comment_line
     core_end = comment_line
@@ -1823,6 +1907,12 @@ def _print_snippet(
 # ---------------------------------------------------------------------------
 
 
+# @beacon[
+#   id=auto-beacon@_sh_find_closing_beacon_span-4gfg,
+#   role=_sh_find_closing_beacon_span,
+#   slice_labels=ra-snippet-range-span-beacon,
+#   kind=ast,
+# ]
 def _sh_find_closing_beacon_span(
     lines: List[str],
     beacons: List[dict],
@@ -1926,6 +2016,12 @@ def _sh_find_closing_beacon_span(
     return None
 
 
+# @beacon[
+#   id=auto-beacon@_sh_comment_block_span-bul0,
+#   role=_sh_comment_block_span,
+#   slice_labels=ra-snippet-range-span-beacon,
+#   kind=ast,
+# ]
 def _sh_comment_block_span(
     lines: List[str],
     comment_line: int,
@@ -1994,6 +2090,12 @@ def _sh_comment_block_span(
     return top, bottom
 
 
+# @beacon[
+#   id=auto-beacon@_sh_snippet_for_beacon-vegx,
+#   role=_sh_snippet_for_beacon,
+#   slice_labels=ra-snippet-range-span-beacon,
+#   kind=ast,
+# ]
 def _sh_snippet_for_beacon(
     file_path: str,
     beacon_id: str,
@@ -2006,7 +2108,7 @@ def _sh_snippet_for_beacon(
     """
 
     if nexus_map_codebase is None:
-        raise RuntimeError("nexus_map_codebase could not be imported")
+        raise RuntimeError("nexus_map_code_snippet could not be imported")
 
     lines = _read_lines(file_path)
 
@@ -2030,8 +2132,29 @@ def _sh_snippet_for_beacon(
                 return cl
         return None
 
-    # First, try closing-delimiter pairing
-    span = _sh_find_closing_beacon_span(lines, beacons, target)
+    # Locate the primary beacon entry (required for all paths)
+    chosen: Optional[dict] = None
+    for b in beacons:
+        if (b.get("id") or "").strip() == target:
+            chosen = b
+            break
+
+    if not chosen:
+        raise RuntimeError(f"Beacon id {beacon_id!r} not found in shell file {file_path!r}")
+
+    # First, prefer Cartographer-driven span semantics when available
+    span: Optional[Tuple[int, int]] = None
+    compute_span = getattr(nexus_map_codebase, "_sh_compute_span", None)
+    if callable(compute_span):  # type: ignore[truthy-function]
+        try:
+            span = compute_span(lines, beacons, chosen)  # type: ignore[misc]
+        except Exception:  # noqa: BLE001
+            span = None
+
+    # Fallback: legacy closing-delimiter pairing
+    if span is None:
+        span = _sh_find_closing_beacon_span(lines, beacons, target)
+
     if span is not None:
         inner_start, inner_end = span
         comment_line = _comment_line_for_id(target)
@@ -2051,7 +2174,9 @@ def _sh_snippet_for_beacon(
 
 # @beacon[
 #   id=carto-js-ts@get_snippet_for_ast_qualname,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,
+#   kind=span,
 # ]
 # Phase 3 JS/TS: AST-qualname snippet template.
 # Reference for a future get_snippet_for_ast_qualname_js_ts(...)
@@ -2139,7 +2264,9 @@ def get_snippet_for_ast_qualname(
 
 # @beacon[
 #   id=carto-js-ts@get_snippet_for_ast_qualname_js_ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-js-ts,
+#   kind=span,
 # ]
 # JS/TS AST-qualname snippet helper.
 # Locates JS/TS AST nodes by ast_qualname and returns a snippet
@@ -2220,7 +2347,7 @@ def get_snippet_for_ast_qualname_js_ts(
 # @beacon[
 #   id=carto-js-ts@get_snippet_data,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,nexus-md-header-path,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,nexus-md-header-path,ra-snippet-range,
 #   kind=span,
 # ]
 # Phase 3 JS/TS: central dispatch point for snippet resolution.
@@ -2363,7 +2490,7 @@ if __name__ == "__main__":  # pragma: no cover
 # @beacon[
 #   id=auto-beacon@get_snippet_for_md_path-8iyg,
 #   role=get_snippet_for_md_path,
-#   slice_labels=nexus-md-header-path,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,
 #   kind=ast,
 # ]
 def get_snippet_for_md_path(
