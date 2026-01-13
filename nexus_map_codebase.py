@@ -1007,6 +1007,12 @@ def whiten_text_for_header_compare(text: str | None) -> str:
     return s
 
 
+# @beacon[
+#   id=auto-beacon@_extract_beacon_id_from_note-ovd8,
+#   role=_extract_beacon_id_from_note,
+#   slice_labels=ra-reconcile,
+#   kind=ast,
+# ]
 def _extract_beacon_id_from_note(note: str | None) -> str | None:
     """Extract beacon `id:` field from a node's note, if present.
 
@@ -1023,6 +1029,12 @@ def _extract_beacon_id_from_note(note: str | None) -> str | None:
     return None
 
 
+# @beacon[
+#   id=auto-beacon@_extract_ast_qualname_from_note-gzzl,
+#   role=_extract_ast_qualname_from_note,
+#   slice_labels=ra-reconcile,
+#   kind=ast,
+# ]
 def _extract_ast_qualname_from_note(note: str | None) -> str | None:
     """Extract AST_QUALNAME from a node's note, if present."""
     if not isinstance(note, str):
@@ -1038,7 +1050,7 @@ def _extract_ast_qualname_from_note(note: str | None) -> str | None:
 # @beacon[
 #   id=auto-beacon@_extract_md_path_from_note-eihl,
 #   role=_extract_md_path_from_note,
-#   slice_labels=ra-snippet-range-ast-md,
+#   slice_labels=ra-snippet-range-ast-md,ra-reconcile,
 #   kind=ast,
 # ]
 def _extract_md_path_from_note(note: str | None) -> list[str] | None:
@@ -1069,7 +1081,7 @@ def _extract_md_path_from_note(note: str | None) -> list[str] | None:
 # @beacon[
 #   id=auto-beacon@reconcile_trees_cartographer-2hsq,
 #   role=reconcile_trees_cartographer,
-#   slice_labels=ra-snippet-range-ast-md,
+#   slice_labels=ra-snippet-range-ast-md,ra-reconcile,
 #   kind=ast,
 # ]
 def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[str, Any]) -> None:
@@ -2458,6 +2470,12 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
         "children": scan_dir(root_path)
     }
 
+# @beacon[
+#   id=auto-beacon@parse_sql_beacon_blocks-xpb1,
+#   role=parse_sql_beacon_blocks,
+#   slice_labels=ra-reconcile,
+#   kind=ast,
+# ]
 def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     """Parse @beacon[...] comment blocks from SQL source lines.
 
@@ -2539,6 +2557,81 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 beacons.append(beacon)
                 continue
         i += 1
+
+    # Second pass: compute span ranges for SQL span beacons
+    for beacon in beacons:
+        if beacon.get("kind") != "span":
+            continue
+
+        b_id = (beacon.get("id") or "").strip()
+        if not b_id:
+            continue
+
+        comment_line = beacon.get("comment_line")
+        if not isinstance(comment_line, int) or not (1 <= comment_line <= n):
+            continue
+
+        # Find end of opener's metadata block (first line containing ']')
+        j = comment_line
+        open_end = comment_line
+        while j <= n:
+            raw = lines[j - 1].lstrip()
+            if raw.startswith("--"):
+                body = raw.lstrip("-").lstrip()
+            else:
+                body = raw
+            if "]" in body:
+                open_end = j
+                break
+            j += 1
+
+        # Scan forward for matching @beacon-close[...] with same id
+        close_comment_line = None
+        k = open_end + 1
+        while k <= n:
+            raw = lines[k - 1].lstrip()
+            if raw.startswith("--"):
+                body = raw.lstrip("-").lstrip()
+            else:
+                body = raw
+
+            if "@beacon-close[" in body:
+                # Collect full close block (may span multiple lines)
+                close_lines = [body]
+                k += 1
+                while k <= n:
+                    next_raw = lines[k - 1].lstrip()
+                    if next_raw.startswith("--"):
+                        next_body = next_raw.lstrip("-").lstrip()
+                    else:
+                        next_body = next_raw
+                    close_lines.append(next_body)
+                    if "]" in next_body:
+                        k += 1
+                        break
+                    k += 1
+
+                # Extract id from close block
+                close_id = None
+                for cl in close_lines:
+                    cl = cl.strip()
+                    if cl.startswith("id="):
+                        close_id = cl.split("=", 1)[1].strip().strip(",").strip("]")
+                        break
+
+                if close_id == b_id:
+                    # Line where @beacon-close[...] started
+                    close_comment_line = k - len(close_lines)
+                    break
+
+            k += 1
+
+        if close_comment_line is not None:
+            inner_start = open_end + 1
+            inner_end = close_comment_line - 1
+            if inner_start <= inner_end:
+                beacon["span_lineno_start"] = inner_start
+                beacon["span_lineno_end"] = inner_end
 
     return beacons
 
@@ -2659,7 +2752,9 @@ def parse_js_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
 
 # @beacon[
 #   id=carto-js-ts@parse_sh_beacon_blocks,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-reconcile,
+#   kind=span,
 # ]
 # Phase 2 JS/TS: shell beacon parser example.
 # Another line-comment @beacon[...] parser useful for cross-checking
@@ -2737,9 +2832,87 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 continue
         i += 1
 
+    # Second pass: compute span ranges for shell span beacons
+    for beacon in beacons:
+        if beacon.get("kind") != "span":
+            continue
+
+        b_id = (beacon.get("id") or "").strip()
+        if not b_id:
+            continue
+
+        comment_line = beacon.get("comment_line")
+        if not isinstance(comment_line, int) or not (1 <= comment_line <= n):
+            continue
+
+        # Find end of opener's metadata block (first line containing ']')
+        j = comment_line
+        open_end = comment_line
+        while j <= n:
+            raw = lines[j - 1].lstrip()
+            if raw.startswith("#"):
+                body = raw.lstrip("#").lstrip()
+            else:
+                body = raw
+            if "]" in body:
+                open_end = j
+                break
+            j += 1
+
+        # Scan forward for matching @beacon-close[...] with same id
+        close_comment_line = None
+        k = open_end + 1
+        while k <= n:
+            raw = lines[k - 1].lstrip()
+            if raw.startswith("#"):
+                body = raw.lstrip("#").lstrip()
+            else:
+                body = raw
+
+            if "@beacon-close[" in body:
+                close_lines = [body]
+                k += 1
+                while k <= n:
+                    next_raw = lines[k - 1].lstrip()
+                    if next_raw.startswith("#"):
+                        next_body = next_raw.lstrip("#").lstrip()
+                    else:
+                        next_body = next_raw
+                    close_lines.append(next_body)
+                    if "]" in next_body:
+                        k += 1
+                        break
+                    k += 1
+
+                close_id = None
+                for cl in close_lines:
+                    cl = cl.strip()
+                    if cl.startswith("id="):
+                        close_id = cl.split("=", 1)[1].strip().strip(",").strip("]")
+                        break
+
+                if close_id == b_id:
+                    close_comment_line = k - len(close_lines)
+                    break
+
+            k += 1
+
+        if close_comment_line is not None:
+            inner_start = open_end + 1
+            inner_end = close_comment_line - 1
+            if inner_start <= inner_end:
+                beacon["span_lineno_start"] = inner_start
+                beacon["span_lineno_end"] = inner_end
+
     return beacons
 
 
+# @beacon[
+#   id=auto-beacon@_sql_compute_span-d1an,
+#   role=_sql_compute_span,
+#   slice_labels=ra-snippet-range-span-beacon-sql,ra-reconcile,
+#   kind=ast,
+# ]
 def _sql_compute_span(
     lines: list[str],
     beacons: list[dict[str, Any]],
@@ -2811,6 +2984,12 @@ def _sql_compute_span(
     return inner_start, inner_end
 
 
+# @beacon[
+#   id=auto-beacon@_extract_sql_beacon_context-9w82,
+#   role=_extract_sql_beacon_context,
+#   slice_labels=ra-reconcile,
+#   kind=ast,
+# ]
 def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str]:
     """Extract nearby SQL comments (non-beacon) around a SQL beacon.
 
@@ -2868,7 +3047,9 @@ def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str
 
 # @beacon[
 #   id=carto-js-ts@apply_sql_beacons,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-reconcile,
+#   kind=span,
 # ]
 # Phase 2 JS/TS: SQL beacon attachment example.
 # Secondary template for attaching span-only beacons as children
@@ -2927,14 +3108,11 @@ def apply_sql_beacons(
             note_lines.append("CONTEXT COMMENTS (SQL):")
             note_lines.extend(context_lines)
 
-        # Raw SQL span text between paired beacons (if any)
+        # Raw SQL span text between opener/closer (if Cartographer computed it)
         span_text_lines: List[str] = []
-        try:
-            span = _sql_compute_span(lines, beacons, beacon)
-        except Exception:  # noqa: BLE001
-            span = None
-        if span is not None:
-            span_start, span_end = span
+        span_start = beacon.get("span_lineno_start")
+        span_end = beacon.get("span_lineno_end")
+        if isinstance(span_start, int) and isinstance(span_end, int):
             span_start = max(1, span_start)
             span_end = min(n, span_end)
             if span_start <= span_end:
@@ -2958,6 +3136,12 @@ def apply_sql_beacons(
         file_children.append(span_node)
 
 
+# @beacon[
+#   id=auto-beacon@_sh_compute_span-shgt,
+#   role=_sh_compute_span,
+#   slice_labels=ra-snippet-range-span-beacon-sh,ra-reconcile,
+#   kind=ast,
+# ]
 def _sh_compute_span(
     lines: list[str],
     beacons: list[dict[str, Any]],
@@ -3021,6 +3205,12 @@ def _sh_compute_span(
     return inner_start, inner_end
 
 
+# @beacon[
+#   id=auto-beacon@_extract_sh_beacon_context-s7r8,
+#   role=_extract_sh_beacon_context,
+#   slice_labels=ra-reconcile,
+#   kind=ast,
+# ]
 def _extract_sh_beacon_context(lines: list[str], comment_line: int) -> List[str]:
     """Extract nearby '#' comments (non-beacon) around a shell beacon.
 
@@ -3072,7 +3262,9 @@ def _extract_sh_beacon_context(lines: list[str], comment_line: int) -> List[str]
 
 # @beacon[
 #   id=carto-js-ts@apply_sh_beacons,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-reconcile,
+#   kind=span,
 # ]
 # Phase 2 JS/TS: shell beacon attachment example.
 # Secondary template similar to SQL for span-only beacons.
@@ -3128,14 +3320,11 @@ def apply_sh_beacons(
             note_lines.append("CONTEXT COMMENTS (SH):")
             note_lines.extend(context_lines)
 
-        # Raw shell span text between paired beacons (if any)
+        # Raw shell span text between opener/closer (if Cartographer computed it)
         span_text_lines: List[str] = []
-        try:
-            span = _sh_compute_span(lines, beacons, beacon)
-        except Exception:  # noqa: BLE001
-            span = None
-        if span is not None:
-            span_start, span_end = span
+        span_start = beacon.get("span_lineno_start")
+        span_end = beacon.get("span_lineno_end")
+        if isinstance(span_start, int) and isinstance(span_end, int):
             span_start = max(1, span_start)
             span_end = min(n, span_end)
             if span_start <= span_end:
