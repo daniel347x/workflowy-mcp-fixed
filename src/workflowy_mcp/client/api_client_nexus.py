@@ -4127,10 +4127,67 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     )
                     include_exts = None
 
-            # Walk filesystem under root_path and collect files matching whitelist
+            # Load .nexusignore patterns (optional, rooted at the folder Path)
+            ignore_patterns: list[str] | None = None
+            if root_path:
+                try:
+                    ignore_path = os.path.join(root_path, ".nexusignore")
+                    if os.path.isfile(ignore_path):
+                        patterns: list[str] = []
+                        invalid: list[str] = []
+                        with open(ignore_path, "r", encoding="utf-8") as ig:
+                            for line in ig:
+                                raw = line.rstrip("\n\r")
+                                stripped = raw.strip()
+                                if not stripped or stripped.startswith("#"):
+                                    continue
+                                if "/" in stripped or "\\" in stripped:
+                                    invalid.append(stripped)
+                                    continue
+                                patterns.append(stripped)
+                        if patterns:
+                            ignore_patterns = patterns
+                            log_event(
+                                "refresh_folder_cartographer_sync: using .nexusignore at "
+                                f"{ignore_path!r} with patterns={patterns!r}",
+                                "BEACON",
+                            )
+                        if invalid:
+                            log_event(
+                                "refresh_folder_cartographer_sync: ignoring .nexusignore patterns with "
+                                f"path separators: {invalid!r}",
+                                "BEACON",
+                            )
+                except Exception as e:  # noqa: BLE001
+                    log_event(
+                        f"refresh_folder_cartographer_sync: failed to load .nexusignore under {root_path}: {e}",
+                        "BEACON",
+                    )
+                    ignore_patterns = None
+
+            def _is_ignored_name(name: str) -> bool:
+                if not ignore_patterns:
+                    return False
+                # Simple fnmatch-style globbing over basenames (no path semantics).
+                import fnmatch
+
+                for pat in ignore_patterns:
+                    if fnmatch.fnmatch(name, pat):
+                        return True
+                return False
+
+            # Walk filesystem under root_path and collect files matching whitelist and .nexusignore
             try:
-                for dirpath, _dirnames, filenames in os.walk(root_path):
+                for dirpath, dirnames, filenames in os.walk(root_path):
+                    # Prune ignored subdirectories so os.walk does not descend into them.
+                    if ignore_patterns:
+                        dirnames[:] = [d for d in dirnames if not _is_ignored_name(d)]
+
                     for fname in filenames:
+                        if fname == ".nexusignore":
+                            continue
+                        if _is_ignored_name(fname):
+                            continue
                         _base, ext = os.path.splitext(fname)
                         ext = ext.lower()
                         if include_exts and ext not in include_exts:
