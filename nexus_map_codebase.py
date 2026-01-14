@@ -2926,6 +2926,77 @@ def parse_js_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
         else:
             i += 1
 
+    # Second pass: compute span ranges for JS/TS span beacons using @beacon-close[...] by id.
+    for beacon in beacons:
+        if beacon.get("kind") != "span":
+            continue
+
+        # Only override when no span was previously set.
+        if beacon.get("span_lineno_start") is not None and beacon.get("span_lineno_end") is not None:
+            continue
+
+        b_id = (beacon.get("id") or "").strip()
+        if not b_id:
+            continue
+
+        comment_line = beacon.get("comment_line")
+        if not isinstance(comment_line, int) or not (1 <= comment_line <= n):
+            continue
+
+        # Find end of opener's metadata block (first line containing ']')
+        j = comment_line
+        open_end = comment_line
+        while j <= n:
+            raw = lines[j - 1]
+            body = _strip_js_comment_sugar(raw)
+            if "]" in body:
+                open_end = j
+                break
+            j += 1
+
+        # Scan forward for matching @beacon-close[...] with same id
+        close_comment_line = None
+        k = open_end + 1
+        while k <= n:
+            raw = lines[k - 1]
+            body = _strip_js_comment_sugar(raw)
+            if "@beacon-close[" in body:
+                close_lines = [body]
+                k += 1
+                while k <= n:
+                    next_raw = lines[k - 1]
+                    next_body = _strip_js_comment_sugar(next_raw)
+                    close_lines.append(next_body)
+                    if "]" in next_body:
+                        k += 1
+                        break
+                    k += 1
+
+                close_id = None
+                for cl in close_lines:
+                    text = cl.strip()
+                    # Drop trailing ',' and ']'
+                    while text and text[-1] in ",]":
+                        text = text[:-1].rstrip()
+                    if text.startswith("id="):
+                        _, val = text.split("=", 1)
+                        close_id = val.strip()
+                        break
+
+                if close_id == b_id:
+                    # Line where @beacon-close[...] started
+                    close_comment_line = k - len(close_lines)
+                    break
+
+            k += 1
+
+        if close_comment_line is not None:
+            inner_start = open_end + 1
+            inner_end = close_comment_line - 1
+            if inner_start <= inner_end:
+                beacon["span_lineno_start"] = inner_start
+                beacon["span_lineno_end"] = inner_end
+
     return beacons
 
 
