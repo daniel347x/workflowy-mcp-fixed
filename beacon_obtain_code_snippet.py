@@ -76,6 +76,12 @@ except Exception as e:  # noqa: BLE001
 
 
 @dataclass
+# @beacon[
+#   id=auto-beacon@NotesMapping-kcvi,
+#   role=NotesMapping,
+#   slice_labels=ra-notes,
+#   kind=ast,
+# ]
 class NotesMapping:
     """(Reserved for future per-file refresh mode inside MCP code).
 
@@ -113,7 +119,7 @@ def _read_lines(path: str) -> List[str]:
 # @beacon[
 #   id=carto-js-ts@_python_resolve_ast_node_heuristic,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,f9-f12-handlers,
 #   kind=span,
 # ]
 # Phase 3 JS/TS: Python AST heuristic template.
@@ -360,7 +366,7 @@ def _python_resolve_ast_node_heuristic(
 # @beacon[
 #   id=carto-js-ts@_js_ts_resolve_ast_node_heuristic,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-js-ts,f9-f12-handlers,
 #   kind=span,
 # ]
 # Phase 3 JS/TS: JS/TS AST heuristic helper.
@@ -1596,6 +1602,155 @@ def _markdown_snippet_for_beacon(
 
 
 # ---------------------------------------------------------------------------
+# YAML beacon snippet extraction
+# ---------------------------------------------------------------------------
+
+
+def _yaml_comment_block_span(
+    lines: List[str],
+    comment_line: int,
+) -> Optional[Tuple[int, int]]:
+    """Return (top, bottom) of the YAML '#' comment block around a beacon."""
+
+    n = len(lines)
+    if comment_line <= 0 or comment_line > n:
+        return None
+
+    # Determine end of the beacon metadata block (first line containing ']')
+    j = int(comment_line)
+    block_end = comment_line
+    while j <= n:
+        raw = lines[j - 1].lstrip()
+        if raw.startswith("#"):
+            body = raw.lstrip("#").lstrip()
+        else:
+            body = raw
+        if "]" in body:
+            block_end = j
+            break
+        j += 1
+
+    top: Optional[int] = None
+    bottom: Optional[int] = None
+
+    # ABOVE
+    j = comment_line - 1
+    while j >= 1:
+        raw = lines[j - 1].lstrip()
+        if not raw:
+            j -= 1
+            continue
+        if raw.startswith("#") and "@beacon" not in raw:
+            if top is None:
+                top = j
+                bottom = j
+            else:
+                top = j
+            j -= 1
+            continue
+        break
+
+    # BELOW
+    j = block_end + 1
+    while j <= n:
+        raw = lines[j - 1].lstrip()
+        if not raw:
+            j += 1
+            continue
+        if raw.startswith("#") and "@beacon" not in raw:
+            if top is None:
+                top = j
+                bottom = j
+            else:
+                bottom = j
+            j += 1
+            continue
+        break
+
+    if top is None:
+        return None
+    if bottom is None:
+        bottom = top
+    return top, bottom
+
+
+def _yaml_snippet_for_beacon(
+    file_path: str,
+    beacon_id: str,
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int]:
+    """Return (start_line, end_line, lines, core_start, core_end, beacon_line) for a YAML beacon."""
+
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    lines = _read_lines(file_path)
+
+    try:
+        beacons = nexus_map_codebase.parse_yaml_beacon_blocks(lines)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse YAML beacon blocks in {file_path}: {e}") from e
+
+    target = beacon_id.strip()
+    n = len(lines)
+
+    def _comment_line_for_id(bid: str) -> Optional[int]:
+        bid = bid.strip()
+        if not bid:
+            return None
+        for b in beacons:
+            if (b.get("id") or "").strip() != bid:
+                continue
+            cl = b.get("comment_line")
+            if isinstance(cl, int) and cl > 0:
+                return cl
+        return None
+
+    # Locate the primary beacon entry (required for all paths)
+    chosen: Optional[dict] = None
+    for b in beacons:
+        if (b.get("id") or "").strip() == target:
+            chosen = b
+            break
+
+    if not chosen:
+        raise RuntimeError(f"Beacon id {beacon_id!r} not found in YAML file {file_path!r}")
+
+    # Prefer Cartographer-driven span semantics when available (span_lineno_* on beacon)
+    span_start = chosen.get("span_lineno_start")
+    span_end = chosen.get("span_lineno_end")
+    span: Optional[Tuple[int, int]] = None
+    if isinstance(span_start, int) and isinstance(span_end, int):
+        span = (span_start, span_end)
+
+    if span is not None:
+        inner_start, inner_end = span
+        comment_line = _comment_line_for_id(target)
+        if comment_line is not None:
+            cb_span = _yaml_comment_block_span(lines, comment_line)
+            if cb_span is not None:
+                core_start = cb_span[0]
+            else:
+                core_start = comment_line
+        else:
+            core_start = inner_start
+        core_end = inner_end
+        start = max(1, core_start - context)
+        end = min(n, core_end + context)
+        beacon_line = comment_line if comment_line is not None else inner_start
+        return start, end, lines, core_start, core_end, beacon_line
+
+    # No span metadata: default to symmetric context around the opening beacon line
+    comment_line = int(chosen.get("comment_line") or 1)
+    core_start = comment_line
+    core_end = comment_line
+    start = max(1, comment_line - context)
+    end = min(n, comment_line + context)
+    beacon_line = comment_line
+    return start, end, lines, core_start, core_end, beacon_line
+
+
+# ---------------------------------------------------------------------------
 # SQL beacon snippet extraction
 # ---------------------------------------------------------------------------
 
@@ -2175,7 +2330,7 @@ def _sh_snippet_for_beacon(
 # @beacon[
 #   id=carto-js-ts@get_snippet_for_ast_qualname,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,f9-f12-handlers,
 #   kind=span,
 # ]
 # Phase 3 JS/TS: AST-qualname snippet template.
@@ -2265,7 +2420,7 @@ def get_snippet_for_ast_qualname(
 # @beacon[
 #   id=carto-js-ts@get_snippet_for_ast_qualname_js_ts,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-js-ts,f9-f12-handlers,
 #   kind=span,
 # ]
 # JS/TS AST-qualname snippet helper.
@@ -2347,7 +2502,7 @@ def get_snippet_for_ast_qualname_js_ts(
 # @beacon[
 #   id=carto-js-ts@get_snippet_data,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,nexus-md-header-path,ra-snippet-range,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,nexus-md-header-path,ra-snippet-range,f9-f12-handlers,
 #   kind=span,
 # ]
 # Phase 3 JS/TS: central dispatch point for snippet resolution.
@@ -2420,6 +2575,10 @@ def get_snippet_data(
         start, end, lines, core_start, core_end, beacon_line = _sql_snippet_for_beacon(
             file_path, beacon_id, context
         )
+    elif ext in {".yml", ".yaml"}:
+        start, end, lines, core_start, core_end, beacon_line = _yaml_snippet_for_beacon(
+            file_path, beacon_id, context
+        )
     elif ext == ".sh":
         start, end, lines, core_start, core_end, beacon_line = _sh_snippet_for_beacon(
             file_path, beacon_id, context
@@ -2490,7 +2649,7 @@ if __name__ == "__main__":  # pragma: no cover
 # @beacon[
 #   id=auto-beacon@get_snippet_for_md_path-8iyg,
 #   role=get_snippet_for_md_path,
-#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,f9-f12-handlers,
 #   kind=ast,
 # ]
 def get_snippet_for_md_path(

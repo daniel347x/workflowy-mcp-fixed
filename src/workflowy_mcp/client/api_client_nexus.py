@@ -241,20 +241,9 @@ class NotesSalvageContext:
     notes_moved_to_parking: int = 0
 
 
-# @beacon[
-#   id=ra-tracking@6bj2zv,
-#   slice_labels=ra-tracking,ra-nexus-test
-# ]
 class WorkFlowyClientNexus(WorkFlowyClientEtch):
     """NEXUS pipeline operations - extends Etch."""
 
-    # @beacon[
-    #   id=auto-beacon@WorkFlowyClientNexus._get_nexus_dir-cx33,
-    #   role=WorkFlowyClientNexus._get_nexus_dir,
-    #   slice_labels=WorkFlowyClientNexus-_get_nexus_dir,nexus-foo,
-    #   kind=ast,
-    #   comment=Nice [idea] here,
-    # ]
     def _get_nexus_dir(self, nexus_tag: str) -> str:
         """Resolve base directory for a CORINTHIAN NEXUS run."""
         base_dir = Path(
@@ -282,10 +271,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         chosen = sorted(candidates, key=lambda p: p.name)[-1]
         return str(chosen)
 
-    # @beacon[
-    #   id=ra-tracking@6bj2zwww,
-    #   slice_labels=ra-tracking,ra-nexus-test
-    # ]
     async def workflowy_glimpse(
         self, node_id: str, use_efficient_traversal: bool = False,
         output_file: str | None = None, _ws_connection=None, _ws_queue=None
@@ -352,10 +337,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         
         raise NetworkError("WebSocket unavailable - use workflowy_scry")
     
-    # @beacon[
-    #   id=ra-tracking@6bj2zv000,
-    #   slice_labels=ra-tracking,ra-nexus-test-3
-    # ]
     async def workflowy_scry(
         self,
         node_id: str,
@@ -431,10 +412,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "_source": "api"
             }
         
-        # @beacon[
-        #   id=ra-tracking@6bj2zv001,
-        #   slice_labels=ra-tracking,ra-nexus-test-3
-        # ]
         # Size limit handling
         # Old behavior: hard error when subtree exceeds size_limit.
         # New behavior (ground-truth semantics): optionally TRUNCATE instead of erroring,
@@ -463,9 +440,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             # Note: flat_nodes is a pre-order-ish list from /nodes-export filtered to subtree.
             # This truncation is intentionally coarse; downstream logic must treat it as incomplete.
             flat_nodes = flat_nodes[: max(1, size_limit)]
-            # @beacon-close[
-            #   id=ra-tracking@6bj2zv001,
-            # ]
         
         # Build hierarchy
         hierarchical_tree = self._build_hierarchy(flat_nodes, True)
@@ -2109,7 +2083,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.bulk_import_from_file-7d6e,
     #   role=WorkFlowyClientNexus.bulk_import_from_file,
-    #   slice_labels=ra-reconcile,
+    #   slice_labels=ra-reconcile,f9-f12-handlers,
     #   kind=ast,
     # ]
     async def bulk_import_from_file(
@@ -3520,6 +3494,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             helper = getattr(cartographer, "update_beacon_from_node_markdown", None)
         elif ext == ".sql":
             helper = getattr(cartographer, "update_beacon_from_node_sql", None)
+        elif ext in {".yml", ".yaml"}:
+            helper = getattr(cartographer, "update_beacon_from_node_yaml", None)
         elif ext in {".sh", ".bash"}:
             helper = getattr(cartographer, "update_beacon_from_node_shell", None)
         else:
@@ -3605,6 +3581,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     beacon_header = "BEACON (JS/TS AST)"
                 elif lang == "markdown":
                     beacon_header = "BEACON (MD AST)"
+                elif lang == "sql":
+                    beacon_header = "BEACON (SQL SPAN)"
+                elif lang == "shell":
+                    beacon_header = "BEACON (SH SPAN)"
+                elif lang == "yaml":
+                    beacon_header = "BEACON (YAML SPAN)"
                 else:
                     beacon_header = "BEACON (AST)"
 

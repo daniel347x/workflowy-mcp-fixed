@@ -2706,6 +2706,18 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
                 "note": note,
                 "children": children,
             }
+        elif ext in ('.yml', '.yaml'):
+            with open(root_path, 'r', encoding='utf-8') as f:
+                yml_lines = f.read().splitlines()
+            children: List[Dict[str, Any]] = []
+            yml_beacons = parse_yaml_beacon_blocks(yml_lines)
+            apply_yaml_beacons(yml_lines, children, yml_beacons)
+            note = format_file_note(root_path, line_count=len(yml_lines))
+            return {
+                "name": f"{EMOJI_FILE} {os.path.basename(root_path)}",
+                "note": note,
+                "children": children,
+            }
         else:
              lc = _get_line_count(root_path)
              note = format_file_note(root_path, line_count=lc)
@@ -3232,6 +3244,154 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     return beacons
 
 
+def parse_yaml_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
+    """Parse @beacon[...] blocks from YAML/Helm using '#'-style comments.
+
+    Syntax mirrors the Python beacon form but is language-agnostic:
+
+        # @beacon[
+        #   id=segment@001,
+        #   role=my:role,             # optional
+        #   slice_labels=TAG1,TAG2,   # optional
+        #   kind=span,                # optional, defaults to span
+        # ]
+    """
+    beacons: list[dict[str, Any]] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            body = stripped.lstrip("#").lstrip()
+            if body.startswith("@beacon["):
+                comment_line = i + 1
+                block_lines = [body]
+                i += 1
+                while i < n:
+                    next_line = lines[i].lstrip()
+                    if next_line.startswith("#"):
+                        next_body = next_line.lstrip("#").lstrip()
+                    else:
+                        next_body = next_line
+                    block_lines.append(next_body)
+                    if "]" in next_body:
+                        i += 1
+                        break
+                    i += 1
+
+                fields: dict[str, str] = {}
+                inner_lines = block_lines[1:-1] if len(block_lines) >= 2 else []
+                for raw in inner_lines:
+                    text = raw.strip()
+                    if not text or text.startswith("@beacon"):
+                        continue
+                    while text and text[-1] in ",]":
+                        text = text[:-1].rstrip()
+                    if not text or "=" not in text:
+                        continue
+                    key, val = text.split("=", 1)
+                    key = key.strip()
+                    val = val.strip()
+                    if (val.startswith("\"") and val.endswith("\"")) or (
+                        val.startswith("'") and val.endswith("'")
+                    ):
+                        val = val[1:-1]
+                    fields[key] = val
+
+                kind = (fields.get("kind") or "span").strip().lower() or "span"
+                if kind not in {"ast", "span"}:
+                    continue
+
+                beacon = {
+                    "id": fields.get("id"),
+                    "role": fields.get("role"),
+                    "slice_labels": fields.get("slice_labels"),
+                    "kind": kind,
+                    "start_snippet": fields.get("start_snippet"),
+                    "end_snippet": fields.get("end_snippet"),
+                    "comment": fields.get("comment"),
+                    "comment_line": comment_line,
+                }
+                beacons.append(beacon)
+                continue
+        i += 1
+
+    # Second pass: compute span ranges for YAML span beacons
+    for beacon in beacons:
+        if beacon.get("kind") != "span":
+            continue
+
+        b_id = (beacon.get("id") or "").strip()
+        if not b_id:
+            continue
+
+        comment_line = beacon.get("comment_line")
+        if not isinstance(comment_line, int) or not (1 <= comment_line <= n):
+            continue
+
+        # Find end of opener's metadata block (first line containing ']')
+        j = comment_line
+        open_end = comment_line
+        while j <= n:
+            raw = lines[j - 1].lstrip()
+            if raw.startswith("#"):
+                body = raw.lstrip("#").lstrip()
+            else:
+                body = raw
+            if "]" in body:
+                open_end = j
+                break
+            j += 1
+
+        # Scan forward for matching @beacon-close[...] with same id
+        close_comment_line = None
+        k = open_end + 1
+        while k <= n:
+            raw = lines[k - 1].lstrip()
+            if raw.startswith("#"):
+                body = raw.lstrip("#").lstrip()
+            else:
+                body = raw
+
+            if "@beacon-close[" in body:
+                close_lines = [body]
+                k += 1
+                while k <= n:
+                    next_raw = lines[k - 1].lstrip()
+                    if next_raw.startswith("#"):
+                        next_body = next_raw.lstrip("#").lstrip()
+                    else:
+                        next_body = next_raw
+                    close_lines.append(next_body)
+                    if "]" in next_body:
+                        k += 1
+                        break
+                    k += 1
+
+                close_id = None
+                for cl in close_lines:
+                    cl = cl.strip()
+                    if cl.startswith("id="):
+                        close_id = cl.split("=", 1)[1].strip().strip(",").strip("]")
+                        break
+
+                if close_id == b_id:
+                    close_comment_line = k - len(close_lines)
+                    break
+
+            k += 1
+
+        if close_comment_line is not None:
+            inner_start = open_end + 1
+            inner_end = close_comment_line - 1
+            if inner_start <= inner_end:
+                beacon["span_lineno_start"] = inner_start
+                beacon["span_lineno_end"] = inner_end
+
+    return beacons
+
+
 # @beacon[
 #   id=auto-beacon@_extract_sql_beacon_context-9w82,
 #   role=_extract_sql_beacon_context,
@@ -3500,6 +3660,142 @@ def apply_sh_beacons(
             note_lines.extend(context_lines)
 
         # Raw shell span text between opener/closer (if Cartographer computed it)
+        span_text_lines: List[str] = []
+        span_start = beacon.get("span_lineno_start")
+        span_end = beacon.get("span_lineno_end")
+        if isinstance(span_start, int) and isinstance(span_end, int):
+            span_start = max(1, span_start)
+            span_end = min(n, span_end)
+            if span_start <= span_end:
+                span_text_lines = lines[span_start - 1 : span_end]
+                while span_text_lines and not span_text_lines[0].strip():
+                    span_text_lines.pop(0)
+                while span_text_lines and not span_text_lines[-1].strip():
+                    span_text_lines.pop()
+        if span_text_lines:
+            note_lines.append("")
+            note_lines.append("SPAN TEXT:")
+            note_lines.extend(span_text_lines)
+
+        span_node = {
+            "name": name,
+            "note": "\n".join(note_lines),
+            "children": [],
+        }
+
+        file_children.append(span_node)
+
+
+def _extract_yaml_beacon_context(lines: list[str], comment_line: int) -> List[str]:
+    """Extract nearby YAML comments (non-beacon) around a YAML beacon.
+
+    Includes lines starting with '#' above/below the block (excluding @beacon).
+    """
+    context: List[str] = []
+
+    j = comment_line
+    block_end = comment_line
+    while j <= len(lines):
+        raw = lines[j - 1].lstrip()
+        if raw.startswith("#"):
+            body = raw.lstrip("#").lstrip()
+        else:
+            body = raw
+        if "]" in body:
+            block_end = j
+            break
+        j += 1
+
+    # Above
+    j = comment_line - 1
+    while j >= 1:
+        raw = lines[j - 1].lstrip()
+        if not raw:
+            j -= 1
+            continue
+        if raw.startswith("#") and "@beacon" not in raw:
+            context.insert(0, raw.lstrip("#").lstrip())
+            j -= 1
+            continue
+        break
+
+    # Below
+    j = block_end + 1
+    while j <= len(lines):
+        raw = lines[j - 1].lstrip()
+        if not raw:
+            j += 1
+            continue
+        if raw.startswith("#") and "@beacon" not in raw:
+            context.append(raw.lstrip("#").lstrip())
+            j += 1
+            continue
+        break
+
+    return context
+
+
+# @beacon[
+#   id=carto-js-ts@apply_yaml_beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-reconcile,
+#   kind=span,
+# ]
+# YAML beacon attachment example.
+# Span-only beacons attached as children under a FILE node for YAML/Helm configs.
+def apply_yaml_beacons(
+    lines: list[str],
+    file_children: List[Dict[str, Any]],
+    beacons: list[dict[str, Any]],
+) -> None:
+    """Attach YAML span beacons as child nodes under the file node.
+
+    Behavior mirrors SQL/SH: purely location-centric annotations; explicit spans
+    are left to snippet tools.
+    """
+    if not beacons:
+        return
+
+    n = len(lines)
+
+    for beacon in beacons:
+        if beacon.get("kind") != "span":
+            continue
+
+        b_id = (beacon.get("id") or "").strip()
+        role = (beacon.get("role") or "").strip()
+        raw_slice_labels = (beacon.get("slice_labels") or "").strip()
+
+        if not role and b_id and "@" in b_id:
+            role = b_id.split("@", 1)[0]
+        slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
+
+        display_role = role or b_id or "yaml-span-beacon"
+        display_slice = slice_labels or "-"
+
+        tag_suffix = _slice_label_tags(slice_labels or display_slice)
+        name = f"🔱 {display_role}"
+        if tag_suffix:
+            name = f"{name} {tag_suffix}"
+
+        context_lines = _extract_yaml_beacon_context(lines, beacon.get("comment_line") or 0)
+        comment = beacon.get("comment")
+
+        note_lines = [
+            "BEACON (YAML SPAN)",
+            f"id: {b_id}",
+            f"role: {role}",
+            f"slice_labels: {slice_labels}",
+            "kind: span",
+        ]
+        if comment:
+            note_lines.append(f"comment: {comment}")
+        if context_lines:
+            note_lines.append("")
+            note_lines.append("CONTEXT COMMENTS (YAML):")
+            note_lines.extend(context_lines)
+
+        # Raw YAML span text between opener/closer (if Cartographer computed it)
         span_text_lines: List[str] = []
         span_start = beacon.get("span_lineno_start")
         span_end = beacon.get("span_lineno_end")
@@ -5262,6 +5558,158 @@ def update_beacon_from_node_shell(
 
     result: Dict[str, Any] = {
         "language": "shell",
+        "file_path": file_path,
+        "base_name": base_name,
+        "tags": tags,
+        "beacon_id": beacon_id,
+        "operation": "noop",
+    }
+
+    if not beacon_id:
+        return result
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except Exception as e:  # noqa: BLE001
+        result["error"] = f"failed_to_read_file: {e}"
+        return result
+
+    role_val: str | None = None
+    comment_val: str | None = None
+    for line in (note or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("role:"):
+            role_val = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("comment:"):
+            comment_val = stripped.split(":", 1)[1].strip()
+
+    role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+
+    extra_label_tokens = [t.lstrip("#") for t in tags]
+    slice_labels_canon = (
+        _canonicalize_slice_labels(",".join(extra_label_tokens), None)
+        if extra_label_tokens
+        else ""
+    )
+
+    def _find_beacon_block_by_id(bid: str) -> Optional[tuple[int, int, str]]:
+        bid = (bid or "").strip()
+        if not bid:
+            return None
+        n = len(lines)
+        i = 0
+        while i < n:
+            raw = lines[i]
+            stripped = raw.lstrip()
+            if stripped.startswith("#") and "@beacon[" in stripped:
+                start_idx = i
+                j = i
+                end_idx = start_idx
+                found_id = False
+                existing_kind = "span"
+                while j < n:
+                    body_raw = lines[j]
+                    body_stripped = body_raw.lstrip()
+                    if body_stripped.startswith("#"):
+                        body = body_stripped.lstrip("#").lstrip()
+                    else:
+                        body = body_stripped
+                    if "id=" in body:
+                        after = body.split("id=", 1)[1]
+                        id_value = after.split(",", 1)[0].strip()
+                        if id_value == bid:
+                            found_id = True
+                    if "kind=" in body:
+                        after_k = body.split("kind=", 1)[1]
+                        k_val = after_k.split(",", 1)[0].strip().lower()
+                        if k_val in {"ast", "span"}:
+                            existing_kind = k_val
+                    if body == "]":
+                        end_idx = j
+                        break
+                    j += 1
+                if found_id and end_idx >= start_idx:
+                    return start_idx, end_idx, existing_kind
+                i = j + 1
+                continue
+            i += 1
+        return None
+
+    span = _find_beacon_block_by_id(beacon_id)
+    if span is None:
+        return result
+
+    start_idx, end_idx, existing_kind = span
+
+    def _build_beacon_block(
+        bid: str,
+        role: str,
+        slice_labels: str,
+        kind: str,
+        comment_text: Optional[str],
+    ) -> list[str]:
+        meta_lines = [
+            "# @beacon[",
+            f"#   id={bid},",
+        ]
+        if role:
+            meta_lines.append(f"#   role={role},")
+        if slice_labels:
+            meta_lines.append(f"#   slice_labels={slice_labels},")
+        if kind:
+            meta_lines.append(f"#   kind={kind},")
+        if comment_text:
+            meta_lines.append(f"#   comment={comment_text},")
+        meta_lines.append("# ]")
+        return meta_lines
+
+    new_block = _build_beacon_block(
+        bid=beacon_id,
+        role=role_display or "",
+        slice_labels=slice_labels_canon,
+        kind=existing_kind,
+        comment_text=comment_val,
+    )
+    new_block = _indent_beacon_block(new_block, lines, start_idx)
+    new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
+
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(new_lines) + "\n")
+    except Exception as e:  # noqa: BLE001
+        result["error"] = f"failed_to_write_file: {e}"
+        return result
+
+    result.update(
+        {
+            "operation": "updated_beacon",
+            "role": role_display,
+            "slice_labels": slice_labels_canon,
+            "comment": comment_val,
+        }
+    )
+    return result
+
+
+# @beacon[
+#   id=auto-beacon@update_beacon_from_node_yaml-ykv1,
+#   role=update_beacon_from_node_yaml,
+#   slice_labels=f9-f12-handlers,
+#   kind=ast,
+# ]
+def update_beacon_from_node_yaml(
+    file_path: str,
+    name: str,
+    note: str,
+) -> Dict[str, Any]:
+    """Update an existing YAML span beacon's metadata for a single node."""
+
+    base_name, tags = split_name_and_tags(name)
+    beacon_id = _extract_beacon_id_from_note(note)
+
+    result: Dict[str, Any] = {
+        "language": "yaml",
         "file_path": file_path,
         "base_name": base_name,
         "tags": tags,
