@@ -686,7 +686,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.beacon_get_code_snippet-c2ov,
     #   role=WorkFlowyClientNexus.beacon_get_code_snippet,
-    #   slice_labels=nexus-md-header-path,ra-snippet-range,
+    #   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,
     #   kind=ast,
     # ]
     async def beacon_get_code_snippet(
@@ -2106,6 +2106,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             import_policy='strict',
         )
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus.bulk_import_from_file-7d6e,
+    #   role=WorkFlowyClientNexus.bulk_import_from_file,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
     async def bulk_import_from_file(
         self,
         json_file: str,
@@ -2540,7 +2546,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus._refresh_file_node_beacons_legacy-zjoy,
     #   role=WorkFlowyClientNexus._refresh_file_node_beacons_legacy,
-    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,
+    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,ra-reconcile,f9-f12-handlers,
     #   kind=ast,
     # ]
     async def _refresh_file_node_beacons_legacy(
@@ -2918,7 +2924,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.refresh_file_node_beacons-wgth,
     #   role=WorkFlowyClientNexus.refresh_file_node_beacons,
-    #   slice_labels=ra-notes,ra-notes-cartographer,
+    #   slice_labels=ra-notes,ra-notes-cartographer,ra-notes-salvage,ra-reconcile,f9-f12-handlers,
     #   kind=ast,
     # ]
     async def refresh_file_node_beacons(
@@ -3404,6 +3410,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         return legacy_result
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus.update_beacon_from_node-enct,
+    #   role=WorkFlowyClientNexus.update_beacon_from_node,
+    #   slice_labels=f9-f12-handlers,
+    #   kind=ast,
+    # ]
     async def update_beacon_from_node(
         self,
         node_id: str,
@@ -3506,6 +3518,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             helper = getattr(cartographer, "update_beacon_from_node_js_ts", None)
         elif ext in {".md", ".markdown"}:
             helper = getattr(cartographer, "update_beacon_from_node_markdown", None)
+        elif ext == ".sql":
+            helper = getattr(cartographer, "update_beacon_from_node_sql", None)
+        elif ext in {".sh", ".bash"}:
+            helper = getattr(cartographer, "update_beacon_from_node_shell", None)
         else:
             helper = None
 
@@ -3750,7 +3766,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync-62ih,
     #   role=WorkFlowyClientNexus.refresh_folder_cartographer_sync,
-    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,
+    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,
     #   kind=ast,
     # ]
     async def refresh_folder_cartographer_sync(

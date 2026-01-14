@@ -4828,6 +4828,302 @@ def update_beacon_from_node_markdown(
     return result
 
 
+def update_beacon_from_node_sql(
+    file_path: str,
+    name: str,
+    note: str,
+) -> Dict[str, Any]:
+    """Update an existing SQL span beacon's metadata for a single node.
+
+    Currently supports updating role/slice_labels/comment for an existing
+    @beacon[...] block identified by id=... in the Workflowy note.
+    """
+    base_name, tags = split_name_and_tags(name)
+    beacon_id = _extract_beacon_id_from_note(note)
+
+    result: Dict[str, Any] = {
+        "language": "sql",
+        "file_path": file_path,
+        "base_name": base_name,
+        "tags": tags,
+        "beacon_id": beacon_id,
+        "operation": "noop",
+    }
+
+    if not beacon_id:
+        return result
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except Exception as e:  # noqa: BLE001
+        result["error"] = f"failed_to_read_file: {e}"
+        return result
+
+    # Derive role/comment from note; slice_labels from Workflowy name tags only.
+    role_val: str | None = None
+    comment_val: str | None = None
+    for line in (note or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("role:"):
+            role_val = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("comment:"):
+            comment_val = stripped.split(":", 1)[1].strip()
+
+    role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+
+    extra_label_tokens = [t.lstrip("#") for t in tags]
+    slice_labels_canon = (
+        _canonicalize_slice_labels(",".join(extra_label_tokens), None)
+        if extra_label_tokens
+        else ""
+    )
+
+    def _find_beacon_block_by_id(bid: str) -> Optional[tuple[int, int, str]]:
+        bid = (bid or "").strip()
+        if not bid:
+            return None
+        n = len(lines)
+        i = 0
+        while i < n:
+            raw = lines[i]
+            stripped = raw.lstrip()
+            if stripped.startswith("--") and "@beacon[" in stripped:
+                start_idx = i
+                j = i
+                end_idx = start_idx
+                found_id = False
+                existing_kind = "span"
+                while j < n:
+                    body_raw = lines[j]
+                    body_stripped = body_raw.lstrip()
+                    if body_stripped.startswith("--"):
+                        body = body_stripped[2:].lstrip()
+                    else:
+                        body = body_stripped
+                    if "id=" in body:
+                        after = body.split("id=", 1)[1]
+                        id_value = after.split(",", 1)[0].strip()
+                        if id_value == bid:
+                            found_id = True
+                    if "kind=" in body:
+                        after_k = body.split("kind=", 1)[1]
+                        k_val = after_k.split(",", 1)[0].strip().lower()
+                        if k_val in {"ast", "span"}:
+                            existing_kind = k_val
+                    if body == "]":
+                        end_idx = j
+                        break
+                    j += 1
+                if found_id and end_idx >= start_idx:
+                    return start_idx, end_idx, existing_kind
+                i = j + 1
+                continue
+            i += 1
+        return None
+
+    span = _find_beacon_block_by_id(beacon_id)
+    if span is None:
+        return result
+
+    start_idx, end_idx, existing_kind = span
+
+    def _build_beacon_block(
+        bid: str,
+        role: str,
+        slice_labels: str,
+        kind: str,
+        comment_text: Optional[str],
+    ) -> list[str]:
+        meta_lines = [
+            "-- @beacon[",
+            f"--   id={bid},",
+        ]
+        if role:
+            meta_lines.append(f"--   role={role},")
+        if slice_labels:
+            meta_lines.append(f"--   slice_labels={slice_labels},")
+        if kind:
+            meta_lines.append(f"--   kind={kind},")
+        if comment_text:
+            meta_lines.append(f"--   comment={comment_text},")
+        meta_lines.append("-- ]")
+        return meta_lines
+
+    new_block = _build_beacon_block(
+        bid=beacon_id,
+        role=role_display or "",
+        slice_labels=slice_labels_canon,
+        kind=existing_kind,
+        comment_text=comment_val,
+    )
+    new_block = _indent_beacon_block(new_block, lines, start_idx)
+    new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
+
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(new_lines) + "\n")
+    except Exception as e:  # noqa: BLE001
+        result["error"] = f"failed_to_write_file: {e}"
+        return result
+
+    result.update(
+        {
+            "operation": "updated_beacon",
+            "role": role_display,
+            "slice_labels": slice_labels_canon,
+            "comment": comment_val,
+        }
+    )
+    return result
+
+
+def update_beacon_from_node_shell(
+    file_path: str,
+    name: str,
+    note: str,
+) -> Dict[str, Any]:
+    """Update an existing shell span beacon's metadata for a single node."""
+
+    base_name, tags = split_name_and_tags(name)
+    beacon_id = _extract_beacon_id_from_note(note)
+
+    result: Dict[str, Any] = {
+        "language": "shell",
+        "file_path": file_path,
+        "base_name": base_name,
+        "tags": tags,
+        "beacon_id": beacon_id,
+        "operation": "noop",
+    }
+
+    if not beacon_id:
+        return result
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except Exception as e:  # noqa: BLE001
+        result["error"] = f"failed_to_read_file: {e}"
+        return result
+
+    role_val: str | None = None
+    comment_val: str | None = None
+    for line in (note or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("role:"):
+            role_val = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("comment:"):
+            comment_val = stripped.split(":", 1)[1].strip()
+
+    role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+
+    extra_label_tokens = [t.lstrip("#") for t in tags]
+    slice_labels_canon = (
+        _canonicalize_slice_labels(",".join(extra_label_tokens), None)
+        if extra_label_tokens
+        else ""
+    )
+
+    def _find_beacon_block_by_id(bid: str) -> Optional[tuple[int, int, str]]:
+        bid = (bid or "").strip()
+        if not bid:
+            return None
+        n = len(lines)
+        i = 0
+        while i < n:
+            raw = lines[i]
+            stripped = raw.lstrip()
+            if stripped.startswith("#") and "@beacon[" in stripped:
+                start_idx = i
+                j = i
+                end_idx = start_idx
+                found_id = False
+                existing_kind = "span"
+                while j < n:
+                    body_raw = lines[j]
+                    body_stripped = body_raw.lstrip()
+                    if body_stripped.startswith("#"):
+                        body = body_stripped.lstrip("#").lstrip()
+                    else:
+                        body = body_stripped
+                    if "id=" in body:
+                        after = body.split("id=", 1)[1]
+                        id_value = after.split(",", 1)[0].strip()
+                        if id_value == bid:
+                            found_id = True
+                    if "kind=" in body:
+                        after_k = body.split("kind=", 1)[1]
+                        k_val = after_k.split(",", 1)[0].strip().lower()
+                        if k_val in {"ast", "span"}:
+                            existing_kind = k_val
+                    if body == "]":
+                        end_idx = j
+                        break
+                    j += 1
+                if found_id and end_idx >= start_idx:
+                    return start_idx, end_idx, existing_kind
+                i = j + 1
+                continue
+            i += 1
+        return None
+
+    span = _find_beacon_block_by_id(beacon_id)
+    if span is None:
+        return result
+
+    start_idx, end_idx, existing_kind = span
+
+    def _build_beacon_block(
+        bid: str,
+        role: str,
+        slice_labels: str,
+        kind: str,
+        comment_text: Optional[str],
+    ) -> list[str]:
+        meta_lines = [
+            "# @beacon[",
+            f"#   id={bid},",
+        ]
+        if role:
+            meta_lines.append(f"#   role={role},")
+        if slice_labels:
+            meta_lines.append(f"#   slice_labels={slice_labels},")
+        if kind:
+            meta_lines.append(f"#   kind={kind},")
+        if comment_text:
+            meta_lines.append(f"#   comment={comment_text},")
+        meta_lines.append("# ]")
+        return meta_lines
+
+    new_block = _build_beacon_block(
+        bid=beacon_id,
+        role=role_display or "",
+        slice_labels=slice_labels_canon,
+        kind=existing_kind,
+        comment_text=comment_val,
+    )
+    new_block = _indent_beacon_block(new_block, lines, start_idx)
+    new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
+
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(new_lines) + "\n")
+    except Exception as e:  # noqa: BLE001
+        result["error"] = f"failed_to_write_file: {e}"
+        return result
+
+    result.update(
+        {
+            "operation": "updated_beacon",
+            "role": role_display,
+            "slice_labels": slice_labels_canon,
+            "comment": comment_val,
+        }
+    )
+    return result
+
+
 def reconcile_trees(source_node: Dict[str, Any], ether_node: Dict[str, Any]) -> None:
     """
     Recursively match source nodes with ether nodes to preserve UUIDs.
