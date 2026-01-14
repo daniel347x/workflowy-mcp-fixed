@@ -291,7 +291,9 @@ def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
 
 # @beacon[
 #   id=carto-js-ts@parse_markdown_beacon_blocks,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   kind=span,
 # ]
 # Phase 2 JS/TS: Markdown beacon parser template.
 # Reference for JS/TS block-comment beacons (/* @beacon[...] */),
@@ -1425,7 +1427,9 @@ def _canonicalize_slice_labels(slice_labels: str | None, role: str | None) -> st
 
 # @beacon[
 #   id=carto-js-ts@parse_python_beacon_blocks,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   kind=span,
 # ]
 # Phase 2 JS/TS: Python beacon parser template.
 # Reference for parse_js_beacon_blocks(...) (JS/TS @beacon[...] parser)
@@ -1647,7 +1651,7 @@ def _find_enclosing_ast_node_for_line(
 # @beacon[
 #   id=carto-js-ts@apply_python_beacons,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-py,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-py,f9-f12-handlers,
 #   kind=span,
 # ]
 # Phase 2 JS/TS: Python beacon attachment template.
@@ -2459,7 +2463,9 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
 
 # @beacon[
 #   id=carto-js-ts@map_codebase,
-#   slice_labels=carto-js-ts,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,f9-f12-handlers,
+#   kind=span,
 # ]
 # Phase 1 JS/TS: directory + single-file dispatcher. This will be extended
 # to call the JS/TS outline builder (parse_js_ts_outline) for .js/.ts/.tsx
@@ -2469,36 +2475,103 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
     Wraps the inner file parsing into a directory walker.
     Returns a single root NEXUS node representing the codebase tree.
     """
-    
+
+    # Load .nexusignore patterns (optional, rooted at the mapping root)
+    ignore_patterns: List[str] | None = None
+    try:
+        ignore_path = os.path.join(root_path, ".nexusignore")
+        if os.path.isfile(ignore_path):
+            patterns: List[str] = []
+            invalid: List[str] = []
+            with open(ignore_path, "r", encoding="utf-8") as ig:
+                for line in ig:
+                    raw = line.rstrip("\n\r")
+                    stripped = raw.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    if "/" in stripped or "\\" in stripped:
+                        invalid.append(stripped)
+                        continue
+                    patterns.append(stripped)
+            if patterns:
+                ignore_patterns = patterns
+                print(
+                    f"[NEXUS MAP] Using .nexusignore at {ignore_path!r} with patterns={patterns!r}",
+                    file=sys.stderr,
+                )
+            if invalid:
+                print(
+                    "[NEXUS MAP] Ignoring .nexusignore patterns with path separators: "
+                    f"{invalid!r}",
+                    file=sys.stderr,
+                )
+    except Exception as e:  # pragma: no cover - safety net
+        print(
+            f"[NEXUS MAP] Failed to load .nexusignore under {root_path!r}: {e}",
+            file=sys.stderr,
+        )
+        ignore_patterns = None
+
+    def _is_ignored_name(name: str) -> bool:
+        if not ignore_patterns:
+            return False
+        # Simple fnmatch-style globbing over basenames (no path semantics).
+        import fnmatch
+
+        for pat in ignore_patterns:
+            if fnmatch.fnmatch(name, pat):
+                return True
+        return False
+
+    # @beacon[
+    #   id=auto-beacon@map_codebase.should_include-td2v,
+    #   role=map_codebase.should_include,
+    #   slice_labels=f9-f12-handlers,
+    #   kind=ast,
+    # ]
     def should_include(name: str) -> bool:
         if exclude_patterns:
             for pat in exclude_patterns:
-                if pat in name: return False
-        
-        # If include list is provided, must match extension
+                if pat in name:
+                    return False
+
+        if _is_ignored_name(name):
+            return False
+
+        # If include list is provided, must match extension (files only)
         if include_exts:
             _, ext = os.path.splitext(name)
             if ext.lower() not in include_exts:
-                # Unless it's a folder? Usually filtering applies to files.
-                # Let's say we always include folders unless excluded by pattern.
                 return False
         return True
 
+    # @beacon[
+    #   id=auto-beacon@map_codebase.scan_dir-k123,
+    #   role=map_codebase.scan_dir,
+    #   slice_labels=f9-f12-handlers,
+    #   kind=ast,
+    # ]
     def scan_dir(current_path: str) -> List[Dict[str, Any]]:
         nodes = []
         try:
             items = sorted(os.listdir(current_path))
             for item in items:
                 full_path = os.path.join(current_path, item)
-                
+
                 # Ignore hidden/system dirs
                 if item.startswith('.') or item == "__pycache__":
                     continue
-                
+
+                # Apply .nexusignore semantics (directories and files)
+                if _is_ignored_name(item):
+                    continue
+
                 if exclude_patterns and any(pat in item for pat in exclude_patterns):
                     continue
-                
+
                 if os.path.isdir(full_path):
+                    # Directories are filtered only by exclude_patterns and .nexusignore;
+                    # include_exts apply to files, not folders.
                     children = scan_dir(full_path)
                     if children:  # Only add non-empty directories
                         folder_note = format_file_note(full_path)
@@ -2507,15 +2580,15 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
                             "note": folder_note,
                             "children": children,
                         })
-                
+
                 elif os.path.isfile(full_path):
                     # Extension Check for files only
                     _, ext = os.path.splitext(item)
                     ext = ext.lower()
-                    
+
                     if include_exts and ext not in include_exts:
                         continue
-                        
+
                     # Dispatch
                     line_count: Optional[int] = None
                     if ext == '.py':
@@ -2560,12 +2633,12 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
                     nodes.append({
                         "name": f"{icon} {item}",
                         "note": note,
-                        "children": children
+                        "children": children,
                     })
-                    
+
         except Exception as e:
             print(f"Error scanning {current_path}: {e}")
-            
+
         return nodes
 
     root_name = os.path.basename(root_path) or "Source Code"
@@ -2652,7 +2725,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
 # @beacon[
 #   id=auto-beacon@parse_sql_beacon_blocks-xpb1,
 #   role=parse_sql_beacon_blocks,
-#   slice_labels=ra-reconcile,
+#   slice_labels=ra-reconcile,f9-f12-handlers,
 #   kind=ast,
 # ]
 def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
@@ -2817,7 +2890,9 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
 
 # @beacon[
 #   id=carto-js-ts@parse_js_beacon_blocks,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   kind=span,
 # ]
 # Phase 2 JS/TS: JS/TS beacon parser.
 # Supports both line-comment (//) and block-comment (/* ... */) forms
@@ -3003,7 +3078,7 @@ def parse_js_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
 # @beacon[
 #   id=carto-js-ts@parse_sh_beacon_blocks,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-reconcile,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-reconcile,f9-f12-handlers,
 #   kind=span,
 # ]
 # Phase 2 JS/TS: shell beacon parser example.
@@ -3160,7 +3235,7 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
 # @beacon[
 #   id=auto-beacon@_extract_sql_beacon_context-9w82,
 #   role=_extract_sql_beacon_context,
-#   slice_labels=ra-reconcile,
+#   slice_labels=ra-reconcile,f9-f12-handlers,
 #   kind=ast,
 # ]
 def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str]:
@@ -3312,7 +3387,7 @@ def apply_sql_beacons(
 # @beacon[
 #   id=auto-beacon@_extract_sh_beacon_context-s7r8,
 #   role=_extract_sh_beacon_context,
-#   slice_labels=ra-reconcile,
+#   slice_labels=ra-reconcile,f9-f12-handlers,
 #   kind=ast,
 # ]
 def _extract_sh_beacon_context(lines: list[str], comment_line: int) -> List[str]:
@@ -3454,7 +3529,7 @@ def apply_sh_beacons(
 # @beacon[
 #   id=carto-js-ts@apply_js_beacons,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-js-ts,f9-f12-handlers,
 #   kind=span,
 # ]
 # Phase 2 JS/TS: JS/TS beacon attachment.
@@ -5013,6 +5088,12 @@ def update_beacon_from_node_markdown(
     return result
 
 
+# @beacon[
+#   id=auto-beacon@update_beacon_from_node_sql-eybf,
+#   role=update_beacon_from_node_sql,
+#   slice_labels=f9-f12-handlers,
+#   kind=ast,
+# ]
 def update_beacon_from_node_sql(
     file_path: str,
     name: str,
@@ -5163,6 +5244,12 @@ def update_beacon_from_node_sql(
     return result
 
 
+# @beacon[
+#   id=auto-beacon@update_beacon_from_node_shell-vult,
+#   role=update_beacon_from_node_shell,
+#   slice_labels=f9-f12-handlers,
+#   kind=ast,
+# ]
 def update_beacon_from_node_shell(
     file_path: str,
     name: str,
@@ -5337,6 +5424,12 @@ def reconcile_trees(source_node: Dict[str, Any], ether_node: Dict[str, Any]) -> 
                 # Remove from map to handle duplicates/prevent re-matching? 
                 # For now, let's leave it. Standard code shouldn't have dups.
 
+# @beacon[
+#   id=auto-beacon@load_existing_map-kat3,
+#   role=load_existing_map,
+#   slice_labels=f9-f12-handlers,
+#   kind=ast,
+# ]
 def load_existing_map(file_path: str) -> Optional[Dict[str, Any]]:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
