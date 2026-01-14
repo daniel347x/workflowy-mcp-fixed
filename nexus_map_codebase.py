@@ -1082,7 +1082,7 @@ def whiten_text_for_header_compare(text: str | None) -> str:
 # @beacon[
 #   id=auto-beacon@_extract_beacon_id_from_note-ovd8,
 #   role=_extract_beacon_id_from_note,
-#   slice_labels=ra-reconcile,
+#   slice_labels=ra-reconcile,f9-f12-handlers,
 #   kind=ast,
 # ]
 def _extract_beacon_id_from_note(note: str | None) -> str | None:
@@ -1153,7 +1153,7 @@ def _extract_md_path_from_note(note: str | None) -> list[str] | None:
 # @beacon[
 #   id=auto-beacon@reconcile_trees_cartographer-2hsq,
 #   role=reconcile_trees_cartographer,
-#   slice_labels=ra-snippet-range-ast-md,ra-reconcile,
+#   slice_labels=ra-snippet-range-ast-md,ra-reconcile,f9-f12-handlers,
 #   kind=ast,
 # ]
 def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[str, Any]) -> None:
@@ -1354,6 +1354,12 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
         reconcile_trees_cartographer(s, match)
 
 
+# @beacon[
+#   id=auto-beacon@_slice_label_tags-vxd4,
+#   role=_slice_label_tags,
+#   slice_labels=f9-f12-handlers,
+#   kind=ast,
+# ]
 def _slice_label_tags(slice_labels: str) -> str:
     """Convert a slice_labels string into a space-delimited #tag list.
 
@@ -1375,6 +1381,12 @@ def _slice_label_tags(slice_labels: str) -> str:
     return " ".join(labels)
 
 
+# @beacon[
+#   id=auto-beacon@_canonicalize_slice_labels-zpcy,
+#   role=_canonicalize_slice_labels,
+#   slice_labels=f9-f12-handlers,
+#   kind=ast,
+# ]
 def _canonicalize_slice_labels(slice_labels: str | None, role: str | None) -> str:
     """Canonicalize slice_labels for tags and display.
 
@@ -3591,7 +3603,9 @@ def apply_js_beacons(
 
 # @beacon[
 #   id=carto-js-ts@split_name_and_tags,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   kind=span,
 # ]
 # Utility: split a Workflowy node name into base text and trailing #tags.
 # Used by update_beacon_from_node_* helpers to derive slice_labels from
@@ -3642,7 +3656,9 @@ def _generate_auto_beacon_hash() -> str:
 
 # @beacon[
 #   id=carto-js-ts@update_beacon_from_node_python,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   kind=span,
 # ]
 # Python: update/create/delete a beacon for a single AST/beacon node
 # based on Workflowy name/note fields.
@@ -3764,29 +3780,27 @@ def update_beacon_from_node_python(
 
     # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
-        # Derive role/slice_labels/comment from note.
+        # Derive role/comment from note. slice_labels are now driven solely by
+        # the Workflowy node name's trailing #tags; the slice_labels line in
+        # the BEACON block is treated as display-only.
         role_val: str | None = None
-        slice_val: str | None = None
         comment_val: str | None = None
         for line in (note or "").splitlines():
             stripped = line.strip()
             if stripped.startswith("role:"):
                 role_val = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("slice_labels:"):
-                slice_val = stripped.split(":", 1)[1].strip()
             elif stripped.startswith("comment:"):
                 comment_val = stripped.split(":", 1)[1].strip()
 
-        # Merge slice_labels from tags + note role/slice_labels using existing
-        # canonicalization logic.
         role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
-        slice_labels_canon = _canonicalize_slice_labels(slice_val, role_display)
-        # Also pull in tags from the name as extra labels.
-        if tags:
-            extra = [t.lstrip("#") for t in tags]
-            existing = [x for x in (slice_labels_canon.split(",") if slice_labels_canon else []) if x]
-            merged = existing + [e for e in extra if e not in existing]
-            slice_labels_canon = ",".join(merged)
+
+        # Slice labels come **only** from Workflowy tags in the node name.
+        extra_label_tokens = [t.lstrip("#") for t in tags]
+        slice_labels_canon = (
+            _canonicalize_slice_labels(",".join(extra_label_tokens), None)
+            if extra_label_tokens
+            else ""
+        )
 
         block_span = _find_beacon_block_by_id(beacon_id)
         if block_span is not None:
@@ -4047,7 +4061,9 @@ def update_beacon_from_node_python(
 
 # @beacon[
 #   id=carto-js-ts@update_beacon_from_node_js_ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   kind=span,
 # ]
 # JS/TS: update/create/delete a beacon for a single AST/beacon node based
 # on Workflowy name/note fields. Mirrors the Python helper but uses
@@ -4140,24 +4156,23 @@ def update_beacon_from_node_js_ts(
     # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
         role_val: str | None = None
-        slice_val: str | None = None
         comment_val: str | None = None
         for line in (note or "").splitlines():
             stripped = line.strip()
             if stripped.startswith("role:"):
                 role_val = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("slice_labels:"):
-                slice_val = stripped.split(":", 1)[1].strip()
             elif stripped.startswith("comment:"):
                 comment_val = stripped.split(":", 1)[1].strip()
 
         role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
-        slice_labels_canon = _canonicalize_slice_labels(slice_val, role_display)
-        if tags:
-            extra = [t.lstrip("#") for t in tags]
-            existing = [x for x in (slice_labels_canon.split(",") if slice_labels_canon else []) if x]
-            merged = existing + [e for e in extra if e not in existing]
-            slice_labels_canon = ",".join(merged)
+
+        # Slice labels come **only** from Workflowy tags in the node name.
+        extra_label_tokens = [t.lstrip("#") for t in tags]
+        slice_labels_canon = (
+            _canonicalize_slice_labels(",".join(extra_label_tokens), None)
+            if extra_label_tokens
+            else ""
+        )
 
         block_span = _find_beacon_block_by_id(beacon_id)
         
@@ -4405,7 +4420,9 @@ def update_beacon_from_node_js_ts(
 
 # @beacon[
 #   id=carto-js-ts@update_beacon_from_node_markdown,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   kind=span,
 # ]
 # Markdown: update/create/delete a beacon for a single heading/beacon node
 # based on Workflowy name/note fields. Uses MD_PATH to locate the heading
@@ -4417,8 +4434,8 @@ def update_beacon_from_node_markdown(
 ) -> Dict[str, Any]:
     """Update/create/delete Markdown beacons for a single heading/beacon node.
 
-    Uses MD_PATH to locate the heading and follows the same slice_labels
-    + tags semantics as the Python/JS/TS helpers.
+    Uses MD_PATH to locate the heading and follows the same name-tag-only
+    slice_labels semantics as the Python/JS/TS helpers.
     """
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
@@ -4506,24 +4523,23 @@ def update_beacon_from_node_markdown(
     # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
         role_val: str | None = None
-        slice_val: str | None = None
         comment_val: str | None = None
         for line in (note or "").splitlines():
             stripped = line.strip()
             if stripped.startswith("role:"):
                 role_val = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("slice_labels:"):
-                slice_val = stripped.split(":", 1)[1].strip()
             elif stripped.startswith("comment:"):
                 comment_val = stripped.split(":", 1)[1].strip()
 
         role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
-        slice_labels_canon = _canonicalize_slice_labels(slice_val, role_display)
-        if tags:
-            extra = [t.lstrip("#") for t in tags]
-            existing = [x for x in (slice_labels_canon.split(",") if slice_labels_canon else []) if x]
-            merged = existing + [e for e in extra if e not in existing]
-            slice_labels_canon = ",".join(merged)
+
+        # Slice labels come **only** from Workflowy tags in the node name.
+        extra_label_tokens = [t.lstrip("#") for t in tags]
+        slice_labels_canon = (
+            _canonicalize_slice_labels(",".join(extra_label_tokens), None)
+            if extra_label_tokens
+            else ""
+        )
 
         block_span = _find_beacon_block_by_id(beacon_id)
         
