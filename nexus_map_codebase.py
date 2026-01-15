@@ -1600,6 +1600,12 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     return beacons
 
 
+# @beacon[
+#   id=carto-js-ts@_iter_ast_outline_nodes-nf4x,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,ra-snippet-range-ast-py,
+#   kind=ast,
+# ]
 def _iter_ast_outline_nodes(nodes: list[dict[str, Any]]):
     """Yield all AST-backed outline nodes in a pre-order traversal.
 
@@ -1755,6 +1761,12 @@ def apply_python_beacons(
             return idx
         return None
 
+    # @beacon[
+    #   id=carto-js-ts@_extract_python_beacon_context-7u3n,
+    #   role=carto-js-ts,
+    #   slice_labels=carto-js-ts,ra-snippet-range-span-beacon,
+    #   kind=ast,
+    # ]
     def _extract_python_beacon_context(comment_line: int, decor_start: Optional[int] = None) -> List[str]:
         """Extract nearby comment-like lines around a Python beacon.
 
@@ -2107,6 +2119,12 @@ def apply_python_beacons(
             outline_nodes.append(span_node)
 
 
+# @beacon[
+#   id=carto-js-ts@get_docstring-u9fp,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,ra-snippet-range-ast-py,
+#   kind=ast,
+# ]
 def get_docstring(node: ast.AST) -> str:
     """Extract docstring from an AST node if present. (Synced Update)"""
     return ast.get_docstring(node) or ""
