@@ -1784,7 +1784,7 @@ def apply_python_beacons(
                 break
             j += 1
 
-        # Above
+        # Above: walk past decorators to reach true leading comments.
         j = comment_line - 1
         while j >= 1:
             raw = lines[j - 1]
@@ -1807,7 +1807,11 @@ def apply_python_beacons(
                 j = s - 1
                 continue
             if stripped.startswith("@"):
-                break
+                # Skip decorator lines but keep walking upward so that
+                # comments above a decorator are still captured as
+                # CONTEXT COMMENTS (PYTHON).
+                j -= 1
+                continue
             break
 
         # Below
