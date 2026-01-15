@@ -752,16 +752,27 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             return lo, hi, lines_local
 
         # Step 1: Load /nodes-export snapshot (cached if available)
-        raw = await export_nodes_impl(self, node_id=None, use_cache=True, force_refresh=False)
-        all_nodes = raw.get("nodes", []) or []
-        nodes_by_id: dict[str, dict[str, Any]] = {
-            str(n.get("id")): n for n in all_nodes if n.get("id")
-        }
-        logger.info(
-            f"beacon_get_code_snippet: /nodes-export snapshot loaded with {len(nodes_by_id)} nodes"
-        )
+        # Gracefully handle cache-not-initialized so we can still do prefix matching.
+        nodes_by_id: dict[str, dict[str, Any]] = {}
+        try:
+            raw = await export_nodes_impl(self, node_id=None, use_cache=True, force_refresh=False)
+            all_nodes = raw.get("nodes", []) or []
+            nodes_by_id = {
+                str(n.get("id")): n for n in all_nodes if n.get("id")
+            }
+            logger.info(
+                f"beacon_get_code_snippet: /nodes-export snapshot loaded with {len(nodes_by_id)} nodes"
+            )
+        except NetworkError as e:
+            # Cache not initialized – we'll try force_refresh below or fail cleanly
+            if "not initialized" in str(e):
+                logger.info(
+                    f"beacon_get_code_snippet: cache not initialized; will attempt force_refresh"
+                )
+            else:
+                raise
 
-        # If node not found, try one forced refresh before failing
+        # If node not found (or cache was empty), try one forced refresh before failing
         if beacon_node_id not in nodes_by_id:
             logger.info(
                 f"beacon_get_code_snippet: {beacon_node_id} not in cache; refreshing /nodes-export"
@@ -1303,6 +1314,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             f"with extension {ext!r}."
         )
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol-ozt9,
+    #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol,
+    #   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-snippet-range,
+    #   kind=ast,
+    # ]
     async def read_text_snippet_by_symbol(
         self,
         file_path: str | None,
@@ -1349,6 +1366,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "read_text_snippet_by_symbol: /nodes-export snapshot is empty; cannot resolve symbol",
             )
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._canonical_path-0zpv,
+        #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._canonical_path,
+        #   slice_labels=ra-notes,
+        #   kind=ast,
+        # ]
         def _canonical_path(path: str) -> str:
             return os.path.normcase(os.path.normpath(path))
 
@@ -1407,6 +1430,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if pid:
                 children_by_parent.setdefault(str(pid), []).append(n)
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._iter_subtree-gums,
+        #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._iter_subtree,
+        #   slice_labels=f9-f12-handlers,
+        #   kind=ast,
+        # ]
         def _iter_subtree(root_id: str):
             stack = [str(root_id)]
             visited: set[str] = set()
@@ -1424,6 +1453,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     if cid:
                         stack.append(str(cid))
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._extract_beacon_fields-gb8d,
+        #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._extract_beacon_fields,
+        #   slice_labels=f9-f12-handlers,ra-reconcile,
+        #   kind=ast,
+        # ]
         def _extract_beacon_fields(note_str: str) -> tuple[str | None, str | None]:
             beacon_id_val: str | None = None
             role_val: str | None = None
@@ -1437,6 +1472,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     role_val = stripped.split(":", 1)[1].strip()
             return beacon_id_val or None, role_val or None
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._extract_ast_qualname-0hpl,
+        #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._extract_ast_qualname,
+        #   slice_labels=f9-f12-handlers,ra-reconcile,
+        #   kind=ast,
+        # ]
         def _extract_ast_qualname(note_str: str) -> str | None:
             for line in note_str.splitlines():
                 stripped = line.strip()
@@ -1444,6 +1485,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     return stripped.split(":", 1)[1].strip() or None
             return None
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._normalize_node_name-rkap,
+        #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._normalize_node_name,
+        #   slice_labels=f9-f12-handlers,
+        #   kind=ast,
+        # ]
         def _normalize_node_name(raw_name: str | None) -> str:
             if not raw_name:
                 return ""
@@ -1479,6 +1526,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         ast_hits: set[str] = set()
         name_hits: set[str] = set()
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._record_hit-oous,
+        #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._record_hit,
+        #   slice_labels=f9-f12-handlers,
+        #   kind=ast,
+        # ]
         def _record_hit(node: dict[str, Any], owner_path: str, bucket: str) -> None:
             nid = node.get("id")
             if not nid:
