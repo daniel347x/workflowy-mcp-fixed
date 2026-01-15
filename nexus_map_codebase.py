@@ -1755,7 +1755,7 @@ def apply_python_beacons(
             return idx
         return None
 
-    def _extract_python_beacon_context(comment_line: int) -> List[str]:
+    def _extract_python_beacon_context(comment_line: int, decor_start: Optional[int] = None) -> List[str]:
         """Extract nearby comment-like lines around a Python beacon.
 
         Includes:
@@ -1784,12 +1784,17 @@ def apply_python_beacons(
                 break
             j += 1
 
-        # Above: walk past decorators to reach true leading comments.
+        # Above: walk past decorators to reach true leading comments, and
+        # skip any decorator region attached to the enclosing AST node
+        # (when known) so multiline decorators do not block comment capture.
         j = comment_line - 1
         while j >= 1:
             raw = lines[j - 1]
             stripped = raw.lstrip()
             if not stripped:
+                j -= 1
+                continue
+            if decor_start is not None and decor_start <= j <= block_end:
                 j -= 1
                 continue
             if stripped.startswith("#"):
@@ -1966,7 +1971,11 @@ def apply_python_beacons(
         ]
         if comment:
             meta_lines.append(f"comment: {comment}")
-        context_lines = _extract_python_beacon_context(comment_line)
+        decor_start_lineno = chosen.get("decor_start_lineno")
+        context_lines = _extract_python_beacon_context(
+            comment_line,
+            decor_start_lineno if isinstance(decor_start_lineno, int) else None,
+        )
         if context_lines:
             meta_lines.append("")
             meta_lines.append("CONTEXT COMMENTS (PYTHON):")
@@ -2049,7 +2058,12 @@ def apply_python_beacons(
         if tag_suffix:
             name = f"{name} {tag_suffix}"
 
-        context_lines = _extract_python_beacon_context(comment_line)
+        enclosing_decor_start: Optional[int] = None
+        if enclosing is not None:
+            dsl = enclosing.get("decor_start_lineno")
+            if isinstance(dsl, int):
+                enclosing_decor_start = dsl
+        context_lines = _extract_python_beacon_context(comment_line, enclosing_decor_start)
         comment = beacon.get("comment")
 
         note_lines = [
@@ -2170,9 +2184,9 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
         tree = ast.parse(content, filename=file_path)
         lines = content.splitlines()
 
-        def _extract_ast_comment_context(start_lineno: int) -> list[str]:
+        def _extract_ast_comment_context(start_lineno: int, decor_start: Optional[int]) -> list[str]:
             context: list[str] = []
-            # Above comments / decorators
+            # Above: skip decorator region between decor_start and the AST node.
             j = start_lineno - 1
             while j >= 1:
                 raw = lines[j - 1]
@@ -2180,13 +2194,16 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                 if not stripped:
                     j -= 1
                     continue
+                if decor_start is not None and decor_start <= j < start_lineno:
+                    # Inside decorator region (including multiline decorators);
+                    # skip these lines entirely so we can reach comments that
+                    # truly lead the AST node.
+                    j -= 1
+                    continue
                 if stripped.startswith("#"):
                     body = stripped.lstrip("#").lstrip()
                     if body:
                         context.insert(0, body)
-                    j -= 1
-                    continue
-                if stripped.startswith("@"):
                     j -= 1
                     continue
                 break
@@ -2221,13 +2238,23 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                     qual = item.name if not qual_prefix else f"{qual_prefix}.{item.name}"
                     start = getattr(item, "lineno", None)
                     end = getattr(item, "end_lineno", start)
+                    decorators = getattr(item, "decorator_list", None) or []
+                    decor_start: Optional[int] = None
+                    if decorators and isinstance(start, int):
+                        dec_lines = [
+                            getattr(d, "lineno", None)
+                            for d in decorators
+                            if getattr(d, "lineno", None)
+                        ]
+                        if dec_lines:
+                            decor_start = min(dec_lines)
                     # Build note: AST_QUALNAME header, then optional separator and docstring.
                     doc = get_docstring(item)
                     note_lines: list[str] = [f"AST_QUALNAME: {qual}"]
                     if doc:
                         note_lines.append("---")
                         note_lines.append(doc)
-                    context_lines = _extract_ast_comment_context(start) if isinstance(start, int) else []
+                    context_lines = _extract_ast_comment_context(start, decor_start) if isinstance(start, int) else []
                     if context_lines:
                         note_lines.append("")
                         note_lines.append("CONTEXT COMMENTS (PYTHON):")
@@ -2245,6 +2272,7 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                         "file_path": file_path,
                         "orig_lineno_start_unused": start,
                         "orig_lineno_end_unused": end,
+                        "decor_start_lineno": decor_start,
                     }
                     priority_counter[0] += 100
                     results.append(node)
@@ -2254,13 +2282,23 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                     qual = item.name if not qual_prefix else f"{qual_prefix}.{item.name}"
                     start = getattr(item, "lineno", None)
                     end = getattr(item, "end_lineno", start)
+                    decorators = getattr(item, "decorator_list", None) or []
+                    decor_start: Optional[int] = None
+                    if decorators and isinstance(start, int):
+                        dec_lines = [
+                            getattr(d, "lineno", None)
+                            for d in decorators
+                            if getattr(d, "lineno", None)
+                        ]
+                        if dec_lines:
+                            decor_start = min(dec_lines)
 
                     doc = get_docstring(item)
                     note_lines: list[str] = [f"AST_QUALNAME: {qual}"]
                     if doc:
                         note_lines.append("---")
                         note_lines.append(doc)
-                    context_lines = _extract_ast_comment_context(start) if isinstance(start, int) else []
+                    context_lines = _extract_ast_comment_context(start, decor_start) if isinstance(start, int) else []
                     if context_lines:
                         note_lines.append("")
                         note_lines.append("CONTEXT COMMENTS (PYTHON):")
@@ -2278,6 +2316,7 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                         "file_path": file_path,
                         "orig_lineno_start_unused": start,
                         "orig_lineno_end_unused": end,
+                        "decor_start_lineno": decor_start,
                     }
                     priority_counter[0] += 100
                     results.append(node)
