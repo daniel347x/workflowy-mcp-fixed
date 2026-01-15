@@ -1413,13 +1413,14 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         "read_text_snippet_by_symbol: no FILE node with Path: matching "
                         f"{file_path!r} was found",
                     )
-                if len(matches) > 1:
-                    paths = sorted({p for _, p in matches})
+                paths = sorted({p for _, p in matches})
+                if len(paths) > 1:
                     raise NetworkError(
                         "read_text_snippet_by_symbol: ambiguous file_path; matches: "
                         + ", ".join(repr(p) for p in paths),
                     )
                 search_roots = matches
+
         else:
             search_roots = file_nodes
 
