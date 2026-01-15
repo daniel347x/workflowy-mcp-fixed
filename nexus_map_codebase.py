@@ -2408,6 +2408,100 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
         tree = parser.parse(source_bytes)
         root = tree.root_node
 
+        # Precompute comment mask and cleaned comment text for JS/TS files so
+        # AST nodes can slurp nearby comments into their Workflowy notes.
+        lines = source_text.splitlines()
+        n = len(lines)
+
+        def _build_js_comment_mask(src_lines: list[str]) -> tuple[list[bool], list[str]]:
+            comment_mask: list[bool] = [False] * len(src_lines)
+            cleaned: list[str] = ["" for _ in range(len(src_lines))]
+            in_block = False
+
+            for idx, raw in enumerate(src_lines, start=1):
+                stripped = raw.lstrip()
+                if not stripped:
+                    continue
+                if "@beacon" in stripped:
+                    # Beacon metadata is handled separately; do not treat it as
+                    # human context for AST nodes.
+                    continue
+
+                is_comment = False
+                text = ""
+
+                if not in_block:
+                    if stripped.startswith("//"):
+                        is_comment = True
+                        text = stripped[2:].lstrip()
+                    elif "/*" in stripped:
+                        is_comment = True
+                        in_block = True
+                        after = stripped.split("/*", 1)[1]
+                        if "*/" in after:
+                            before_close, _ = after.split("*/", 1)
+                            text = before_close.strip()
+                            in_block = False
+                        else:
+                            text = after.strip()
+                else:
+                    is_comment = True
+                    if "*/" in stripped:
+                        before_close, _ = stripped.split("*/", 1)
+                        text = before_close.strip()
+                        in_block = False
+                    else:
+                        text = stripped
+
+                if is_comment:
+                    comment_mask[idx - 1] = True
+                    cleaned[idx - 1] = text
+
+            return comment_mask, cleaned
+
+        comment_mask, cleaned_comments = _build_js_comment_mask(lines)
+
+        def _extract_js_ast_comment_context(start_line: int) -> list[str]:
+            ctx: list[str] = []
+
+            # Above: walk upward through contiguous comment lines, skipping
+            # decorator-like lines that start with '@'.
+            j = start_line - 1
+            while j >= 1:
+                raw = lines[j - 1]
+                stripped = raw.lstrip()
+                if not stripped:
+                    j -= 1
+                    continue
+                if stripped.startswith("@"):
+                    j -= 1
+                    continue
+                if comment_mask[j - 1]:
+                    text = cleaned_comments[j - 1]
+                    if text:
+                        ctx.insert(0, text)
+                    j -= 1
+                    continue
+                break
+
+            # Below: immediate top-of-body comments (before code).
+            j = start_line + 1
+            while j <= n:
+                raw = lines[j - 1]
+                stripped = raw.lstrip()
+                if not stripped:
+                    j += 1
+                    continue
+                if comment_mask[j - 1]:
+                    text = cleaned_comments[j - 1]
+                    if text:
+                        ctx.append(text)
+                    j += 1
+                    continue
+                break
+
+            return ctx
+
         priority_counter = [100]
 
         def node_text(n) -> str:
@@ -2415,11 +2509,17 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                 return ""
             return source_bytes[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
 
-        def make_note(qual: str, doc: Optional[str] = None) -> str:
+        def make_note(qual: str, start_line: int | None = None, doc: Optional[str] = None) -> str:
             note_lines: List[str] = [f"AST_QUALNAME: {qual}"]
             if doc:
                 note_lines.append("---")
                 note_lines.append(doc)
+            if isinstance(start_line, int):
+                ctx = _extract_js_ast_comment_context(start_line)
+                if ctx:
+                    note_lines.append("")
+                    note_lines.append("CONTEXT COMMENTS (JS/TS):")
+                    note_lines.extend(ctx)
             return "\n".join(note_lines)
 
         def walk(node, qual_prefix: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -2436,7 +2536,7 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                     end_line = child.end_point[0] + 1
 
                     # TODO: in future, harvest JSDoc comments into doc
-                    note_text = make_note(qual)
+                    note_text = make_note(qual, start_line)
 
                     class_node: Dict[str, Any] = {
                         "name": f"{EMOJI_CLASS} class {class_name}",
@@ -2472,7 +2572,7 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                         params_text = node_text(params_node).strip()
                         signature = f"{func_name}{params_text}"
 
-                    note_text = make_note(qual)
+                    note_text = make_note(qual, start_line)
 
                     func_node: Dict[str, Any] = {
                         "name": f"{EMOJI_FUNC} function {signature}",
@@ -2508,7 +2608,7 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                         params_text = node_text(params_node).strip()
                         signature = f"{method_name}{params_text}"
 
-                    note_text = make_note(qual)
+                    note_text = make_note(qual, start_line)
 
                     method_node: Dict[str, Any] = {
                         "name": f"{EMOJI_FUNC} method {signature}",
