@@ -3257,13 +3257,111 @@ async def beacon_get_code_snippet(
         return {"success": False, "error": str(e)}
 
 
+async def _read_text_snippet_impl(
+    input_str: str,
+    context: int,
+    *,
+    explicit_uuid: bool = False,
+) -> str:
+    """Shared implementation for read_text_snippet and read_text_snippet_by_uuid.
+
+    When explicit_uuid is True, input_str is always treated as a UUID and
+    routed directly to beacon_get_code_snippet (no symbol fallback).
+    When False, non-UUID-looking input is treated as a symbol and routed
+    through the client's read_text_snippet_by_symbol helper.
+
+    This helper is intentionally the *only* place that talks to the
+    underlying snippet-resolution helpers so that MCP tools never call
+    each other directly (which breaks in some FastMCP environments).
+    """
+    client = get_client()
+    candidate = (input_str or "").strip()
+
+    # UUID vs symbol detection only in auto mode.
+    is_likely_uuid = (
+        len(candidate) >= 32
+        and ("-" in candidate or len(candidate) == 32)
+        and all(c in "0123456789abcdefABCDEF-" for c in candidate)
+    )
+
+    if not explicit_uuid and not is_likely_uuid:
+        # Treat as symbol and delegate to the client-level helper rather than
+        # another MCP tool (FunctionTool objects are not directly awaitable).
+        log_event(
+            f"read_text_snippet: input {candidate!r} doesn't look like UUID; treating as symbol",
+            "SNIPPET",
+        )
+        if _rate_limiter:
+            await _rate_limiter.acquire()
+        try:
+            result = await client.read_text_snippet_by_symbol(
+                symbol=candidate,
+                file_path=None,
+                symbol_kind="auto",
+                context=context,
+            )
+            if _rate_limiter:
+                _rate_limiter.on_success()
+        except Exception as e:  # noqa: BLE001
+            if (
+                _rate_limiter
+                and hasattr(e, "__class__")
+                and e.__class__.__name__ == "RateLimitError"
+            ):
+                _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+            raise
+
+        # WorkFlowyClientNexus.read_text_snippet_by_symbol returns the same
+        # structure as beacon_get_code_snippet (dict with a "snippet" field).
+        if not isinstance(result, dict):
+            raise RuntimeError("Unexpected result from read_text_snippet_by_symbol")
+
+        snippet = result.get("snippet", "")
+        if not isinstance(snippet, str):
+            snippet = str(snippet)
+        return snippet
+
+    # UUID path: delegate to beacon_get_code_snippet (includes hallucination tolerance).
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.beacon_get_code_snippet(
+            beacon_node_id=candidate,
+            context=context,
+        )
+        if _rate_limiter:
+            _rate_limiter.on_success()
+    except Exception as e:  # noqa: BLE001
+        if (
+            _rate_limiter
+            and hasattr(e, "__class__")
+            and e.__class__.__name__ == "RateLimitError"
+        ):
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+    if not isinstance(result, dict):
+        raise RuntimeError("Unexpected result from beacon_get_code_snippet")
+
+    if not result.get("success", False):
+        raise RuntimeError(result.get("error", "Unknown error from beacon_get_code_snippet"))
+
+    snippet = result.get("snippet", "")
+    if not isinstance(snippet, str):
+        snippet = str(snippet)
+    return snippet
+
+
 # Tool: Beacon-based text snippet (read_text_file twin)
 @mcp.tool(
     name="read_text_snippet",
     description=(
         "Return a raw text snippet anchored by a Cartographer beacon/AST/heading/file "
         "node, using the same resolution pipeline as beacon_get_code_snippet, but "
-        "returning only the snippet text."
+        "returning only the snippet text. This is the go-to replacement for "
+        "read_text_file on Cartographer-mapped code: always use this (or its UUID/" "symbol "
+        "variants) instead of read_text_file when working with mapped repos."
     ),
 )
 # @beacon[
@@ -3278,9 +3376,9 @@ async def read_text_snippet(
 ) -> str:
     """Return raw text snippet anchored by a Cartographer node.
 
-    This is a thin wrapper around WorkFlowyClientNexus.beacon_get_code_snippet that
-    returns only the ``snippet`` field as plain text. It uses the same resolution
-    pipeline as beacon_get_code_snippet:
+    This is a thin wrapper around WorkFlowyClientNexus.beacon_get_code_snippet and
+    read_text_snippet_by_symbol that returns only the ``snippet`` field as plain
+    text. It uses the same resolution pipeline as beacon_get_code_snippet:
 
     - BEACON (AST|SPAN) metadata when present
     - AST_QUALNAME / MD_PATH when present for .py/.md
@@ -3288,61 +3386,19 @@ async def read_text_snippet(
 
     Robustness:
     - If beacon_node_id doesn't look like a UUID (no hyphens, <8 chars, etc.),
-      silently treats it as a symbol and delegates to read_text_snippet_by_symbol.
-    - Supports UUID hallucination tolerance (prefix matching) via beacon_get_code_snippet.
+      treats it as a symbol and routes through the client-level
+      read_text_snippet_by_symbol helper.
+    - Supports UUID hallucination tolerance (prefix matching) via
+      beacon_get_code_snippet.
+
+    This is the advanced, Cartographer-aware twin of read_text_file and should
+    be used instead of read_text_file for any Cartographer-mapped code.
     """
-    client = get_client()
-
-    # Detect non-UUID input and fallback to symbol resolution.
-    # Heuristic: a UUID is typically 32-36 chars with hyphens or exactly 32 hex chars.
-    # If input looks like a function name / beacon id, route to symbol resolver.
-    candidate = (beacon_node_id or "").strip()
-    is_likely_uuid = (
-        len(candidate) >= 32
-        and ("-" in candidate or len(candidate) == 32)
-        and all(c in "0123456789abcdefABCDEF-" for c in candidate)
+    return await _read_text_snippet_impl(
+        input_str=beacon_node_id,
+        context=context,
+        explicit_uuid=False,
     )
-
-    if not is_likely_uuid:
-        # Treat as symbol and delegate to read_text_snippet_by_symbol.
-        log_event(
-            f"read_text_snippet: input {candidate!r} doesn't look like UUID; treating as symbol",
-            "SNIPPET",
-        )
-        return await read_text_snippet_by_symbol(
-            symbol=candidate,
-            file_path=None,
-            symbol_kind="auto",
-            context=context,
-        )
-
-    # UUID path: delegate to beacon_get_code_snippet (includes hallucination tolerance).
-    if _rate_limiter:
-        await _rate_limiter.acquire()
-
-    try:
-        result = await client.beacon_get_code_snippet(
-            beacon_node_id=beacon_node_id,
-            context=context,
-        )
-        if _rate_limiter:
-            _rate_limiter.on_success()
-    except Exception as e:  # noqa: BLE001
-        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
-            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
-        raise
-
-    if not isinstance(result, dict):
-        raise RuntimeError("Unexpected result from beacon_get_code_snippet")
-
-    if not result.get("success", False):
-        raise RuntimeError(result.get("error", "Unknown error from beacon_get_code_snippet"))
-
-    snippet = result.get("snippet", "")
-    if not isinstance(snippet, str):
-        snippet = str(snippet)
-
-    return snippet
 
 
 # Tool: UUID-based text snippet (explicit UUID variant)
@@ -3350,8 +3406,9 @@ async def read_text_snippet(
     name="read_text_snippet_by_uuid",
     description=(
         "Return a raw text snippet anchored by a Workflowy UUID. "
-        "Explicit UUID variant of read_text_snippet. Supports UUID hallucination "
-        "tolerance via prefix matching."
+        "Explicit UUID variant of read_text_snippet. Use this for "
+        "Cartographer-mapped code when you have a UUID from GLIMPSE; do not "
+        "fall back to read_text_file."
     ),
 )
 async def read_text_snippet_by_uuid(
@@ -3360,8 +3417,9 @@ async def read_text_snippet_by_uuid(
 ) -> str:
     """Return raw text snippet anchored by a Cartographer node UUID.
 
-    This is an explicit-UUID variant of read_text_snippet that delegates
-    directly to it. Provided for naming symmetry:
+    This is an explicit-UUID variant of read_text_snippet that always treats
+    input as a UUID and never falls back to symbol resolution. Provided for
+    naming symmetry:
 
     - read_text_snippet: accepts UUID or symbol (auto-detects)
     - read_text_snippet_by_uuid: explicit UUID intent
@@ -3370,9 +3428,10 @@ async def read_text_snippet_by_uuid(
     Supports UUID hallucination tolerance via prefix matching in the
     underlying beacon_get_code_snippet implementation.
     """
-    return await read_text_snippet(
-        beacon_node_id=beacon_node_id,
+    return await _read_text_snippet_impl(
+        input_str=beacon_node_id,
         context=context,
+        explicit_uuid=True,
     )
 
 
@@ -3385,6 +3444,12 @@ async def read_text_snippet_by_uuid(
         "agents to supply Workflowy UUIDs; the server resolves symbol → node → snippet."
     ),
 )
+# @beacon[
+#   id=auto-beacon@read_text_snippet_by_symbol-ewti,
+#   role=read_text_snippet_by_symbol,
+#   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-snippet-range,
+#   kind=ast,
+# ]
 async def read_text_snippet_by_symbol(
     symbol: str,
     file_path: str | None = None,
