@@ -771,9 +771,33 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             nodes_by_id = {str(n.get("id")): n for n in all_nodes if n.get("id")}
 
         beacon_node = nodes_by_id.get(beacon_node_id)
+
+        # UUID hallucination tolerance: if exact match fails, try prefix matching.
+        # Iteratively shave off segments from the end (e.g., ade00478-cf38-4a0c-...
+        # → ade00478-cf38-4a0c → ade00478-cf38 → ade00478), supporting both
+        # hyphenated and non-hyphenated UUIDs.
+        if not beacon_node:
+            candidate_id = beacon_node_id.replace("-", "")  # normalize to no-hyphens
+            min_prefix_len = 8
+            for prefix_len in range(len(candidate_id), min_prefix_len - 1, -1):
+                prefix = candidate_id[:prefix_len]
+                matches = [
+                    nid for nid in nodes_by_id.keys()
+                    if str(nid).replace("-", "").startswith(prefix)
+                ]
+                if len(matches) == 1:
+                    beacon_node = nodes_by_id.get(matches[0])
+                    logger.info(
+                        f"beacon_get_code_snippet: UUID prefix match {beacon_node_id!r} → {matches[0]}"
+                    )
+                    break
+                if len(matches) > 1:
+                    # Ambiguous prefix; don't guess.
+                    break
+
         if not beacon_node:
             raise NetworkError(
-                f"Node {beacon_node_id!r} not found in /nodes-export snapshot"
+                f"Node {beacon_node_id!r} not found in /nodes-export snapshot (tried prefix matching)"
             )
 
         node_name = str(beacon_node.get("name") or "").strip()
