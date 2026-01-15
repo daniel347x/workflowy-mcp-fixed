@@ -182,6 +182,15 @@ def _is_notes_name(raw_name: str) -> bool:
     - 📝  user-authored persistent NOTES roots
     - 🅿️  internal "Notes (parking)" nodes
     - 🧩  internal "Notes (salvaged)" nodes
+    - 💥  impact/critical notes
+    - 🌟  highlighted/starred notes
+    - 💡  idea/insight notes
+    - 📌  pinned notes
+    - 📓  dark notebook notes
+    - 🧾  receipt/log notes
+    - 🧠  brain/knowledge notes
+    - 🕯️  candle/guiding-light notes
+    - 🧨  explosive/experimental notes
     """
     name = (raw_name or "").strip()
     if not name:
@@ -191,7 +200,7 @@ def _is_notes_name(raw_name: str) -> bool:
     # This gates out plain headings like "Notes on ..." that are part of the
     # source syntax tree rather than persistent NOTES subtrees.
     first = name[0]
-    if first not in {"📝", "🅿️", "🧩"}:
+    if first not in {"📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨"}:
         return False
 
     # Strip the leading marker and any immediate non-alphanumeric decoration
