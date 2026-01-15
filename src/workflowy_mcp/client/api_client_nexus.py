@@ -170,7 +170,7 @@ def scan_active_weaves(nexus_runs_base: str) -> list[dict[str, Any]]:
 #   slice_labels=ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
-def _is_notes_name(raw_name: str) -> bool:
+def _is_notes_name(raw_name: str, note: str | None = None) -> bool:
     """Detect Notes[...] roots (strip leading emoji/bullets).
 
     IMPORTANT (Jan 2026):
@@ -200,21 +200,48 @@ def _is_notes_name(raw_name: str) -> bool:
     # This gates out plain headings like "Notes on ..." that are part of the
     # source syntax tree rather than persistent NOTES subtrees.
     first = name[0]
-    if first not in {"📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨"}:
+    notes_prefixes = {"📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨"}
+    if first not in notes_prefixes:
         return False
 
-    # Strip the leading marker and any immediate non-alphanumeric decoration
-    # (bullets, arrows, etc.), then look for a "notes..." prefix in the
-    # remaining text.
+    # --- Strict path: emoji + "Notes..." prefix (existing behavior) ---
     candidate = name[1:].lstrip()
-    if not candidate:
-        return False
-    if not candidate[0].isalnum():
-        candidate = candidate[1:].lstrip()
-        if not candidate:
-            return False
+    if candidate:
+        if not candidate[0].isalnum():
+            candidate = candidate[1:].lstrip()
+        if candidate and candidate.lower().startswith("notes"):
+            return True
 
-    return candidate.lower().startswith("notes")
+    # --- Fallback path: emoji-rooted node, but NOT a Cartographer structural node ---
+    # If we have a note, inspect the first non-empty line for structural headers.
+    if note is not None:
+        first_line: str | None = None
+        for line in str(note).splitlines():
+            stripped = line.strip()
+            if stripped:
+                first_line = stripped
+                break
+
+        if first_line:
+            fl = first_line.casefold()
+            if (
+                fl.startswith("path:")
+                or fl.startswith("root:")
+                or fl.startswith("ast_qualname:")
+                or fl.startswith("md_path:")
+                or fl.startswith("beacon (")
+                or fl.startswith("@beacon[")
+            ):
+                # Cartographer structural node; do NOT treat as persistent Notes root.
+                return False
+
+        # Emoji-rooted node without structural headers in the note: treat as
+        # a persistent Notes root even if the name does not start with
+        # "Notes".
+        return True
+
+    # No note provided and no strict "Notes" prefix → not a Notes root.
+    return False
 
 
 @dataclass
@@ -4962,7 +4989,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if not cid:
                 continue
             cname = str(child.get("name") or "")
-            if _is_notes_name(cname):
+            cnote = child.get("note") or child.get("no") or ""
+            if _is_notes_name(cname, cnote):
                 ctx.stashed_notes_by_path.setdefault(file_path_key, []).append(str(cid))
 
         # 2) Beacon-scoped Notes[...] subtrees.
@@ -4990,7 +5018,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if not cid:
                     continue
                 cname = str(child.get("name") or "")
-                if _is_notes_name(cname):
+                cnote = child.get("note") or child.get("no") or ""
+                if _is_notes_name(cname, cnote):
                     ctx.saved_notes_by_beacon.setdefault(beacon_id_val, []).append(str(cid))
                     ctx.total_notes_to_salvage += 1
 
@@ -5020,7 +5049,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if cid_str in salvaged_ids:
                     continue
                 cname = str(child.get("name") or "")
-                if _is_notes_name(cname):
+                cnote = child.get("note") or child.get("no") or ""
+                if _is_notes_name(cname, cnote):
                     ctx.generic_notes_by_parent.setdefault(parent_id, []).append(cid_str)
                     ctx.total_notes_to_salvage += 1
 
