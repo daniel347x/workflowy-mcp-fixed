@@ -1106,7 +1106,7 @@ def _extract_beacon_id_from_note(note: str | None) -> str | None:
 # @beacon[
 #   id=auto-beacon@_extract_ast_qualname_from_note-gzzl,
 #   role=_extract_ast_qualname_from_note,
-#   slice_labels=ra-reconcile,
+#   slice_labels=f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 def _extract_ast_qualname_from_note(note: str | None) -> str | None:
@@ -2166,6 +2166,45 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
         tree = ast.parse(content, filename=file_path)
         lines = content.splitlines()
 
+        def _extract_ast_comment_context(start_lineno: int) -> list[str]:
+            context: list[str] = []
+            # Above comments / decorators
+            j = start_lineno - 1
+            while j >= 1:
+                raw = lines[j - 1]
+                stripped = raw.lstrip()
+                if not stripped:
+                    j -= 1
+                    continue
+                if stripped.startswith("#"):
+                    body = stripped.lstrip("#").lstrip()
+                    if body:
+                        context.insert(0, body)
+                    j -= 1
+                    continue
+                if stripped.startswith("@"):
+                    j -= 1
+                    continue
+                break
+
+            # Below: immediate top-of-body comments (before docstring or code)
+            j = start_lineno + 1
+            while j <= len(lines):
+                raw = lines[j - 1]
+                stripped = raw.lstrip()
+                if not stripped:
+                    j += 1
+                    continue
+                if stripped.startswith("#"):
+                    body = stripped.lstrip("#").lstrip()
+                    if body:
+                        context.append(body)
+                    j += 1
+                    continue
+                break
+
+            return context
+
         priority_counter = [100]  # Mutable list to share across recursion
 
         def walk_body(
@@ -2184,6 +2223,11 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                     if doc:
                         note_lines.append("---")
                         note_lines.append(doc)
+                    context_lines = _extract_ast_comment_context(start) if isinstance(start, int) else []
+                    if context_lines:
+                        note_lines.append("")
+                        note_lines.append("CONTEXT COMMENTS (PYTHON):")
+                        note_lines.extend(context_lines)
                     note_text = "\n".join(note_lines)
 
                     node = {
@@ -2212,6 +2256,11 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                     if doc:
                         note_lines.append("---")
                         note_lines.append(doc)
+                    context_lines = _extract_ast_comment_context(start) if isinstance(start, int) else []
+                    if context_lines:
+                        note_lines.append("")
+                        note_lines.append("CONTEXT COMMENTS (PYTHON):")
+                        note_lines.extend(context_lines)
                     note_text = "\n".join(note_lines)
 
                     node = {
