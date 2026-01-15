@@ -1960,7 +1960,9 @@ def apply_python_beacons(
             name = f"{name} {tag_suffix}"
         chosen["name"] = name
 
-        # Merge beacon metadata into note
+        # Merge beacon metadata into note. For AST beacons, we rely on the
+        # AST node itself to carry CONTEXT COMMENTS (PYTHON) so we do not
+        # duplicate comment blocks in the BEACON section.
         comment = beacon.get("comment")
         meta_lines = [
             "BEACON (AST)",
@@ -1971,15 +1973,6 @@ def apply_python_beacons(
         ]
         if comment:
             meta_lines.append(f"comment: {comment}")
-        decor_start_lineno = chosen.get("decor_start_lineno")
-        context_lines = _extract_python_beacon_context(
-            comment_line,
-            decor_start_lineno if isinstance(decor_start_lineno, int) else None,
-        )
-        if context_lines:
-            meta_lines.append("")
-            meta_lines.append("CONTEXT COMMENTS (PYTHON):")
-            meta_lines.extend(context_lines)
         note = chosen.get("note") or ""
         meta_block = "\n".join(meta_lines)
         if note:
