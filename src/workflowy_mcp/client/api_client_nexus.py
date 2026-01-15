@@ -3698,7 +3698,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if not nid:
                     continue
                 name = str(n.get("name") or "")
-                if _is_notes_name(name):
+                note_for_notes = n.get("note") or n.get("no") or ""
+                # IMPORTANT: pass note so emoji-only Notes roots (e.g. '📌')
+                # are preserved the same way as '📝 Notes ...'.
+                if _is_notes_name(name, note_for_notes):
                     root_id = str(nid)
                     explicitly_preserved_ids.add(root_id)
                     _collect_notes_descendants(root_id)
