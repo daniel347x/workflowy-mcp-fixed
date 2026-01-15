@@ -3285,9 +3285,38 @@ async def read_text_snippet(
     - BEACON (AST|SPAN) metadata when present
     - AST_QUALNAME / MD_PATH when present for .py/.md
     - Implicit search or top-of-file fallback for other Cartographer FILE/child nodes
+
+    Robustness:
+    - If beacon_node_id doesn't look like a UUID (no hyphens, <8 chars, etc.),
+      silently treats it as a symbol and delegates to read_text_snippet_by_symbol.
+    - Supports UUID hallucination tolerance (prefix matching) via beacon_get_code_snippet.
     """
     client = get_client()
 
+    # Detect non-UUID input and fallback to symbol resolution.
+    # Heuristic: a UUID is typically 32-36 chars with hyphens or exactly 32 hex chars.
+    # If input looks like a function name / beacon id, route to symbol resolver.
+    candidate = (beacon_node_id or "").strip()
+    is_likely_uuid = (
+        len(candidate) >= 32
+        and ("-" in candidate or len(candidate) == 32)
+        and all(c in "0123456789abcdefABCDEF-" for c in candidate)
+    )
+
+    if not is_likely_uuid:
+        # Treat as symbol and delegate to read_text_snippet_by_symbol.
+        log_event(
+            f"read_text_snippet: input {candidate!r} doesn't look like UUID; treating as symbol",
+            "SNIPPET",
+        )
+        return await read_text_snippet_by_symbol(
+            symbol=candidate,
+            file_path=None,
+            symbol_kind="auto",
+            context=context,
+        )
+
+    # UUID path: delegate to beacon_get_code_snippet (includes hallucination tolerance).
     if _rate_limiter:
         await _rate_limiter.acquire()
 
@@ -3314,6 +3343,37 @@ async def read_text_snippet(
         snippet = str(snippet)
 
     return snippet
+
+
+# Tool: UUID-based text snippet (explicit UUID variant)
+@mcp.tool(
+    name="read_text_snippet_by_uuid",
+    description=(
+        "Return a raw text snippet anchored by a Workflowy UUID. "
+        "Explicit UUID variant of read_text_snippet. Supports UUID hallucination "
+        "tolerance via prefix matching."
+    ),
+)
+async def read_text_snippet_by_uuid(
+    beacon_node_id: str,
+    context: int = 20,
+) -> str:
+    """Return raw text snippet anchored by a Cartographer node UUID.
+
+    This is an explicit-UUID variant of read_text_snippet that delegates
+    directly to it. Provided for naming symmetry:
+
+    - read_text_snippet: accepts UUID or symbol (auto-detects)
+    - read_text_snippet_by_uuid: explicit UUID intent
+    - read_text_snippet_by_symbol: explicit symbol intent
+
+    Supports UUID hallucination tolerance via prefix matching in the
+    underlying beacon_get_code_snippet implementation.
+    """
+    return await read_text_snippet(
+        beacon_node_id=beacon_node_id,
+        context=context,
+    )
 
 
 # Tool: Symbol-based text snippet (handle-first variant)
