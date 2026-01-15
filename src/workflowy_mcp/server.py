@@ -3257,6 +3257,12 @@ async def beacon_get_code_snippet(
         return {"success": False, "error": str(e)}
 
 
+# @beacon[
+#   id=auto-beacon@_read_text_snippet_impl-lsln,
+#   role=_read_text_snippet_impl,
+#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def _read_text_snippet_impl(
     input_str: str,
     context: int,
@@ -3411,6 +3417,12 @@ async def read_text_snippet(
         "fall back to read_text_file."
     ),
 )
+# @beacon[
+#   id=auto-beacon@read_text_snippet_by_uuid-ji9w,
+#   role=read_text_snippet_by_uuid,
+#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def read_text_snippet_by_uuid(
     beacon_node_id: str,
     context: int = 20,
@@ -3457,6 +3469,10 @@ async def read_text_snippet_by_symbol(
     context: int = 10,
 ) -> str:
     """Return raw text snippet resolved from symbol + optional file path.
+
+    This is the go-to symbol-based snippet tool for Cartographer-mapped code;
+    use this instead of read_text_file when you know a symbol and optional
+    file path.
 
     This is a handle-based companion to read_text_snippet that resolves
     symbols (function names, AST_QUALNAME, beacon ids/roles) without
