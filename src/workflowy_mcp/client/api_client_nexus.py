@@ -1654,8 +1654,22 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
                 if use_ast:
                     ast_q = _extract_ast_qualname(note_str)
-                    if ast_q and ast_q == symbol:
-                        _record_hit(node, owner_path, "ast")
+                    if ast_q:
+                        # If symbol includes a dot, treat it as a full AST_QUALNAME
+                        # and require exact equality. If it has no dot, treat it
+                        # as a short name and match against the final segment of
+                        # the qualname. This lets callers use either
+                        # "WorkFlowyClientNexus.read_text_snippet_by_symbol" or
+                        # just "read_text_snippet_by_symbol" (with
+                        # symbol_kind="ast") while still surfacing ambiguities
+                        # when multiple matches exist.
+                        if "." in symbol:
+                            if ast_q == symbol:
+                                _record_hit(node, owner_path, "ast")
+                        else:
+                            short = ast_q.rsplit(".", 1)[-1]
+                            if short == symbol:
+                                _record_hit(node, owner_path, "ast")
 
                 if use_name:
                     norm_name = _normalize_node_name(node.get("name"))
