@@ -1383,6 +1383,46 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "read_text_snippet_by_symbol: /nodes-export snapshot is empty; cannot resolve symbol",
             )
 
+        # Build parent map and detect HIDE CARTOGRAPHER sentinels so we can
+        # ignore entire Cartographer mappings that live under those nodes.
+        parent_by_id: dict[str, str] = {}
+        for n in all_nodes:
+            nid = n.get("id")
+            pid = n.get("parent_id") or n.get("parentId")
+            if nid and pid:
+                parent_by_id[str(nid)] = str(pid)
+
+        def _is_hide_cartographer_node(node: dict[str, Any]) -> bool:
+            raw_name = str(node.get("name") or "")
+            name = raw_name.strip()
+            if not name:
+                return False
+            tokens = name.split()
+            # Drop trailing #tags.
+            while tokens and str(tokens[-1]).startswith("#"):
+                tokens.pop()
+            if not tokens:
+                return False
+            core = " ".join(tokens).strip().lower()
+            return core == "hide cartographer"
+
+        hide_ids: set[str] = set()
+        for n in nodes_by_id.values():
+            if _is_hide_cartographer_node(n):
+                nid = n.get("id")
+                if nid:
+                    hide_ids.add(str(nid))
+
+        def _is_under_hidden_subtree(node_id: str) -> bool:
+            cur = node_id
+            visited: set[str] = set()
+            while cur and cur not in visited:
+                if cur in hide_ids:
+                    return True
+                visited.add(cur)
+                cur = parent_by_id.get(cur)
+            return False
+
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._canonical_path-0zpv,
         #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._canonical_path,
@@ -1392,13 +1432,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         def _canonical_path(path: str) -> str:
             return os.path.normcase(os.path.normpath(path))
 
-        # 2) Identify Cartographer FILE nodes via Path:/Root: headers.
+        # 2) Identify Cartographer FILE nodes via Path:/Root: headers,
+        # excluding any that live under a "HIDE CARTOGRAPHER" sentinel.
         file_nodes: list[tuple[dict[str, Any], str]] = []
         for n in nodes_by_id.values():
             n_note = n.get("note") or n.get("no") or ""
             path = parse_path_or_root_from_note(str(n_note))
-            if path:
-                file_nodes.append((n, path))
+            if not path:
+                continue
+            nid = n.get("id")
+            sid = str(nid) if nid else None
+            if sid and _is_under_hidden_subtree(sid):
+                continue
+            file_nodes.append((n, path))
 
         if not file_nodes:
             raise NetworkError(
@@ -1430,6 +1476,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         "read_text_snippet_by_symbol: no FILE node with Path: matching "
                         f"{file_path!r} was found",
                     )
+
+                # Prefer matches that correspond to real files on disk and do
+                # not contain an ellipsis placeholder in the path. This avoids
+                # false-positive ambiguities from stale or placeholder Path:
+                # values such as "E:\\...\\TODO\\nexus_map_codebase.py".
+                existing_matches = [
+                    (n, p)
+                    for (n, p) in matches
+                    if os.path.isfile(p) and "..." not in p
+                ]
+                if existing_matches:
+                    matches = existing_matches
+
                 paths = sorted({p for _, p in matches})
                 if len(paths) > 1:
                     raise NetworkError(
