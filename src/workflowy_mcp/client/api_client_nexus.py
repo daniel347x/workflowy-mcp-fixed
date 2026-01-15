@@ -1279,6 +1279,292 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             f"with extension {ext!r}."
         )
 
+    async def read_text_snippet_by_symbol(
+        self,
+        file_path: str | None,
+        symbol: str,
+        symbol_kind: str = "auto",
+        context: int = 10,
+    ) -> dict[str, Any]:
+        """Resolve a snippet by optional file path/name and symbol.
+
+        This is a handle-based companion to beacon_get_code_snippet/read_text_snippet
+        that avoids requiring the caller to supply a Workflowy UUID. It works by:
+
+        1. Loading the cached /nodes-export snapshot (refreshing once on demand).
+        2. Locating Cartographer FILE nodes via their Path:/Root: note header.
+        3. Optionally restricting the search to a single FILE based on `file_path`
+           (full path or basename); otherwise searching all FILE nodes.
+        4. Within the chosen FILE subtree(s), attempting to match `symbol` as:
+
+           - Beacon id or role (BEACON blocks in the note),
+           - AST_QUALNAME (Python/JS/TS AST nodes),
+           - Normalized node name (function/method/heading name).
+
+        5. If exactly one node matches across the requested symbol kinds, delegating
+           to beacon_get_code_snippet(...) using that node's UUID and returning its
+           full result dict, including `snippet`.
+
+        If zero or multiple matches are found, a NetworkError is raised describing
+        the mismatch/ambiguity so the caller can refine `file_path` or `symbol`.
+        """
+        logger = _ClientLogger()
+
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise NetworkError("read_text_snippet_by_symbol: symbol must be a non-empty string")
+
+        # 1) Load /nodes-export snapshot (cached if available).
+        raw = await export_nodes_impl(self, node_id=None, use_cache=True, force_refresh=False)
+        all_nodes = raw.get("nodes", []) or []
+        nodes_by_id: dict[str, dict[str, Any]] = {
+            str(n.get("id")): n for n in all_nodes if n.get("id")
+        }
+        if not nodes_by_id:
+            raise NetworkError(
+                "read_text_snippet_by_symbol: /nodes-export snapshot is empty; cannot resolve symbol",
+            )
+
+        def _canonical_path(path: str) -> str:
+            return os.path.normcase(os.path.normpath(path))
+
+        # 2) Identify Cartographer FILE nodes via Path:/Root: headers.
+        file_nodes: list[tuple[dict[str, Any], str]] = []
+        for n in nodes_by_id.values():
+            n_note = n.get("note") or n.get("no") or ""
+            path = parse_path_or_root_from_note(str(n_note))
+            if path:
+                file_nodes.append((n, path))
+
+        if not file_nodes:
+            raise NetworkError(
+                "read_text_snippet_by_symbol: no Cartographer-mapped FILE nodes with Path:/Root: found",
+            )
+
+        # 3) Restrict FILE set by file_path when provided (full path or basename).
+        search_roots: list[tuple[dict[str, Any], str]]
+        if file_path:
+            fp = file_path.strip()
+            if not fp:
+                search_roots = file_nodes
+            else:
+                is_full = any(sep in fp for sep in ("\\", "/")) or ":" in fp
+                matches: list[tuple[dict[str, Any], str]]
+                if is_full:
+                    target_norm = _canonical_path(fp)
+                    matches = [
+                        (n, p) for (n, p) in file_nodes
+                        if _canonical_path(p) == target_norm
+                    ]
+                else:
+                    matches = [
+                        (n, p) for (n, p) in file_nodes
+                        if os.path.basename(p) == fp
+                    ]
+                if not matches:
+                    raise NetworkError(
+                        "read_text_snippet_by_symbol: no FILE node with Path: matching "
+                        f"{file_path!r} was found",
+                    )
+                if len(matches) > 1:
+                    paths = sorted({p for _, p in matches})
+                    raise NetworkError(
+                        "read_text_snippet_by_symbol: ambiguous file_path; matches: "
+                        + ", ".join(repr(p) for p in paths),
+                    )
+                search_roots = matches
+        else:
+            search_roots = file_nodes
+
+        # 4) Build children index for subtree walks.
+        children_by_parent: dict[str, list[dict[str, Any]]] = {}
+        for n in all_nodes:
+            pid = n.get("parent_id") or n.get("parentId")
+            if pid:
+                children_by_parent.setdefault(str(pid), []).append(n)
+
+        def _iter_subtree(root_id: str):
+            stack = [str(root_id)]
+            visited: set[str] = set()
+            while stack:
+                nid = stack.pop()
+                if nid in visited:
+                    continue
+                visited.add(nid)
+                node = nodes_by_id.get(nid)
+                if not node:
+                    continue
+                yield node
+                for child in children_by_parent.get(nid, []) or []:
+                    cid = child.get("id")
+                    if cid:
+                        stack.append(str(cid))
+
+        def _extract_beacon_fields(note_str: str) -> tuple[str | None, str | None]:
+            beacon_id_val: str | None = None
+            role_val: str | None = None
+            if "BEACON (" not in note_str and "@beacon[" not in note_str:
+                return None, None
+            for line in note_str.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("id:"):
+                    beacon_id_val = stripped.split(":", 1)[1].strip()
+                elif stripped.startswith("role:"):
+                    role_val = stripped.split(":", 1)[1].strip()
+            return beacon_id_val or None, role_val or None
+
+        def _extract_ast_qualname(note_str: str) -> str | None:
+            for line in note_str.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("AST_QUALNAME:"):
+                    return stripped.split(":", 1)[1].strip() or None
+            return None
+
+        def _normalize_node_name(raw_name: str | None) -> str:
+            if not raw_name:
+                return ""
+            name = str(raw_name)
+            # Strip leading decoration/emoji until alnum/underscore/dollar.
+            i = 0
+            while i < len(name) and not (name[i].isalnum() or name[i] in {"_", "$"}):
+                i += 1
+            name = name[i:].strip()
+            if not name:
+                return ""
+            tokens = name.split()
+            # Drop trailing #tags.
+            while tokens and str(tokens[-1]).startswith("#"):
+                tokens.pop()
+            if not tokens:
+                return ""
+            # Drop structural prefixes like "ƒ", "class", "function", "method".
+            if tokens[0] in {"ƒ", "class", "function", "method"}:
+                tokens = tokens[1:]
+            if not tokens:
+                return ""
+            core = " ".join(tokens)
+            # Strip parameters after '('.
+            paren = core.find("(")
+            if paren != -1:
+                core = core[:paren].strip()
+            return core
+
+        # Buckets for matches by strategy.
+        node_to_file_path: dict[str, str] = {}
+        beacon_hits: set[str] = set()
+        ast_hits: set[str] = set()
+        name_hits: set[str] = set()
+
+        def _record_hit(node: dict[str, Any], owner_path: str, bucket: str) -> None:
+            nid = node.get("id")
+            if not nid:
+                return
+            s_nid = str(nid)
+            node_to_file_path.setdefault(s_nid, owner_path)
+            if bucket == "beacon":
+                beacon_hits.add(s_nid)
+            elif bucket == "ast":
+                ast_hits.add(s_nid)
+            elif bucket == "name":
+                name_hits.add(s_nid)
+
+        # Determine which strategies are enabled.
+        use_beacon = symbol_kind in {"auto", "beacon"}
+        use_ast = symbol_kind in {"auto", "ast"}
+        use_name = symbol_kind in {"auto", "name"}
+
+        # 5) Scan selected FILE subtrees and collect matches.
+        for file_node, owner_path in search_roots:
+            root_id = str(file_node.get("id")) if file_node.get("id") else None
+            if not root_id:
+                continue
+            for node in _iter_subtree(root_id):
+                note_str = str(node.get("note") or node.get("no") or "")
+
+                if use_beacon:
+                    beacon_id_val, role_val = _extract_beacon_fields(note_str)
+                    if beacon_id_val == symbol or role_val == symbol:
+                        _record_hit(node, owner_path, "beacon")
+
+                if use_ast:
+                    ast_q = _extract_ast_qualname(note_str)
+                    if ast_q and ast_q == symbol:
+                        _record_hit(node, owner_path, "ast")
+
+                if use_name:
+                    norm_name = _normalize_node_name(node.get("name"))
+                    if norm_name and norm_name == symbol:
+                        _record_hit(node, owner_path, "name")
+
+        # 6) Compute union of hits across enabled strategies and enforce uniqueness.
+        active_sets: list[set[str]] = []
+        if use_beacon:
+            active_sets.append(beacon_hits)
+        if use_ast:
+            active_sets.append(ast_hits)
+        if use_name:
+            active_sets.append(name_hits)
+
+        union_ids: set[str] = set()
+        for s in active_sets:
+            union_ids.update(s)
+
+        if not union_ids:
+            raise NetworkError(
+                "read_text_snippet_by_symbol: no matching node found for symbol "
+                f"{symbol!r} (symbol_kind={symbol_kind!r})",
+            )
+
+        if len(union_ids) > 1:
+            # Build a concise ambiguity report.
+            details: list[str] = []
+            for nid in sorted(union_ids):
+                node = nodes_by_id.get(nid) or {}
+                nname = node.get("name") or "(no name)"
+                fpath = node_to_file_path.get(nid) or "(unknown Path)"
+                buckets: list[str] = []
+                if nid in beacon_hits:
+                    buckets.append("beacon")
+                if nid in ast_hits:
+                    buckets.append("ast")
+                if nid in name_hits:
+                    buckets.append("name")
+                details.append(
+                    f"id={nid} name={nname!r} file={fpath!r} via={'+'.join(buckets)}"
+                )
+            raise NetworkError(
+                "read_text_snippet_by_symbol: symbol is ambiguous; candidates:\n"
+                + "\n".join(details),
+            )
+
+        target_id = next(iter(union_ids))
+        logger.info(
+            "read_text_snippet_by_symbol: resolved symbol %r (kind=%r) to node %s",
+            symbol,
+            symbol_kind,
+            target_id,
+        )
+
+        # 7) Delegate to beacon_get_code_snippet for the actual snippet extraction.
+        result = await self.beacon_get_code_snippet(
+            beacon_node_id=target_id,
+            context=context,
+        )
+
+        if not isinstance(result, dict) or not result.get("success"):
+            raise NetworkError(
+                "read_text_snippet_by_symbol: beacon_get_code_snippet failed for node "
+                f"{target_id!r} (symbol={symbol!r})",
+            )
+
+        # Attach resolution metadata for debugging/inspection.
+        result.setdefault("resolved_symbol", symbol)
+        result.setdefault("resolved_symbol_kind", symbol_kind)
+        result.setdefault("resolved_node_id", target_id)
+        result.setdefault("resolved_file_path", node_to_file_path.get(target_id))
+
+        return result
+
     async def nexus_scry(
         self,
         nexus_tag: str,

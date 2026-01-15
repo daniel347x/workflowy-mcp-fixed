@@ -406,6 +406,12 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         }))
 
 
+# @beacon[
+#   id=auto-beacon@_guess_line_number_from_name-wlsn,
+#   role=_guess_line_number_from_name,
+#   slice_labels=nexus-md-header-path,f9-f12-handlers,
+#   kind=ast,
+# ]
 def _guess_line_number_from_name(file_path: str, node_name: str | None) -> int:
     """Best-effort line-number guess for non-beacon nodes.
 
@@ -496,6 +502,12 @@ def _guess_line_number_from_name(file_path: str, node_name: str | None) -> int:
     return 1
 
 
+# @beacon[
+#   id=auto-beacon@_launch_windsurf-nrnc,
+#   role=_launch_windsurf,
+#   slice_labels=f9-f12-handlers,
+#   kind=ast,
+# ]
 def _launch_windsurf(file_path: str, line: int | None = None) -> None:
     """Launch WindSurf for the given file/line on Windows.
 
@@ -533,6 +545,12 @@ def _launch_windsurf(file_path: str, line: int | None = None) -> None:
         raise
 
 
+# @beacon[
+#   id=auto-beacon@_maybe_create_ast_beacon_from_tags-adiu,
+#   role=_maybe_create_ast_beacon_from_tags,
+#   slice_labels=f9-f12-handlers,
+#   kind=ast,
+# ]
 async def _maybe_create_ast_beacon_from_tags(
     client: "WorkFlowyClient",
     node_id: str,
@@ -840,6 +858,12 @@ async def _maybe_create_ast_beacon_from_tags(
     }
 
 
+# @beacon[
+#   id=auto-beacon@_handle_refresh_file_node-7irr,
+#   role=_handle_refresh_file_node,
+#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
     """Handle F12-driven request to refresh a Cartographer FILE node.
 
@@ -967,6 +991,12 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
         )
 
 
+# @beacon[
+#   id=auto-beacon@_handle_refresh_folder_node-tgyl,
+#   role=_handle_refresh_folder_node,
+#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
     """Handle F12-driven request to refresh a Cartographer FOLDER subtree.
 
@@ -1021,6 +1051,12 @@ async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
         )
 
 
+# @beacon[
+#   id=auto-beacon@_handle_open_node_in_windsurf-3j45,
+#   role=_handle_open_node_in_windsurf,
+#   slice_labels=nexus-md-header-path,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None:
     """Handle F10-driven request to open code in WindSurf for a Workflowy node.
 
@@ -3167,6 +3203,12 @@ async def etch_async(
     name="beacon_get_code_snippet",
     description="Get raw code/doc snippet for a beacon node UUID (via Cartographer beacons)."
 )
+# @beacon[
+#   id=auto-beacon@beacon_get_code_snippet-kxet,
+#   role=beacon_get_code_snippet,
+#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def beacon_get_code_snippet(
     beacon_node_id: str,
     context: int = 10,
@@ -3224,6 +3266,12 @@ async def beacon_get_code_snippet(
         "returning only the snippet text."
     ),
 )
+# @beacon[
+#   id=auto-beacon@read_text_snippet-37kd,
+#   role=read_text_snippet,
+#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def read_text_snippet(
     beacon_node_id: str,
     context: int = 20,
@@ -3260,6 +3308,83 @@ async def read_text_snippet(
 
     if not result.get("success", False):
         raise RuntimeError(result.get("error", "Unknown error from beacon_get_code_snippet"))
+
+    snippet = result.get("snippet", "")
+    if not isinstance(snippet, str):
+        snippet = str(snippet)
+
+    return snippet
+
+
+# Tool: Symbol-based text snippet (handle-first variant)
+@mcp.tool(
+    name="read_text_snippet_by_symbol",
+    description=(
+        "Return a raw text snippet by optional file path/name and symbol "
+        "(function name, AST_QUALNAME, or beacon id/role). Avoids requiring "
+        "agents to supply Workflowy UUIDs; the server resolves symbol → node → snippet."
+    ),
+)
+async def read_text_snippet_by_symbol(
+    symbol: str,
+    file_path: str | None = None,
+    symbol_kind: str = "auto",
+    context: int = 10,
+) -> str:
+    """Return raw text snippet resolved from symbol + optional file path.
+
+    This is a handle-based companion to read_text_snippet that resolves
+    symbols (function names, AST_QUALNAME, beacon ids/roles) without
+    requiring Workflowy UUIDs from agents. It:
+
+    - Loads the cached /nodes-export snapshot.
+    - Identifies Cartographer FILE nodes by their Path:/Root: headers.
+    - Optionally restricts search to FILE(s) matching file_path (basename or full path).
+    - Matches symbol within chosen FILE subtree(s) by:
+        - Beacon id or role (BEACON blocks in note),
+        - AST_QUALNAME (Python/JS/TS AST nodes),
+        - Normalized node name (function/method/heading).
+    - On unique match, delegates to beacon_get_code_snippet and returns snippet text.
+    - On zero/multiple matches, raises NetworkError with disambiguation hints.
+
+    Args:
+        symbol: Function name, AST_QUALNAME, or beacon id/role to search for.
+        file_path: Optional file path (basename or full path) to restrict search.
+                   If None, searches all Cartographer FILE nodes.
+        symbol_kind: "auto" (default), "beacon", "ast", or "name".
+                     Controls which matching strategies are enabled.
+        context: Lines of context around the snippet (default 10).
+
+    Returns:
+        Raw snippet text (same format as read_text_snippet).
+
+    Raises:
+        NetworkError when symbol is not found or is ambiguous.
+    """
+    client = get_client()
+
+    if _rate_limiter:
+        await _rate_limiter.acquire()
+
+    try:
+        result = await client.read_text_snippet_by_symbol(
+            file_path=file_path,
+            symbol=symbol,
+            symbol_kind=symbol_kind,
+            context=context,
+        )
+        if _rate_limiter:
+            _rate_limiter.on_success()
+    except Exception as e:  # noqa: BLE001
+        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+        raise
+
+    if not isinstance(result, dict):
+        raise RuntimeError("Unexpected result from read_text_snippet_by_symbol")
+
+    if not result.get("success", False):
+        raise RuntimeError(result.get("error", "Unknown error from read_text_snippet_by_symbol"))
 
     snippet = result.get("snippet", "")
     if not isinstance(snippet, str):
@@ -3310,6 +3435,12 @@ def nexus_purge_keystones(keystone_ids: list[str]) -> dict:
         "subtrees keyed by beacon id."
     ),
 )
+# @beacon[
+#   id=auto-beacon@beacon_refresh_code_node-1t6u,
+#   role=beacon_refresh_code_node,
+#   slice_labels=ra-notes,ra-notes-cartographer,ra-reconcile,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def beacon_refresh_code_node(
     file_node_id: str,
     dry_run: bool = False,
@@ -3353,6 +3484,12 @@ async def beacon_refresh_code_node(
         "file; the client should update the cached node name/note separately."
     ),
 )
+# @beacon[
+#   id=auto-beacon@update_beacon_from_node-kiam,
+#   role=update_beacon_from_node,
+#   slice_labels=f9-f12-handlers,
+#   kind=ast,
+# ]
 async def update_beacon_from_node(
     node_id: str,
     name: str,
