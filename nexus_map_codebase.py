@@ -3244,6 +3244,12 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     return beacons
 
 
+# @beacon[
+#   id=carto-js-ts@parse_yaml_beacon_blocks,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-reconcile,f9-f12-handlers,
+#   kind=span,
+# ]
 def parse_yaml_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     """Parse @beacon[...] blocks from YAML/Helm using '#'-style comments.
 
@@ -3402,18 +3408,67 @@ def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str
     """Extract nearby SQL comments (non-beacon) around a SQL beacon.
 
     Includes:
-    - Lines starting with '--' above/below the beacon block (excluding @beacon lines)
+    - Lines that are part of a line comment starting with '--'
+    - Lines that are part of a block comment /* ... */ above/below the beacon
+      (we treat the entire contiguous comment region as context).
 
     Skips:
     - blank lines
-    - the beacon metadata lines themselves
+    - any line containing '@beacon' (metadata)
     """
     context: List[str] = []
+
+    n = len(lines)
+
+    # Precompute which lines are comment-like and a cleaned text version.
+    # For block comments we treat every line between /* and */ (inclusive)
+    # as comment-like, so that interior lines are visible in CONTEXT COMMENTS.
+    comment_mask: list[bool] = [False] * n
+    cleaned: list[str] = ["" for _ in range(n)]
+    in_block = False
+
+    for idx, raw in enumerate(lines, start=1):
+        stripped = raw.lstrip()
+        if not stripped:
+            continue
+        if "@beacon" in stripped:
+            continue
+
+        is_comment = False
+        text = ""
+
+        if not in_block:
+            if stripped.startswith("--"):
+                is_comment = True
+                text = stripped[2:].lstrip()
+            elif "/*" in stripped:
+                is_comment = True
+                in_block = True
+                after = stripped.split("/*", 1)[1]
+                if "*/" in after:
+                    before_close, _ = after.split("*/", 1)
+                    text = before_close.strip()
+                    in_block = False
+                else:
+                    text = after.strip()
+        else:
+            # Inside a /* ... */ block
+            is_comment = True
+            if "*/" in stripped:
+                before_close, _ = stripped.split("*/", 1)
+                text = before_close.strip()
+                in_block = False
+            else:
+                text = stripped
+
+        if is_comment:
+            comment_mask[idx - 1] = True
+            cleaned[idx - 1] = text
 
     # Determine end of the beacon metadata block (similar to parse_sql_beacon_blocks)
     j = comment_line
     block_end = comment_line
-    while j <= len(lines):
+    while j <= n:
         raw = lines[j - 1].lstrip()
         if raw.startswith("--"):
             body = raw.lstrip("-").lstrip()
@@ -3427,25 +3482,27 @@ def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str
     # Above
     j = comment_line - 1
     while j >= 1:
-        raw = lines[j - 1].lstrip()
-        if not raw:
+        raw = lines[j - 1]
+        if not raw.strip():
             j -= 1
             continue
-        if raw.startswith("--") and "@beacon" not in raw:
-            context.insert(0, raw.lstrip("-").lstrip())
+        if comment_mask[j - 1]:
+            if cleaned[j - 1]:
+                context.insert(0, cleaned[j - 1])
             j -= 1
             continue
         break
 
     # Below
     j = block_end + 1
-    while j <= len(lines):
-        raw = lines[j - 1].lstrip()
-        if not raw:
+    while j <= n:
+        raw = lines[j - 1]
+        if not raw.strip():
             j += 1
             continue
-        if raw.startswith("--") and "@beacon" not in raw:
-            context.append(raw.lstrip("-").lstrip())
+        if comment_mask[j - 1]:
+            if cleaned[j - 1]:
+                context.append(cleaned[j - 1])
             j += 1
             continue
         break
@@ -3686,6 +3743,12 @@ def apply_sh_beacons(
         file_children.append(span_node)
 
 
+# @beacon[
+#   id=carto-js-ts@apply_yaml_beacon_context,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-reconcile,
+#   kind=span,
+# ]
 def _extract_yaml_beacon_context(lines: list[str], comment_line: int) -> List[str]:
     """Extract nearby YAML comments (non-beacon) around a YAML beacon.
 
@@ -3864,10 +3927,65 @@ def apply_js_beacons(
         return lines[ln - 1]
 
     def _extract_js_beacon_context(comment_line: int) -> List[str]:
+        """Extract nearby JS/TS comments (non-beacon) around a JS/TS beacon.
+
+        Includes:
+        - Lines that are part of a '//' line comment
+        - Lines that are part of a block comment /* ... */ above/below the beacon
+
+        Skips:
+        - blank lines
+        - lines containing '@beacon' (metadata)
+        """
         context: List[str] = []
+
+        # Precompute which lines are comment-like and a cleaned text version.
+        # For block comments we treat every line between /* and */ (inclusive)
+        # as comment-like, so that interior lines are visible in CONTEXT COMMENTS.
+        comment_mask: list[bool] = [False] * n
+        cleaned: list[str] = ["" for _ in range(n)]
+        in_block = False
+
+        for idx, raw in enumerate(lines, start=1):
+            stripped = raw.lstrip()
+            if not stripped:
+                continue
+            if "@beacon" in stripped:
+                continue
+
+            is_comment = False
+            text = ""
+
+            if not in_block:
+                if stripped.startswith("//"):
+                    is_comment = True
+                    text = stripped[2:].lstrip()
+                elif "/*" in stripped:
+                    is_comment = True
+                    in_block = True
+                    after = stripped.split("/*", 1)[1]
+                    if "*/" in after:
+                        before_close, _ = after.split("*/", 1)
+                        text = before_close.strip()
+                        in_block = False
+                    else:
+                        text = after.strip()
+            else:
+                is_comment = True
+                if "*/" in stripped:
+                    before_close, _ = stripped.split("*/", 1)
+                    text = before_close.strip()
+                    in_block = False
+                else:
+                    text = stripped
+
+            if is_comment:
+                comment_mask[idx - 1] = True
+                cleaned[idx - 1] = text
+
+        # Find end of beacon block (first line containing ']')
         j = comment_line
         block_end = comment_line
-        # Find end of beacon block (first line containing ']')
         while j <= n:
             raw = lines[j - 1]
             if "]" in raw:
@@ -3878,20 +3996,13 @@ def apply_js_beacons(
         # Above
         j = comment_line - 1
         while j >= 1:
-            raw = lines[j - 1].lstrip()
-            if not raw:
+            raw = lines[j - 1]
+            if not raw.strip():
                 j -= 1
                 continue
-            if raw.startswith("//") and "@beacon" not in raw:
-                context.insert(0, raw[2:].lstrip())
-                j -= 1
-                continue
-            if (raw.startswith("/*") or raw.startswith("*") or raw.startswith("*/")) and "@beacon" not in raw:
-                cleaned = raw
-                for prefix in ("/*", "*/", "*"):
-                    if cleaned.startswith(prefix):
-                        cleaned = cleaned[len(prefix):].lstrip()
-                context.insert(0, cleaned)
+            if comment_mask[j - 1]:
+                if cleaned[j - 1]:
+                    context.insert(0, cleaned[j - 1])
                 j -= 1
                 continue
             break
@@ -3899,20 +4010,13 @@ def apply_js_beacons(
         # Below
         j = block_end + 1
         while j <= n:
-            raw = lines[j - 1].lstrip()
-            if not raw:
+            raw = lines[j - 1]
+            if not raw.strip():
                 j += 1
                 continue
-            if raw.startswith("//") and "@beacon" not in raw:
-                context.append(raw[2:].lstrip())
-                j += 1
-                continue
-            if (raw.startswith("/*") or raw.startswith("*") or raw.startswith("*/")) and "@beacon" not in raw:
-                cleaned = raw
-                for prefix in ("/*", "*/", "*"):
-                    if cleaned.startswith(prefix):
-                        cleaned = cleaned[len(prefix):].lstrip()
-                context.append(cleaned)
+            if comment_mask[j - 1]:
+                if cleaned[j - 1]:
+                    context.append(cleaned[j - 1])
                 j += 1
                 continue
             break
