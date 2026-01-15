@@ -3209,7 +3209,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if salvage_ctx.parking_node_id and sid == salvage_ctx.parking_node_id:
                     continue
                 cname = str(child.get("name") or "")
-                if _is_notes_name(cname):
+                cnote = child.get("note") or child.get("no") or ""
+                if _is_notes_name(cname, cnote):
                     # Manual Notes root – preserve
                     continue
                 structural_deleted += 1
