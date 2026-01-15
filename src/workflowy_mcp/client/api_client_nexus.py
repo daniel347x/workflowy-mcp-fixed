@@ -772,14 +772,24 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             else:
                 raise
 
-        # If node not found (or cache was empty), try one forced refresh before failing
+        # If node not found in the current snapshot, rely on prefix matching only.
+        # We deliberately avoid triggering a fresh /nodes-export here because
+        # automatic refresh is disabled by design; Dan prefers explicit cache
+        # refresh via the workflowy_refresh_nodes_export_cache tool.
         if beacon_node_id not in nodes_by_id:
+            if not nodes_by_id:
+                # No snapshot available at all; surface the same guidance as
+                # export_nodes_impl rather than attempting an implicit refresh.
+                raise NetworkError(
+                    "nodes-export cache is not initialized; run "
+                    "workflowy_refresh_nodes_export_cache from the UUID widget."
+                )
             logger.info(
-                f"beacon_get_code_snippet: {beacon_node_id} not in cache; refreshing /nodes-export"
+                f"beacon_get_code_snippet: {beacon_node_id!r} not in cached /nodes-export; "
+                "will rely on prefix matching only (no automatic refresh)"
             )
-            raw = await export_nodes_impl(self, node_id=None, use_cache=False, force_refresh=True)
-            all_nodes = raw.get("nodes", []) or []
-            nodes_by_id = {str(n.get("id")): n for n in all_nodes if n.get("id")}
+            # nodes_by_id remains as-is; prefix matching below may still succeed
+            # if the caller supplied a truncated or slightly corrupted UUID.
 
         beacon_node = nodes_by_id.get(beacon_node_id)
 
