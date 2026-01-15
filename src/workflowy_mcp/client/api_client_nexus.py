@@ -821,6 +821,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 f"Node {beacon_node_id!r} not found in /nodes-export snapshot (tried prefix matching)"
             )
 
+        # Use the canonical UUID of the resolved node as the starting point for
+        # ancestor traversal. This ensures that prefix-matched UUIDs behave the
+        # same as exact matches when locating the enclosing FILE node.
+        start_uuid = (
+            str(beacon_node.get("id")) if beacon_node and beacon_node.get("id") else beacon_node_id
+        )
+
         node_name = str(beacon_node.get("name") or "").strip()
 
         # Step 2: Parse beacon note for id and kind (if present)
@@ -840,9 +847,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         # Step 3: Walk ancestors to find FILE node with Path: ... in its note
         logger.info(
-            f"beacon_get_code_snippet: starting FILE ancestor search from {beacon_node_id!r}"
+            f"beacon_get_code_snippet: starting FILE ancestor search from {start_uuid!r}"
         )
-        current_id = beacon_node_id
+        current_id = start_uuid
         visited: set[str] = set()
         file_node: dict[str, Any] | None = None
 
