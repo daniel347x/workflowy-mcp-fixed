@@ -2413,6 +2413,12 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
         lines = source_text.splitlines()
         n = len(lines)
 
+        # @beacon[
+        #   id=carto-js-ts@_build_js_comment_mask-9p1f,
+        #   role=carto-js-ts,
+        #   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,
+        #   kind=ast,
+        # ]
         def _build_js_comment_mask(src_lines: list[str]) -> tuple[list[bool], list[str]]:
             comment_mask: list[bool] = [False] * len(src_lines)
             cleaned: list[str] = ["" for _ in range(len(src_lines))]
@@ -2461,6 +2467,12 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
 
         comment_mask, cleaned_comments = _build_js_comment_mask(lines)
 
+        # @beacon[
+        #   id=carto-js-ts@_extract_js_ast_comment_context-v3sd,
+        #   role=carto-js-ts,
+        #   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,
+        #   kind=ast,
+        # ]
         def _extract_js_ast_comment_context(start_line: int) -> list[str]:
             ctx: list[str] = []
 
