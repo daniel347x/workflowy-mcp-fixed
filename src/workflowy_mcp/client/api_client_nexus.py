@@ -1726,10 +1726,58 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             union_ids.update(s)
 
         if not union_ids:
-            raise NetworkError(
-                "read_text_snippet_by_symbol: no matching node found for symbol "
-                f"{symbol!r} (symbol_kind={symbol_kind!r})",
-            )
+            # Robust fallback: if caller provided a dotted symbol like
+            # "WorkFlowyClientNexus._is_notes_name" but the Cartographer node
+            # is module-level ("_is_notes_name"), retry once using the final
+            # segment. This is a common agent failure mode.
+            #
+            # Safety:
+            # - We only do this when the symbol contains a dot.
+            # - We do NOT guess further than the last segment.
+            # - We still raise ambiguity if multiple matches exist.
+            if "." in symbol:
+                tail = symbol.rsplit(".", 1)[-1].strip()
+                if tail and tail != symbol:
+                    # Retry name matching against the tail (keeping the same
+                    # symbol_kind semantics).
+                    for file_node, owner_path in search_roots:
+                        root_id = str(file_node.get("id")) if file_node.get("id") else None
+                        if not root_id:
+                            continue
+                        for node in _iter_subtree(root_id):
+                            note_str = str(node.get("note") or node.get("no") or "")
+
+                            if use_beacon:
+                                beacon_id_val, role_val = _extract_beacon_fields(note_str)
+                                if beacon_id_val == tail or role_val == tail:
+                                    _record_hit(node, owner_path, "beacon")
+
+                            if use_ast:
+                                ast_q = _extract_ast_qualname(note_str)
+                                if ast_q:
+                                    if "." in tail:
+                                        if ast_q == tail:
+                                            _record_hit(node, owner_path, "ast")
+                                    else:
+                                        short = ast_q.rsplit(".", 1)[-1]
+                                        if short == tail:
+                                            _record_hit(node, owner_path, "ast")
+
+                            if use_name:
+                                norm_name = _normalize_node_name(node.get("name"))
+                                if norm_name and norm_name == tail:
+                                    _record_hit(node, owner_path, "name")
+
+                    # Recompute union with the updated hit sets.
+                    union_ids = set()
+                    for s in active_sets:
+                        union_ids.update(s)
+
+            if not union_ids:
+                raise NetworkError(
+                    "read_text_snippet_by_symbol: no matching node found for symbol "
+                    f"{symbol!r} (symbol_kind={symbol_kind!r})",
+                )
 
         if len(union_ids) > 1:
             # Build a concise ambiguity report.
