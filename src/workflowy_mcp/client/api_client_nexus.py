@@ -5039,8 +5039,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 continue
             cname = str(child.get("name") or "")
             cnote = child.get("note") or child.get("no") or ""
-            if _is_notes_name(cname, cnote):
+            is_notes = _is_notes_name(cname, cnote)
+            if is_notes:
                 ctx.stashed_notes_by_path.setdefault(file_path_key, []).append(str(cid))
+                ctx.total_notes_to_salvage += 1
+            # Debug: classify FILE-level children
+            try:
+                if is_notes:
+                    log_event(
+                        "NOTES_CLASSIFY bucket=file_level "
+                        f"file={file_node_id} nid={cid} name={cname!r} parent={file_node_id}",
+                        "BEACON",
+                    )
+            except Exception:
+                pass
 
         # 2) Beacon-scoped Notes[...] subtrees.
         for n in flat_nodes:
@@ -5068,9 +5080,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     continue
                 cname = str(child.get("name") or "")
                 cnote = child.get("note") or child.get("no") or ""
-                if _is_notes_name(cname, cnote):
+                is_notes = _is_notes_name(cname, cnote)
+                if is_notes:
                     ctx.saved_notes_by_beacon.setdefault(beacon_id_val, []).append(str(cid))
                     ctx.total_notes_to_salvage += 1
+                    # Debug: classify beacon-scoped
+                    try:
+                        log_event(
+                            "NOTES_CLASSIFY bucket=beacon_scoped "
+                            f"file={file_node_id} nid={cid} name={cname!r} parent={sid} beacon_id={beacon_id_val}",
+                            "BEACON",
+                        )
+                    except Exception:
+                        pass
 
         # 3) Generic Notes[...] under non-FILE, non-beacon parents. These would
         # otherwise block deletion of their structural parents during
@@ -5099,9 +5121,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     continue
                 cname = str(child.get("name") or "")
                 cnote = child.get("note") or child.get("no") or ""
-                if _is_notes_name(cname, cnote):
+                is_notes = _is_notes_name(cname, cnote)
+                if is_notes:
                     ctx.generic_notes_by_parent.setdefault(parent_id, []).append(cid_str)
                     ctx.total_notes_to_salvage += 1
+                    # Debug: classify generic
+                    try:
+                        log_event(
+                            "NOTES_CLASSIFY bucket=generic "
+                            f"file={file_node_id} nid={cid_str} name={cname!r} parent={parent_id}",
+                            "BEACON",
+                        )
+                    except Exception:
+                        pass
 
         # 4) Optional: pre-salvage moves.
         #
@@ -5391,10 +5423,26 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             if nid not in node_by_id:
                                 # Note vanished entirely; treat as orphan.
                                 generic_salvaged += 1
+                                try:
+                                    log_event(
+                                        "NOTES_RESTORE_GENERIC parent_exists_but_node_missing "
+                                        f"file={file_node_id} nid={nid} intended_parent={parent_id}",
+                                        "BEACON",
+                                    )
+                                except Exception:
+                                    pass
                                 continue
                             try:
                                 await self.move_node(nid, parent_id, "bottom")
                                 generic_reattached += 1
+                                try:
+                                    log_event(
+                                        "NOTES_RESTORE_GENERIC reattached "
+                                        f"file={file_node_id} nid={nid} parent={parent_id}",
+                                        "BEACON",
+                                    )
+                                except Exception:
+                                    pass
                             except Exception as e:  # noqa: BLE001
                                 log_event(
                                     f"Failed to reattach generic notes node {nid} to parent {parent_id}: {e}",
