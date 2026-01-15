@@ -1392,6 +1392,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if nid and pid:
                 parent_by_id[str(nid)] = str(pid)
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._is_hide_cartographer_node-9s4h,
+        #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._is_hide_cartographer_node,
+        #   slice_labels=ra-snippet-range,
+        #   kind=ast,
+        # ]
         def _is_hide_cartographer_node(node: dict[str, Any]) -> bool:
             raw_name = str(node.get("name") or "")
             name = raw_name.strip()
@@ -1413,6 +1419,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if nid:
                     hide_ids.add(str(nid))
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._is_under_hidden_subtree-y3qp,
+        #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._is_under_hidden_subtree,
+        #   slice_labels=ra-snippet-range,
+        #   kind=ast,
+        # ]
         def _is_under_hidden_subtree(node_id: str) -> bool:
             cur = node_id
             visited: set[str] = set()
