@@ -912,13 +912,12 @@ async def reconcile_tree(
             if not desired_ids:
                 continue
 
-            # In full WEAVE mode, we respect truncated_parents and do not attempt
-            # to selectively reorder potentially-hidden children. For F12
-            # per-file refresh (allow_pure_reorder=True), we still respect this
-            # for non-root parents, but we allow reordering under the
-            # reconciliation root (parent_uuid) when the source JSON declares
-            # children_status='complete' for that root.
-            if p in truncated_parents and not (allow_pure_reorder and p == parent_uuid):
+            # In full WEAVE mode (allow_pure_reorder=False), we respect
+            # truncated_parents and do not attempt to selectively reorder
+            # potentially-hidden children. For F12 per-file refresh
+            # (allow_pure_reorder=True), we assume Cartographer has a complete
+            # view of the file subtree and ignore truncation for ordering.
+            if not allow_pure_reorder and p in truncated_parents:
                 log(
                     f"   Parent {p}: children_status != 'complete' in source; "
                     "skipping REORDER to avoid touching hidden children",
@@ -932,6 +931,13 @@ async def reconcile_tree(
             if current_ids == desired_ids:
                 log(f"   Parent {p}: children already in desired order; skipping REORDER")
                 continue
+
+            # ORDER MISMATCH diagnostics (permanent): log both current and
+            # desired UUID sequences so we can understand unexpected reorders.
+            log(
+                f"   Parent {p}: ORDER MISMATCH – "
+                f"current_ids={current_ids}, desired_ids={desired_ids}",
+            )
 
             log(f"   Parent {p}: Reordering {len(desired_ids)} children")
             log(f"      Desired order (reversed for TOP positioning): {list(reversed(desired_ids))}")
