@@ -927,7 +927,24 @@ async def reconcile_tree(
             # Compare current order vs desired order. If they already match, skip
             # emitting no-op move operations that would just burn rate limit.
             current_children = Children_T.get(p, [])
-            current_ids = [cid for cid in current_children if cid in desired_ids]
+
+            def _priority_of(nid: str) -> int:
+                node = Map_T.get(nid, {})
+                prio = node.get("priority")
+                data = node.get("data") or {}
+                if prio is None and isinstance(data, dict):
+                    prio = data.get("priority")
+                # Workflowy priorities are integers; treat anything else as 0
+                try:
+                    return int(prio)
+                except (TypeError, ValueError):
+                    return 0
+
+            # Sort children by Workflowy priority so current_ids reflects
+            # true visual order in the UI rather than raw export order.
+            sorted_child_ids = sorted(current_children, key=_priority_of)
+            current_ids = [cid for cid in sorted_child_ids if cid in desired_ids]
+
             if current_ids == desired_ids:
                 log(f"   Parent {p}: children already in desired order; skipping REORDER")
                 continue
