@@ -56,6 +56,12 @@ import importlib
 Node = Dict
 
 
+# @beacon[
+#   id=auto-beacon@reconcile_tree-v8e1,
+#   role=reconcile_tree,
+#   slice_labels=ra-reconcile,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def reconcile_tree(
     source_json: Union[List[Node], Dict],
     parent_uuid: str,
@@ -74,6 +80,7 @@ async def reconcile_tree(
     log_to_file_msg: Optional[Callable[[str], None]] = None,
     skip_delete_bulk_export_wait: bool = False,
     debug_log_path: Optional[str] = None,
+    allow_pure_reorder: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     Reconcile the Workflowy subtree under parent_uuid to match source_json.
@@ -368,6 +375,12 @@ async def reconcile_tree(
         strip_ids(source_nodes)
 
     # ------------- helpers -------------
+    # @beacon[
+    #   id=auto-beacon@reconcile_tree.index_source-jaao,
+    #   role=reconcile_tree.index_source,
+    #   slice_labels=ra-reconcile,f9-f12-handlers,
+    #   kind=ast,
+    # ]
     def index_source(nodes: List[Node], parent_id: Optional[str] = None, order_acc: Optional[List[Node]] = None) -> List[Node]:
         # Preorder traversal; annotate desired parent and index
         if order_acc is None:
@@ -379,6 +392,12 @@ async def reconcile_tree(
             index_source(n.get('children', []), n.get('id'), order_acc)
         return order_acc
 
+    # @beacon[
+    #   id=auto-beacon@reconcile_tree.snapshot_target-es3t,
+    #   role=reconcile_tree.snapshot_target,
+    #   slice_labels=ra-reconcile,f9-f12-handlers,
+    #   kind=ast,
+    # ]
     async def snapshot_target(root_parent: str, use_efficient_traversal: bool = False, export_func = None):
         # Snapshot existing subtree under root_parent to map nodes
         Map_T: Dict[str, Node] = {}
@@ -441,6 +460,12 @@ async def reconcile_tree(
         
         return Map_T, Parent_T, Children_T
 
+    # @beacon[
+    #   id=auto-beacon@reconcile_tree.desired_maps-sss8,
+    #   role=reconcile_tree.desired_maps,
+    #   slice_labels=ra-reconcile,f9-f12-handlers,
+    #   kind=ast,
+    # ]
     def desired_maps(source_nodes_local: List[Node], root_parent: str):
         Map_S: Dict[Optional[str], Node] = {}
         Parent_S: Dict[str, Optional[str]] = {}
@@ -460,6 +485,12 @@ async def reconcile_tree(
                 Order_S[p].append(nid)
         return Map_S, Parent_S, Order_S
 
+    # @beacon[
+    #   id=auto-beacon@reconcile_tree.compute_delete_roots-sn31,
+    #   role=reconcile_tree.compute_delete_roots,
+    #   slice_labels=ra-reconcile,f9-f12-handlers,
+    #   kind=ast,
+    # ]
     def compute_delete_roots(to_delete: Iterable[str], Parent_T_map: Dict[str, Optional[str]]):
         to_delete_set = set(to_delete)
         roots: set[str] = set()
@@ -475,6 +506,12 @@ async def reconcile_tree(
                 roots.add(d)
         return roots
 
+    # @beacon[
+    #   id=auto-beacon@reconcile_tree.normalize_html_entities-ytk0,
+    #   role=reconcile_tree.normalize_html_entities,
+    #   slice_labels=f9-f12-handlers,
+    #   kind=ast,
+    # ]
     def normalize_html_entities(s: str | None) -> str | None:
         """Decode a small set of HTML entities for semantic comparison.
 
@@ -504,6 +541,12 @@ async def reconcile_tree(
                 s = s.replace(ent, ch)
         return s
 
+    # @beacon[
+    #   id=auto-beacon@reconcile_tree.node_data_equal-n4rn,
+    #   role=reconcile_tree.node_data_equal,
+    #   slice_labels=ra-reconcile,f9-f12-handlers,
+    #   kind=ast,
+    # ]
     def node_data_equal(src: Optional[Node], tgt: Optional[Node]) -> bool:
         if src is None or tgt is None:
             return False
@@ -551,6 +594,12 @@ async def reconcile_tree(
     log(f"   UUIDs ONLY in Source: {set(k for k in Map_S.keys() if k is not None) - set(Map_T.keys())}")
 
     # Collect parent_refs to protect during deletion (all parent_id that appear in source)
+    # @beacon[
+    #   id=auto-beacon@reconcile_tree.preorder-ay4u,
+    #   role=reconcile_tree.preorder,
+    #   slice_labels=f9-f12-handlers,
+    #   kind=ast,
+    # ]
     def preorder(nodes: List[Node]):
         for n in nodes:
             yield n
@@ -613,6 +662,12 @@ async def reconcile_tree(
     # whether a weave is safely resumable.
     jewel_sync_ledger: List[Dict[str, Any]] = []
 
+    # @beacon[
+    #   id=auto-beacon@reconcile_tree.ensure_created-u4k9,
+    #   role=reconcile_tree.ensure_created,
+    #   slice_labels=ra-reconcile,f9-f12-handlers,
+    #   kind=ast,
+    # ]
     async def ensure_created(nodes: List[Node], desired_parent: Optional[str], source_path_prefix: List[int] | None = None):
         nonlocal create_count, jewel_sync_ledger
         if source_path_prefix is None:
@@ -840,12 +895,14 @@ async def reconcile_tree(
     # ------------- phase 3: REORDER siblings per parent -------------
     log(f"\n[PHASE 3] START - REORDER siblings")
 
-    # Optimization: if there were no creates and no moves in this run,
-    # then sibling order is already correct relative to the source JSON.
-    # In that case we can safely skip the REORDER phase entirely to avoid
-    # unnecessary move_node API calls.
-    if create_count == 0 and move_count == 0:
-        log("   REORDER phase skipped: no creates or moves; sibling order assumed correct")
+    # Optimization: for large WEAVEs (allow_pure_reorder=False), we can safely
+    # skip the REORDER phase entirely when there were no creates and no moves in
+    # this run, because sibling order is already correct relative to the source
+    # JSON. For F12 per-file refresh (allow_pure_reorder=True), we always allow
+    # pure reorders when source vs target order differ, even if there were no
+    # creates or moves.
+    if not allow_pure_reorder and create_count == 0 and move_count == 0:
+        log("   REORDER phase skipped: no creates or moves; sibling order assumed correct (allow_pure_reorder=False)")
     else:
         reorder_count = 0
         for p, desired in Order_S.items():
@@ -855,16 +912,21 @@ async def reconcile_tree(
             if not desired_ids:
                 continue
 
-        # If this parent has truncated children in the source JSON, we treat its
-        # existing children as an opaque blob: we can still move/delete the parent
-        # as a whole, and we can append new children, but we do NOT try to
-        # selectively reorder potentially-hidden originals.
-            if p in truncated_parents:
-                log(f"   Parent {p}: children_status != 'complete' in source; skipping REORDER to avoid touching hidden children")
+            # In full WEAVE mode, we respect truncated_parents and do not attempt
+            # to selectively reorder potentially-hidden children. For F12
+            # per-file refresh (allow_pure_reorder=True), we still respect this
+            # for non-root parents, but we allow reordering under the
+            # reconciliation root (parent_uuid) when the source JSON declares
+            # children_status='complete' for that root.
+            if p in truncated_parents and not (allow_pure_reorder and p == parent_uuid):
+                log(
+                    f"   Parent {p}: children_status != 'complete' in source; "
+                    "skipping REORDER to avoid touching hidden children",
+                )
                 continue
 
-        # Compare current order vs desired order. If they already match, skip
-        # emitting no-op move operations that would just burn rate limit.
+            # Compare current order vs desired order. If they already match, skip
+            # emitting no-op move operations that would just burn rate limit.
             current_children = Children_T.get(p, [])
             current_ids = [cid for cid in current_children if cid in desired_ids]
             if current_ids == desired_ids:
@@ -1039,6 +1101,12 @@ async def reconcile_tree(
     # the source JSON. For parents whose children were not fully loaded in the
     # source (truncated_parents), we must NOT interpret missing descendants as
     # deletes – they were simply never shown.
+    # @beacon[
+    #   id=auto-beacon@reconcile_tree.is_hidden_descendant-ka59,
+    #   role=reconcile_tree.is_hidden_descendant,
+    #   slice_labels=f9-f12-handlers,
+    #   kind=ast,
+    # ]
     def is_hidden_descendant(node_id: str, truncated_roots: set[str], parent_map: Dict[str, Optional[str]]) -> bool:
         cur = parent_map.get(node_id)
         while cur is not None:
@@ -1047,6 +1115,12 @@ async def reconcile_tree(
             cur = parent_map.get(cur)
         return False
 
+    # @beacon[
+    #   id=auto-beacon@reconcile_tree.parent_all_children_known-3vk8,
+    #   role=reconcile_tree.parent_all_children_known,
+    #   slice_labels=f9-f12-handlers,
+    #   kind=ast,
+    # ]
     def parent_all_children_known(
         tid: str,
         parent_map: Dict[str, Optional[str]],
@@ -1084,6 +1158,12 @@ async def reconcile_tree(
             "(IDs list suppressed)"
         )
 
+    # @beacon[
+    #   id=auto-beacon@reconcile_tree.can_delete_candidate-p99v,
+    #   role=reconcile_tree.can_delete_candidate,
+    #   slice_labels=f9-f12-handlers,
+    #   kind=ast,
+    # ]
     def can_delete_candidate(tid: str) -> bool:
         """Decide whether a candidate ID is eligible for automatic deletion.
 

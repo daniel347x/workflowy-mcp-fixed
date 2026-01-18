@@ -3460,23 +3460,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     ) -> dict[str, Any]:
         """Incremental, beacon-aware per-file refresh (F12).
 
-        CURRENT BEHAVIOR (safe scaffold):
+        CURRENT BEHAVIOR:
         - Builds a per-file NEXUS-style JSON (terrain/gem-like) shaped for
-          workflowy_move_reconcile.reconcile_tree.
-        - Runs reconcile_tree(...) in dry_run mode to compute a plan only
-          (no Workflowy mutations).
-        - Writes that JSON to temp/cartographer_file_refresh for inspection.
-        - Then delegates the actual mutation to _refresh_file_node_beacons_legacy,
-          so runtime behavior remains identical to the legacy full-rebuild path.
+          ``workflowy_move_reconcile.reconcile_tree``.
+        - Invokes ``reconcile_tree(...)`` with create/update/delete/move wrappers
+          to apply an incremental plan for this FILE node (no full rebuild).
+        - Persists the per-file ``source_json`` to ``temp/cartographer_file_refresh``
+          for inspection and debugging.
 
-        This gives us:
-        - A reproducible, file-scoped source_json for testing incremental
-          reconciliation.
-        - A dry-run plan from the same engine used by WEAVE.
+        If the incremental pipeline fails for any reason, this method falls back
+        to ``_refresh_file_node_beacons_legacy`` as a safety net, preserving the
+        previous full-rebuild behavior only as an error-path fallback.
 
-        Once the incremental path is battle-tested, this function becomes the
-        natural place to switch from legacy full-rebuild to true incremental
-        reconcile_tree-based updates.
+        This keeps the normal path fully incremental while retaining the legacy
+        implementation for rare failure cases.
         """
         logger = _ClientLogger()
         log_event(
@@ -3818,6 +3815,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     dry_run=dry_run,
                     skip_delete_bulk_export_wait=True,
                     log_to_file_msg=lambda m: _log_to_file_helper(m, "reconcile"),
+                    allow_pure_reorder=True,
                 )
             except Exception as e:  # noqa: BLE001
                 _log_to_file_helper(
