@@ -913,6 +913,66 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
                 "WS_HANDLER",
             )
 
+    # Decide whether this node is a FILE node (note starts with Path:/Root:)
+    # vs an AST/heading node. For FILE nodes we bypass beacon update entirely
+    # and go straight to a single per-file refresh to avoid double-running the
+    # F12 pipeline.
+    note_for_classification = data.get("node_note")
+    if note_for_classification is None:
+        # Fallback: read from cached /nodes-export
+        all_nodes_for_note = client._get_nodes_export_cache_nodes()
+        nodes_by_id_for_note: dict[str, dict[str, Any]] = {
+            str(n.get("id")): n for n in all_nodes_for_note if n.get("id")
+        }
+        node_for_note = nodes_by_id_for_note.get(str(node_id))
+        if node_for_note:
+            note_for_classification = str(node_for_note.get("note") or node_for_note.get("no") or "")
+        else:
+            note_for_classification = ""
+    else:
+        note_for_classification = str(note_for_classification)
+
+    is_file_node = False
+    if isinstance(note_for_classification, str):
+        for line in note_for_classification.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Path:") or stripped.startswith("Root:"):
+                is_file_node = True
+                break
+
+    if is_file_node:
+        # FILE node: skip beacon update entirely; perform a single per-file
+        # Cartographer refresh only once.
+        try:
+            result = await client.refresh_file_node_beacons(
+                file_node_id=node_id,
+                dry_run=False,
+            )
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                f"_handle_refresh_file_node: refresh_file_node_beacons failed for {node_id}: {e}",
+                "WS_HANDLER",
+            )
+            await websocket.send(
+                json.dumps(
+                    {
+                        "action": "refresh_file_node_result",
+                        "success": False,
+                        "node_id": node_id,
+                        "error": f"Failed to refresh file node {node_id}: {e}",
+                    }
+                )
+            )
+            return
+
+        if not isinstance(result, dict):
+            result = {"success": False, "error": "refresh_file_node_beacons returned non-dict"}
+
+        result["action"] = "refresh_file_node_result"
+        result["node_id"] = node_id
+        await websocket.send(json.dumps(result))
+        return
+
     # Special-case: AST/beacon node with metadata/tags in name/note.
     # Use the new update_beacon_from_node method which supports Python/JS/TS/Markdown.
     # This handles:
