@@ -40,13 +40,21 @@ async def main():
     """Main worker entry point."""
     
     parser = argparse.ArgumentParser(description='NEXUS WEAVE detached worker')
-    parser.add_argument('--mode', required=True, choices=['enchanted', 'direct'],
-                       help='ENCHANTED (nexus_tag-based) or DIRECT (json_file-based)')
+    parser.add_argument(
+        '--mode',
+        required=True,
+        choices=['enchanted', 'direct', 'carto_refresh'],
+        help=(
+            'ENCHANTED (nexus_tag-based), DIRECT (json_file-based), or '
+            'CARTO_REFRESH (Cartographer F12 job JSON-based)'
+        ),
+    )
     parser.add_argument('--nexus-tag', help='NEXUS tag (for enchanted mode)')
     parser.add_argument('--json-file', help='JSON file path (for direct mode)')
     parser.add_argument('--parent-id', help='Parent UUID (for direct mode, optional)')
     parser.add_argument('--dry-run', default='false', help='Dry run flag (true/false)')
     parser.add_argument('--import-policy', default='strict', help='Import policy (for direct mode)')
+    parser.add_argument('--carto-job-file', help='CARTO_REFRESH job JSON file (for carto_refresh mode)')
     
     args = parser.parse_args()
     
@@ -75,7 +83,7 @@ async def main():
     # Get nexus_runs base directory from environment (passed by launcher)
     # This avoids path calculation issues when worker is deployed vs source location
     nexus_runs_base = os.environ.get('NEXUS_RUNS_BASE')
-    if not nexus_runs_base:
+    if mode in ('enchanted', 'direct') and not nexus_runs_base:
         log_worker("ERROR: NEXUS_RUNS_BASE not set in environment")
         log_worker("Launcher must pass the nexus_runs directory path via environment")
         sys.exit(1)
@@ -144,7 +152,7 @@ async def main():
         pid_file = run_dir / ".weave.pid"
         log_worker(f"ENCHANTED mode: nexus_tag={nexus_tag}")
         
-    else:  # direct mode
+    elif mode == 'direct':  # direct mode
         if not args.json_file:
             log_worker("ERROR: --json-file required for direct mode")
             sys.exit(1)
@@ -159,16 +167,111 @@ async def main():
         # PID file goes in same directory as JSON file
         pid_file = json_path.parent / ".weave.pid"
         log_worker(f"DIRECT mode: json_file={json_file}, parent_id={args.parent_id}")
+    else:
+        # CARTO_REFRESH mode does not use a .weave.pid file; PID is tracked via the CARTO job JSON.
+        log_worker("CARTO_REFRESH mode: PID file will not be created (tracked via job JSON)")
     
-    # Write PID file
-    try:
-        with open(pid_file, 'w') as f:
-            f.write(str(os.getpid()))
-        log_worker(f"PID file written: {pid_file}")
-    except Exception as e:
-        log_worker(f"Failed to write PID file: {e}")
-        # Continue anyway - not critical
+    # Write PID file for WEAVE modes only
+    if pid_file is not None:
+        try:
+            with open(pid_file, 'w') as f:
+                f.write(str(os.getpid()))
+            log_worker(f"PID file written: {pid_file}")
+        except Exception as e:
+            log_worker(f"Failed to write PID file: {e}")
+            # Continue anyway - not critical
     
+    # CARTO_REFRESH mode: run Cartographer refresh via CARTO job JSON and exit
+    if mode == 'carto_refresh':
+        if not args.carto_job_file:
+            log_worker("ERROR: --carto-job-file required for carto_refresh mode")
+            await client.close()
+            sys.exit(1)
+
+        job_path = Path(args.carto_job_file)
+
+        if not job_path.exists():
+            log_worker(f"ERROR: CARTO job file not found: {job_path}")
+            await client.close()
+            sys.exit(1)
+
+        # Load job JSON
+        try:
+            with open(job_path, 'r', encoding='utf-8') as jf:
+                job = json.load(jf)
+        except Exception as e:
+            log_worker(f"ERROR: Failed to read CARTO job file: {e}")
+            await client.close()
+            sys.exit(1)
+
+        # Update job status to running
+        now_iso = datetime.utcnow().isoformat()
+        job['status'] = 'running'
+        job['updated_at'] = now_iso
+        job['pid'] = os.getpid()
+
+        progress = job.get('progress') or {}
+        job['progress'] = progress
+        progress.setdefault('current_phase', 'refresh')
+
+        result_summary = job.get('result_summary') or {}
+        job['result_summary'] = result_summary
+        result_summary.setdefault('errors', [])
+
+        try:
+            with open(job_path, 'w', encoding='utf-8') as jf:
+                json.dump(job, jf, indent=2)
+        except Exception as e:
+            log_worker(f"ERROR: Failed to write CARTO job file: {e}")
+
+        root_uuid = job.get('root_uuid')
+        carto_mode = job.get('mode')
+
+        exit_code = 0
+
+        try:
+            if not root_uuid or carto_mode not in ('file', 'folder'):
+                raise ValueError("Invalid CARTO_REFRESH job payload (root_uuid/mode)")
+
+            if carto_mode == 'file':
+                log_worker(f"CARTO_REFRESH: refreshing FILE node {root_uuid}")
+                result = await client.refresh_file_node_beacons(
+                    file_node_id=root_uuid,
+                    dry_run=False,
+                )
+                files_refreshed = 1
+            else:
+                log_worker(f"CARTO_REFRESH: refreshing FOLDER subtree {root_uuid}")
+                result = await client.refresh_folder_cartographer_sync(
+                    folder_node_id=root_uuid,
+                )
+                if isinstance(result, dict):
+                    files_refreshed = result.get('files_refreshed', 0)
+                else:
+                    files_refreshed = 0
+
+            job['status'] = 'completed'
+            job['progress']['completed_files'] = job['progress'].get('total_files', files_refreshed or 1)
+            job['result_summary']['files_refreshed'] = files_refreshed
+            job['result_summary']['raw_result'] = result
+        except Exception as e:
+            exit_code = 1
+            log_worker(f"CARTO_REFRESH failed with error: {e}")
+            import traceback
+            log_worker(traceback.format_exc())
+            job['status'] = 'failed'
+            job['error'] = str(e)
+            job['result_summary'].setdefault('errors', []).append(str(e))
+        finally:
+            job['updated_at'] = datetime.utcnow().isoformat()
+            try:
+                with open(job_path, 'w', encoding='utf-8') as jf:
+                    json.dump(job, jf, indent=2)
+            except Exception as e:
+                log_worker(f"ERROR: Failed to write CARTO job file: {e}")
+            await client.close()
+            sys.exit(exit_code)
+
     # Call the appropriate weave method
     try:
         if mode == 'enchanted':

@@ -1653,6 +1653,170 @@ async def _start_background_job(
     }
 
 
+async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
+    """Launch a CARTO_REFRESH job via weave_worker.py as a detached process.
+
+    This mirrors the detached WEAVE worker pattern but targets the
+    Cartographer per-file/per-folder F12 refresh path, using job JSON
+    files under temp/cartographer_jobs/.
+    """
+    import os
+    import sys as _sys
+    import subprocess
+    from datetime import datetime as _dt
+    import json as json_module
+    from uuid import uuid4 as _uuid4
+
+    if mode not in ("file", "folder"):
+        return {
+            "success": False,
+            "error": f"Invalid mode {mode!r}; expected 'file' or 'folder'.",
+        }
+
+    # Job directory under workflowy_mcp temp
+    carto_jobs_base = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\MCP_Servers\workflowy_mcp\temp\cartographer_jobs"
+    os.makedirs(carto_jobs_base, exist_ok=True)
+
+    now = _dt.utcnow().isoformat()
+    job_id = f"carto-refresh-{mode}-{_uuid4().hex[:8]}"
+    job_file = os.path.join(carto_jobs_base, f"{job_id}.json")
+    log_file = os.path.join(carto_jobs_base, f"{job_id}.log")
+
+    job_payload = {
+        "id": job_id,
+        "type": "CARTO_REFRESH",
+        "mode": mode,
+        "root_uuid": root_uuid,
+        "status": "queued",
+        "created_at": now,
+        "updated_at": now,
+        "progress": {
+            "total_files": 1 if mode == "file" else 0,
+            "completed_files": 0,
+            "current_file": None,
+            "current_phase": None,
+        },
+        "result_summary": {
+            "files_refreshed": 0,
+            "files_deleted": 0,
+            "errors": [],
+        },
+        "error": None,
+        "logs_path": log_file,
+    }
+
+    try:
+        with open(job_file, "w", encoding="utf-8") as jf:
+            json_module.dump(job_payload, jf, indent=2)
+    except Exception as e:  # noqa: BLE001
+        return {
+            "success": False,
+            "error": f"Failed to write CARTO job file '{job_file}': {e}",
+        }
+
+    # Locate weave_worker.py (sibling of this server.py)
+    worker_script = os.path.join(os.path.dirname(__file__), "weave_worker.py")
+    worker_script = os.path.abspath(worker_script)
+    if not os.path.exists(worker_script):
+        return {
+            "success": False,
+            "error": f"weave_worker.py not found: {worker_script}",
+        }
+
+    client = get_client()
+
+    # Environment similar to detached WEAVE worker
+    env = os.environ.copy()
+    try:
+        api_key = client.config.api_key.get_secret_value()
+    except Exception:  # noqa: BLE001
+        api_key = env.get("WORKFLOWY_API_KEY", "")
+    if not api_key:
+        return {
+            "success": False,
+            "error": "WORKFLOWY_API_KEY not configured for CARTO_REFRESH",
+        }
+
+    env["WORKFLOWY_API_KEY"] = api_key
+    # NEXUS_RUNS_BASE is only used for WEAVE, but safe to pass through here as well
+    env.setdefault(
+        "NEXUS_RUNS_BASE",
+        r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs",
+    )
+
+    cmd = [
+        _sys.executable,
+        worker_script,
+        "--mode",
+        "carto_refresh",
+        "--carto-job-file",
+        job_file,
+        "--dry-run",
+        "false",
+    ]
+
+    try:
+        log_handle = open(log_file, "w", encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        return {
+            "success": False,
+            "error": f"Failed to open CARTO log file '{log_file}': {e}",
+        }
+
+    log_event(
+        f"Launching CARTO_REFRESH worker for {mode} root={root_uuid}, job_id={job_id}, log={log_file}",
+        "CARTO",
+    )
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            if _sys.platform == "win32"
+            else 0,
+            start_new_session=True if _sys.platform != "win32" else False,
+            stdin=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+        )
+        pid = process.pid
+        log_event(
+            f"CARTO_REFRESH worker detached: PID={pid}, job_id={job_id}",
+            "CARTO",
+        )
+
+        # Update job file with PID
+        job_payload["pid"] = pid
+        job_payload["updated_at"] = _dt.utcnow().isoformat()
+        try:
+            with open(job_file, "w", encoding="utf-8") as jf:
+                json_module.dump(job_payload, jf, indent=2)
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                f"WARNING: Failed to update CARTO job file with pid: {e}",
+                "CARTO",
+            )
+
+        return {
+            "success": True,
+            "job_id": job_id,
+            "pid": pid,
+            "detached": True,
+            "mode": "carto_refresh",
+            "root_uuid": root_uuid,
+            "job_file": job_file,
+            "log_file": log_file,
+            "note": "CARTO_REFRESH worker detached - survives MCP restart.",
+        }
+    except Exception as e:  # noqa: BLE001
+        log_event(f"Failed to launch CARTO_REFRESH worker: {e}", "CARTO")
+        return {
+            "success": False,
+            "error": f"Failed to launch CARTO_REFRESH worker: {e}",
+        }
+
+
 @mcp.tool(
     name="mcp_job_status",
     description="Get status/result for long-running MCP jobs (ETCH, NEXUS, etc.).",
@@ -1675,6 +1839,8 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
     # Determine nexus_runs directory
     # TODO: make this configurable or derive from client
     nexus_runs_base = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs"
+    # CARTO_REFRESH job directory (server-managed)
+    carto_jobs_base = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\MCP_Servers\workflowy_mcp\temp\cartographer_jobs"
 
     def _scan_weave_journals(base_dir_str: str) -> list[dict[str, Any]]:
         """Scan nexus_runs/ for WEAVE journal files and summarize their status.
@@ -1751,6 +1917,42 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
 
         return results
 
+    def _scan_carto_jobs(base_dir_str: str) -> list[dict[str, Any]]:
+        """Scan cartographer_jobs/ for CARTO_REFRESH job JSON files."""
+        base_dir = Path(base_dir_str)
+        results: list[dict[str, Any]] = []
+        if not base_dir.exists():
+            return results
+
+        for job_path in base_dir.glob("carto-refresh-*.json"):
+            try:
+                with open(job_path, "r", encoding="utf-8") as jf:
+                    job = json_module.load(jf)
+            except Exception:
+                continue
+
+            jid = job.get("id") or job_path.stem
+            results.append(
+                {
+                    "job_id": jid,
+                    "kind": "CARTO_REFRESH",
+                    "status": job.get("status", "unknown"),
+                    "mode": job.get("mode"),
+                    "root_uuid": job.get("root_uuid"),
+                    "detached": True,
+                    "carto_job_file": str(job_path),
+                    "log_file": job.get("logs_path"),
+                    "created_at": job.get("created_at"),
+                    "updated_at": job.get("updated_at"),
+                    "progress": job.get("progress"),
+                    "result_summary": job.get("result_summary"),
+                    "error": job.get("error"),
+                    "pid": job.get("pid"),
+                }
+            )
+
+        return results
+
     # Return status for one job (if job_id given) or all jobs
     if job_id is None:
         # List ALL jobs (in-memory + detached)
@@ -1787,12 +1989,13 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
                 detached_jobs_dict[jid] = aj
 
         detached_jobs = list(detached_jobs_dict.values())
+        carto_jobs = _scan_carto_jobs(carto_jobs_base)
 
         return {
             "success": True,
             "in_memory_jobs": in_memory_jobs,
-            "detached_jobs": detached_jobs,
-            "total": len(in_memory_jobs) + len(detached_jobs),
+            "detached_jobs": detached_jobs + carto_jobs,
+            "total": len(in_memory_jobs) + len(detached_jobs) + len(carto_jobs),
         }
 
     # Check in-memory first
@@ -1812,6 +2015,13 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
             merged.update(journal_jobs[job_id])
         if job_id in active_weaves:
             merged.update(active_weaves[job_id])
+        merged["success"] = True
+        return merged
+
+    # Check CARTO_REFRESH jobs (JSON-based)
+    carto_map = {j["job_id"]: j for j in _scan_carto_jobs(carto_jobs_base)}
+    if job_id in carto_map:
+        merged = dict(carto_map[job_id])
         merged["success"] = True
         return merged
 
@@ -3723,6 +3933,26 @@ async def update_beacon_from_node(
         if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
             _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
         return {"success": False, "error": str(e)}
+
+
+@mcp.tool(
+    name="cartographer_refresh_async",
+    description=(
+        "Start an async Cartographer F12 refresh job (file or folder) via "
+        "weave_worker.py and return a job_id for status polling."
+    ),
+)
+async def cartographer_refresh_async(
+    root_uuid: str,
+    mode: str,
+) -> dict:
+    """Start a detached CARTO_REFRESH job for a FILE or FOLDER node.
+
+    Args:
+        root_uuid: Workflowy UUID of the Cartographer FILE or FOLDER node to refresh.
+        mode: "file" for per-file refresh, "folder" for subtree refresh.
+    """
+    return await _start_carto_refresh_job(root_uuid=root_uuid, mode=mode)
 
 
 # Resource: WorkFlowy Outline
