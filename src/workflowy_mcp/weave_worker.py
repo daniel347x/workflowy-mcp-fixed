@@ -181,6 +181,13 @@ async def main():
             log_worker(f"Failed to write PID file: {e}")
             # Continue anyway - not critical
     
+    # @beacon[
+    #   id=weave-worker@carto-refresh-job,
+    #   role=weave worker – CARTO_REFRESH job runner,
+    #   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,
+    #   kind=span,
+    #   comment=Async CARTO_REFRESH job execution block in weave_worker main,
+    # ]
     # CARTO_REFRESH mode: run Cartographer refresh via CARTO job JSON and exit
     if mode == 'carto_refresh':
         if not args.carto_job_file:
@@ -271,6 +278,9 @@ async def main():
                 log_worker(f"ERROR: Failed to write CARTO job file: {e}")
             await client.close()
             sys.exit(exit_code)
+    # @beacon-close[
+    #   id=weave-worker@carto-refresh-job,
+    # ]
 
     # Call the appropriate weave method
     try:
