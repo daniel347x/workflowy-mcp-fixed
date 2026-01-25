@@ -303,6 +303,31 @@ async def main():
                 log_worker(f"CARTO_REFRESH: refreshing FILE node {root_uuid}")
 
                 # @beacon[
+                #   id=weave-worker@carto-refresh-cancel-file,
+                #   role=weave worker – CARTO_REFRESH should_cancel (file mode),
+                #   slice_labels=ra-carto-jobs,
+                #   kind=ast,
+                # ]
+                def _carto_should_cancel_file() -> bool:
+                    """Return True if the CARTO_REFRESH job JSON is marked cancelled.
+
+                    This mirrors the folder-mode _carto_should_cancel but is
+                    scoped to file-mode jobs that may route into folder
+                    Cartographer sync when Path/Root points to a directory.
+                    """
+                    try:
+                        with open(job_path, "r", encoding="utf-8") as jf:
+                            fresh = json.load(jf)
+                    except Exception as e:  # noqa: BLE001
+                        log_worker(
+                            f"CARTO_REFRESH: failed to re-read job JSON for cancel check (file mode): {e}",
+                            "CARTO",
+                        )
+                        return False
+
+                    return str(fresh.get("status")) == "cancelled"
+
+                # @beacon[
                 #   id=weave-worker@carto-refresh-progress-file,
                 #   role=weave worker  CARTO_REFRESH progress (file mode),
                 #   slice_labels=ra-carto-jobs,
@@ -352,6 +377,7 @@ async def main():
                 result = await client.refresh_file_node_beacons(
                     file_node_id=root_uuid,
                     dry_run=False,
+                    cancel_callback=_carto_should_cancel_file,
                     progress_callback=_carto_progress_for_file,
                 )
                 files_refreshed = 1
