@@ -861,7 +861,7 @@ async def _maybe_create_ast_beacon_from_tags(
 # @beacon[
 #   id=auto-beacon@_handle_refresh_file_node-7irr,
 #   role=_handle_refresh_file_node,
-#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,
+#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,
 #   kind=ast,
 # ]
 async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
@@ -1054,7 +1054,7 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
 # @beacon[
 #   id=auto-beacon@_handle_refresh_folder_node-tgyl,
 #   role=_handle_refresh_folder_node,
-#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,
+#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,
 #   kind=ast,
 # ]
 async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
@@ -1653,10 +1653,136 @@ async def _start_background_job(
     }
 
 
+def _gc_carto_jobs(carto_jobs_base: str, max_age_seconds: int = 3600) -> None:
+    """Garbage-collect old CARTO_REFRESH artifacts (jobs + per-file F12 logs).
+
+    Job GC:
+        Any job whose JSON lives under ``carto_jobs_base`` with ``status`` in
+        {"completed", "cancelled"} and ``updated_at`` (or ``created_at``)
+        older than ``max_age_seconds`` is removed along with its job-level
+        log file.
+
+    Per-file F12 GC:
+        Additionally removes per-file Cartographer F12 artifacts under::
+
+            E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\cartographer_file_refresh
+
+        when their modification time is older than the same age threshold.
+        This directory contains, for each F12 run:
+
+            <timestamp>_file_refresh_<shortid>_<basename>.json
+            <timestamp>_file_refresh_<shortid>_<basename>.weave_journal.json
+            <timestamp>_file_refresh_<shortid>_<basename>.reconcile_debug.log
+
+        We do *not* attempt to tie these back to a specific job_id; they are
+        treated as global F12 artifacts and pruned purely by age.
+
+    Failures during GC are silently ignored; this helper is best-effort and
+    must never raise. Corrupt or unreadable job files are left in place for
+    manual inspection.
+    """
+    try:
+        from pathlib import Path
+        from datetime import datetime, timedelta
+        import json as json_module  # type: ignore[redefined-builtin]
+
+        now = datetime.utcnow()
+        cutoff = now - timedelta(seconds=max_age_seconds)
+
+        # 1) Job JSON + job-level log under carto_jobs_base
+        base_path = Path(carto_jobs_base)
+        if base_path.exists():
+            for job_path in base_path.glob("carto-refresh-*.json"):
+                try:
+                    with job_path.open("r", encoding="utf-8") as jf:
+                        job = json_module.load(jf)
+                except Exception:  # noqa: BLE001
+                    # Leave unreadable/corrupt jobs for manual inspection.
+                    continue
+
+                status = str(job.get("status", "")).lower()
+                if status not in ("completed", "cancelled"):
+                    continue
+
+                ts_str = job.get("updated_at") or job.get("created_at")
+                if not ts_str:
+                    continue
+
+                try:
+                    ts = datetime.fromisoformat(str(ts_str))
+                except Exception:  # noqa: BLE001
+                    continue
+
+                if ts > cutoff:
+                    continue
+
+                # Determine associated log path, defaulting to <job_id>.log in the same dir.
+                logs_path = job.get("logs_path")
+                try:
+                    if logs_path:
+                        Path(str(logs_path)).unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    # Log deletion failures at call site if needed.
+                    pass
+
+                # Delete job JSON itself.
+                try:
+                    job_path.unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
+
+                # Delete per-job folder (if present), which may contain F12 file_refresh logs.
+                try:
+                    jid = job.get("id") or job_path.stem
+                    job_dir = base_path / str(jid)
+                    if job_dir.exists() and job_dir.is_dir():
+                        import shutil
+                        shutil.rmtree(job_dir, ignore_errors=True)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # 2) Per-file F12 artifacts under temp/cartographer_file_refresh
+        try:
+            file_refresh_dir = Path(
+                r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\cartographer_file_refresh"
+            )
+            if file_refresh_dir.exists():
+                for path in file_refresh_dir.iterdir():
+                    try:
+                        if not path.is_file():
+                            continue
+                        name = path.name
+                        # Guard to only touch Cartographer F12 artifacts.
+                        if "_file_refresh_" not in name:
+                            continue
+                        # JSON source + per-file journal + per-file reconcile debug log.
+                        if not (
+                            name.endswith(".json")
+                            or name.endswith(".weave_journal.json")
+                            or name.endswith(".reconcile_debug.log")
+                        ):
+                            continue
+
+                        mtime = datetime.utcfromtimestamp(path.stat().st_mtime)
+                        if mtime > cutoff:
+                            continue
+
+                        path.unlink(missing_ok=True)
+                    except Exception:  # noqa: BLE001
+                        continue
+        except Exception:  # noqa: BLE001
+            # F12 GC failures must not affect callers.
+            pass
+
+    except Exception:  # noqa: BLE001
+        # Absolutely must not raise from GC; callers treat this as best-effort.
+        return
+
+
 # @beacon[
 #   id=auto-beacon@_start_carto_refresh_job-vgpo,
 #   role=_start_carto_refresh_job,
-#   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,
+#   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,ra-logging,ra-carto-jobs,
 #   kind=ast,
 # ]
 async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
@@ -1682,6 +1808,9 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
     # Job directory under workflowy_mcp temp
     carto_jobs_base = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\MCP_Servers\workflowy_mcp\temp\cartographer_jobs"
     os.makedirs(carto_jobs_base, exist_ok=True)
+
+    # Opportunistic GC of old completed/cancelled CARTO_REFRESH jobs.
+    _gc_carto_jobs(carto_jobs_base)
 
     now = _dt.utcnow().isoformat()
     job_id = f"carto-refresh-{mode}-{_uuid4().hex[:8]}"
@@ -1830,7 +1959,7 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
 # @beacon[
 #   id=auto-beacon@mcp_job_status-lu5h,
 #   role=mcp_job_status,
-#   slice_labels=f9-f12-handlers,ra-reconcile,
+#   slice_labels=f9-f12-handlers,ra-reconcile,ra-logging,ra-carto-jobs,
 #   kind=ast,
 # ]
 async def mcp_job_status(job_id: str | None = None) -> dict:
@@ -2048,6 +2177,12 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
     name="mcp_cancel_job",
     description="Request cancellation of a long-running MCP job (ETCH, NEXUS, CARTO_REFRESH, etc.).",
 )
+# @beacon[
+#   id=auto-beacon@mcp_cancel_job-7wb6,
+#   role=mcp_cancel_job,
+#   slice_labels=ra-carto-jobs,
+#   kind=ast,
+# ]
 async def mcp_cancel_job(job_id: str) -> dict:
     """Attempt to cancel a background MCP job.
 
@@ -2635,6 +2770,12 @@ async def export_node(
         "by NEXUS and the UUID Navigator."
     ),
 )
+# @beacon[
+#   id=auto-beacon@workflowy_refresh_nodes_export_cache-4u9w,
+#   role=workflowy_refresh_nodes_export_cache,
+#   slice_labels=ra-workflowy-cache,
+#   kind=ast,
+# ]
 async def workflowy_refresh_nodes_export_cache() -> dict:
     """Explicitly refresh the cached /nodes-export snapshot.
 
@@ -4015,7 +4156,7 @@ async def update_beacon_from_node(
 # @beacon[
 #   id=auto-beacon@cartographer_refresh_async-zk93,
 #   role=cartographer_refresh_async,
-#   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,
+#   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,ra-logging,ra-carto-jobs,
 #   kind=ast,
 # ]
 async def cartographer_refresh_async(

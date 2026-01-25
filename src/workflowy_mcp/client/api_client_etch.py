@@ -24,6 +24,12 @@ from .api_client_core import (
 _current_weave_context = {"json_file": None}
 
 
+# @beacon[
+#   id=auto-beacon@_log_to_file_helper-epud,
+#   role=_log_to_file_helper,
+#   slice_labels=ra-logging,
+#   kind=ast,
+# ]
 def _log_to_file_helper(message: str, log_type: str = "reconcile") -> None:
     """Log message to a tag-specific debug file (best-effort).
 
@@ -44,11 +50,21 @@ def _log_to_file_helper(message: str, log_type: str = "reconcile") -> None:
         elif log_type in ("jewel", "jewelstorm"):
             filename = "jewelstorm_debug.log"
         
-        # Determine log directory (tag-specific if in WEAVE context)
+        # Determine log directory (tag-specific if in WEAVE/F12 context)
         json_file = _current_weave_context.get("json_file")
         if json_file and os.path.exists(json_file):
-            # Tag-specific: put debug log in same directory as JSON
-            log_path = os.path.join(os.path.dirname(json_file), filename)
+            # Tag-specific: for general WEAVE, keep a single reconcile_debug.log
+            # per JSON directory (as before). For F12 Cartographer per-file
+            # refreshes, where source_json files live under
+            # temp/cartographer_file_refresh, use a per-file debug log whose
+            # name is derived from the JSON basename.
+            base_dir = os.path.dirname(json_file)
+            base_name = os.path.basename(json_file)
+            if "cartographer_file_refresh" in os.path.normcase(base_dir):
+                stem, _ext = os.path.splitext(base_name)
+                log_path = os.path.join(base_dir, f"{stem}.{filename}")
+            else:
+                log_path = os.path.join(base_dir, filename)
         else:
             # Global fallback
             log_path = fr"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\{filename}"
@@ -817,6 +833,12 @@ class WorkFlowyClientEtch(WorkFlowyClientCore):
             }
 
 
+# @beacon[
+#   id=auto-beacon@export_nodes_impl-bweo,
+#   role=export_nodes_impl,
+#   slice_labels=ra-workflowy-cache,
+#   kind=ast,
+# ]
 async def export_nodes_impl(
     client: WorkFlowyClientCore,
     node_id: str | None = None,

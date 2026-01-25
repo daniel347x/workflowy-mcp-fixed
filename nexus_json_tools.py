@@ -1823,6 +1823,12 @@ def _collect_subtree_ids(root_id: str, children_ids: Dict[str, List[str]]) -> Li
     return seen
 
 
+# @beacon[
+#   id=auto-beacon@_compute_delete_roots-95tm,
+#   role=_compute_delete_roots,
+#   slice_labels=ra-reconcile,
+#   kind=ast,
+# ]
 def _compute_delete_roots(delete_ids: List[str], parent_map: Dict[str, Optional[str]]) -> List[str]:
     """Given a set of ids to delete and a parent map from S0, compute branch roots.
 

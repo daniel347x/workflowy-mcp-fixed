@@ -105,19 +105,41 @@ async def main():
     
     client = WorkFlowyClient(config)
 
+
+    # @beacon[
+    #   id=weave-worker@refresh_nodes_export_cache,
+    #   role=weave worker – refresh_nodes_export_cache,
+    #   slice_labels=ra-workflowy-cache,
+    #   kind=span,
+    #   comment=Async refresh_nodes_export_cache block in weave_worker main,
+    # ]
     # Ensure this worker has a fresh /nodes-export snapshot. Unlike the MCP
     # server (where /nodes-export refresh is manual via the UUID widget), the
     # detached WEAVE worker must be able to reconcile against ETHER on its
-    # own. We therefore perform a one-time explicit refresh here.
-    try:
-        log_worker("Refreshing /nodes-export cache for WEAVE worker…")
-        await client.refresh_nodes_export_cache()
-        log_worker("/nodes-export cache refresh complete for WEAVE worker")
-    except Exception as e:  # noqa: BLE001
-        log_worker(f"ERROR: refresh_nodes_export_cache failed in WEAVE worker: {e}")
-        import traceback
-        log_worker(traceback.format_exc())
-        sys.exit(1)
+    # own. We therefore perform a one-time explicit refresh here, but prefer
+    # a warm-started snapshot when available.
+    if getattr(client, "_nodes_export_cache", None) is not None:
+        ts = getattr(client, "_nodes_export_cache_timestamp", None)
+        if ts:
+            log_worker(
+                "Using warm-started /nodes-export cache snapshot for WEAVE worker "
+                f"(timestamp={ts})"
+            )
+        else:
+            log_worker("Using warm-started /nodes-export cache snapshot for WEAVE worker")
+    else:
+        try:
+            log_worker("Refreshing /nodes-export cache for WEAVE worker…")
+            await client.refresh_nodes_export_cache()
+            log_worker("/nodes-export cache refresh complete for WEAVE worker")
+        except Exception as e:  # noqa: BLE001
+            log_worker(f"ERROR: refresh_nodes_export_cache failed in WEAVE worker: {e}")
+            import traceback
+            log_worker(traceback.format_exc())
+            sys.exit(1)
+    # @beacon-close[
+    #   id=weave-worker@refresh_nodes_export_cache,
+    # ]
     
     # Determine PID file location and validate inputs based on mode
     pid_file = None
@@ -184,7 +206,7 @@ async def main():
     # @beacon[
     #   id=weave-worker@carto-refresh-job,
     #   role=weave worker – CARTO_REFRESH job runner,
-    #   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,
+    #   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,ra-carto-jobs,
     #   kind=span,
     #   comment=Async CARTO_REFRESH job execution block in weave_worker main,
     # ]
@@ -210,6 +232,20 @@ async def main():
             log_worker(f"ERROR: Failed to read CARTO job file: {e}")
             await client.close()
             sys.exit(1)
+
+        # Derive a per-job directory and expose it via environment so that
+        # refresh_file_node_beacons can route per-file JSON/journal/debug logs
+        # into a job-specific folder under cartographer_jobs/.
+        try:
+            jid = job.get('id') or job_path.stem
+            job_dir = job_path.parent / str(jid)
+            job_dir.mkdir(parents=True, exist_ok=True)
+            os.environ['CARTO_JOB_DIR'] = str(job_dir)
+        except Exception as e:  # noqa: BLE001
+            log_worker(
+                f"CARTO_REFRESH: failed to initialize CARTO_JOB_DIR for job {job.get('id') or job_path.stem}: {e}",
+                "CARTO",
+            )
 
         # If job was cancelled before the worker started, exit early without work
         if job.get('status') == 'cancelled':
@@ -259,6 +295,12 @@ async def main():
             else:
                 log_worker(f"CARTO_REFRESH: refreshing FOLDER subtree {root_uuid}")
 
+                # @beacon[
+                #   id=weave-worker@carto-refresh-cancel,
+                #   role=weave worker – CARTO_REFRESH should_cancel,
+                #   slice_labels=ra-carto-jobs,
+                #   kind=ast,
+                # ]
                 def _carto_should_cancel() -> bool:
                     """Return True if the CARTO_REFRESH job JSON is marked cancelled.
 
@@ -278,9 +320,48 @@ async def main():
 
                     return str(fresh.get("status")) == "cancelled"
 
+                # @beacon[
+                #   id=weave-worker@carto-refresh-progress,
+                #   role=weave worker – CARTO_REFRESH progress,
+                #   slice_labels=ra-carto-jobs,
+                #   kind=ast,
+                # ]
+                def _carto_progress(file_uuid: str, completed: int, total: int) -> None:
+                    """Best-effort progress writer for CARTO_REFRESH folder jobs.
+
+                    Updates the CARTO job JSON's progress.{total_files,completed_files,current_file}.
+                    Errors are logged but never raised.
+                    """
+                    try:
+                        with open(job_path, "r", encoding="utf-8") as jf:
+                            fresh = json.load(jf)
+                    except Exception as e:  # noqa: BLE001
+                        log_worker(
+                            f"CARTO_REFRESH: failed to re-read job JSON for progress update: {e}",
+                        )
+                        return
+
+                    progress_local = fresh.get("progress") or {}
+                    fresh["progress"] = progress_local
+                    if total > 0:
+                        progress_local["total_files"] = total
+                    progress_local["completed_files"] = max(0, int(completed))
+                    if file_uuid:
+                        progress_local["current_file"] = file_uuid
+
+                    fresh["updated_at"] = datetime.utcnow().isoformat()
+                    try:
+                        with open(job_path, "w", encoding="utf-8") as jf:
+                            json.dump(fresh, jf, indent=2)
+                    except Exception as e:  # noqa: BLE001
+                        log_worker(
+                            f"CARTO_REFRESH: failed to write job JSON for progress update: {e}",
+                        )
+
                 result = await client.refresh_folder_cartographer_sync(
                     folder_node_id=root_uuid,
                     cancel_callback=_carto_should_cancel,
+                    progress_callback=_carto_progress,
                 )
                 if isinstance(result, dict):
                     files_refreshed = result.get('refreshed_file_nodes', 0)
@@ -288,7 +369,27 @@ async def main():
                     files_refreshed = 0
 
             job['status'] = 'completed'
-            job['progress']['completed_files'] = job['progress'].get('total_files', files_refreshed or 1)
+            # Preserve any more up-to-date progress written by refresh_folder_cartographer_sync
+            # but ensure we at least record final totals.
+            total_from_result = 0
+            if isinstance(result, dict):
+                total_from_result = (
+                    result.get('total_existing_files')
+                    or result.get('refreshed_file_nodes')
+                    or 0
+                )
+
+            progress_total = (
+                job['progress'].get('total_files')
+                or total_from_result
+                or (files_refreshed or 1)
+            )
+            job['progress']['total_files'] = progress_total
+            job['progress']['completed_files'] = max(
+                int(job['progress'].get('completed_files') or 0),
+                int(files_refreshed or progress_total),
+            )
+
             job['result_summary']['files_refreshed'] = files_refreshed
             job['result_summary']['raw_result'] = result
         except Exception as e:

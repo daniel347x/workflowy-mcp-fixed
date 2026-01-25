@@ -1606,6 +1606,12 @@ def _markdown_snippet_for_beacon(
 # ---------------------------------------------------------------------------
 
 
+# @beacon[
+#   id=auto-beacon@_yaml_comment_block_span-1whb,
+#   role=_yaml_comment_block_span,
+#   slice_labels=ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-yaml,
+#   kind=ast,
+# ]
 def _yaml_comment_block_span(
     lines: List[str],
     comment_line: int,
@@ -1674,6 +1680,12 @@ def _yaml_comment_block_span(
     return top, bottom
 
 
+# @beacon[
+#   id=auto-beacon@_yaml_snippet_for_beacon-1whb,
+#   role=_yaml_snippet_for_beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-yaml,
+#   kind=ast,
+# ]
 def _yaml_snippet_for_beacon(
     file_path: str,
     beacon_id: str,

@@ -101,6 +101,12 @@ def is_pid_running(pid: int) -> bool:
         return False
 
 
+# @beacon[
+#   id=auto-beacon@scan_active_weaves-bf4y,
+#   role=scan_active_weaves,
+#   slice_labels=ra-logging,
+#   kind=ast,
+# ]
 def scan_active_weaves(nexus_runs_base: str) -> list[dict[str, Any]]:
     """Scan nexus_runs directory for active detached WEAVE processes."""
     nexus_runs_dir = Path(nexus_runs_base)
@@ -2633,7 +2639,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.bulk_import_from_file-7d6e,
     #   role=WorkFlowyClientNexus.bulk_import_from_file,
-    #   slice_labels=ra-reconcile,f9-f12-handlers,
+    #   slice_labels=ra-reconcile,f9-f12-handlers,ra-logging,
     #   kind=ast,
     # ]
     async def bulk_import_from_file(
@@ -2644,7 +2650,42 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         import_policy: str = 'strict',
         auto_upgrade_to_jewel: bool = True,
     ) -> dict[str, Any]:
-        """Create nodes from JSON using reconciliation algorithm."""
+        """Create nodes from JSON using reconciliation algorithm.
+
+        Logging / journaling topology
+        -----------------------------
+
+        General WEAVE (``nexus_weave_enchanted`` / ``bulk_import_from_file``):
+
+        - Per-JSON journal: ``<json>.weave_journal.json``
+        - Per-JSON reconcile debug log: ``reconcile_debug.log`` next to the JSON
+        - Detached worker log: ``.weave.log`` in the NEXUS run directory when
+          launched via ``_launch_detached_weave`` / ``weave_worker.py``
+
+        F12 / CARTO_REFRESH (Cartographer per-file refresh):
+
+        - Per-file journal: ``<source_json>.weave_journal.json`` under
+          ``temp/cartographer_file_refresh``
+        - Per-file reconcile debug log:
+          ``<source_json>.reconcile_debug.log`` in the same folder
+        - CARTO job log: ``<job_id>.log`` under
+          ``MCP_Servers/workflowy_mcp/temp/cartographer_jobs/`` when
+          ``weave_worker.py`` runs in ``carto_refresh`` mode
+
+        The F12 code path is implemented in:
+
+        - ``WorkFlowyClientNexus.refresh_file_node_beacons`` (per-file F12)
+        - ``WorkFlowyClientNexus.refresh_folder_cartographer_sync`` (folder F12)
+        - ``_start_carto_refresh_job`` / ``cartographer_refresh_async`` (job launch)
+        - ``weave_worker.main`` (CARTO_REFRESH branch)
+
+        All of these reuse the same reconciliation engine
+        (``workflowy_move_reconcile.reconcile_tree``) and the same
+        tag-aware debug logging helper (``_log_to_file_helper``). The
+        differences are purely in file layout and granularity: JSON+
+        journal+debug-log per WEAVE run vs. per-file JSON+
+        journal+debug-log plus a per-job worker log for F12/CARTO_REFRESH.
+        """
         import asyncio
         from ..models import NodeListRequest, NodeCreateRequest, NodeUpdateRequest
 
@@ -3449,7 +3490,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.refresh_file_node_beacons-wgth,
     #   role=WorkFlowyClientNexus.refresh_file_node_beacons,
-    #   slice_labels=ra-notes,ra-notes-cartographer,ra-notes-salvage,ra-reconcile,f9-f12-handlers,
+    #   slice_labels=ra-notes,ra-notes-cartographer,ra-notes-salvage,ra-reconcile,f9-f12-handlers,ra-logging,ra-carto-jobs,
     #   kind=ast,
     # ]
     async def refresh_file_node_beacons(
@@ -3474,6 +3515,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         This keeps the normal path fully incremental while retaining the legacy
         implementation for rare failure cases.
+
+        For how the F12 / CARTO_REFRESH logging and journaling (per-file
+        journals, per-file reconcile debug logs, and job-level worker logs)
+        map onto the general WEAVE logging topology, see the
+        ``bulk_import_from_file`` docstring.
         """
         logger = _ClientLogger()
         log_event(
@@ -3712,11 +3758,21 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "explicitly_preserved_ids": sorted(explicitly_preserved_ids),
             }
 
-            # 6) Persist JSON to temp/cartographer_file_refresh for inspection
+            # 6) Persist JSON for inspection.
+            #
+            # For CARTO_REFRESH jobs running under weave_worker.py we route per-file
+            # artifacts into a job-specific directory to keep all logs/journals
+            # together under the job_id folder. Otherwise we fall back to the
+            # global temp/cartographer_file_refresh directory.
             source_json_path: str | None = None
             try:
-                file_refresh_dir = os.path.join(project_root, "temp", "cartographer_file_refresh")
+                job_dir_env = os.getenv("CARTO_JOB_DIR")
+                if job_dir_env and os.path.isdir(job_dir_env):
+                    file_refresh_dir = os.path.join(job_dir_env, "file_refresh")
+                else:
+                    file_refresh_dir = os.path.join(project_root, "temp", "cartographer_file_refresh")
                 os.makedirs(file_refresh_dir, exist_ok=True)
+
                 short_id = str(file_node_id).replace("-", "")[:8]
                 base_name = os.path.basename(source_path)
                 timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -3801,7 +3857,46 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 stats["api_calls"] += 1
                 return data
 
+            # 7) Execute incremental reconcile_tree with per-file journal + debug log
+            # Set tag-specific debug log context so reconcile_debug.log is written
+            # next to the per-file source_json when available.
+            prev_weave_json_file = _current_weave_context.get("json_file")
+            f12_journal_path: str | None = None
+            f12_journal: dict[str, Any] | None = None
+            log_weave_entry_fn: Callable[[dict[str, Any]], None] | None = None
+
+            if not dry_run and source_json_path:
+                f12_journal_path = source_json_path.replace(".json", ".weave_journal.json")
+                try:
+                    f12_journal = {
+                        "json_file": source_json_path,
+                        "last_run_started_at": datetime.datetime.now().isoformat(),
+                        "last_run_completed": False,
+                        "phase": "before_reconcile",
+                        "entries": [],
+                    }
+                    with open(f12_journal_path, "w", encoding="utf-8") as jf:
+                        json_module.dump(f12_journal, jf, indent=2, ensure_ascii=False)
+                except Exception:
+                    f12_journal = None
+                    f12_journal_path = None
+
+                def log_weave_entry_fn(entry: dict[str, Any]) -> None:
+                    if f12_journal is None or f12_journal_path is None:
+                        return
+                    try:
+                        e = dict(entry)
+                        e.setdefault("timestamp", datetime.datetime.now().isoformat())
+                        f12_journal.setdefault("entries", []).append(e)
+                        with open(f12_journal_path, "w", encoding="utf-8") as jf2:
+                            json_module.dump(f12_journal, jf2, indent=2, ensure_ascii=False)
+                    except Exception:
+                        # Journal failures must never break F12 behavior
+                        pass
+
             try:
+                if source_json_path:
+                    _current_weave_context["json_file"] = source_json_path
                 reconcile_result = await _reconcile_tree_for_f12(
                     source_json=source_json,
                     parent_uuid=str(file_node_id),
@@ -3814,15 +3909,35 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     import_policy="strict",
                     dry_run=dry_run,
                     skip_delete_bulk_export_wait=True,
+                    log_weave_entry=log_weave_entry_fn,
                     log_to_file_msg=lambda m: _log_to_file_helper(m, "reconcile"),
                     allow_pure_reorder=True,
                 )
+                if f12_journal and f12_journal_path:
+                    try:
+                        f12_journal["last_run_completed"] = True
+                        f12_journal["phase"] = "completed"
+                        with open(f12_journal_path, "w", encoding="utf-8") as jf:
+                            json_module.dump(f12_journal, jf, indent=2, ensure_ascii=False)
+                    except Exception:
+                        pass
             except Exception as e:  # noqa: BLE001
+                if f12_journal and f12_journal_path:
+                    try:
+                        f12_journal["last_run_completed"] = False
+                        f12_journal["last_run_error"] = str(e)
+                        f12_journal["phase"] = "error"
+                        with open(f12_journal_path, "w", encoding="utf-8") as jf:
+                            json_module.dump(f12_journal, jf, indent=2, ensure_ascii=False)
+                    except Exception:
+                        pass
                 _log_to_file_helper(
                     f"refresh_file_node_beacons incremental: reconcile_tree failed: {e}",
                     "reconcile",
                 )
                 raise
+            finally:
+                _current_weave_context["json_file"] = prev_weave_json_file
 
             incremental_probe = {
                 "success": True,
@@ -4300,7 +4415,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync-62ih,
     #   role=WorkFlowyClientNexus.refresh_folder_cartographer_sync,
-    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,
+    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,
     #   kind=ast,
     # ]
     async def refresh_folder_cartographer_sync(
@@ -4309,6 +4424,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         *,
         dry_run: bool = False,
         cancel_callback: Callable[[], bool] | None = None,
+        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, Any]:
         """Multi-file Cartographer sync for a FOLDER subtree.
 
@@ -4530,6 +4646,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             "BEACON",
                         )
 
+        # Compute total number of existing FILE nodes for optional job progress reporting.
+        total_existing_files = sum(1 for _nid, _path, _exists in file_nodes_info if _exists)
+        completed_files = 0
+
+        if progress_callback is not None and total_existing_files > 0:
+            try:
+                progress_callback("", 0, total_existing_files)
+            except Exception as e:  # noqa: BLE001
+                log_event(
+                    "refresh_folder_cartographer_sync: progress_callback raised during "
+                    f"initialization for folder_node_id={folder_node_id}: {e}",
+                    "BEACON",
+                )
+
         # Now perform per-file refresh only when the file exists on disk
         for s_nid, source_path, exists in file_nodes_info:
             if not exists:
@@ -4591,6 +4721,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 )
                 log_event(msg, "BEACON")
                 refresh_errors.append(msg)
+
+            # Update progress after each existing FILE processed.
+            if exists:
+                completed_files += 1
+                if progress_callback is not None and total_existing_files > 0:
+                    try:
+                        progress_callback(s_nid, completed_files, total_existing_files)
+                    except Exception as e:  # noqa: BLE001
+                        log_event(
+                            "refresh_folder_cartographer_sync: progress_callback raised for "
+                            f"FILE node_id={s_nid} Path=\"{source_path}\": {e}",
+                            "BEACON",
+                        )
 
         # 2b) Delete FILE nodes whose source file no longer exists on disk
         if not dry_run:
@@ -4977,6 +5120,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "root_path": root_path,
             "dry_run": dry_run,
             "refreshed_file_nodes": refreshed_count,
+            "total_existing_files": total_existing_files,
             "refresh_errors": refresh_errors,
             "present_paths": sorted(present_paths_raw.values()),
             "missing_paths": missing_paths,

@@ -1155,7 +1155,7 @@ def _extract_md_path_from_note(note: str | None) -> list[str] | None:
 # @beacon[
 #   id=auto-beacon@reconcile_trees_cartographer-2hsq,
 #   role=reconcile_trees_cartographer,
-#   slice_labels=ra-snippet-range-ast-md,ra-reconcile,f9-f12-handlers,
+#   slice_labels=ra-snippet-range-ast-md,ra-reconcile,f9-f12-handlers,nexus-md-header-path,
 #   kind=ast,
 # ]
 def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[str, Any]) -> None:
@@ -2130,10 +2130,6 @@ def get_docstring(node: ast.AST) -> str:
     return ast.get_docstring(node) or ""
 
 
-def hello_ether():
-    """Hello, Ether."""
-    print("Hello, Ether!")
-
 def get_function_signature(node: ast.FunctionDef) -> str:
     """Reconstruct function signature for display."""
     args = []
@@ -2689,6 +2685,11 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
     """
     Wraps the inner file parsing into a directory walker.
     Returns a single root NEXUS node representing the codebase tree.
+
+    NOTE: This function is used to initialize a Cartographer codebase map
+    via MCP tool calls, but this full-codebase mapping is not considered
+    part of the minimal NEXUS Core v1 surface. It remains here for
+    convenience and advanced workflows.
     """
 
     # Load .nexusignore patterns (optional, rooted at the mapping root)

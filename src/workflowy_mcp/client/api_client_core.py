@@ -114,6 +114,12 @@ class WorkFlowyClientCore:
         # respect the presence/absence of an actual cache snapshot.
         self._nodes_export_cache_mode: str = "eager"
 
+        # @beacon[
+        #   id=api-client-core@load_nodes_export_cache_from_disk,
+        #   role=API Client Core – load_nodes_export_cache_from_disk,
+        #   slice_labels=ra-workflowy-cache,
+        #   kind=span,
+        # ]
         # Best-effort warm start: attempt to load a cached /nodes-export snapshot
         # from disk on client initialization so MCP restarts do not always pay the
         # full /nodes-export cost. Failures are logged but never fatal; callers
@@ -124,12 +130,21 @@ class WorkFlowyClientCore:
                 self._log_debug("Warm-started /nodes-export cache from disk snapshot")
         except Exception as exc:  # pragma: no cover - defensive logging only
             self._log_debug(f"Failed to warm-start /nodes-export cache from disk: {exc}")
+        # @beacon-close[
+        #   id=api-client-core@load_nodes_export_cache_from_disk,
+        # ]
     
     def _log_debug(self, message: str) -> None:
         """Log debug messages to stderr (unified logging)."""
         # Console Visibility ONLY - keep reconcile_debug.log clean for weaves
         log_event(message, "CLIENT_DEBUG")
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientCore._get_nodes_export_snapshot_dir-3t4u,
+    #   role=WorkFlowyClientCore._get_nodes_export_snapshot_dir,
+    #   slice_labels=ra-workflowy-cache,
+    #   kind=ast,
+    # ]
     def _get_nodes_export_snapshot_dir(self) -> str:
         """Return directory path for persisted /nodes-export cache snapshots.
 
@@ -151,6 +166,12 @@ class WorkFlowyClientCore:
         os.makedirs(snapshot_dir, exist_ok=True)
         return snapshot_dir
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientCore._save_nodes_export_cache_to_disk-6mk2,
+    #   role=WorkFlowyClientCore._save_nodes_export_cache_to_disk,
+    #   slice_labels=ra-workflowy-cache,
+    #   kind=ast,
+    # ]
     def _save_nodes_export_cache_to_disk(self) -> str:
         """Persist current /nodes-export cache snapshot to disk.
 
@@ -165,6 +186,7 @@ class WorkFlowyClientCore:
         # newest can be discovered lexicographically.
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         snapshot_path = os.path.join(snapshot_dir, f"{ts}_nodes_export_snapshot.json")
+        tmp_path = snapshot_path + ".tmp"
 
         # Serialize a minimal wrapper containing the raw export plus lightweight
         # metadata about when it was captured.
@@ -172,12 +194,28 @@ class WorkFlowyClientCore:
             "snapshot_timestamp": datetime.now().isoformat(),
             "nodes_export": self._nodes_export_cache,
         }
-        with open(snapshot_path, "w", encoding="utf-8") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
+        # Atomic replace so readers never see a half-written file.
+        os.replace(tmp_path, snapshot_path)
+
         self._log_debug(f"Saved /nodes-export cache snapshot to {snapshot_path}")
+
+        # Opportunistically garbage-collect older snapshots.
+        try:
+            self._gc_nodes_export_snapshots()
+        except Exception as exc:  # pragma: no cover - defensive logging only
+            self._log_debug(f"_gc_nodes_export_snapshots failed: {exc}")
+
         return snapshot_path
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientCore._load_nodes_export_cache_from_disk-qd8q,
+    #   role=WorkFlowyClientCore._load_nodes_export_cache_from_disk,
+    #   slice_labels=ra-workflowy-cache,
+    #   kind=ast,
+    # ]
     def _load_nodes_export_cache_from_disk(self) -> bool:
         """Attempt to warm-start /nodes-export cache from the newest snapshot on disk.
 
@@ -222,6 +260,58 @@ class WorkFlowyClientCore:
         self._nodes_export_dirty_ids.clear()
         self._log_debug(f"Loaded /nodes-export cache snapshot from {latest_path}")
         return True
+
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientCore._gc_nodes_export_snapshots-gc1a,
+    #   role=WorkFlowyClientCore._gc_nodes_export_snapshots,
+    #   slice_labels=ra-workflowy-cache,
+    #   kind=ast,
+    # ]
+    def _gc_nodes_export_snapshots(
+        self,
+        max_keep: int = 3,
+        min_age_seconds: int = 3600,
+    ) -> None:
+        """Best-effort garbage collection for /nodes-export snapshots on disk.
+
+        Keeps at least the newest `max_keep` snapshots and only deletes files
+        older than `min_age_seconds`. Failures are logged but never raised.
+        """
+        snapshot_dir = self._get_nodes_export_snapshot_dir()
+        try:
+            names = [
+                name
+                for name in os.listdir(snapshot_dir)
+                if name.endswith("_nodes_export_snapshot.json")
+            ]
+        except FileNotFoundError:
+            return
+
+        if len(names) <= max_keep:
+            return
+
+        names.sort()
+        protected: set[str] = set(names[-max_keep:])
+        now_ts = datetime.now().timestamp()
+
+        for name in names:
+            if name in protected:
+                continue
+            path = os.path.join(snapshot_dir, name)
+            try:
+                st = os.stat(path)
+            except FileNotFoundError:
+                continue
+
+            age = now_ts - st.st_mtime
+            if age < min_age_seconds:
+                continue
+
+            try:
+                os.remove(path)
+            except OSError:
+                # Best-effort only; the OS may refuse to delete open files.
+                continue
 
     @staticmethod
     def _segment_whitelisted_markup(text: str) -> list[dict[str, str]]:
@@ -533,6 +623,12 @@ class WorkFlowyClientCore:
         except json.JSONDecodeError as err:
             raise NetworkError("Invalid response format from API") from err
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientCore._mark_nodes_export_dirty-4dnc,
+    #   role=WorkFlowyClientCore._mark_nodes_export_dirty,
+    #   slice_labels=ra-workflowy-cache,
+    #   kind=ast,
+    # ]
     def _mark_nodes_export_dirty(self, node_ids: list[str] | None = None) -> None:
         """Mark parts of the cached /nodes-export snapshot as dirty.
 
@@ -558,7 +654,7 @@ class WorkFlowyClientCore:
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientCore._get_nodes_export_cache_nodes-5uaq,
     #   role=WorkFlowyClientCore._get_nodes_export_cache_nodes,
-    #   slice_labels=WorkFlowyClientCore-_get_nodes_export_cache_nodes,nexus-test,
+    #   slice_labels=WorkFlowyClientCore-_get_nodes_export_cache_nodes,nexus-test,ra-workflowy-cache,
     #   kind=ast,
     # ]
     def _get_nodes_export_cache_nodes(self) -> list[dict[str, Any]]:
@@ -736,6 +832,12 @@ class WorkFlowyClientCore:
         if target_id in self._nodes_export_dirty_ids:
             self._nodes_export_dirty_ids.discard(target_id)
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientCore.refresh_nodes_export_cache-kejn,
+    #   role=WorkFlowyClientCore.refresh_nodes_export_cache,
+    #   slice_labels=ra-workflowy-cache,
+    #   kind=ast,
+    # ]
     async def refresh_nodes_export_cache(self, max_retries: int = 10) -> dict[str, Any]:
         """Force a fresh /nodes-export call and update the in-memory cache.
 
@@ -779,6 +881,12 @@ class WorkFlowyClientCore:
             "timestamp": self._nodes_export_cache_timestamp or datetime.now().isoformat(),
         }
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientCore.save_nodes_export_cache-vwv9,
+    #   role=WorkFlowyClientCore.save_nodes_export_cache,
+    #   slice_labels=ra-workflowy-cache,
+    #   kind=ast,
+    # ]
     async def save_nodes_export_cache(self) -> dict[str, Any]:
         """Persist the current /nodes-export cache snapshot to disk.
 

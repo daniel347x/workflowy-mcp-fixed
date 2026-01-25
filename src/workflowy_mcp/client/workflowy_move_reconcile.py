@@ -59,7 +59,7 @@ Node = Dict
 # @beacon[
 #   id=auto-beacon@reconcile_tree-v8e1,
 #   role=reconcile_tree,
-#   slice_labels=ra-reconcile,f9-f12-handlers,
+#   slice_labels=ra-reconcile,f9-f12-handlers,ra-logging,
 #   kind=ast,
 # ]
 async def reconcile_tree(
