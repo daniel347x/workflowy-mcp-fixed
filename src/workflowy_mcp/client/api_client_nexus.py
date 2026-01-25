@@ -3498,6 +3498,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         file_node_id: str,
         *,
         dry_run: bool = False,
+        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, Any]:
         """Incremental, beacon-aware per-file refresh (F12).
 
@@ -3627,6 +3628,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 folder_result = await self.refresh_folder_cartographer_sync(
                     folder_node_id=str(file_node_id),
                     dry_run=dry_run,
+                    cancel_callback=None,
+                    progress_callback=progress_callback,
                 )
                 if isinstance(folder_result, dict):
                     folder_result.setdefault("routed_from", "refresh_file_node_beacons")

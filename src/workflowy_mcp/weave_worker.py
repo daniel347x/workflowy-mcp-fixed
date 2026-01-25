@@ -301,9 +301,48 @@ async def main():
 
             if carto_mode == 'file':
                 log_worker(f"CARTO_REFRESH: refreshing FILE node {root_uuid}")
+
+                # @beacon[
+                #   id=weave-worker@carto-refresh-progress-file,
+                #   role=weave worker  CARTO_REFRESH progress (file mode),
+                #   slice_labels=ra-carto-jobs,
+                #   kind=ast,
+                # ]
+                def _carto_progress_for_file(file_uuid: str, completed: int, total: int) -> None:
+                    """Best-effort progress writer for CARTO_REFRESH file jobs that
+                    actually run a folder-level Cartographer sync via
+                    refresh_file_node_beacons. Mirrors the folder-mode
+                    _carto_progress behavior."""
+                    try:
+                        with open(job_path, "r", encoding="utf-8") as jf:
+                            fresh = json.load(jf)
+                    except Exception as e:  # noqa: BLE001
+                        log_worker(
+                            f"CARTO_REFRESH: failed to re-read job JSON for progress update (file mode): {e}",
+                        )
+                        return
+
+                    progress_local = fresh.get("progress") or {}
+                    fresh["progress"] = progress_local
+                    if total > 0:
+                        progress_local["total_files"] = total
+                    progress_local["completed_files"] = max(0, int(completed))
+                    if file_uuid:
+                        progress_local["current_file"] = file_uuid
+
+                    fresh["updated_at"] = datetime.utcnow().isoformat()
+                    try:
+                        with open(job_path, "w", encoding="utf-8") as jf:
+                            json.dump(fresh, jf, indent=2)
+                    except Exception as e:  # noqa: BLE001
+                        log_worker(
+                            f"CARTO_REFRESH: failed to write job JSON for progress update (file mode): {e}",
+                        )
+
                 result = await client.refresh_file_node_beacons(
                     file_node_id=root_uuid,
                     dry_run=False,
+                    progress_callback=_carto_progress_for_file,
                 )
                 files_refreshed = 1
             else:
