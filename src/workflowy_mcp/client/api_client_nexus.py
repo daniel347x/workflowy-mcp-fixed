@@ -3,7 +3,7 @@
 import json
 import sys
 import os
-from typing import Any
+from typing import Any, Callable
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
