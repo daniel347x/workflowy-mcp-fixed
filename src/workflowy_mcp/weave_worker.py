@@ -237,10 +237,24 @@ async def main():
         # refresh_file_node_beacons can route per-file JSON/journal/debug logs
         # into a job-specific folder under cartographer_jobs/.
         try:
-            jid = job.get('id') or job_path.stem
-            job_dir = job_path.parent / str(jid)
+            jid = job.get("id") or job_path.stem
+
+            # Prefer a sortable timestamp prefix based on created_at if present.
+            job_dir_name = str(jid)
+            created_str = job.get("created_at")
+            if isinstance(created_str, str) and created_str:
+                try:
+                    # created_at is ISO 8601; convert to YYYYMMDD-HHMMSS for folder naming.
+                    dt = datetime.fromisoformat(created_str)
+                    prefix = dt.strftime("%Y%m%d-%H%M%S")
+                    job_dir_name = f"{prefix}_{jid}"
+                except Exception:  # noqa: BLE001
+                    # Fall back to bare job id if parsing fails.
+                    pass
+
+            job_dir = job_path.parent / job_dir_name
             job_dir.mkdir(parents=True, exist_ok=True)
-            os.environ['CARTO_JOB_DIR'] = str(job_dir)
+            os.environ["CARTO_JOB_DIR"] = str(job_dir)
         except Exception as e:  # noqa: BLE001
             log_worker(
                 f"CARTO_REFRESH: failed to initialize CARTO_JOB_DIR for job {job.get('id') or job_path.stem}: {e}",

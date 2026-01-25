@@ -1862,7 +1862,20 @@ def _gc_carto_jobs(carto_jobs_base: str, max_age_seconds: int = 3600) -> None:
                 # Delete per-job folder (if present), which may contain F12 file_refresh logs.
                 try:
                     jid = job.get("id") or job_path.stem
-                    job_dir = base_path / str(jid)
+
+                    # Mirror the naming used in weave_worker CARTO_REFRESH mode:
+                    #   YYYYMMDD-HHMMSS_<job-id>  (falls back to bare job id if needed).
+                    job_dir_name = str(jid)
+                    created_str = job.get("created_at")
+                    if isinstance(created_str, str) and created_str:
+                        try:
+                            ts = datetime.fromisoformat(str(created_str))
+                            prefix = ts.strftime("%Y%m%d-%H%M%S")
+                            job_dir_name = f"{prefix}_{jid}"
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                    job_dir = base_path / job_dir_name
                     if job_dir.exists() and job_dir.is_dir():
                         import shutil
                         shutil.rmtree(job_dir, ignore_errors=True)
