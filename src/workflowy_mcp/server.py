@@ -1544,14 +1544,43 @@ async def websocket_handler(websocket):
                 # List CARTO_REFRESH jobs (for async F12 status in the GLIMPSE widget)
                 if action == 'carto_list_jobs':
                     try:
-                        status = await mcp_job_status(job_id=None)
+                        # Directly scan CARTO_REFRESH job JSON files under cartographer_jobs/.
+                        from pathlib import Path
+                        import json as json_module  # type: ignore[redefined-builtin]
+
+                        carto_jobs_base = (
+                            r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\MCP_Servers\\workflowy_mcp\\temp\\cartographer_jobs"
+                        )
+                        base_dir = Path(carto_jobs_base)
                         jobs: list[dict[str, Any]] = []
-                        if isinstance(status, dict) and status.get("success"):
-                            detached = status.get("detached_jobs") or []
-                            if isinstance(detached, list):
-                                for j in detached:
-                                    if isinstance(j, dict) and j.get("kind") == "CARTO_REFRESH":
-                                        jobs.append(j)
+                        if base_dir.exists():
+                            for job_path in base_dir.glob("carto-refresh-*.json"):
+                                try:
+                                    with job_path.open("r", encoding="utf-8") as jf:
+                                        job = json_module.load(jf)
+                                except Exception:  # noqa: BLE001
+                                    continue
+
+                                jid = job.get("id") or job_path.stem
+                                jobs.append(
+                                    {
+                                        "job_id": jid,
+                                        "kind": "CARTO_REFRESH",
+                                        "status": job.get("status", "unknown"),
+                                        "mode": job.get("mode"),
+                                        "root_uuid": job.get("root_uuid"),
+                                        "detached": True,
+                                        "carto_job_file": str(job_path),
+                                        "log_file": job.get("logs_path"),
+                                        "created_at": job.get("created_at"),
+                                        "updated_at": job.get("updated_at"),
+                                        "progress": job.get("progress"),
+                                        "result_summary": job.get("result_summary"),
+                                        "error": job.get("error"),
+                                        "pid": job.get("pid"),
+                                    }
+                                )
+
                         await websocket.send(
                             json.dumps(
                                 {
