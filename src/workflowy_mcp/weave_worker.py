@@ -431,9 +431,9 @@ async def main():
                 else:
                     files_refreshed = 0
 
-            job['status'] = 'completed'
             # Preserve any more up-to-date progress written by refresh_folder_cartographer_sync
             # or file-mode callbacks, but ensure we at least record final totals.
+            cancelled_flag = False
             total_from_result = 0
             if isinstance(result, dict):
                 total_from_result = (
@@ -451,6 +451,7 @@ async def main():
                 fresh_progress = fresh.get("progress") or {}
                 latest_total = int(fresh_progress.get("total_files") or 0)
                 latest_completed = int(fresh_progress.get("completed_files") or 0)
+                cancelled_flag = str(fresh.get("status")) == "cancelled"
             except Exception:  # noqa: BLE001
                 pass
 
@@ -474,6 +475,15 @@ async def main():
 
             job['result_summary']['files_refreshed'] = files_refreshed
             job['result_summary']['raw_result'] = result
+
+            # Preserve an explicit "cancelled" status if the job JSON was
+            # marked as such by an external actor (e.g. WebSocket
+            # carto_cancel_job or mcp_cancel_job). Otherwise treat the job
+            # as completed.
+            if cancelled_flag:
+                job['status'] = 'cancelled'
+            else:
+                job['status'] = 'completed'
         except Exception as e:
             exit_code = 1
             log_worker(f"CARTO_REFRESH failed with error: {e}")
