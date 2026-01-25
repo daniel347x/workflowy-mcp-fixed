@@ -90,6 +90,12 @@ def get_client() -> WorkFlowyClient:
     return _client
 
 
+# @beacon[
+#   id=auto-beacon@get_ws_connection-bjsi,
+#   role=get_ws_connection,
+#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,
+#   kind=ast,
+# ]
 def get_ws_connection():
     """Get the current WebSocket connection and message queue (if any)."""
     global _ws_connection, _ws_message_queue
@@ -113,6 +119,12 @@ def _log(message: str, component: str = "SERVER") -> None:
     log_event(message, component)
 
 
+# @beacon[
+#   id=auto-beacon@_resolve_uuid_path_and_respond-fu2j,
+#   role=_resolve_uuid_path_and_respond,
+#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,
+#   kind=ast,
+# ]
 async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, format_mode: str = "f3") -> None:
     """Resolve full ancestor path for target_uuid and send result back to extension.
 
@@ -409,7 +421,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
 # @beacon[
 #   id=auto-beacon@_guess_line_number_from_name-wlsn,
 #   role=_guess_line_number_from_name,
-#   slice_labels=nexus-md-header-path,f9-f12-handlers,
+#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-websocket,
 #   kind=ast,
 # ]
 def _guess_line_number_from_name(file_path: str, node_name: str | None) -> int:
@@ -505,7 +517,7 @@ def _guess_line_number_from_name(file_path: str, node_name: str | None) -> int:
 # @beacon[
 #   id=auto-beacon@_launch_windsurf-nrnc,
 #   role=_launch_windsurf,
-#   slice_labels=f9-f12-handlers,
+#   slice_labels=f9-f12-handlers,ra-websocket,
 #   kind=ast,
 # ]
 def _launch_windsurf(file_path: str, line: int | None = None) -> None:
@@ -548,7 +560,7 @@ def _launch_windsurf(file_path: str, line: int | None = None) -> None:
 # @beacon[
 #   id=auto-beacon@_maybe_create_ast_beacon_from_tags-adiu,
 #   role=_maybe_create_ast_beacon_from_tags,
-#   slice_labels=f9-f12-handlers,
+#   slice_labels=f9-f12-handlers,ra-websocket,
 #   kind=ast,
 # ]
 async def _maybe_create_ast_beacon_from_tags(
@@ -861,25 +873,23 @@ async def _maybe_create_ast_beacon_from_tags(
 # @beacon[
 #   id=auto-beacon@_handle_refresh_file_node-7irr,
 #   role=_handle_refresh_file_node,
-#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,
+#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-websocket,
 #   kind=ast,
 # ]
 async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
     """Handle F12-driven request to refresh a Cartographer FILE node.
 
     This is a WebSocket wrapper around the existing beacon_refresh_code_node
-    MCP tool (which in turn calls client.refresh_file_node_beacons). The
-    default implementation is straightforward:
-    - Extract node_id from the WebSocket payload.
-    - Call client.refresh_file_node_beacons(file_node_id=node_id, dry_run=False).
-    - Send back a refresh_file_node_result with success/counts or error.
+    MCP tool (which in turn calls client.refresh_file_node_beacons).
 
-    NEW (Jan 2026): If the target UUID corresponds to a Cartographer AST node
-    whose note contains AST_QUALNAME: but no existing BEACON metadata, and the
-    node name has trailing #tags, we instead auto-create a Python AST beacon in
-    the underlying source file and return a result describing that change. In
-    that case we **do not** trigger a file-level refresh; Dan will manually
-    refresh the file node in Workflowy afterwards.
+    New behavior (NEXUS Core v1 async F12):
+    - If data.carto_async is truthy, we launch a detached CARTO_REFRESH job
+      via _start_carto_refresh_job and return a small result containing
+      job_id / mode / root_uuid. The UUID widget polls mcp_job_status to
+      show progress.
+    - Otherwise, we fall back to the legacy synchronous behavior (per-file
+      refresh via refresh_file_node_beacons), including AST beacon update
+      for non-FILE nodes.
     """
     node_id = data.get("node_id") or data.get("target_uuid") or data.get("uuid")
     node_name = data.get("node_name") or ""
@@ -894,6 +904,18 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
                 }
             )
         )
+        return
+
+    # Async CARTO_REFRESH path when requested by the client.
+    if data.get("carto_async"):
+        async_result = await _start_carto_refresh_job(root_uuid=str(node_id), mode="file")
+        payload: dict[str, Any] = {
+            "action": "refresh_file_node_result",
+            "node_id": node_id,
+        }
+        if isinstance(async_result, dict):
+            payload.update(async_result)
+        await websocket.send(json.dumps(payload))
         return
 
     client = get_client()
@@ -1054,17 +1076,18 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
 # @beacon[
 #   id=auto-beacon@_handle_refresh_folder_node-tgyl,
 #   role=_handle_refresh_folder_node,
-#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,
+#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-websocket,
 #   kind=ast,
 # ]
 async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
     """Handle F12-driven request to refresh a Cartographer FOLDER subtree.
 
-    - Recursively refreshes all descendant FILE nodes via
-      refresh_file_node_beacons.
-    - Optionally scans the filesystem under the folder's Path: note using the
-      Cartographer whitelist and creates FILE nodes (and intermediate
-      FOLDER nodes) for any on-disk files not represented in the subtree.
+    New behavior (NEXUS Core v1 async F12):
+    - If data.carto_async is truthy, we launch a detached CARTO_REFRESH job
+      via _start_carto_refresh_job(mode="folder") and return a small
+      result containing job_id / mode / root_uuid.
+    - Otherwise, we fall back to the legacy synchronous behavior using
+      refresh_folder_cartographer_sync.
     """
     node_id = data.get("node_id") or data.get("target_uuid") or data.get("uuid")
 
@@ -1078,6 +1101,18 @@ async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
                 }
             )
         )
+        return
+
+    # Async CARTO_REFRESH path when requested by the client.
+    if data.get("carto_async"):
+        async_result = await _start_carto_refresh_job(root_uuid=str(node_id), mode="folder")
+        payload: dict[str, Any] = {
+            "action": "refresh_folder_node_result",
+            "node_id": node_id,
+        }
+        if isinstance(async_result, dict):
+            payload.update(async_result)
+        await websocket.send(json.dumps(payload))
         return
 
     client = get_client()
@@ -1114,7 +1149,7 @@ async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
 # @beacon[
 #   id=auto-beacon@_handle_open_node_in_windsurf-3j45,
 #   role=_handle_open_node_in_windsurf,
-#   slice_labels=nexus-md-header-path,f9-f12-handlers,
+#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-websocket,
 #   kind=ast,
 # ]
 async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None:
@@ -1262,6 +1297,12 @@ async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None
         )
 
 
+# @beacon[
+#   id=auto-beacon@websocket_handler-kgmz,
+#   role=websocket_handler,
+#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,
+#   kind=ast,
+# ]
 async def websocket_handler(websocket):
     """Handle WebSocket connections from Chrome extension.
     
@@ -1499,6 +1540,46 @@ async def websocket_handler(websocket):
                             # Best-effort only; do not crash the handler on error reporting
                             pass
                     continue
+
+                # List CARTO_REFRESH jobs (for async F12 status in the GLIMPSE widget)
+                if action == 'carto_list_jobs':
+                    try:
+                        status = await mcp_job_status(job_id=None)
+                        jobs: list[dict[str, Any]] = []
+                        if isinstance(status, dict) and status.get("success"):
+                            detached = status.get("detached_jobs") or []
+                            if isinstance(detached, list):
+                                for j in detached:
+                                    if isinstance(j, dict) and j.get("kind") == "CARTO_REFRESH":
+                                        jobs.append(j)
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "action": "carto_list_jobs_result",
+                                    "success": True,
+                                    "jobs": jobs,
+                                }
+                            )
+                        )
+                    except Exception as e:
+                        log_event(
+                            f"carto_list_jobs handler error: {e}",
+                            "WS_HANDLER",
+                        )
+                        try:
+                            await websocket.send(
+                                json.dumps(
+                                    {
+                                        "action": "carto_list_jobs_result",
+                                        "success": False,
+                                        "error": str(e),
+                                    }
+                                )
+                            )
+                        except Exception:
+                            # Best-effort only; do not crash the handler on error reporting
+                            pass
+                    continue
                 
                 # Put all other messages in queue for workflowy_glimpse() to consume
                 await _ws_message_queue.put(data)
@@ -1521,6 +1602,12 @@ async def websocket_handler(websocket):
         log_event("WebSocket client cleaned up", "WS_HANDLER")
 
 
+# @beacon[
+#   id=auto-beacon@start_websocket_server-xel3,
+#   role=start_websocket_server,
+#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,
+#   kind=ast,
+# ]
 async def start_websocket_server():
     """Start WebSocket server for Chrome extension communication."""
     try:
@@ -1545,6 +1632,12 @@ async def start_websocket_server():
 
 
 @asynccontextmanager
+# @beacon[
+#   id=auto-beacon@lifespan-30n8,
+#   role=lifespan,
+#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,
+#   kind=ast,
+# ]
 async def lifespan(_app: FastMCP):  # type: ignore[no-untyped-def]
     """Manage server lifecycle."""
     global _client, _rate_limiter, _ws_server_task
@@ -1653,6 +1746,12 @@ async def _start_background_job(
     }
 
 
+# @beacon[
+#   id=auto-beacon@_gc_carto_jobs-0oga,
+#   role=_gc_carto_jobs,
+#   slice_labels=ra-carto-jobs,
+#   kind=ast,
+# ]
 def _gc_carto_jobs(carto_jobs_base: str, max_age_seconds: int = 3600) -> None:
     """Garbage-collect old CARTO_REFRESH artifacts (jobs + per-file F12 logs).
 
@@ -4060,7 +4159,7 @@ def nexus_purge_keystones(keystone_ids: list[str]) -> dict:
 # @beacon[
 #   id=auto-beacon@beacon_refresh_code_node-1t6u,
 #   role=beacon_refresh_code_node,
-#   slice_labels=ra-notes,ra-notes-cartographer,ra-reconcile,f9-f12-handlers,
+#   slice_labels=ra-notes,ra-notes-cartographer,ra-reconcile,f9-f12-handlers,ra-carto-jobs,
 #   kind=ast,
 # ]
 async def beacon_refresh_code_node(
