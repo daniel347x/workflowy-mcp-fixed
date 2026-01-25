@@ -1341,7 +1341,8 @@ async def websocket_handler(websocket):
             try:
                 data = json.loads(message)
                 action = data.get('action')
-                log_event(f"WebSocket message received: {action}", "WS_HANDLER")
+                if action != 'carto_list_jobs':
+                    log_event(f"WebSocket message received: {action}", "WS_HANDLER")
                 
                 # Handle ping to keep connection alive
                 if action == 'ping':
@@ -1570,11 +1571,15 @@ async def websocket_handler(websocket):
                         base_dir = Path(carto_jobs_base)
                         jobs: list[dict[str, Any]] = []
                         if base_dir.exists():
-                            for job_path in base_dir.glob("carto-refresh-*.json"):
+                            for job_path in base_dir.glob("*.json"):
                                 try:
                                     with job_path.open("r", encoding="utf-8") as jf:
                                         job = json_module.load(jf)
                                 except Exception:  # noqa: BLE001
+                                    continue
+
+                                # Only consider CARTO_REFRESH jobs; ignore any other JSON artifacts.
+                                if str(job.get("type")) != "CARTO_REFRESH":
                                     continue
 
                                 jid = job.get("id") or job_path.stem
@@ -1836,12 +1841,16 @@ def _gc_carto_jobs(carto_jobs_base: str, max_age_seconds: int = 3600) -> None:
         # 1) Job JSON + job-level log under carto_jobs_base
         base_path = Path(carto_jobs_base)
         if base_path.exists():
-            for job_path in base_path.glob("carto-refresh-*.json"):
+            for job_path in base_path.glob("*.json"):
                 try:
                     with job_path.open("r", encoding="utf-8") as jf:
                         job = json_module.load(jf)
                 except Exception:  # noqa: BLE001
                     # Leave unreadable/corrupt jobs for manual inspection.
+                    continue
+
+                # Only consider CARTO_REFRESH jobs; ignore any other JSON artifacts.
+                if str(job.get("type")) != "CARTO_REFRESH":
                     continue
 
                 status = str(job.get("status", "")).lower()
@@ -1969,10 +1978,13 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
     # Opportunistic GC of old completed/cancelled CARTO_REFRESH jobs.
     _gc_carto_jobs(carto_jobs_base)
 
-    now = _dt.utcnow().isoformat()
+    now_dt = _dt.utcnow()
+    now = now_dt.isoformat()
     job_id = f"carto-refresh-{mode}-{_uuid4().hex[:8]}"
-    job_file = os.path.join(carto_jobs_base, f"{job_id}.json")
-    log_file = os.path.join(carto_jobs_base, f"{job_id}.log")
+    ts_prefix = now_dt.strftime("%Y%m%d-%H%M%S")
+    filename_prefix = f"{ts_prefix}_{job_id}"
+    job_file = os.path.join(carto_jobs_base, f"{filename_prefix}.json")
+    log_file = os.path.join(carto_jobs_base, f"{filename_prefix}.log")
 
     job_payload = {
         "id": job_id,
@@ -2225,11 +2237,15 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
         if not base_dir.exists():
             return results
 
-        for job_path in base_dir.glob("carto-refresh-*.json"):
+        for job_path in base_dir.glob("*.json"):
             try:
                 with open(job_path, "r", encoding="utf-8") as jf:
                     job = json_module.load(jf)
             except Exception:
+                continue
+
+            # Only consider CARTO_REFRESH jobs; ignore any other JSON artifacts.
+            if str(job.get("type")) != "CARTO_REFRESH":
                 continue
 
             jid = job.get("id") or job_path.stem
@@ -2380,11 +2396,15 @@ async def mcp_cancel_job(job_id: str) -> dict:
     carto_jobs_base = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\MCP_Servers\\workflowy_mcp\\temp\\cartographer_jobs"
     base_dir = Path(carto_jobs_base)
     if base_dir.exists():
-        for job_path in base_dir.glob("carto-refresh-*.json"):
+        for job_path in base_dir.glob("*.json"):
             try:
                 with open(job_path, "r", encoding="utf-8") as jf:
                     carto_job = json_module.load(jf)
             except Exception:  # noqa: BLE001
+                continue
+
+            # Only consider CARTO_REFRESH jobs; ignore any other JSON artifacts.
+            if str(carto_job.get("type")) != "CARTO_REFRESH":
                 continue
 
             jid = carto_job.get("id") or job_path.stem
