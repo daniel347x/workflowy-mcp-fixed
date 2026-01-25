@@ -883,13 +883,13 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
     MCP tool (which in turn calls client.refresh_file_node_beacons).
 
     New behavior (NEXUS Core v1 async F12):
-    - If data.carto_async is truthy, we launch a detached CARTO_REFRESH job
-      via _start_carto_refresh_job and return a small result containing
-      job_id / mode / root_uuid. The UUID widget polls mcp_job_status to
-      show progress.
-    - Otherwise, we fall back to the legacy synchronous behavior (per-file
-      refresh via refresh_file_node_beacons), including AST beacon update
-      for non-FILE nodes.
+    - For true FILE nodes with data.carto_async truthy, we launch a detached
+      CARTO_REFRESH job via _start_carto_refresh_job and return a small
+      result containing job_id / mode / root_uuid. The UUID widget polls
+      mcp_job_status to show progress.
+    - For AST/beacon nodes (non-FILE), we always run the synchronous beacon
+      update path first, then perform a per-file refresh. The caller may
+      later trigger a separate async FILE-level F12 if desired.
     """
     node_id = data.get("node_id") or data.get("target_uuid") or data.get("uuid")
     node_name = data.get("node_name") or ""
@@ -904,18 +904,6 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
                 }
             )
         )
-        return
-
-    # Async CARTO_REFRESH path when requested by the client.
-    if data.get("carto_async"):
-        async_result = await _start_carto_refresh_job(root_uuid=str(node_id), mode="file")
-        payload: dict[str, Any] = {
-            "action": "refresh_file_node_result",
-            "node_id": node_id,
-        }
-        if isinstance(async_result, dict):
-            payload.update(async_result)
-        await websocket.send(json.dumps(payload))
         return
 
     client = get_client()
@@ -937,8 +925,7 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
 
     # Decide whether this node is a FILE node (note starts with Path:/Root:)
     # vs an AST/heading node. For FILE nodes we bypass beacon update entirely
-    # and go straight to a single per-file refresh to avoid double-running the
-    # F12 pipeline.
+    # and go straight to a single per-file refresh (sync or async).
     note_for_classification = data.get("node_note")
     if note_for_classification is None:
         # Fallback: read from cached /nodes-export
@@ -962,9 +949,23 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
                 is_file_node = True
                 break
 
+    # Async CARTO_REFRESH path is only valid for true FILE nodes. For AST/beacon
+    # nodes we must run the synchronous update-beacon pipeline so that source
+    # code and Workflowy metadata stay in lockstep.
+    if is_file_node and data.get("carto_async"):
+        async_result = await _start_carto_refresh_job(root_uuid=str(node_id), mode="file")
+        payload: dict[str, Any] = {
+            "action": "refresh_file_node_result",
+            "node_id": node_id,
+        }
+        if isinstance(async_result, dict):
+            payload.update(async_result)
+        await websocket.send(json.dumps(payload))
+        return
+
     if is_file_node:
-        # FILE node: skip beacon update entirely; perform a single per-file
-        # Cartographer refresh only once.
+        # FILE node (no async requested): skip beacon update entirely; perform a
+        # single per-file Cartographer refresh only once.
         try:
             result = await client.refresh_file_node_beacons(
                 file_node_id=node_id,
@@ -1019,7 +1020,7 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
                 note_val = ""
         else:
             note_val = str(note_val)
-        
+
         # Call the new unified beacon update method (supports Python/JS/TS/Markdown).
         beacon_update_result = await client.update_beacon_from_node(
             node_id=str(node_id),
@@ -1033,16 +1034,28 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
         )
         beacon_update_result = None
 
-    # If update_beacon_from_node succeeded and performed an operation
-    # (created/updated beacon), return early without doing a full file refresh.
-    if beacon_update_result is not None and beacon_update_result.get("operation") in {"updated_beacon", "created_beacon"}:
-        # Surface as refresh_file_node_result so extension has consistent action.
-        beacon_update_result["action"] = "refresh_file_node_result"
-        beacon_update_result["node_id"] = node_id
-        await websocket.send(json.dumps(beacon_update_result))
+    # After synchronous beacon update for AST nodes, trigger a FILE-level
+    # refresh either synchronously or via a CARTO_REFRESH job, depending on
+    # whether the client requested async behavior.
+    if data.get("carto_async"):
+        # Use the same CARTO_REFRESH file job path as FILE-node F12, but
+        # allow the root_uuid to be a descendant; refresh_file_node_beacons
+        # will resolve the enclosing FILE node.
+        async_result = await _start_carto_refresh_job(root_uuid=str(node_id), mode="file")
+        payload: dict[str, Any] = {
+            "action": "refresh_file_node_result",
+            "node_id": node_id,
+            "beacon_update": beacon_update_result,
+        }
+        if isinstance(async_result, dict):
+            payload.update(async_result)
+        await websocket.send(json.dumps(payload))
         return
 
-    # Default path: per-file Cartographer refresh in Workflowy
+    # Default path for non-FILE nodes when async is not requested:
+    # per-file Cartographer refresh in Workflowy. This is synchronous but
+    # limited to a single file, so it should remain reasonably fast even
+    # for large codebases.
     try:
         result = await client.refresh_file_node_beacons(
             file_node_id=node_id,
@@ -1051,9 +1064,12 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
         if not isinstance(result, dict):
             result = {"success": False, "error": "refresh_file_node_beacons returned non-dict"}
 
-        # Forward result back to the extension (success + counts or error).
+        # Forward result back to the extension (success + counts or error),
+        # and include any beacon_update_result for additional context.
         result["action"] = "refresh_file_node_result"
         result["node_id"] = node_id
+        if beacon_update_result is not None:
+            result["beacon_update"] = beacon_update_result
         await websocket.send(json.dumps(result))
 
     except Exception as e:  # noqa: BLE001
