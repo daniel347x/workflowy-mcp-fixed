@@ -1630,6 +1630,117 @@ async def websocket_handler(websocket):
                             # Best-effort only; do not crash the handler on error reporting
                             pass
                     continue
+
+                # CANCEL a CARTO_REFRESH job (from Workflowy UUID widget)
+                if action == 'carto_cancel_job':
+                    try:
+                        from pathlib import Path
+                        import json as json_module  # type: ignore[redefined-builtin]
+                        from datetime import datetime as _dt  # local alias
+
+                        job_id = data.get('job_id')
+                        if not job_id:
+                            await websocket.send(
+                                json.dumps(
+                                    {
+                                        "action": "carto_cancel_job_result",
+                                        "success": False,
+                                        "error": "Missing job_id in carto_cancel_job payload.",
+                                    }
+                                )
+                            )
+                            continue
+
+                        carto_jobs_base = (
+                            r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\MCP_Servers\\workflowy_mcp\\temp\\cartographer_jobs"
+                        )
+                        base_dir = Path(carto_jobs_base)
+                        found = False
+
+                        if base_dir.exists():
+                            for job_path in base_dir.glob("*.json"):
+                                try:
+                                    with job_path.open("r", encoding="utf-8") as jf:
+                                        carto_job = json_module.load(jf)
+                                except Exception:  # noqa: BLE001
+                                    continue
+
+                                # Only consider CARTO_REFRESH jobs; ignore any other JSON artifacts.
+                                if str(carto_job.get("type")) != "CARTO_REFRESH":
+                                    continue
+
+                                jid = carto_job.get("id") or job_path.stem
+                                if jid != job_id:
+                                    continue
+
+                                now_iso = _dt.utcnow().isoformat()
+                                carto_job["status"] = "cancelled"
+                                carto_job["updated_at"] = now_iso
+
+                                result_summary = carto_job.get("result_summary") or {}
+                                carto_job["result_summary"] = result_summary
+                                result_summary.setdefault("errors", []).append(
+                                    "Cancelled via carto_cancel_job (WebSocket).",
+                                )
+
+                                try:
+                                    with job_path.open("w", encoding="utf-8") as jf:
+                                        json_module.dump(carto_job, jf, indent=2)
+                                except Exception as e:  # noqa: BLE001
+                                    await websocket.send(
+                                        json.dumps(
+                                            {
+                                                "action": "carto_cancel_job_result",
+                                                "success": False,
+                                                "job_id": job_id,
+                                                "error": f"Failed to update CARTO job file: {e}",
+                                            }
+                                        )
+                                    )
+                                    break
+
+                                found = True
+                                await websocket.send(
+                                    json.dumps(
+                                        {
+                                            "action": "carto_cancel_job_result",
+                                            "success": True,
+                                            "job_id": job_id,
+                                        }
+                                    )
+                                )
+                                break
+
+                        if not found:
+                            await websocket.send(
+                                json.dumps(
+                                    {
+                                        "action": "carto_cancel_job_result",
+                                        "success": False,
+                                        "job_id": job_id,
+                                        "error": "CARTO job not found.",
+                                    }
+                                )
+                            )
+                    except Exception as e:
+                        log_event(
+                            f"carto_cancel_job handler error: {e}",
+                            "WS_HANDLER",
+                        )
+                        try:
+                            await websocket.send(
+                                json.dumps(
+                                    {
+                                        "action": "carto_cancel_job_result",
+                                        "success": False,
+                                        "error": str(e),
+                                    }
+                                )
+                            )
+                        except Exception:
+                            # Best-effort only; do not crash the handler on error reporting
+                            pass
+                    continue
                 
                 # Put all other messages in queue for workflowy_glimpse() to consume
                 await _ws_message_queue.put(data)
