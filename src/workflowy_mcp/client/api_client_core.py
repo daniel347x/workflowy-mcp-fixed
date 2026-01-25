@@ -81,7 +81,20 @@ class _ClientLogger:
 
 
 class WorkFlowyClientCore:
-    """Core WorkFlowy API client - CRUD operations and validation."""
+    """Core WorkFlowy API client – CRUD operations, cache, and validation.
+
+    Cache semantics (per-process):
+        Each WorkFlowyClientCore instance owns its own in-memory /nodes-export
+        cache. Mutating methods (create_node, update_node, delete_node,
+        complete_node, uncomplete_node, move_node, etc.) eagerly patch this
+        cache **for that instance only** when possible and otherwise mark
+        affected UUIDs as dirty.
+
+        Detached workers and other processes (e.g. the MCP server vs a
+        background WEAVE/CARTO worker) maintain separate cache instances.
+        They do not share cache state; each must explicitly refresh or load
+        its own /nodes-export snapshot.
+    """
 
     def __init__(self, config: APIConfiguration):
         """Initialize the WorkFlowy API client."""
@@ -470,6 +483,12 @@ class WorkFlowyClientCore:
             )
         return self._client
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientCore.close-17ax,
+    #   role=WorkFlowyClientCore.close,
+    #   slice_labels=WorkFlowyClientCore-close,nexus-foo,
+    #   kind=ast,
+    # ]
     async def close(self) -> None:
         """Close the HTTP client."""
         if self._client:
@@ -536,6 +555,12 @@ class WorkFlowyClientCore:
             if nid:
                 self._nodes_export_dirty_ids.add(nid)
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientCore._get_nodes_export_cache_nodes-5uaq,
+    #   role=WorkFlowyClientCore._get_nodes_export_cache_nodes,
+    #   slice_labels=WorkFlowyClientCore-_get_nodes_export_cache_nodes,nexus-test,
+    #   kind=ast,
+    # ]
     def _get_nodes_export_cache_nodes(self) -> list[dict[str, Any]]:
         """Return the flat `nodes` list from the /nodes-export cache or raise.
 
@@ -550,6 +575,12 @@ class WorkFlowyClientCore:
             raise RuntimeError("nodes-export cache is missing 'nodes' list")
         return nodes
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientCore.update_cached_node_name-c84o,
+    #   role=WorkFlowyClientCore.update_cached_node_name,
+    #   slice_labels=f9-f12-handlers,
+    #   kind=ast,
+    # ]
     async def update_cached_node_name(self, node_id: str, new_name: str) -> bool:
         """Update the name for a single node in the cached /nodes-export snapshot.
 
@@ -783,6 +814,13 @@ class WorkFlowyClientCore:
             request: Node creation request
             _internal_call: Internal flag - bypasses single-node forcing function (not exposed to MCP)
             max_retries: Maximum retry attempts (default 10)
+
+        Cache semantics:
+            This method eagerly updates the /nodes-export cache **for this
+            WorkFlowyClientCore instance only**. Detached workers and other
+            processes have their own in-memory cache snapshots; they will not
+            see this change until they explicitly refresh or load their own
+            cache.
         """
         import asyncio
 
@@ -967,6 +1005,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             node_id: The ID of the node to update
             request: Node update request
             max_retries: Maximum retry attempts (default 10)
+
+        Cache semantics:
+            Best-effort patch of the /nodes-export cache **for this
+            WorkFlowyClientCore instance only**. Other processes (including
+            detached workers) maintain their own cache instances and must
+            refresh separately.
         """
         import asyncio
 
@@ -1221,6 +1265,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         Args:
             node_id: The ID of the node to delete
             max_retries: Maximum retry attempts (default 10)
+
+        Cache semantics:
+            Attempts to remove the node from the in-memory /nodes-export cache
+            **for this WorkFlowyClientCore instance only**. Other processes do
+            not share this cache and must refresh independently.
         """
         import asyncio
         from .api_client_etch import _log_to_file_helper
@@ -1330,7 +1379,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         raise NetworkError("delete_node failed after maximum retries")
 
     async def complete_node(self, node_id: str, max_retries: int = 10) -> WorkFlowyNode:
-        """Mark a node as completed with exponential backoff retry."""
+        """Mark a node as completed with exponential backoff retry.
+
+        Cache semantics:
+            Best-effort patch of completion state into the /nodes-export cache
+            **for this WorkFlowyClientCore instance only**. Detached workers and
+            other processes have separate caches.
+        """
         import asyncio
 
         logger = _ClientLogger()
@@ -1404,7 +1459,13 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         raise NetworkError("complete_node failed after maximum retries")
 
     async def uncomplete_node(self, node_id: str, max_retries: int = 10) -> WorkFlowyNode:
-        """Mark a node as not completed with exponential backoff retry."""
+        """Mark a node as not completed with exponential backoff retry.
+
+        Cache semantics:
+            Best-effort patch of completion state into the /nodes-export cache
+            **for this WorkFlowyClientCore instance only**. Detached workers and
+            other processes have separate caches.
+        """
         import asyncio
 
         logger = _ClientLogger()
@@ -1453,6 +1514,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 else:
                     raise
 
+            # @beacon[
+            #   id=17ax-00001,
+            #   slice_labels=nexus-span-beacon,nexus-foo,nexus-doo,nexus-noo,nexus-888,nexus-999,nexus-one,nexus-nexus,
+            #   kind=span,
+            #   comment=This is a comment, and another comment, 999, nexus, rexus, pexus
+            # ]
             except NetworkError as e:
                 retry_count += 1
                 logger.warning(
@@ -1462,6 +1529,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     await asyncio.sleep(base_delay * (2 ** retry_count))
                 else:
                     raise
+                # @beacon-close[
+                #   id=17ax-00001,
+                # ]
 
             except httpx.TimeoutException as err:
                 retry_count += 1
@@ -1494,6 +1564,11 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             
         Returns:
             True if move was successful
+
+        Cache semantics:
+            Attempts to update parent/position in the /nodes-export cache
+            **for this WorkFlowyClientCore instance only**. Other processes
+            have separate cache instances that must be refreshed separately.
         """
         import asyncio
 
@@ -1537,6 +1612,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                 return success
                 
+            # @beacon[
+            #   id=17ax-00002,
+            #   slice_labels=nexus-span-beacon,nexus-new,
+            #   kind=span,
+            #   comment=This is a HELLO,
+            # ]
             except RateLimitError as e:
                 retry_count += 1
                 retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
@@ -1549,6 +1630,9 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     await asyncio.sleep(retry_after)
                 else:
                     raise
+                # @beacon-close[
+                #   id=17ax-00002,
+                # ]
                     
             except NetworkError as e:
                 retry_count += 1

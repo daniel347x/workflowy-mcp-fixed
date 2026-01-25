@@ -4308,6 +4308,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         folder_node_id: str,
         *,
         dry_run: bool = False,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Multi-file Cartographer sync for a FOLDER subtree.
 
@@ -4533,6 +4534,23 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         for s_nid, source_path, exists in file_nodes_info:
             if not exists:
                 continue
+
+            # Best-effort cancellation hook for long-running folder jobs (e.g. CARTO_REFRESH)
+            if cancel_callback is not None:
+                try:
+                    if cancel_callback():
+                        log_event(
+                            "refresh_folder_cartographer_sync: cancellation requested; "
+                            f"stopping before FILE node_id={s_nid} Path=\"{source_path}\"",
+                            "BEACON",
+                        )
+                        break
+                except Exception as e:  # noqa: BLE001
+                    log_event(
+                        "refresh_folder_cartographer_sync: cancel_callback raised "
+                        f"for FILE node_id={s_nid} Path=\"{source_path}\": {e}",
+                        "BEACON",
+                    )
 
             try:
                 log_event(

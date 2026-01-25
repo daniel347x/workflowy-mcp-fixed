@@ -211,6 +211,15 @@ async def main():
             await client.close()
             sys.exit(1)
 
+        # If job was cancelled before the worker started, exit early without work
+        if job.get('status') == 'cancelled':
+            log_worker(
+                f"CARTO_REFRESH job {job.get('id') or job_path.stem} is already "
+                "marked cancelled; exiting without running refresh."
+            )
+            await client.close()
+            sys.exit(0)
+
         # Update job status to running
         now_iso = datetime.utcnow().isoformat()
         job['status'] = 'running'
@@ -249,11 +258,32 @@ async def main():
                 files_refreshed = 1
             else:
                 log_worker(f"CARTO_REFRESH: refreshing FOLDER subtree {root_uuid}")
+
+                def _carto_should_cancel() -> bool:
+                    """Return True if the CARTO_REFRESH job JSON is marked cancelled.
+
+                    This is a best-effort check invoked between per-file refreshes
+                    inside refresh_folder_cartographer_sync. Errors while reading the
+                    job JSON are logged but do not stop the job.
+                    """
+                    try:
+                        with open(job_path, "r", encoding="utf-8") as jf:
+                            fresh = json.load(jf)
+                    except Exception as e:  # noqa: BLE001
+                        log_worker(
+                            f"CARTO_REFRESH: failed to re-read job JSON for cancel check: {e}",
+                            "CARTO",
+                        )
+                        return False
+
+                    return str(fresh.get("status")) == "cancelled"
+
                 result = await client.refresh_folder_cartographer_sync(
                     folder_node_id=root_uuid,
+                    cancel_callback=_carto_should_cancel,
                 )
                 if isinstance(result, dict):
-                    files_refreshed = result.get('files_refreshed', 0)
+                    files_refreshed = result.get('refreshed_file_nodes', 0)
                 else:
                     files_refreshed = 0
 

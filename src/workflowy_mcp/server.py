@@ -1653,6 +1653,12 @@ async def _start_background_job(
     }
 
 
+# @beacon[
+#   id=auto-beacon@_start_carto_refresh_job-vgpo,
+#   role=_start_carto_refresh_job,
+#   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,
+#   kind=ast,
+# ]
 async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
     """Launch a CARTO_REFRESH job via weave_worker.py as a detached process.
 
@@ -1821,16 +1827,25 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
     name="mcp_job_status",
     description="Get status/result for long-running MCP jobs (ETCH, NEXUS, etc.).",
 )
+# @beacon[
+#   id=auto-beacon@mcp_job_status-lu5h,
+#   role=mcp_job_status,
+#   slice_labels=f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
 async def mcp_job_status(job_id: str | None = None) -> dict:
-    """Get status for background jobs (in-memory + detached WEAVE workers).
+    """Get status for background jobs (in-memory + detached WEAVE + CARTO_REFRESH workers).
 
     Scans:
     - In-memory asyncio jobs (_jobs registry)
-    - Detached WEAVE workers via:
+    - Detached WEAVE jobs via:
       • Active PIDs (.weave.pid under nexus_runs/)
       • Persistent journals (enchanted_terrain.weave_journal.json / *.weave_journal.json)
+    - CARTO_REFRESH jobs via:
+      • JSON job files under MCP_Servers/workflowy_mcp/temp/cartographer_jobs/
 
-    This allows status/error inspection even after the worker PID has exited.
+    This allows status/error inspection even after the worker PID has exited
+    (for WEAVE) or the CARTO_REFRESH worker process has finished.
     """
     from .client.api_client import scan_active_weaves
     from pathlib import Path
@@ -2031,31 +2046,86 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
 
 @mcp.tool(
     name="mcp_cancel_job",
-    description="Request cancellation of a long-running MCP job (ETCH, NEXUS, etc.).",
+    description="Request cancellation of a long-running MCP job (ETCH, NEXUS, CARTO_REFRESH, etc.).",
 )
 async def mcp_cancel_job(job_id: str) -> dict:
     """Attempt to cancel a background MCP job.
 
-    This sends an asyncio.CancelledError into the job task. The job will
-    transition to status='failed' with an error message indicating
-    cancellation.
+    For in-memory jobs (ETCH, NEXUS, etc.), this sends an asyncio.CancelledError
+    into the job task, causing it to transition to status='failed' with an
+    error indicating cancellation.
+
+    For CARTO_REFRESH jobs, this marks the corresponding JSON job file under
+    temp/cartographer_jobs/ as status='cancelled'. The carto_refresh worker
+    reads this status at startup and will skip work if cancellation is
+    requested before it begins. Cancellation is best-effort and may not
+    interrupt an in-flight refresh.
     """
+    # First, try to cancel in-memory jobs registered in _jobs.
+    # NOTE: For CARTO_REFRESH / F12 jobs, there is no in-memory entry in _jobs;
+    # this block is only for ETCH/NEXUS-style jobs created inside the MCP
+    # process. CARTO_REFRESH cancellation always uses the JSON job file path
+    # below.
     job = _jobs.get(job_id)
-    if not job:
-        return {"success": False, "error": f"Unknown job_id: {job_id}"}
+    if job is not None:
+        task = job.get("_task")
+        if task is None:
+            return {"success": False, "error": "Job has no associated task (cannot cancel)."}
 
-    task = job.get("_task")
-    if task is None:
-        return {"success": False, "error": "Job has no associated task (cannot cancel)."}
+        if task.done():
+            return {"success": False, "error": "Job already completed."}
 
-    if task.done():
-        return {"success": False, "error": "Job already completed."}
+        # Mark as cancelling for visibility; runner will finalize status
+        job["status"] = "cancelling"
+        task.cancel()
 
-    # Mark as cancelling for visibility; runner will finalize status
-    job["status"] = "cancelling"
-    task.cancel()
+        return {"success": True, "job_id": job_id, "status": "cancelling"}
 
-    return {"success": True, "job_id": job_id, "status": "cancelling"}
+    # Fallback: attempt to cancel a detached CARTO_REFRESH job (JSON-based)
+    from pathlib import Path
+    import json as json_module
+
+    carto_jobs_base = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\MCP_Servers\\workflowy_mcp\\temp\\cartographer_jobs"
+    base_dir = Path(carto_jobs_base)
+    if base_dir.exists():
+        for job_path in base_dir.glob("carto-refresh-*.json"):
+            try:
+                with open(job_path, "r", encoding="utf-8") as jf:
+                    carto_job = json_module.load(jf)
+            except Exception:  # noqa: BLE001
+                continue
+
+            jid = carto_job.get("id") or job_path.stem
+            if jid != job_id:
+                continue
+
+            now_iso = _dt.utcnow().isoformat()
+            carto_job["status"] = "cancelled"
+            carto_job["updated_at"] = now_iso
+
+            result_summary = carto_job.get("result_summary") or {}
+            carto_job["result_summary"] = result_summary
+            result_summary.setdefault("errors", []).append("Cancelled via mcp_cancel_job().")
+
+            try:
+                with open(job_path, "w", encoding="utf-8") as jf:
+                    json_module.dump(carto_job, jf, indent=2)
+            except Exception as e:  # noqa: BLE001
+                return {
+                    "success": False,
+                    "error": f"Failed to update CARTO_REFRESH job file: {e}",
+                }
+
+            return {
+                "success": True,
+                "job_id": job_id,
+                "status": "cancelled",
+                "kind": "CARTO_REFRESH",
+                "carto_job_file": str(job_path),
+            }
+
+    # Unknown job_id
+    return {"success": False, "error": f"Unknown job_id: {job_id}"}
 
 
 # 🔐 SECRET CODE VALIDATION - Brute Force Agent Training Override
@@ -3942,6 +4012,12 @@ async def update_beacon_from_node(
         "weave_worker.py and return a job_id for status polling."
     ),
 )
+# @beacon[
+#   id=auto-beacon@cartographer_refresh_async-zk93,
+#   role=cartographer_refresh_async,
+#   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,
+#   kind=ast,
+# ]
 async def cartographer_refresh_async(
     root_uuid: str,
     mode: str,
