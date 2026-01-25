@@ -339,6 +339,16 @@ async def main():
                             f"CARTO_REFRESH: failed to write job JSON for progress update (file mode): {e}",
                         )
 
+                    # Instrumentation: log file-mode progress for debugging
+                    try:
+                        log_worker(
+                            f"CARTO_REFRESH file-mode progress: completed={completed} total={total} file_uuid={file_uuid!r}",
+                            "CARTO",
+                        )
+                    except Exception:
+                        # Logging must never break progress updates
+                        pass
+
                 result = await client.refresh_file_node_beacons(
                     file_node_id=root_uuid,
                     dry_run=False,
@@ -423,7 +433,7 @@ async def main():
 
             job['status'] = 'completed'
             # Preserve any more up-to-date progress written by refresh_folder_cartographer_sync
-            # but ensure we at least record final totals.
+            # or file-mode callbacks, but ensure we at least record final totals.
             total_from_result = 0
             if isinstance(result, dict):
                 total_from_result = (
@@ -432,16 +442,35 @@ async def main():
                     or 0
                 )
 
-            progress_total = (
-                job['progress'].get('total_files')
-                or total_from_result
-                or (files_refreshed or 1)
+            # Incorporate the most recent on-disk progress written by callbacks
+            latest_total = 0
+            latest_completed = 0
+            try:
+                with open(job_path, "r", encoding="utf-8") as jf:
+                    fresh = json.load(jf)
+                fresh_progress = fresh.get("progress") or {}
+                latest_total = int(fresh_progress.get("total_files") or 0)
+                latest_completed = int(fresh_progress.get("completed_files") or 0)
+            except Exception:  # noqa: BLE001
+                pass
+
+            existing_progress = job.get('progress') or {}
+            job['progress'] = existing_progress
+
+            progress_total = max(
+                int(existing_progress.get('total_files') or 0),
+                int(latest_total or 0),
+                int(total_from_result or 0),
+                int(files_refreshed or 1),
             )
-            job['progress']['total_files'] = progress_total
-            job['progress']['completed_files'] = max(
-                int(job['progress'].get('completed_files') or 0),
+            existing_progress['total_files'] = progress_total
+
+            completed_final = max(
+                int(existing_progress.get('completed_files') or 0),
+                int(latest_completed or 0),
                 int(files_refreshed or progress_total),
             )
+            existing_progress['completed_files'] = completed_final
 
             job['result_summary']['files_refreshed'] = files_refreshed
             job['result_summary']['raw_result'] = result
