@@ -948,6 +948,81 @@ def apply_markdown_beacons(
 
 
 # @beacon[
+#   id=auto-beacon@_split_frontmatter_if_any-3p1h,
+#   role=_split_frontmatter_if_any,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,
+#   kind=ast,
+# ]
+def _split_frontmatter_if_any(text: str | None) -> tuple[str | None, str]:
+    """If text starts with valid YAML frontmatter, return (frontmatter, body).
+
+    Frontmatter is defined as:
+    - First line exactly '---' (no leading/trailing spaces)
+    - A matching closing '---' on a later line
+
+    If not present, returns (None, original_text).
+    """
+    if not isinstance(text, str):
+        return None, ""
+
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None, text
+
+    frontmatter_lines: list[str] = []
+    body_lines: list[str] = []
+    found_closing = False
+
+    for idx, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            found_closing = True
+            body_lines = lines[idx + 1 :]
+            break
+        frontmatter_lines.append(line)
+
+    if not found_closing:
+        # Not a well-formed frontmatter block; treat as normal text.
+        return None, text
+
+    frontmatter = "\n".join(frontmatter_lines).strip("\n")
+    body = "\n".join(body_lines)
+    return frontmatter or None, body
+
+
+# @beacon[
+#   id=auto-beacon@_frontmatter_has_ignore_mdformat-y9k2,
+#   role=_frontmatter_has_ignore_mdformat,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,
+#   kind=ast,
+# ]
+def _frontmatter_has_ignore_mdformat(frontmatter: str | None) -> bool:
+    """Return True if frontmatter contains IGNORE_MDFORMAT set to a truthy value.
+
+    - Field name is matched case-insensitively: IGNORE_MDFORMAT
+    - Values treated as true (case-insensitive): true, yes, on, 1
+    - Stops on first occurrence of the key.
+    """
+    if not isinstance(frontmatter, str):
+        return False
+
+    for raw in frontmatter.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        key, val = line.split(":", 1)
+        if key.strip().lower() != "ignore_mdformat":
+            continue
+        v = val.strip().lower()
+        if v in {"true", "yes", "on", "1"}:
+            return True
+        return False
+
+    return False
+
+
+# @beacon[
 #   id=auto-beacon@parse_markdown_structure-z918,
 #   role=parse_markdown_structure,
 #   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,
@@ -958,38 +1033,54 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
     
     CRITICAL CHANGES (v2.0):
     1. Runs mdformat FIRST to normalize Markdown (fixes nested code blocks, etc.)
+       unless a YAML frontmatter flag IGNORE_MDFORMAT is set to true.
     2. Uses markdown-it-py parser (battle-tested, CommonMark compliant)
     3. Assigns priority values based on document order (preserves ordering)
     4. Converts token stream to hierarchical NEXUS tree
     
-    NO JUNK ALLOWED - mdformat enforces opinionated style before parsing.
+    NO JUNK ALLOWED - mdformat enforces opinionated style before parsing,
+    except for files that explicitly opt out via IGNORE_MDFORMAT.
     """
     try:
-        # STEP 1: Format the Markdown with mdformat FIRST (normalize before parsing)
-        # This auto-repairs nested code blocks, whitespace, etc.
+        # STEP 1: Load the Markdown source.
         with open(file_path, 'r', encoding='utf-8') as f:
             original_content = f.read()
-        
-        formatted_content = mdformat.text(original_content)
-        
-        # Optional debug: show formatted Markdown with line numbers
-        if DEBUG_MD_BEACONS:
-            print(f"[MD-FILE] path={file_path!r}")
-            print("[MD-FORMATTED-BEGIN]")
-            for idx, line in enumerate(formatted_content.splitlines(), start=1):
-                print(f"{idx:4d}: {line!r}")
-            print("[MD-FORMATTED-END]")
-        
-        # STEP 1.5: Write formatted content BACK to source file (opinionated cleanup)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(formatted_content)
-        
-        lines = formatted_content.splitlines()
+
+        # STEP 1.1: Detect YAML frontmatter and per-file IGNORE_MDFORMAT flag.
+        frontmatter, _body = _split_frontmatter_if_any(original_content)
+        ignore_mdformat = _frontmatter_has_ignore_mdformat(frontmatter)
+
+        if ignore_mdformat:
+            # Skip mdformat entirely for this file; parse the raw content.
+            content_for_parse = original_content
+            if DEBUG_MD_BEACONS:
+                print(
+                    f"[MD-FILE] path={file_path!r} (IGNORE_MDFORMAT=true; "
+                    "skipping mdformat normalization)",
+                )
+        else:
+            # STEP 1.2: Format the Markdown with mdformat FIRST (normalize before parsing).
+            # This auto-repairs nested code blocks, whitespace, etc.
+            content_for_parse = mdformat.text(original_content)
+
+            # Optional debug: show formatted Markdown with line numbers
+            if DEBUG_MD_BEACONS:
+                print(f"[MD-FILE] path={file_path!r}")
+                print("[MD-FORMATTED-BEGIN]")
+                for idx, line in enumerate(content_for_parse.splitlines(), start=1):
+                    print(f"{idx:4d}: {line!r}")
+                print("[MD-FORMATTED-END]")
+
+            # STEP 1.3: Write formatted content BACK to source file (opinionated cleanup)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content_for_parse)
+
+        lines = content_for_parse.splitlines()
         md_beacons = parse_markdown_beacon_blocks(lines)
-        
-        # STEP 2: Parse formatted Markdown with markdown-it-py
+
+        # STEP 2: Parse (possibly formatted) Markdown with markdown-it-py
         md = MarkdownIt("commonmark")
-        tokens = md.parse(formatted_content)
+        tokens = md.parse(content_for_parse)
 
         if DEBUG_MD_BEACONS:
             print("[MD-TOKENS-BEGIN]")
