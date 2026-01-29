@@ -472,7 +472,7 @@ def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 while k <= n:
                     next_raw = lines[k - 1]
                     close_lines.append(next_raw)
-                    if "]" in next_raw:
+                    if next_raw.strip().lstrip("#").lstrip().startswith("]"):
                         k += 1
                         break
                     k += 1
@@ -1564,7 +1564,9 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     else:
                         next_body = next_line
                     block_lines.append(next_body)
-                    if "]" in next_body:
+                    # Close only when the metadata delimiter line begins with ']'.
+                    # This avoids premature termination when a value contains a stray ']'.
+                    if next_body.strip().startswith("]"):
                         i += 1
                         break
                     i += 1
@@ -1639,7 +1641,7 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 body = stripped.lstrip("#").lstrip()
             else:
                 body = stripped
-            if "]" in body:
+            if body.strip().startswith("]"):
                 open_end = j
                 break
             j += 1
@@ -1858,7 +1860,11 @@ def apply_python_beacons(
     #   slice_labels=carto-js-ts,ra-snippet-range-span-beacon,
     #   kind=ast,
     # ]
-    def _extract_python_beacon_context(comment_line: int, decor_start: Optional[int] = None) -> List[str]:
+    def _extract_python_beacon_context(
+        comment_line: int,
+        decor_start: Optional[int] = None,
+        beacon_id: Optional[str] = None,
+    ) -> List[str]:
         """Extract nearby comment-like lines around a Python beacon.
 
         Includes:
@@ -1882,7 +1888,7 @@ def apply_python_beacons(
                 body = stripped.lstrip("#").lstrip()
             else:
                 body = stripped
-            if "]" in body:
+            if body.strip().startswith("]"):
                 block_end = j
                 break
             j += 1
@@ -1932,6 +1938,44 @@ def apply_python_beacons(
                 continue
             if stripped.startswith("#"):
                 body = stripped.lstrip("#").lstrip()
+
+                # Never include beacon delimiter blocks as "context comments".
+                # Also support overlapping span beacons by only stopping on a
+                # matching @beacon-close id (when beacon_id is provided).
+                if body.startswith("@beacon["):
+                    # Skip nested opener metadata block.
+                    j += 1
+                    while j <= len(lines):
+                        nxt = lines[j - 1].lstrip()
+                        nb = nxt.lstrip("#").lstrip() if nxt.startswith("#") else nxt
+                        if nb.strip().startswith("]"):
+                            j += 1
+                            break
+                        j += 1
+                    continue
+
+                if body.startswith("@beacon-close["):
+                    close_id: Optional[str] = None
+                    j += 1
+                    while j <= len(lines):
+                        nxt = lines[j - 1].lstrip()
+                        nb = nxt.lstrip("#").lstrip() if nxt.startswith("#") else nxt
+                        nb_strip = nb.strip()
+                        if nb_strip.startswith("id=") and close_id is None:
+                            close_id = nb_strip.split("=", 1)[1].strip().strip(",").strip("]")
+                        if nb_strip.startswith("]"):
+                            break
+                        j += 1
+
+                    # Ignore close blocks for other beacon ids (supports overlap).
+                    if beacon_id and close_id and close_id != beacon_id:
+                        j += 1
+                        continue
+                    break
+
+                if body.startswith("@beacon"):
+                    break
+
                 if body:
                     context.append(body)
                 j += 1
@@ -2176,7 +2220,11 @@ def apply_python_beacons(
             dsl = enclosing.get("decor_start_lineno")
             if isinstance(dsl, int):
                 enclosing_decor_start = dsl
-        context_lines = _extract_python_beacon_context(comment_line, enclosing_decor_start)
+        context_lines = _extract_python_beacon_context(
+            comment_line,
+            enclosing_decor_start,
+            beacon_id=b_id,
+        )
         comment = beacon.get("comment")
 
         note_lines = [
@@ -3098,7 +3146,9 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     else:
                         next_body = next_line
                     block_lines.append(next_body)
-                    if "]" in next_body:
+                    # Close only when the metadata delimiter line begins with ']'.
+                    # This avoids premature termination when a value contains a stray ']'.
+                    if next_body.strip().startswith("]"):
                         i += 1
                         break
                     i += 1
@@ -3168,7 +3218,7 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 body = raw.lstrip("-").lstrip()
             else:
                 body = raw
-            if "]" in body:
+            if body.strip().startswith("]"):
                 open_end = j
                 break
             j += 1
@@ -3194,7 +3244,7 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     else:
                         next_body = next_raw
                     close_lines.append(next_body)
-                    if "]" in next_body:
+                    if next_body.strip().startswith("]"):
                         k += 1
                         break
                     k += 1
@@ -3360,7 +3410,7 @@ def parse_js_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
         while j <= n:
             raw = lines[j - 1]
             body = _strip_js_comment_sugar(raw)
-            if "]" in body:
+            if body.strip().startswith("]"):
                 open_end = j
                 break
             j += 1
@@ -3378,7 +3428,7 @@ def parse_js_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     next_raw = lines[k - 1]
                     next_body = _strip_js_comment_sugar(next_raw)
                     close_lines.append(next_body)
-                    if "]" in next_body:
+                    if next_body.strip().startswith("]"):
                         k += 1
                         break
                     k += 1
@@ -3451,7 +3501,9 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     else:
                         next_body = next_line
                     block_lines.append(next_body)
-                    if "]" in next_body:
+                    # Close only when the metadata delimiter line begins with ']'.
+                    # This avoids premature termination when a value contains a stray ']'.
+                    if next_body.strip().startswith("]"):
                         i += 1
                         break
                     i += 1
@@ -3540,7 +3592,7 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     else:
                         next_body = next_raw
                     close_lines.append(next_body)
-                    if "]" in next_body:
+                    if next_body.strip().startswith("]"):
                         k += 1
                         break
                     k += 1
@@ -3728,21 +3780,40 @@ def parse_yaml_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
 #   slice_labels=ra-reconcile,f9-f12-handlers,
 #   kind=ast,
 # ]
-def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str]:
+def _extract_sql_beacon_context(
+    lines: list[str],
+    comment_line: int,
+    beacon_id: Optional[str] = None,
+) -> List[str]:
     """Extract nearby SQL comments (non-beacon) around a SQL beacon.
+
+    This populates the "CONTEXT COMMENTS (SQL)" section of Workflowy notes.
 
     Includes:
     - Lines that are part of a line comment starting with '--'
     - Lines that are part of a block comment /* ... */ above/below the beacon
       (we treat the entire contiguous comment region as context).
 
-    Skips:
-    - blank lines
-    - any line containing '@beacon' (metadata)
+    Excludes:
+    - Any @beacon[...] / @beacon-close[...] delimiter blocks (and their metadata lines).
+
+    Close-block semantics:
+    - When encountering a @beacon-close block, treat it as the terminator ONLY if
+      its id matches `beacon_id` (supports overlapping/nested span beacons).
     """
+
     context: List[str] = []
 
     n = len(lines)
+
+    def _sql_body(raw_line: str) -> str:
+        s = raw_line.lstrip()
+        if s.startswith("--"):
+            return s[2:].lstrip()
+        return s
+
+    def _is_meta_block_end(body: str) -> bool:
+        return body.strip().startswith("]")
 
     # Precompute which lines are comment-like and a cleaned text version.
     # For block comments we treat every line between /* and */ (inclusive)
@@ -3755,6 +3826,8 @@ def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str
         stripped = raw.lstrip()
         if not stripped:
             continue
+
+        # Do not treat beacon delimiter blocks as human context.
         if "@beacon" in stripped:
             continue
 
@@ -3793,12 +3866,8 @@ def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str
     j = comment_line
     block_end = comment_line
     while j <= n:
-        raw = lines[j - 1].lstrip()
-        if raw.startswith("--"):
-            body = raw.lstrip("-").lstrip()
-        else:
-            body = raw
-        if "]" in body:
+        body = _sql_body(lines[j - 1])
+        if _is_meta_block_end(body):
             block_end = j
             break
         j += 1
@@ -3824,11 +3893,44 @@ def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str
         if not raw.strip():
             j += 1
             continue
+
+        body = _sql_body(raw)
+
+        # Skip nested beacon opener blocks entirely.
+        if body.startswith("@beacon["):
+            j += 1
+            while j <= n:
+                inner_body = _sql_body(lines[j - 1])
+                if _is_meta_block_end(inner_body):
+                    j += 1
+                    break
+                j += 1
+            continue
+
+        # Stop at a matching close block; ignore close blocks for other beacon ids.
+        if body.startswith("@beacon-close["):
+            close_id: Optional[str] = None
+            j += 1
+            while j <= n:
+                inner_body = _sql_body(lines[j - 1]).strip()
+                if inner_body.startswith("id=") and close_id is None:
+                    close_id = inner_body.split("=", 1)[1].strip()
+                    close_id = close_id.rstrip(",").rstrip("]").strip()
+                if _is_meta_block_end(inner_body):
+                    j += 1
+                    break
+                j += 1
+
+            if beacon_id and close_id and close_id != beacon_id:
+                continue
+            break
+
         if comment_mask[j - 1]:
             if cleaned[j - 1]:
                 context.append(cleaned[j - 1])
             j += 1
             continue
+
         break
 
     return context
@@ -3880,7 +3982,11 @@ def apply_sql_beacons(
         if tag_suffix:
             name = f"{name} {tag_suffix}"
 
-        context_lines = _extract_sql_beacon_context(lines, beacon.get("comment_line") or 0)
+        context_lines = _extract_sql_beacon_context(
+            lines,
+            beacon.get("comment_line") or 0,
+            beacon_id=b_id,
+        )
         comment = beacon.get("comment")
 
         note_lines = [
@@ -3931,51 +4037,131 @@ def apply_sql_beacons(
 #   slice_labels=ra-reconcile,f9-f12-handlers,
 #   kind=ast,
 # ]
-def _extract_sh_beacon_context(lines: list[str], comment_line: int) -> List[str]:
-    """Extract nearby '#' comments (non-beacon) around a shell beacon.
+def _extract_sh_beacon_context(
+    lines: list[str],
+    comment_line: int,
+    beacon_id: Optional[str] = None,
+) -> List[str]:
+    """Extract nearby shell comments (non-beacon) around a shell @beacon block.
 
-    Includes lines starting with '#' above/below the block (excluding @beacon).
+    This populates the "CONTEXT COMMENTS (SH)" section of Workflowy notes.
+
+    Rules:
+    - Never include any @beacon[...] / @beacon-close[...] delimiter blocks (or their metadata lines).
+    - When encountering a @beacon-close block, treat it as the terminator ONLY if its id matches
+      `beacon_id` (supports overlapping/nested span beacons).
+    - Skip empty comment bodies and hash-only separators (e.g. "###").
     """
+
+    n = len(lines)
     context: List[str] = []
 
+    def _strip_hash_prefix(raw_line: str) -> str:
+        s = raw_line.lstrip()
+        if s.startswith("#"):
+            # Remove only ONE leading '#'. This avoids turning '###' into ''
+            # (which produced blank lines in the extracted context).
+            return s[1:].lstrip()
+        return s
+
+    def _is_meta_block_end(body: str) -> bool:
+        # Close delimiter is a line that begins with ']'.
+        # We intentionally do NOT use substring matching to avoid false positives.
+        return body.strip().startswith("]")
+
+    # Locate the end of the opener metadata block so we can start scanning below it.
+    open_end = comment_line
     j = comment_line
-    block_end = comment_line
-    while j <= len(lines):
-        raw = lines[j - 1].lstrip()
-        if raw.startswith("#"):
-            body = raw.lstrip("#").lstrip()
-        else:
-            body = raw
-        if "]" in body:
-            block_end = j
+    while 1 <= j <= n:
+        body = _strip_hash_prefix(lines[j - 1])
+        if _is_meta_block_end(body):
+            open_end = j
             break
         j += 1
 
-    # Above
+    # ABOVE: collect contiguous comment bodies above the opener.
     j = comment_line - 1
     while j >= 1:
-        raw = lines[j - 1].lstrip()
-        if not raw:
+        raw = lines[j - 1]
+        if not raw.strip():
             j -= 1
             continue
-        if raw.startswith("#") and "@beacon" not in raw:
-            context.insert(0, raw.lstrip("#").lstrip())
-            j -= 1
-            continue
-        break
+        stripped = raw.lstrip()
+        if not stripped.startswith("#"):
+            break
 
-    # Below
-    j = block_end + 1
-    while j <= len(lines):
-        raw = lines[j - 1].lstrip()
-        if not raw:
+        body = _strip_hash_prefix(raw)
+        if not body:
+            j -= 1
+            continue
+        if body.startswith("@beacon") or _is_meta_block_end(body):
+            break
+        if set(body.strip()) <= {"#"}:
+            j -= 1
+            continue
+
+        context.insert(0, body)
+        j -= 1
+
+    # BELOW: collect contiguous comment bodies below the opener until we hit
+    # a non-comment line or a matching @beacon-close block.
+    j = open_end + 1
+    while j <= n:
+        raw = lines[j - 1]
+        if not raw.strip():
             j += 1
             continue
-        if raw.startswith("#") and "@beacon" not in raw:
-            context.append(raw.lstrip("#").lstrip())
+
+        stripped = raw.lstrip()
+        if not stripped.startswith("#"):
+            break
+
+        body = _strip_hash_prefix(raw)
+        if not body:
             j += 1
             continue
-        break
+
+        # Skip nested opener blocks entirely (do not treat as a terminator).
+        if body.startswith("@beacon["):
+            j += 1
+            while j <= n:
+                inner_body = _strip_hash_prefix(lines[j - 1])
+                if _is_meta_block_end(inner_body):
+                    j += 1
+                    break
+                j += 1
+            continue
+
+        # Stop at a matching close block; ignore close blocks for other beacon ids.
+        if body.startswith("@beacon-close["):
+            close_id: Optional[str] = None
+            j += 1
+            while j <= n:
+                inner_body = _strip_hash_prefix(lines[j - 1]).strip()
+                if inner_body.startswith("id=") and close_id is None:
+                    close_id = inner_body.split("=", 1)[1].strip()
+                    # Drop common trailing punctuation
+                    close_id = close_id.rstrip(",").rstrip("]").strip()
+                if _is_meta_block_end(inner_body):
+                    j += 1
+                    break
+                j += 1
+
+            # Only stop when the close id matches this beacon id.
+            if beacon_id and close_id and close_id != beacon_id:
+                continue
+            break
+
+        # Any other beacon marker terminates the context region.
+        if body.startswith("@beacon"):
+            break
+
+        if set(body.strip()) <= {"#"}:
+            j += 1
+            continue
+
+        context.append(body)
+        j += 1
 
     return context
 
@@ -4023,7 +4209,11 @@ def apply_sh_beacons(
         if tag_suffix:
             name = f"{name} {tag_suffix}"
 
-        context_lines = _extract_sh_beacon_context(lines, beacon.get("comment_line") or 0)
+        context_lines = _extract_sh_beacon_context(
+            lines,
+            beacon.get("comment_line") or 0,
+            beacon_id=b_id,
+        )
         comment = beacon.get("comment")
 
         note_lines = [
@@ -4073,51 +4263,112 @@ def apply_sh_beacons(
 #   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-reconcile,
 #   kind=span,
 # ]
-def _extract_yaml_beacon_context(lines: list[str], comment_line: int) -> List[str]:
-    """Extract nearby YAML comments (non-beacon) around a YAML beacon.
+def _extract_yaml_beacon_context(
+    lines: list[str],
+    comment_line: int,
+    beacon_id: Optional[str] = None,
+) -> List[str]:
+    """Extract nearby YAML comments (non-beacon) around a YAML @beacon block.
 
-    Includes lines starting with '#' above/below the block (excluding @beacon).
+    Mirrors _extract_sh_beacon_context semantics:
+    - Exclude @beacon[...] / @beacon-close[...] delimiter blocks and their metadata.
+    - Stop at a matching @beacon-close (id match when beacon_id is provided).
+    - Skip empty/hash-only separator lines.
     """
+
+    n = len(lines)
     context: List[str] = []
 
+    def _strip_hash_prefix(raw_line: str) -> str:
+        s = raw_line.lstrip()
+        if s.startswith("#"):
+            return s[1:].lstrip()
+        return s
+
+    def _is_meta_block_end(body: str) -> bool:
+        return body.strip().startswith("]")
+
+    open_end = comment_line
     j = comment_line
-    block_end = comment_line
-    while j <= len(lines):
-        raw = lines[j - 1].lstrip()
-        if raw.startswith("#"):
-            body = raw.lstrip("#").lstrip()
-        else:
-            body = raw
-        if "]" in body:
-            block_end = j
+    while 1 <= j <= n:
+        body = _strip_hash_prefix(lines[j - 1])
+        if _is_meta_block_end(body):
+            open_end = j
             break
         j += 1
 
     # Above
     j = comment_line - 1
     while j >= 1:
-        raw = lines[j - 1].lstrip()
-        if not raw:
+        raw = lines[j - 1]
+        if not raw.strip():
             j -= 1
             continue
-        if raw.startswith("#") and "@beacon" not in raw:
-            context.insert(0, raw.lstrip("#").lstrip())
+        stripped = raw.lstrip()
+        if not stripped.startswith("#"):
+            break
+        body = _strip_hash_prefix(raw)
+        if not body:
             j -= 1
             continue
-        break
+        if body.startswith("@beacon") or _is_meta_block_end(body):
+            break
+        if set(body.strip()) <= {"#"}:
+            j -= 1
+            continue
+        context.insert(0, body)
+        j -= 1
 
     # Below
-    j = block_end + 1
-    while j <= len(lines):
-        raw = lines[j - 1].lstrip()
-        if not raw:
+    j = open_end + 1
+    while j <= n:
+        raw = lines[j - 1]
+        if not raw.strip():
             j += 1
             continue
-        if raw.startswith("#") and "@beacon" not in raw:
-            context.append(raw.lstrip("#").lstrip())
+        stripped = raw.lstrip()
+        if not stripped.startswith("#"):
+            break
+        body = _strip_hash_prefix(raw)
+        if not body:
             j += 1
             continue
-        break
+
+        if body.startswith("@beacon["):
+            j += 1
+            while j <= n:
+                inner_body = _strip_hash_prefix(lines[j - 1])
+                if _is_meta_block_end(inner_body):
+                    j += 1
+                    break
+                j += 1
+            continue
+
+        if body.startswith("@beacon-close["):
+            close_id: Optional[str] = None
+            j += 1
+            while j <= n:
+                inner_body = _strip_hash_prefix(lines[j - 1]).strip()
+                if inner_body.startswith("id=") and close_id is None:
+                    close_id = inner_body.split("=", 1)[1].strip()
+                    close_id = close_id.rstrip(",").rstrip("]").strip()
+                if _is_meta_block_end(inner_body):
+                    j += 1
+                    break
+                j += 1
+            if beacon_id and close_id and close_id != beacon_id:
+                continue
+            break
+
+        if body.startswith("@beacon"):
+            break
+
+        if set(body.strip()) <= {"#"}:
+            j += 1
+            continue
+
+        context.append(body)
+        j += 1
 
     return context
 
@@ -4165,7 +4416,11 @@ def apply_yaml_beacons(
         if tag_suffix:
             name = f"{name} {tag_suffix}"
 
-        context_lines = _extract_yaml_beacon_context(lines, beacon.get("comment_line") or 0)
+        context_lines = _extract_yaml_beacon_context(
+            lines,
+            beacon.get("comment_line") or 0,
+            beacon_id=b_id,
+        )
         comment = beacon.get("comment")
 
         note_lines = [
@@ -4312,7 +4567,19 @@ def apply_js_beacons(
         block_end = comment_line
         while j <= n:
             raw = lines[j - 1]
-            if "]" in raw:
+            body = raw.lstrip()
+            if body.startswith("//"):
+                body = body[2:].lstrip()
+            if body.startswith("/*"):
+                body = body[2:].lstrip()
+            if body.startswith("*/"):
+                body = body[2:].lstrip()
+            if body.startswith("*"):
+                body = body[1:].lstrip()
+            if body.rstrip().endswith("*/"):
+                body = body.rstrip()[:-2].rstrip()
+
+            if body.strip().startswith("]"):
                 block_end = j
                 break
             j += 1
