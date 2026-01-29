@@ -292,7 +292,7 @@ def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
 # @beacon[
 #   id=carto-js-ts@parse_markdown_beacon_blocks,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
 #   kind=span,
 # ]
 # Phase 2 JS/TS: Markdown beacon parser template.
@@ -950,7 +950,7 @@ def apply_markdown_beacons(
 # @beacon[
 #   id=auto-beacon@_split_frontmatter_if_any-3p1h,
 #   role=_split_frontmatter_if_any,
-#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,ra-reconcile,
 #   kind=ast,
 # ]
 def _split_frontmatter_if_any(text: str | None) -> tuple[str | None, str]:
@@ -992,7 +992,7 @@ def _split_frontmatter_if_any(text: str | None) -> tuple[str | None, str]:
 # @beacon[
 #   id=auto-beacon@_frontmatter_has_ignore_mdformat-y9k2,
 #   role=_frontmatter_has_ignore_mdformat,
-#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,ra-reconcile,
 #   kind=ast,
 # ]
 def _frontmatter_has_ignore_mdformat(frontmatter: str | None) -> bool:
@@ -1450,7 +1450,7 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
 # @beacon[
 #   id=auto-beacon@_slice_label_tags-vxd4,
 #   role=_slice_label_tags,
-#   slice_labels=f9-f12-handlers,
+#   slice_labels=f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 def _slice_label_tags(slice_labels: str) -> str:
@@ -1477,7 +1477,7 @@ def _slice_label_tags(slice_labels: str) -> str:
 # @beacon[
 #   id=auto-beacon@_canonicalize_slice_labels-zpcy,
 #   role=_canonicalize_slice_labels,
-#   slice_labels=f9-f12-handlers,
+#   slice_labels=f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 def _canonicalize_slice_labels(slice_labels: str | None, role: str | None) -> str:
@@ -1519,7 +1519,7 @@ def _canonicalize_slice_labels(slice_labels: str | None, role: str | None) -> st
 # @beacon[
 #   id=carto-js-ts@parse_python_beacon_blocks,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
 #   kind=span,
 # ]
 # Phase 2 JS/TS: Python beacon parser template.
@@ -1750,7 +1750,7 @@ def _find_enclosing_ast_node_for_line(
 # @beacon[
 #   id=carto-js-ts@apply_python_beacons,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-py,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-py,f9-f12-handlers,ra-reconcile,
 #   kind=span,
 # ]
 # Phase 2 JS/TS: Python beacon attachment template.
@@ -3277,7 +3277,7 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
 # @beacon[
 #   id=carto-js-ts@parse_js_beacon_blocks,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
 #   kind=span,
 # ]
 # Phase 2 JS/TS: JS/TS beacon parser.
@@ -3777,7 +3777,7 @@ def parse_yaml_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
 # @beacon[
 #   id=auto-beacon@_extract_sql_beacon_context-9w82,
 #   role=_extract_sql_beacon_context,
-#   slice_labels=ra-reconcile,f9-f12-handlers,
+#   slice_labels=ra-reconcile,f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 def _extract_sql_beacon_context(
@@ -3806,12 +3806,24 @@ def _extract_sql_beacon_context(
 
     n = len(lines)
 
+    # @beacon[
+    #   id=auto-beacon@_extract_sql_beacon_context._sql_body-lr4m,
+    #   role=_extract_sql_beacon_context._sql_body,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
     def _sql_body(raw_line: str) -> str:
         s = raw_line.lstrip()
         if s.startswith("--"):
             return s[2:].lstrip()
         return s
 
+    # @beacon[
+    #   id=auto-beacon@_extract_sql_beacon_context._is_meta_block_end-y1eq,
+    #   role=_extract_sql_beacon_context._is_meta_block_end,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
     def _is_meta_block_end(body: str) -> bool:
         return body.strip().startswith("]")
 
@@ -3961,6 +3973,44 @@ def apply_sql_beacons(
 
     n = len(lines)
 
+    # Detect duplicate beacon IDs in this file and surface a user-facing warning.
+    # Duplicate IDs usually happen when a human accidentally writes an opener
+    # block (`@beacon[`) where they meant to write a closer (`@beacon-close[`).
+    #
+    # This causes ambiguous UUID matching during F12 refresh and can trigger
+    # spurious REORDER operations downstream.
+    seen_beacon_ids: set[str] = set()
+    duplicate_beacon_ids: set[str] = set()
+    for b in beacons:
+        bid = (b.get("id") or "").strip()
+        if not bid:
+            continue
+        if bid in seen_beacon_ids:
+            duplicate_beacon_ids.add(bid)
+        seen_beacon_ids.add(bid)
+
+    if duplicate_beacon_ids:
+        warning_nodes: List[Dict[str, Any]] = []
+        for dup_id in sorted(duplicate_beacon_ids):
+            warning_nodes.append(
+                {
+                    "name": f"⚠️ Duplicate beacon ID: {dup_id}",
+                    "note": (
+                        "This file contains multiple @beacon blocks with the same id.\n\n"
+                        "Why this matters:\n"
+                        "- F12 refresh matches nodes by beacon id.\n"
+                        "- Duplicate ids create ambiguous matches and may cause reorder storms.\n\n"
+                        "Fix:\n"
+                        "- Make beacon ids unique (or correct @beacon-close blocks).\n"
+                        "- Then press F12 again."
+                    ),
+                    "children": [],
+                }
+            )
+
+        # Insert at the TOP so it is immediately visible in Workflowy.
+        file_children[:0] = warning_nodes
+
     for beacon in beacons:
         if beacon.get("kind") != "span":
             continue
@@ -4034,7 +4084,7 @@ def apply_sql_beacons(
 # @beacon[
 #   id=auto-beacon@_extract_sh_beacon_context-s7r8,
 #   role=_extract_sh_beacon_context,
-#   slice_labels=ra-reconcile,f9-f12-handlers,
+#   slice_labels=ra-reconcile,f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 def _extract_sh_beacon_context(
@@ -4056,6 +4106,12 @@ def _extract_sh_beacon_context(
     n = len(lines)
     context: List[str] = []
 
+    # @beacon[
+    #   id=auto-beacon@_extract_sh_beacon_context._strip_hash_prefix-89ha,
+    #   role=_extract_sh_beacon_context._strip_hash_prefix,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
     def _strip_hash_prefix(raw_line: str) -> str:
         s = raw_line.lstrip()
         if s.startswith("#"):
@@ -4064,6 +4120,12 @@ def _extract_sh_beacon_context(
             return s[1:].lstrip()
         return s
 
+    # @beacon[
+    #   id=auto-beacon@_extract_sh_beacon_context._is_meta_block_end-lxa3,
+    #   role=_extract_sh_beacon_context._is_meta_block_end,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
     def _is_meta_block_end(body: str) -> bool:
         # Close delimiter is a line that begins with ']'.
         # We intentionally do NOT use substring matching to avoid false positives.
@@ -4189,6 +4251,33 @@ def apply_sh_beacons(
 
     n = len(lines)
 
+    # Detect duplicate beacon IDs in this file and surface a user-facing warning.
+    seen_beacon_ids: set[str] = set()
+    duplicate_beacon_ids: set[str] = set()
+    for b in beacons:
+        bid = (b.get("id") or "").strip()
+        if not bid:
+            continue
+        if bid in seen_beacon_ids:
+            duplicate_beacon_ids.add(bid)
+        seen_beacon_ids.add(bid)
+
+    if duplicate_beacon_ids:
+        warning_nodes: List[Dict[str, Any]] = []
+        for dup_id in sorted(duplicate_beacon_ids):
+            warning_nodes.append(
+                {
+                    "name": f"⚠️ Duplicate beacon ID: {dup_id}",
+                    "note": (
+                        "This file contains multiple @beacon blocks with the same id.\n\n"
+                        "This causes ambiguous UUID matching during F12 refresh and can trigger reorder storms.\n\n"
+                        "Fix: make beacon ids unique (or correct @beacon-close blocks), then press F12 again."
+                    ),
+                    "children": [],
+                }
+            )
+        file_children[:0] = warning_nodes
+
     for beacon in beacons:
         if beacon.get("kind") != "span":
             continue
@@ -4279,12 +4368,24 @@ def _extract_yaml_beacon_context(
     n = len(lines)
     context: List[str] = []
 
+    # @beacon[
+    #   id=auto-beacon@_extract_yaml_beacon_context._strip_hash_prefix-5iy9,
+    #   role=_extract_yaml_beacon_context._strip_hash_prefix,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
     def _strip_hash_prefix(raw_line: str) -> str:
         s = raw_line.lstrip()
         if s.startswith("#"):
             return s[1:].lstrip()
         return s
 
+    # @beacon[
+    #   id=auto-beacon@_extract_yaml_beacon_context._is_meta_block_end-c8x6,
+    #   role=_extract_yaml_beacon_context._is_meta_block_end,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
     def _is_meta_block_end(body: str) -> bool:
         return body.strip().startswith("]")
 
@@ -4396,6 +4497,33 @@ def apply_yaml_beacons(
 
     n = len(lines)
 
+    # Detect duplicate beacon IDs in this file and surface a user-facing warning.
+    seen_beacon_ids: set[str] = set()
+    duplicate_beacon_ids: set[str] = set()
+    for b in beacons:
+        bid = (b.get("id") or "").strip()
+        if not bid:
+            continue
+        if bid in seen_beacon_ids:
+            duplicate_beacon_ids.add(bid)
+        seen_beacon_ids.add(bid)
+
+    if duplicate_beacon_ids:
+        warning_nodes: List[Dict[str, Any]] = []
+        for dup_id in sorted(duplicate_beacon_ids):
+            warning_nodes.append(
+                {
+                    "name": f"⚠️ Duplicate beacon ID: {dup_id}",
+                    "note": (
+                        "This file contains multiple @beacon blocks with the same id.\n\n"
+                        "This causes ambiguous UUID matching during F12 refresh and can trigger reorder storms.\n\n"
+                        "Fix: make beacon ids unique (or correct @beacon-close blocks), then press F12 again."
+                    ),
+                    "children": [],
+                }
+            )
+        file_children[:0] = warning_nodes
+
     for beacon in beacons:
         if beacon.get("kind") != "span":
             continue
@@ -4467,7 +4595,7 @@ def apply_yaml_beacons(
 # @beacon[
 #   id=carto-js-ts@apply_js_beacons,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-js-ts,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-js-ts,f9-f12-handlers,ra-reconcile,
 #   kind=span,
 # ]
 # Phase 2 JS/TS: JS/TS beacon attachment.
@@ -4872,7 +5000,7 @@ def apply_js_beacons(
 # @beacon[
 #   id=carto-js-ts@split_name_and_tags,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
 #   kind=span,
 # ]
 # Utility: split a Workflowy node name into base text and trailing #tags.
@@ -4925,7 +5053,7 @@ def _generate_auto_beacon_hash() -> str:
 # @beacon[
 #   id=carto-js-ts@update_beacon_from_node_python,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
 #   kind=span,
 # ]
 # Python: update/create/delete a beacon for a single AST/beacon node
@@ -5330,7 +5458,7 @@ def update_beacon_from_node_python(
 # @beacon[
 #   id=carto-js-ts@update_beacon_from_node_js_ts,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
 #   kind=span,
 # ]
 # JS/TS: update/create/delete a beacon for a single AST/beacon node based
@@ -5689,7 +5817,7 @@ def update_beacon_from_node_js_ts(
 # @beacon[
 #   id=carto-js-ts@update_beacon_from_node_markdown,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
 #   kind=span,
 # ]
 # Markdown: update/create/delete a beacon for a single heading/beacon node
@@ -6099,7 +6227,7 @@ def update_beacon_from_node_markdown(
 # @beacon[
 #   id=auto-beacon@update_beacon_from_node_sql-eybf,
 #   role=update_beacon_from_node_sql,
-#   slice_labels=f9-f12-handlers,
+#   slice_labels=f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 def update_beacon_from_node_sql(
@@ -6251,7 +6379,7 @@ def update_beacon_from_node_sql(
 # @beacon[
 #   id=auto-beacon@update_beacon_from_node_shell-vult,
 #   role=update_beacon_from_node_shell,
-#   slice_labels=f9-f12-handlers,
+#   slice_labels=f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 def update_beacon_from_node_shell(
@@ -6400,7 +6528,7 @@ def update_beacon_from_node_shell(
 # @beacon[
 #   id=auto-beacon@update_beacon_from_node_yaml-ykv1,
 #   role=update_beacon_from_node_yaml,
-#   slice_labels=f9-f12-handlers,
+#   slice_labels=f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 def update_beacon_from_node_yaml(
@@ -6575,7 +6703,7 @@ def reconcile_trees(source_node: Dict[str, Any], ether_node: Dict[str, Any]) -> 
 # @beacon[
 #   id=auto-beacon@load_existing_map-kat3,
 #   role=load_existing_map,
-#   slice_labels=f9-f12-handlers,
+#   slice_labels=f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 def load_existing_map(file_path: str) -> Optional[Dict[str, Any]]:
