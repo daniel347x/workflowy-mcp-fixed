@@ -3517,6 +3517,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         dry_run: bool = False,
         cancel_callback: Callable[[], bool] | None = None,
         progress_callback: Callable[[str, int, int], None] | None = None,
+        diagnostic_parent_id: str | None = None,
     ) -> dict[str, Any]:
         """Incremental, beacon-aware per-file refresh (F12).
 
@@ -3706,6 +3707,76 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 ) from e
 
             new_children = copy.deepcopy(file_map.get("children") or [])
+
+            # If we're running as part of a FOLDER-level refresh, promote parse-error
+            # diagnostics to the folder root instead of leaving them buried under the
+            # FILE node.
+            #
+            # We detect this by recognizing Cartographer's parse-error sentinel nodes
+            # (e.g. "⚠️ Parse Error", "⚠️ Parse Error (JS/TS)").
+            if diagnostic_parent_id and new_children:
+                parse_error_nodes: list[dict[str, Any]] = []
+                kept_children: list[dict[str, Any]] = []
+
+                for child in new_children:
+                    cname = str(child.get("name") or "")
+                    if cname and "parse error" in cname.casefold() and cname.lstrip().startswith("⚠"):
+                        parse_error_nodes.append(child)
+                    else:
+                        kept_children.append(child)
+
+                # Remove parse-error nodes from the FILE subtree when we're promoting.
+                if parse_error_nodes:
+                    new_children = kept_children
+
+                    if not dry_run:
+                        for pe in parse_error_nodes:
+                            raw_note = str(pe.get("note") or "")
+                            base = os.path.basename(source_path)
+                            diag_name = f"⚠️ Parse error: {base}"
+                            diag_note = f"File: {source_path}\n---\n{raw_note}".rstrip()
+
+                            # Avoid spamming duplicates: if a matching diagnostic already
+                            # exists under the folder root, update it in place.
+                            existing_id: str | None = None
+                            if nodes_by_id_cache:
+                                target_parent = str(diagnostic_parent_id)
+                                needle = f"File: {source_path}"
+                                for n_local in nodes_by_id_cache.values():
+                                    pid_local = n_local.get("parent_id") or n_local.get("parentId")
+                                    if str(pid_local) != target_parent:
+                                        continue
+                                    nn = str(n_local.get("name") or "")
+                                    if "parse error" not in nn.casefold():
+                                        continue
+                                    nnote = str(n_local.get("note") or n_local.get("no") or "")
+                                    if needle in nnote:
+                                        existing_id = str(n_local.get("id"))
+                                        break
+
+                            try:
+                                if existing_id:
+                                    await self.update_node(
+                                        existing_id,
+                                        NodeUpdateRequest(name=diag_name, note=diag_note, layoutMode=None),
+                                    )
+                                else:
+                                    await self.create_node(
+                                        NodeCreateRequest(
+                                            name=diag_name,
+                                            parent_id=str(diagnostic_parent_id),
+                                            note=diag_note,
+                                            layoutMode=None,
+                                            position="top",
+                                        ),
+                                        _internal_call=True,
+                                    )
+                            except Exception as e:  # noqa: BLE001
+                                log_event(
+                                    "refresh_file_node_beacons: failed to write folder-level parse-error diagnostic "
+                                    f"for {source_path}: {e}",
+                                    "BEACON",
+                                )
 
             # 4) Seed IDs into the Cartographer tree by matching existing
             # Workflowy children by name via reconcile_trees.
@@ -4776,6 +4847,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 result = await self.refresh_file_node_beacons(
                     file_node_id=s_nid,
                     dry_run=dry_run,
+                    diagnostic_parent_id=str(folder_node_id),
                 )
                 if isinstance(result, dict) and result.get("success"):
                     refreshed_count += 1
