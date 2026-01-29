@@ -3979,43 +3979,7 @@ def apply_sql_beacons(
 
     n = len(lines)
 
-    # Detect duplicate beacon IDs in this file and surface a user-facing warning.
-    # Duplicate IDs usually happen when a human accidentally writes an opener
-    # block (`@beacon[`) where they meant to write a closer (`@beacon-close[`).
-    #
-    # This causes ambiguous UUID matching during F12 refresh and can trigger
-    # spurious REORDER operations downstream.
-    seen_beacon_ids: set[str] = set()
-    duplicate_beacon_ids: set[str] = set()
-    for b in beacons:
-        bid = (b.get("id") or "").strip()
-        if not bid:
-            continue
-        if bid in seen_beacon_ids:
-            duplicate_beacon_ids.add(bid)
-        seen_beacon_ids.add(bid)
-
-    if duplicate_beacon_ids:
-        warning_nodes: List[Dict[str, Any]] = []
-        for dup_id in sorted(duplicate_beacon_ids):
-            warning_nodes.append(
-                {
-                    "name": f"⚠️ Duplicate beacon ID: {dup_id}",
-                    "note": (
-                        "This file contains multiple @beacon blocks with the same id.\n\n"
-                        "Why this matters:\n"
-                        "- F12 refresh matches nodes by beacon id.\n"
-                        "- Duplicate ids create ambiguous matches and may cause reorder storms.\n\n"
-                        "Fix:\n"
-                        "- Make beacon ids unique (or correct @beacon-close blocks).\n"
-                        "- Then press F12 again."
-                    ),
-                    "children": [],
-                }
-            )
-
-        # Insert at the TOP so it is immediately visible in Workflowy.
-        file_children[:0] = warning_nodes
+    _prepend_duplicate_beacon_id_warning_nodes(file_children, beacons, language="SQL")
 
     for beacon in beacons:
         if beacon.get("kind") != "span":
