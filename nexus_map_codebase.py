@@ -5833,6 +5833,9 @@ def update_beacon_from_node_sql(
         result["error"] = f"failed_to_read_file: {e}"
         return result
 
+    # Use robust parser
+    beacons = parse_sql_beacon_blocks(lines)
+
     # Derive role/comment from note; slice_labels from Workflowy name tags only.
     role_val: str | None = None
     comment_val: str | None = None
@@ -5856,43 +5859,36 @@ def update_beacon_from_node_sql(
         bid = (bid or "").strip()
         if not bid:
             return None
-        n = len(lines)
-        i = 0
-        while i < n:
-            raw = lines[i]
-            stripped = raw.lstrip()
-            if stripped.startswith("--") and "@beacon[" in stripped:
-                start_idx = i
-                j = i
-                end_idx = start_idx
-                found_id = False
-                existing_kind = "span"
-                while j < n:
-                    body_raw = lines[j]
-                    body_stripped = body_raw.lstrip()
-                    if body_stripped.startswith("--"):
-                        body = body_stripped[2:].lstrip()
-                    else:
-                        body = body_stripped
-                    if "id=" in body:
-                        after = body.split("id=", 1)[1]
-                        id_value = after.split(",", 1)[0].strip()
-                        if id_value == bid:
-                            found_id = True
-                    if "kind=" in body:
-                        after_k = body.split("kind=", 1)[1]
-                        k_val = after_k.split(",", 1)[0].strip().lower()
-                        if k_val in {"ast", "span"}:
-                            existing_kind = k_val
-                    if body == "]":
-                        end_idx = j
-                        break
-                    j += 1
-                if found_id and end_idx >= start_idx:
-                    return start_idx, end_idx, existing_kind
-                i = j + 1
+        for b in beacons:
+            if (b.get("id") or "").strip() != bid:
                 continue
-            i += 1
+            cl = b.get("comment_line")
+            if not isinstance(cl, int) or cl <= 0:
+                continue
+            
+            # SQL comments start with '--'
+            start_idx = cl - 1
+            j = cl
+            end_idx = start_idx
+            existing_kind = (b.get("kind") or "span").strip().lower()
+
+            while j <= len(lines):
+                if j > len(lines):
+                    break
+                raw = lines[j - 1]
+                stripped = raw.lstrip()
+                # Careful with SQL comments '--'
+                if stripped.startswith("--"):
+                    body = stripped[2:].lstrip()
+                else:
+                    body = stripped
+                
+                if body == "]":
+                    end_idx = j - 1
+                    break
+                j += 1
+            
+            return start_idx, end_idx, existing_kind
         return None
 
     span = _find_beacon_block_by_id(beacon_id)
@@ -5986,6 +5982,52 @@ def update_beacon_from_node_shell(
         result["error"] = f"failed_to_read_file: {e}"
         return result
 
+    # Use robust parser instead of manual scan
+    beacons = parse_sh_beacon_blocks(lines)
+
+    def _find_beacon_block_by_id(bid: str) -> Optional[tuple[int, int, str]]:
+        bid = (bid or "").strip()
+        if not bid:
+            return None
+        for b in beacons:
+            if (b.get("id") or "").strip() != bid:
+                continue
+            cl = b.get("comment_line")
+            if not isinstance(cl, int) or cl <= 0:
+                continue
+            
+            # Find the closing ']' line.
+            # Shell comments start with '#'.
+            start_idx = cl - 1
+            j = cl
+            end_idx = start_idx
+            existing_kind = (b.get("kind") or "span").strip().lower()
+            
+            while j <= len(lines):
+                if j > len(lines): 
+                    break
+                raw = lines[j - 1]
+                stripped = raw.lstrip()
+                if stripped.startswith("#"):
+                    body = stripped.lstrip("#").lstrip()
+                else:
+                    # Should not happen in a valid block, but handle gracefully
+                    body = stripped
+                
+                if body == "]":
+                    end_idx = j - 1
+                    break
+                j += 1
+                
+            return start_idx, end_idx, existing_kind
+        return None
+
+    span = _find_beacon_block_by_id(beacon_id)
+    if span is None:
+        return result
+
+    start_idx, end_idx, existing_kind = span
+
     role_val: str | None = None
     comment_val: str | None = None
     for line in (note or "").splitlines():
@@ -6003,55 +6045,6 @@ def update_beacon_from_node_shell(
         if extra_label_tokens
         else ""
     )
-
-    def _find_beacon_block_by_id(bid: str) -> Optional[tuple[int, int, str]]:
-        bid = (bid or "").strip()
-        if not bid:
-            return None
-        n = len(lines)
-        i = 0
-        while i < n:
-            raw = lines[i]
-            stripped = raw.lstrip()
-            if stripped.startswith("#") and "@beacon[" in stripped:
-                start_idx = i
-                j = i
-                end_idx = start_idx
-                found_id = False
-                existing_kind = "span"
-                while j < n:
-                    body_raw = lines[j]
-                    body_stripped = body_raw.lstrip()
-                    if body_stripped.startswith("#"):
-                        body = body_stripped.lstrip("#").lstrip()
-                    else:
-                        body = body_stripped
-                    if "id=" in body:
-                        after = body.split("id=", 1)[1]
-                        id_value = after.split(",", 1)[0].strip()
-                        if id_value == bid:
-                            found_id = True
-                    if "kind=" in body:
-                        after_k = body.split("kind=", 1)[1]
-                        k_val = after_k.split(",", 1)[0].strip().lower()
-                        if k_val in {"ast", "span"}:
-                            existing_kind = k_val
-                    if body == "]":
-                        end_idx = j
-                        break
-                    j += 1
-                if found_id and end_idx >= start_idx:
-                    return start_idx, end_idx, existing_kind
-                i = j + 1
-                continue
-            i += 1
-        return None
-
-    span = _find_beacon_block_by_id(beacon_id)
-    if span is None:
-        return result
-
-    start_idx, end_idx, existing_kind = span
 
     def _build_beacon_block(
         bid: str,
@@ -6138,6 +6131,50 @@ def update_beacon_from_node_yaml(
         result["error"] = f"failed_to_read_file: {e}"
         return result
 
+    # Use robust parser
+    beacons = parse_yaml_beacon_blocks(lines)
+
+    def _find_beacon_block_by_id(bid: str) -> Optional[tuple[int, int, str]]:
+        bid = (bid or "").strip()
+        if not bid:
+            return None
+        for b in beacons:
+            if (b.get("id") or "").strip() != bid:
+                continue
+            cl = b.get("comment_line")
+            if not isinstance(cl, int) or cl <= 0:
+                continue
+
+            # YAML comments start with '#' (same as shell/python)
+            start_idx = cl - 1
+            j = cl
+            end_idx = start_idx
+            existing_kind = (b.get("kind") or "span").strip().lower()
+
+            while j <= len(lines):
+                if j > len(lines):
+                    break
+                raw = lines[j - 1]
+                stripped = raw.lstrip()
+                if stripped.startswith("#"):
+                    body = stripped.lstrip("#").lstrip()
+                else:
+                    body = stripped
+                
+                if body == "]":
+                    end_idx = j - 1
+                    break
+                j += 1
+            
+            return start_idx, end_idx, existing_kind
+        return None
+
+    span = _find_beacon_block_by_id(beacon_id)
+    if span is None:
+        return result
+
+    start_idx, end_idx, existing_kind = span
+
     role_val: str | None = None
     comment_val: str | None = None
     for line in (note or "").splitlines():
@@ -6155,55 +6192,6 @@ def update_beacon_from_node_yaml(
         if extra_label_tokens
         else ""
     )
-
-    def _find_beacon_block_by_id(bid: str) -> Optional[tuple[int, int, str]]:
-        bid = (bid or "").strip()
-        if not bid:
-            return None
-        n = len(lines)
-        i = 0
-        while i < n:
-            raw = lines[i]
-            stripped = raw.lstrip()
-            if stripped.startswith("#") and "@beacon[" in stripped:
-                start_idx = i
-                j = i
-                end_idx = start_idx
-                found_id = False
-                existing_kind = "span"
-                while j < n:
-                    body_raw = lines[j]
-                    body_stripped = body_raw.lstrip()
-                    if body_stripped.startswith("#"):
-                        body = body_stripped.lstrip("#").lstrip()
-                    else:
-                        body = body_stripped
-                    if "id=" in body:
-                        after = body.split("id=", 1)[1]
-                        id_value = after.split(",", 1)[0].strip()
-                        if id_value == bid:
-                            found_id = True
-                    if "kind=" in body:
-                        after_k = body.split("kind=", 1)[1]
-                        k_val = after_k.split(",", 1)[0].strip().lower()
-                        if k_val in {"ast", "span"}:
-                            existing_kind = k_val
-                    if body == "]":
-                        end_idx = j
-                        break
-                    j += 1
-                if found_id and end_idx >= start_idx:
-                    return start_idx, end_idx, existing_kind
-                i = j + 1
-                continue
-            i += 1
-        return None
-
-    span = _find_beacon_block_by_id(beacon_id)
-    if span is None:
-        return result
-
-    start_idx, end_idx, existing_kind = span
 
     def _build_beacon_block(
         bid: str,
