@@ -4831,6 +4831,23 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             for s_nid, source_path, exists in file_nodes_info:
                 if exists:
                     continue
+
+                # IMPORTANT: do NOT delete salvageable/persistent Notes-style nodes
+                # (⚠️ Parse error..., ❌ Error..., etc.) that may have a Path: line
+                # purely for reporting. These are user-facing diagnostics and should
+                # persist after the folder refresh completes.
+                node_local = node_by_id.get(str(s_nid))
+                if node_local is not None:
+                    n_name = str(node_local.get("name") or "")
+                    n_note = node_local.get("note") or node_local.get("no") or ""
+                    if _is_notes_name(n_name, str(n_note)):
+                        log_event(
+                            "refresh_folder_cartographer_sync: skipping deletion of salvageable Notes node "
+                            f"node_id={s_nid} name={n_name!r} Path=\"{source_path}\"",
+                            "BEACON",
+                        )
+                        continue
+
                 try:
                     deleted_ok = await self.delete_node(s_nid)
                     if deleted_ok:
