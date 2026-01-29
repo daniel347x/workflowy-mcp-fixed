@@ -4242,7 +4242,7 @@ def _prepend_duplicate_beacon_id_warning_nodes(
     for dup_id in sorted(duplicate_beacon_ids):
         warning_nodes.append(
             {
-                "name": f"⚠️ Duplicate beacon ID ({language}): {dup_id}",
+                "name": f"🚨 Duplicate beacon ID ({language}): {dup_id}",
                 "note": (
                     "This file contains multiple @beacon blocks with the same id.\n\n"
                     "Why this matters:\n"
