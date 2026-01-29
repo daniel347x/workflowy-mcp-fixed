@@ -3720,7 +3720,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
                 for child in new_children:
                     cname = str(child.get("name") or "")
-                    if cname and "parse error" in cname.casefold() and cname.lstrip().startswith("⚠"):
+                    # Recognize Cartographer parse-error sentinel nodes, regardless of
+                    # which salvageable emoji we use at the front.
+                    if cname and "parse error" in cname.casefold() and _is_notes_name(cname):
                         parse_error_nodes.append(child)
                     else:
                         kept_children.append(child)
@@ -3733,7 +3735,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         for pe in parse_error_nodes:
                             raw_note = str(pe.get("note") or "")
                             base = os.path.basename(source_path)
-                            diag_name = f"⚠️ Parse error: {base}"
+                            diag_name = f"🚨 Parse error: {base}"
                             diag_note = f"File: {source_path}\n---\n{raw_note}".rstrip()
 
                             # Avoid spamming duplicates: if a matching diagnostic already
