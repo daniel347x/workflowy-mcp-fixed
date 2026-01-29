@@ -4253,6 +4253,7 @@ def _prepend_duplicate_beacon_id_warning_nodes(
                     "- Then press F12 again."
                 ),
                 "children": [],
+                "_position_hint": "top",
             }
         )
 
