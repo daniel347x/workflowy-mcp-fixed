@@ -203,6 +203,11 @@ def _is_notes_name(raw_name: str, note: str | None = None) -> bool:
     - ⚠️  warning notes
     - ❌  error notes
     - ✅  success notes
+    - 🚨  critical alert/emergency notes
+    - 🔴  red circle alert notes
+    - 🛑  stop sign alert notes
+    - ⛔  no-entry alert notes
+    - ❗  exclamation alert notes
     """
     name = (raw_name or "").strip()
     if not name:
@@ -216,7 +221,7 @@ def _is_notes_name(raw_name: str, note: str | None = None) -> bool:
     # checking the first codepoint (name[0]) still works for those.
     notes_prefixes = {
         "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
-        "⚠", "❌", "✅",
+        "⚠", "❌", "✅", "🚨", "🔴", "🛑", "⛔", "❗",
     }
     if first not in notes_prefixes:
         return False
