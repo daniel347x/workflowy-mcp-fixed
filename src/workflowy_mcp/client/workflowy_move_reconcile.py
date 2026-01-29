@@ -465,6 +465,12 @@ async def reconcile_tree(
         # If we do not sort Children_T by priority here, reconcile_tree may
         # mis-detect "pure reorders" and spam MOVE operations on every run,
         # even when the only real change is a simple UPDATE.
+        # @beacon[
+        #   id=auto-beacon@reconcile_tree.snapshot_target._priority_of-ysdx,
+        #   role=reconcile_tree.snapshot_target._priority_of,
+        #   slice_labels=ra-reconcile,f9-f12-handlers,
+        #   kind=ast,
+        # ]
         def _priority_of(cid: str) -> int:
             node = Map_T.get(cid) or {}
             p = node.get("priority")
@@ -643,7 +649,7 @@ async def reconcile_tree(
     # @beacon[
     #   id=auto-beacon@reconcile_tree.preorder-ay4u,
     #   role=reconcile_tree.preorder,
-    #   slice_labels=f9-f12-handlers,
+    #   slice_labels=f9-f12-handlers,ra-reconcile,
     #   kind=ast,
     # ]
     def preorder(nodes: List[Node]):
@@ -747,6 +753,7 @@ async def reconcile_tree(
                         'note': n.get('note'),
                         'data': n.get('data'),
                         'completed': bool(n.get('completed', False)),
+                        '_position_hint': n.get('_position_hint'),  # Pass through if present
                     }
                     log(f"      >>> Payload prepared: name={payload.get('name')}, note_length={len(payload.get('note') or '')}, data={payload.get('data')}")
 
@@ -1173,7 +1180,7 @@ async def reconcile_tree(
     # @beacon[
     #   id=auto-beacon@reconcile_tree.is_hidden_descendant-ka59,
     #   role=reconcile_tree.is_hidden_descendant,
-    #   slice_labels=f9-f12-handlers,
+    #   slice_labels=f9-f12-handlers,ra-reconcile,
     #   kind=ast,
     # ]
     def is_hidden_descendant(node_id: str, truncated_roots: set[str], parent_map: Dict[str, Optional[str]]) -> bool:
@@ -1187,7 +1194,7 @@ async def reconcile_tree(
     # @beacon[
     #   id=auto-beacon@reconcile_tree.parent_all_children_known-3vk8,
     #   role=reconcile_tree.parent_all_children_known,
-    #   slice_labels=f9-f12-handlers,
+    #   slice_labels=f9-f12-handlers,ra-reconcile,
     #   kind=ast,
     # ]
     def parent_all_children_known(
@@ -1230,7 +1237,7 @@ async def reconcile_tree(
     # @beacon[
     #   id=auto-beacon@reconcile_tree.can_delete_candidate-p99v,
     #   role=reconcile_tree.can_delete_candidate,
-    #   slice_labels=f9-f12-handlers,
+    #   slice_labels=f9-f12-handlers,ra-reconcile,
     #   kind=ast,
     # ]
     def can_delete_candidate(tid: str) -> bool:
