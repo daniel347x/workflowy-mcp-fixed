@@ -493,19 +493,42 @@ async def reconcile_tree(
         Map_S: Dict[Optional[str], Node] = {}
         Parent_S: Dict[str, Optional[str]] = {}
         Order_S: Dict[Optional[str], List[Optional[str]]] = defaultdict(list)
+
         # Set desired parents for top-level to root_parent
         for i, n in enumerate(source_nodes_local):
             n['_desired_parent'] = root_parent
             n['_desired_index'] = i
+
         seq = index_source(source_nodes_local, root_parent)  # fills _desired_parent/_desired_index recursively
+
+        # Defensive: source JSON must never contain duplicate Workflowy UUIDs.
+        # However, certain Cartographer refresh edge cases can accidentally
+        # duplicate an existing UUID with a different name/note (e.g. when
+        # identity matching is ambiguous). If we allow duplicates into Order_S,
+        # the REORDER phase will spam MOVE operations (often moving the same node
+        # multiple times).
+        seen_ids: set[str] = set()
+
         for n in seq:
             nid = n.get('id')
-            Map_S[nid] = n  # nid can be None for new nodes
             p = n.get('_desired_parent')
+
+            # Always record the node in Map_S (last write wins) so UPDATE phase
+            # has access to the latest desired content.
+            Map_S[nid] = n  # nid can be None for new nodes
+
             if nid is not None:
-                Parent_S[nid] = p
+                nid_str = str(nid)
+                if nid_str in seen_ids:
+                    # Skip duplicate ID for ordering/moves; keep only first occurrence.
+                    log(f"   WARNING: duplicate UUID in source JSON: {nid_str} (skipping duplicate for ordering)")
+                    continue
+                seen_ids.add(nid_str)
+                Parent_S[nid_str] = p
+
             if p is not None:
                 Order_S[p].append(nid)
+
         return Map_S, Parent_S, Order_S
 
     # @beacon[
