@@ -3835,12 +3835,14 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 return [n.model_dump() for n in nodes]
 
             async def create_wrapper(parent_uuid: str, data: dict) -> str:
+                # Respect _position_hint if present (used by warning nodes to force top placement)
+                position = data.get("_position_hint") or "bottom"
                 req = NodeCreateRequest(
                     name=data.get("name"),
                     parent_id=parent_uuid,
                     note=data.get("note"),
                     layoutMode=(data.get("data") or {}).get("layoutMode"),
-                    position="bottom",
+                    position=position,
                 )
                 _log_to_file_helper(f"F12 CREATE: {data.get('name')}", "reconcile")
                 node = await self.create_node(req, _internal_call=True)
