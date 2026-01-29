@@ -177,26 +177,32 @@ def scan_active_weaves(nexus_runs_base: str) -> list[dict[str, Any]]:
 #   kind=ast,
 # ]
 def _is_notes_name(raw_name: str, note: str | None = None) -> bool:
-    """Detect Notes[...] roots (strip leading emoji/bullets).
+    """Detect persistent Notes[...] roots (strip leading emoji/bullets).
 
     IMPORTANT (Jan 2026):
-    We now require an explicit NOTES emoji/badge prefix so that ordinary
+    We require an explicit NOTES marker emoji/badge prefix so that ordinary
     headings like "Notes on X" in source files are not treated as persistent
     NOTES subtrees during Cartographer refresh/reconcile.
 
+    The text that follows the emoji may be *anything* (it does NOT need to
+    start with the word "Notes").
+
     Recognized prefixes:
-    - 📝  user-authored persistent NOTES roots
+    - 📝  user-authored persistent notes
     - 🅿️  internal "Notes (parking)" nodes
     - 🧩  internal "Notes (salvaged)" nodes
     - 💥  impact/critical notes
     - 🌟  highlighted/starred notes
     - 💡  idea/insight notes
     - 📌  pinned notes
-    - 📓  dark notebook notes
+    - 📓  notebook notes
     - 🧾  receipt/log notes
     - 🧠  brain/knowledge notes
-    - 🕯️  candle/guiding-light notes
+    - 🕯️  guiding-light notes
     - 🧨  explosive/experimental notes
+    - ⚠️  warning notes
+    - ❌  error notes
+    - ✅  success notes
     """
     name = (raw_name or "").strip()
     if not name:
@@ -206,7 +212,12 @@ def _is_notes_name(raw_name: str, note: str | None = None) -> bool:
     # This gates out plain headings like "Notes on ..." that are part of the
     # source syntax tree rather than persistent NOTES subtrees.
     first = name[0]
-    notes_prefixes = {"📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨"}
+    # NOTE: some emoji may appear with variation selectors (e.g. "⚠️");
+    # checking the first codepoint (name[0]) still works for those.
+    notes_prefixes = {
+        "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
+        "⚠", "❌", "✅",
+    }
     if first not in notes_prefixes:
         return False
 
@@ -246,8 +257,9 @@ def _is_notes_name(raw_name: str, note: str | None = None) -> bool:
         # "Notes".
         return True
 
-    # No note provided and no strict "Notes" prefix → not a Notes root.
-    return False
+    # No note provided: be permissive (emoji alone counts as Notes root).
+    # Callers that need to distinguish structural nodes should pass `note`.
+    return True
 
 
 @dataclass
@@ -702,7 +714,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.beacon_get_code_snippet-c2ov,
     #   role=WorkFlowyClientNexus.beacon_get_code_snippet,
-    #   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,
+    #   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,
     #   kind=ast,
     # ]
     async def beacon_get_code_snippet(
@@ -1376,7 +1388,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol-ozt9,
     #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol,
-    #   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-snippet-range,
+    #   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-snippet-range,ra-reconcile,
     #   kind=ast,
     # ]
     async def read_text_snippet_by_symbol(
@@ -1564,7 +1576,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._iter_subtree-gums,
         #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._iter_subtree,
-        #   slice_labels=f9-f12-handlers,
+        #   slice_labels=f9-f12-handlers,ra-reconcile,
         #   kind=ast,
         # ]
         def _iter_subtree(root_id: str):
@@ -1619,7 +1631,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._normalize_node_name-rkap,
         #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._normalize_node_name,
-        #   slice_labels=f9-f12-handlers,
+        #   slice_labels=f9-f12-handlers,ra-reconcile,
         #   kind=ast,
         # ]
         def _normalize_node_name(raw_name: str | None) -> str:
@@ -1660,7 +1672,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._record_hit-oous,
         #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._record_hit,
-        #   slice_labels=f9-f12-handlers,
+        #   slice_labels=f9-f12-handlers,ra-reconcile,
         #   kind=ast,
         # ]
         def _record_hit(node: dict[str, Any], owner_path: str, bucket: str) -> None:
@@ -4058,7 +4070,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.update_beacon_from_node-enct,
     #   role=WorkFlowyClientNexus.update_beacon_from_node,
-    #   slice_labels=f9-f12-handlers,
+    #   slice_labels=f9-f12-handlers,ra-reconcile,
     #   kind=ast,
     # ]
     async def update_beacon_from_node(
@@ -4481,7 +4493,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync-62ih,
     #   role=WorkFlowyClientNexus.refresh_folder_cartographer_sync,
-    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,
+    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,
     #   kind=ast,
     # ]
     async def refresh_folder_cartographer_sync(
