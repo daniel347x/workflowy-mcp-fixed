@@ -321,6 +321,7 @@ def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     """
     beacons: list[dict[str, Any]] = []
     n = len(lines)
+
     i = 0
 
     while i < n:
@@ -580,6 +581,8 @@ def apply_markdown_beacons(
     """
     if not beacons or not root_children:
         return
+
+    _prepend_duplicate_beacon_id_warning_nodes(root_children, beacons, language="MD")
 
     # Normalize kind and optionally auto-promote some span beacons to AST
     # based on their position relative to the next heading.
@@ -1788,6 +1791,9 @@ def apply_python_beacons(
     beacons = parse_python_beacon_blocks(lines)
     if not beacons:
         return
+
+    # Warn early if there are duplicate beacon IDs in the file.
+    _prepend_duplicate_beacon_id_warning_nodes(outline_nodes, beacons, language="PY")
 
     # Precompute AST-backed nodes and a helper for line lookups
     ast_nodes = list(_iter_ast_outline_nodes(outline_nodes))
@@ -4236,6 +4242,60 @@ def _extract_sh_beacon_context(
 # ]
 # Phase 2 JS/TS: shell beacon attachment example.
 # Secondary template similar to SQL for span-only beacons.
+
+def _prepend_duplicate_beacon_id_warning_nodes(
+    children: List[Dict[str, Any]],
+    beacons: list[dict[str, Any]],
+    *,
+    language: str,
+) -> None:
+    """Prepend warning nodes when duplicate beacon IDs appear in a single file.
+
+    This is a UX guardrail. Duplicate beacon ids (often due to a mistaken
+    `@beacon[` opener where `@beacon-close[` was intended) cause ambiguous
+    id-based matching during F12 refresh.
+
+    We emit a *salvageable* warning node so the user sees the problem at the
+    top of the file subtree.
+    """
+    if not beacons:
+        return
+
+    seen_beacon_ids: set[str] = set()
+    duplicate_beacon_ids: set[str] = set()
+    for b in beacons:
+        bid = (b.get("id") or "").strip()
+        if not bid:
+            continue
+        if bid in seen_beacon_ids:
+            duplicate_beacon_ids.add(bid)
+        seen_beacon_ids.add(bid)
+
+    if not duplicate_beacon_ids:
+        return
+
+    warning_nodes: List[Dict[str, Any]] = []
+    for dup_id in sorted(duplicate_beacon_ids):
+        warning_nodes.append(
+            {
+                "name": f"⚠️ Duplicate beacon ID ({language}): {dup_id}",
+                "note": (
+                    "This file contains multiple @beacon blocks with the same id.\n\n"
+                    "Why this matters:\n"
+                    "- F12 refresh matches nodes by beacon id.\n"
+                    "- Duplicate ids create ambiguous matches and may cause reorder storms.\n\n"
+                    "Fix:\n"
+                    "- Make beacon ids unique (or correct @beacon-close blocks).\n"
+                    "- Then press F12 again."
+                ),
+                "children": [],
+            }
+        )
+
+    # Insert at the TOP so it is immediately visible in Workflowy.
+    children[:0] = warning_nodes
+
+
 def apply_sh_beacons(
     lines: list[str],
     file_children: List[Dict[str, Any]],
@@ -4251,32 +4311,7 @@ def apply_sh_beacons(
 
     n = len(lines)
 
-    # Detect duplicate beacon IDs in this file and surface a user-facing warning.
-    seen_beacon_ids: set[str] = set()
-    duplicate_beacon_ids: set[str] = set()
-    for b in beacons:
-        bid = (b.get("id") or "").strip()
-        if not bid:
-            continue
-        if bid in seen_beacon_ids:
-            duplicate_beacon_ids.add(bid)
-        seen_beacon_ids.add(bid)
-
-    if duplicate_beacon_ids:
-        warning_nodes: List[Dict[str, Any]] = []
-        for dup_id in sorted(duplicate_beacon_ids):
-            warning_nodes.append(
-                {
-                    "name": f"⚠️ Duplicate beacon ID: {dup_id}",
-                    "note": (
-                        "This file contains multiple @beacon blocks with the same id.\n\n"
-                        "This causes ambiguous UUID matching during F12 refresh and can trigger reorder storms.\n\n"
-                        "Fix: make beacon ids unique (or correct @beacon-close blocks), then press F12 again."
-                    ),
-                    "children": [],
-                }
-            )
-        file_children[:0] = warning_nodes
+    _prepend_duplicate_beacon_id_warning_nodes(file_children, beacons, language="SH")
 
     for beacon in beacons:
         if beacon.get("kind") != "span":
@@ -4497,32 +4532,7 @@ def apply_yaml_beacons(
 
     n = len(lines)
 
-    # Detect duplicate beacon IDs in this file and surface a user-facing warning.
-    seen_beacon_ids: set[str] = set()
-    duplicate_beacon_ids: set[str] = set()
-    for b in beacons:
-        bid = (b.get("id") or "").strip()
-        if not bid:
-            continue
-        if bid in seen_beacon_ids:
-            duplicate_beacon_ids.add(bid)
-        seen_beacon_ids.add(bid)
-
-    if duplicate_beacon_ids:
-        warning_nodes: List[Dict[str, Any]] = []
-        for dup_id in sorted(duplicate_beacon_ids):
-            warning_nodes.append(
-                {
-                    "name": f"⚠️ Duplicate beacon ID: {dup_id}",
-                    "note": (
-                        "This file contains multiple @beacon blocks with the same id.\n\n"
-                        "This causes ambiguous UUID matching during F12 refresh and can trigger reorder storms.\n\n"
-                        "Fix: make beacon ids unique (or correct @beacon-close blocks), then press F12 again."
-                    ),
-                    "children": [],
-                }
-            )
-        file_children[:0] = warning_nodes
+    _prepend_duplicate_beacon_id_warning_nodes(file_children, beacons, language="YAML")
 
     for beacon in beacons:
         if beacon.get("kind") != "span":
@@ -4613,6 +4623,8 @@ def apply_js_beacons(
     ast_nodes = list(_iter_ast_outline_nodes(outline_nodes))
 
     n = len(lines)
+
+    _prepend_duplicate_beacon_id_warning_nodes(outline_nodes, beacons, language="JS/TS")
 
     def _js_next_anchor_line_after(line_no: int) -> Optional[int]:
         for idx in range(line_no + 1, n + 1):
