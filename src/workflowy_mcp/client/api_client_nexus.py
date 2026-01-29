@@ -4303,29 +4303,91 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 original_note = str(wf_node.get("note") or wf_node.get("no") or "")
                 note_lines = original_note.splitlines()
 
-                # Find the existing BEACON block (if any) and remove it.
-                beacon_start_idx: int | None = None
-                beacon_end_idx: int | None = None
-                for idx, line in enumerate(note_lines):
-                    stripped = line.strip()
-                    if stripped.startswith("BEACON ("):
-                        beacon_start_idx = idx
-                    elif beacon_start_idx is not None and stripped.startswith("kind:"):
-                        # End of beacon block is the line after "kind: ..."
-                        beacon_end_idx = idx
-                        break
+                def _strip_existing_beacon_blocks(lines_in: list[str]) -> list[str]:
+                    """Remove BEACON (...) metadata blocks from a node note.
 
-                # Rebuild note: keep header/body, replace beacon block.
-                if beacon_start_idx is not None and beacon_end_idx is not None:
-                    # Strip away old beacon block.
-                    new_note_lines = note_lines[:beacon_start_idx] + note_lines[beacon_end_idx + 1 :]
-                else:
-                    new_note_lines = note_lines[:]
+                    We strip:
+                    - "BEACON (...)" header line
+                    - id:/role:/slice_labels:/kind:/comment: lines (and blank lines within)
+                    - For MD beacon notes, an optional '---' separator immediately after the block
+                    """
+                    out: list[str] = []
+                    i = 0
+                    while i < len(lines_in):
+                        header = lines_in[i].strip()
+                        if header.startswith("BEACON ("):
+                            beacon_header_line = header
+                            i += 1
 
-                # Append new beacon block.
-                if new_note_lines and new_note_lines[-1].strip():
-                    new_note_lines.append("")  # Blank line separator
+                            # Consume metadata lines that belong to the beacon block.
+                            while i < len(lines_in):
+                                s = lines_in[i].strip()
+                                if not s:
+                                    i += 1
+                                    continue
+                                if any(
+                                    s.startswith(p)
+                                    for p in ("id:", "role:", "slice_labels:", "kind:", "comment:")
+                                ):
+                                    i += 1
+                                    continue
+
+                                # Markdown beacon notes sometimes include a literal '---'
+                                # separator immediately after the BEACON block.
+                                if s == "---" and "(MD" in beacon_header_line:
+                                    i += 1
+                                break
+
+                            # Strip a single blank line after the beacon block (if present).
+                            if i < len(lines_in) and not lines_in[i].strip():
+                                i += 1
+                            continue
+
+                        out.append(lines_in[i])
+                        i += 1
+                    return out
+
+                def _compute_beacon_insert_idx(lines_in: list[str]) -> int:
+                    """Return the insertion index for the BEACON block.
+
+                    Policy (Dan):
+                    - Keep the identifier at the top (AST_QUALNAME or MD_PATH)
+                    - Place BEACON metadata directly beneath the identifier
+                    - Place all other content (docstring, context, span text) beneath BEACON
+                    """
+                    if not lines_in:
+                        return 0
+
+                    first = lines_in[0].strip()
+                    if first.startswith("AST_QUALNAME:"):
+                        # Single-line identifier for most code nodes.
+                        return 1
+
+                    if first == "MD_PATH:" or first.startswith("MD_PATH:"):
+                        # Multi-line identifier: MD_PATH block ends at first '---' after MD_PATH.
+                        saw_md_path = False
+                        for idx, line in enumerate(lines_in):
+                            t = line.strip()
+                            if t == "MD_PATH:" or t.startswith("MD_PATH:"):
+                                saw_md_path = True
+                            elif saw_md_path and t == "---":
+                                return idx + 1
+                        return len(lines_in)
+
+                    return 0
+
+                cleaned_lines = _strip_existing_beacon_blocks(note_lines)
+                insert_idx = _compute_beacon_insert_idx(cleaned_lines)
+
+                new_note_lines: list[str] = []
+                new_note_lines.extend(cleaned_lines[:insert_idx])
                 new_note_lines.extend(beacon_meta_lines)
+
+                # Ensure a blank line between the BEACON block and the remaining body.
+                if insert_idx < len(cleaned_lines):
+                    if cleaned_lines[insert_idx].strip():
+                        new_note_lines.append("")
+                    new_note_lines.extend(cleaned_lines[insert_idx:])
 
                 new_note = "\n".join(new_note_lines)
 

@@ -2077,11 +2077,28 @@ def apply_python_beacons(
         if comment:
             meta_lines.append(f"comment: {comment}")
         note = chosen.get("note") or ""
-        meta_block = "\n".join(meta_lines)
         if note:
-            chosen["note"] = note + "\n\n" + meta_block
+            # Keep the identifier (AST_QUALNAME) at the top, then insert the
+            # BEACON metadata block, then the rest of the content.
+            note_lines = note.splitlines()
+            insert_idx = (
+                1
+                if (note_lines and note_lines[0].strip().startswith("AST_QUALNAME:"))
+                else 0
+            )
+
+            new_note_lines: list[str] = []
+            new_note_lines.extend(note_lines[:insert_idx])
+            new_note_lines.extend(meta_lines)
+
+            if insert_idx < len(note_lines):
+                if note_lines[insert_idx].strip():
+                    new_note_lines.append("")
+                new_note_lines.extend(note_lines[insert_idx:])
+
+            chosen["note"] = "\n".join(new_note_lines)
         else:
-            chosen["note"] = meta_block
+            chosen["note"] = "\n".join(meta_lines)
 
     # Pass 2: SPAN beacons
     for beacon in beacons:
@@ -4452,11 +4469,28 @@ def apply_js_beacons(
             meta_lines.append("CONTEXT COMMENTS (JS/TS):")
             meta_lines.extend(context_lines)
         note = chosen.get("note") or ""
-        meta_block = "\n".join(meta_lines)
         if note:
-            chosen["note"] = note + "\n\n" + meta_block
+            # Keep the identifier (AST_QUALNAME) at the top, then insert the
+            # BEACON metadata block, then the rest of the content.
+            note_lines = note.splitlines()
+            insert_idx = (
+                1
+                if (note_lines and note_lines[0].strip().startswith("AST_QUALNAME:"))
+                else 0
+            )
+
+            new_note_lines: list[str] = []
+            new_note_lines.extend(note_lines[:insert_idx])
+            new_note_lines.extend(meta_lines)
+
+            if insert_idx < len(note_lines):
+                if note_lines[insert_idx].strip():
+                    new_note_lines.append("")
+                new_note_lines.extend(note_lines[insert_idx:])
+
+            chosen["note"] = "\n".join(new_note_lines)
         else:
-            chosen["note"] = meta_block
+            chosen["note"] = "\n".join(meta_lines)
 
     # Pass 2: SPAN beacons
     for beacon in beacons:
