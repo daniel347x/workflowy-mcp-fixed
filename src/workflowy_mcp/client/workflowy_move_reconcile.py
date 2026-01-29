@@ -458,6 +458,29 @@ async def reconcile_tree(
                     if parent_id is not None:
                         Children_T[parent_id].append(nid)
         
+        # IMPORTANT: Workflowy /nodes-export does not guarantee that the flat
+        # node list is ordered by on-screen sibling order. The visual ordering
+        # is carried by each node's priority field.
+        #
+        # If we do not sort Children_T by priority here, reconcile_tree may
+        # mis-detect "pure reorders" and spam MOVE operations on every run,
+        # even when the only real change is a simple UPDATE.
+        def _priority_of(cid: str) -> int:
+            node = Map_T.get(cid) or {}
+            p = node.get("priority")
+            if p is None:
+                # Some snapshots use short keys; be defensive.
+                p = node.get("pr")
+            try:
+                return int(p) if p is not None else 10**12
+            except Exception:
+                return 10**12
+
+        for pid, kids in list(Children_T.items()):
+            pos_map = {cid: i for i, cid in enumerate(kids)}
+            kids.sort(key=lambda cid, _pos=pos_map: (_priority_of(cid), _pos.get(cid, 10**12)))
+            Children_T[pid] = kids
+
         return Map_T, Parent_T, Children_T
 
     # @beacon[
