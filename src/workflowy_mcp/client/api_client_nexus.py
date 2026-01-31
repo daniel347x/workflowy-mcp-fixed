@@ -32,6 +32,12 @@ from .nexus_helper import (
 )
 
 
+# @beacon[
+#   id=auto-beacon@_log_glimpse_to_file-97lr,
+#   role=_log_glimpse_to_file,
+#   slice_labels=nexus--glimpse-extension,
+#   kind=ast,
+# ]
 def _log_glimpse_to_file(operation_type: str, node_id: str, result: dict[str, Any]) -> None:
     """Log GLIMPSE operations to persistent markdown files."""
     try:
@@ -303,6 +309,12 @@ class NotesSalvageContext:
 class WorkFlowyClientNexus(WorkFlowyClientEtch):
     """NEXUS pipeline operations - extends Etch."""
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus._get_nexus_dir-wr37,
+    #   role=WorkFlowyClientNexus._get_nexus_dir,
+    #   slice_labels=nexus--glimpse-extension,
+    #   kind=ast,
+    # ]
     def _get_nexus_dir(self, nexus_tag: str) -> str:
         """Resolve base directory for a CORINTHIAN NEXUS run."""
         base_dir = Path(
@@ -330,6 +342,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         chosen = sorted(candidates, key=lambda p: p.name)[-1]
         return str(chosen)
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus.workflowy_glimpse-yqpd,
+    #   role=WorkFlowyClientNexus.workflowy_glimpse,
+    #   slice_labels=nexus--glimpse-extension,
+    #   kind=ast,
+    #   comment=Ignite,
+    # ]
     async def workflowy_glimpse(
         self, node_id: str, use_efficient_traversal: bool = False,
         output_file: str | None = None, _ws_connection=None, _ws_queue=None
@@ -337,18 +356,23 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         """Load node tree via WebSocket (GLIMPSE command)."""
         import asyncio
         import json as json_module
+        import os
 
         logger = _ClientLogger()
+
+        # Max time we wait for the Chrome/Electron extension to extract + return DOM.
+        # Large context slices can legitimately take >5s.
+        ws_timeout_s = float(os.getenv("WORKFLOWY_GLIMPSE_WS_TIMEOUT_S", "30"))
         
         # Try WebSocket first
         if _ws_connection and _ws_queue:
             try:
-                logger.info(f"🔌 WebSocket extraction for {node_id[:8]}...")
+                logger.info(f"🔌 WebSocket extraction for {node_id[:8]}... (timeout={ws_timeout_s:.1f}s)")
                 
                 request = {"action": "extract_dom", "node_id": node_id}
                 await _ws_connection.send(json_module.dumps(request))
                 
-                response = await asyncio.wait_for(_ws_queue.get(), timeout=5.0)
+                response = await asyncio.wait_for(_ws_queue.get(), timeout=ws_timeout_s)
                 
                 if response.get('success') and 'children' in response:
                     response['_source'] = 'websocket'
@@ -390,12 +414,18 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     raise NetworkError("WebSocket invalid response")
                     
             except asyncio.TimeoutError:
-                raise NetworkError("WebSocket timeout (5s)")
+                raise NetworkError(f"WebSocket timeout ({ws_timeout_s:.1f}s)")
             except Exception as e:
                 raise NetworkError(f"WebSocket error: {e}") from e
         
         raise NetworkError("WebSocket unavailable - use workflowy_scry")
     
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus.workflowy_scry-77wt,
+    #   role=WorkFlowyClientNexus.workflowy_scry,
+    #   slice_labels=nexus--glimpse-extension,
+    #   kind=ast,
+    # ]
     async def workflowy_scry(
         self,
         node_id: str,
@@ -1852,6 +1882,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         return result
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus.nexus_scry-cfy9,
+    #   role=WorkFlowyClientNexus.nexus_scry,
+    #   slice_labels=nexus--glimpse-extension,
+    #   kind=ast,
+    # ]
     async def nexus_scry(
         self,
         nexus_tag: str,
@@ -2169,6 +2205,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "node_count": total_nodes,
         }
 
+    # @beacon[
+    #   id=auto-beacon@WorkFlowyClientNexus.nexus_glimpse-wsml,
+    #   role=WorkFlowyClientNexus.nexus_glimpse,
+    #   slice_labels=nexus--glimpse-extension,
+    #   kind=ast,
+    # ]
     async def nexus_glimpse(
         self,
         nexus_tag: str,
@@ -2656,7 +2698,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.bulk_import_from_file-7d6e,
     #   role=WorkFlowyClientNexus.bulk_import_from_file,
-    #   slice_labels=ra-reconcile,f9-f12-handlers,ra-logging,
+    #   slice_labels=ra-reconcile,f9-f12-handlers,ra-logging,nexus--glimpse-extension,
     #   kind=ast,
     # ]
     async def bulk_import_from_file(
