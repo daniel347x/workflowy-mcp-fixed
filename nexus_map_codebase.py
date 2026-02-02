@@ -2089,7 +2089,10 @@ def apply_python_beacons(
             span = _find_triple_span_for_line(j)
             if span and span not in seen_spans:
                 s, e = span
-                for k in range(s, e + 1):
+                # IMPORTANT: preserve original order when prepending a multi-line
+                # triple-quoted block. Using insert(0, ...) in a forward loop
+                # reverses the block.
+                for k in range(e, s - 1, -1):
                     context.insert(0, lines[k - 1])
                 seen_spans.add(span)
                 j = s - 1
@@ -2692,7 +2695,7 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
 # @beacon[
 #   id=carto-js-ts@parse_js_ts_outline,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,ra-reconcile,test,test3,
+#   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,ra-reconcile,
 #   kind=span,
 # ]
 # Phase 1 JS/TS: placeholder anchor for the future parse_js_ts_outline(...)
