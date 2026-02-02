@@ -1624,31 +1624,58 @@ def _extract_show_span_from_note(note: str | None) -> Optional[bool]:
 def _strip_beacon_meta_blocks_from_context(context_lines: list[str]) -> list[str]:
     """Remove literal @beacon[...] / @beacon-close[...] metadata blocks from context.
 
-    This is delimiter-block based. It strips sequences starting with a line whose
-    trimmed text starts with '@beacon[' or '@beacon-close[' and continues until a
-    terminator line whose trimmed text is exactly ']'.
+    Delimiter-block based and language-agnostic.
 
-    Works for AST beacons as well (which typically have only the single @beacon[...] block).
+    We strip sequences starting with a line whose *normalized* text starts with:
+      - '@beacon[' or '@beacon-close['
+
+    ...and continue stripping until the metadata terminator line, defined as a
+    line whose normalized text *starts with* ']'.
+
+    Using "starts with" (not equality) matches the more robust parsing style used
+    elsewhere in this file (prevents edge cases around whitespace / trailing
+    commas / minor formatting).
+
+    Works for AST beacons as well (which typically have only the single
+    @beacon[...] block).
     """
     if not context_lines:
         return []
+
+    def _normalize_meta_line(raw: str) -> str:
+        s = (raw or "").strip()
+        # Defensive: if a comment prefix somehow survives into context_lines,
+        # strip common single-line comment sugars.
+        if s.startswith("#"):
+            s = s.lstrip("#").lstrip()
+        if s.startswith("--"):
+            s = s[2:].lstrip()
+        if s.startswith("//"):
+            s = s[2:].lstrip()
+        if s.startswith("*"):
+            s = s.lstrip("*").lstrip()
+        return s
+
+    def _is_meta_block_end(norm: str) -> bool:
+        # Close delimiter is a line that begins with ']'.
+        # We intentionally do NOT use substring matching.
+        return norm.strip().startswith("]")
 
     out: list[str] = []
     in_meta = False
 
     for raw in context_lines:
-        s = (raw or "").strip()
+        norm = _normalize_meta_line(raw)
 
-        if not in_meta and (s.startswith("@beacon[") or s.startswith("@beacon-close[")):
+        if not in_meta and (norm.startswith("@beacon[") or norm.startswith("@beacon-close[")):
             # Single-line meta blocks (rare) or start of a multi-line block.
-            if "]" in s:
+            if "]" in norm:
                 continue
             in_meta = True
             continue
 
         if in_meta:
-            end_s = s.rstrip(",").strip()
-            if end_s == "]":
+            if _is_meta_block_end(norm):
                 in_meta = False
             continue
 
