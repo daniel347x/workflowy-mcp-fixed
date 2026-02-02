@@ -551,7 +551,7 @@ def _extract_markdown_beacon_context(lines: list[str], comment_line: int) -> Lis
             continue
         break
 
-    return context
+    return _strip_beacon_meta_blocks_from_context(context)
 
 
 # @beacon[
@@ -1616,6 +1616,48 @@ def _extract_show_span_from_note(note: str | None) -> Optional[bool]:
 
 
 # @beacon[
+#   id=carto-js-ts@_strip_beacon_meta_blocks_from_context-m8k3,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
+def _strip_beacon_meta_blocks_from_context(context_lines: list[str]) -> list[str]:
+    """Remove literal @beacon[...] / @beacon-close[...] metadata blocks from context.
+
+    This is delimiter-block based. It strips sequences starting with a line whose
+    trimmed text starts with '@beacon[' or '@beacon-close[' and continues until a
+    terminator line whose trimmed text is exactly ']'.
+
+    Works for AST beacons as well (which typically have only the single @beacon[...] block).
+    """
+    if not context_lines:
+        return []
+
+    out: list[str] = []
+    in_meta = False
+
+    for raw in context_lines:
+        s = (raw or "").strip()
+
+        if not in_meta and (s.startswith("@beacon[") or s.startswith("@beacon-close[")):
+            # Single-line meta blocks (rare) or start of a multi-line block.
+            if "]" in s:
+                continue
+            in_meta = True
+            continue
+
+        if in_meta:
+            end_s = s.rstrip(",").strip()
+            if end_s == "]":
+                in_meta = False
+            continue
+
+        out.append(raw)
+
+    return out
+
+
+# @beacon[
 #   id=carto-js-ts@parse_python_beacon_blocks,
 #   role=carto-js-ts,
 #   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
@@ -2092,7 +2134,7 @@ def apply_python_beacons(
                 break
             break
 
-        return context
+        return _strip_beacon_meta_blocks_from_context(context)
 
     # Pre-pass: for snippet-less span beacons, compute anchor lineno and
     # auto-upgrade to AST when the anchor is a clean class/function/async start.
@@ -2489,7 +2531,7 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                     continue
                 break
 
-            return context
+            return _strip_beacon_meta_blocks_from_context(context)
 
         priority_counter = [100]  # Mutable list to share across recursion
 
@@ -2623,7 +2665,7 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
 # @beacon[
 #   id=carto-js-ts@parse_js_ts_outline,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,ra-reconcile,test,test2,
+#   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,ra-reconcile,test,test3,
 #   kind=span,
 # ]
 # Phase 1 JS/TS: placeholder anchor for the future parse_js_ts_outline(...)
@@ -4043,7 +4085,7 @@ def _extract_sql_beacon_context(
             continue
         break
 
-    return context
+    return _strip_beacon_meta_blocks_from_context(context)
 
 
 # @beacon[
@@ -4277,7 +4319,7 @@ def _extract_sh_beacon_context(
         context.append(body)
         j += 1
 
-    return context
+    return _strip_beacon_meta_blocks_from_context(context)
 
 
 # @beacon[
@@ -4540,7 +4582,7 @@ def _extract_yaml_beacon_context(
         context.append(body)
         j += 1
 
-    return context
+    return _strip_beacon_meta_blocks_from_context(context)
 
 
 # @beacon[
@@ -4706,8 +4748,9 @@ def apply_js_beacons(
             stripped = raw.lstrip()
             if not stripped:
                 continue
-            if "@beacon" in stripped:
-                continue
+            # NOTE: we intentionally do NOT skip '@beacon' lines here.
+            # We collect them into context and later strip the entire
+            # delimiter block via _strip_beacon_meta_blocks_from_context(...).
 
             is_comment = False
             text = ""
@@ -4788,7 +4831,7 @@ def apply_js_beacons(
                 continue
             break
 
-        return context
+        return _strip_beacon_meta_blocks_from_context(context)
 
     # Pre-pass: for snippet-less beacons (span OR ast), compute anchor lineno.
     # For span beacons, auto-upgrade to AST when anchor is a class/function/method.
