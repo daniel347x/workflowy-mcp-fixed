@@ -366,6 +366,8 @@ def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
             if kind not in {"ast", "span"}:
                 continue
 
+            show_span, show_span_explicit = _parse_show_span_fields(fields)
+
             start_snippet = fields.get("start_snippet")
             end_snippet = fields.get("end_snippet")
 
@@ -429,6 +431,8 @@ def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 "span_lineno_start": span_start,
                 "span_lineno_end": span_end,
                 "kind_explicit": bool(kind_raw),
+                "show_span": show_span,
+                "show_span_explicit": show_span_explicit,
             }
             beacons.append(beacon)
         else:
@@ -472,7 +476,7 @@ def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 while k <= n:
                     next_raw = lines[k - 1]
                     close_lines.append(next_raw)
-                    if "]" in next_raw:
+                    if next_raw.strip().lstrip("#").lstrip().startswith("]"):
                         k += 1
                         break
                     k += 1
@@ -580,6 +584,7 @@ def apply_markdown_beacons(
     """
     if not beacons or not root_children:
         return
+    _prepend_duplicate_beacon_id_warning_nodes(root_children, beacons, language="MD")
 
     # Normalize kind and optionally auto-promote some span beacons to AST
     # based on their position relative to the next heading.
@@ -891,6 +896,8 @@ def apply_markdown_beacons(
                 )
             )
 
+        show_span, show_span_explicit = _beacon_show_span(beacon)
+
         display_role = role or b_id or "md-span-beacon"
         display_slice = slice_labels or "-"
 
@@ -911,6 +918,8 @@ def apply_markdown_beacons(
             f"slice_labels: {slice_labels}",
             "kind: span",
         ]
+        if show_span_explicit:
+            note_lines.append(f"show_span: {'true' if show_span else 'false'}")
         if comment:
             note_lines.append(f"comment: {comment}")
         if context_lines:
@@ -928,14 +937,6 @@ def apply_markdown_beacons(
                     span_text_lines.pop(0)
                 while span_text_lines and not span_text_lines[-1].strip():
                     span_text_lines.pop()
-        if span_text_lines and context_lines:
-            # Avoid duplicating the same comment block in both
-            # CONTEXT COMMENTS and SPAN TEXT.
-            while span_text_lines and span_text_lines[0].strip().startswith("<!--"):
-                span_text_lines.pop(0)
-            while span_text_lines and not span_text_lines[0].strip():
-                span_text_lines.pop(0)
-
         if span_text_lines:
             note_lines.append("")
             note_lines.append("SPAN TEXT:")
@@ -1525,6 +1526,96 @@ def _canonicalize_slice_labels(slice_labels: str | None, role: str | None) -> st
 
 
 # @beacon[
+#   id=carto-js-ts@_coerce_boolish-jb5p,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
+def _coerce_boolish(val: Any | None) -> Optional[bool]:
+    """Coerce common Workflowy/beacon boolean spellings to a bool.
+
+    Returns:
+      - True/False when val looks like a boolean
+      - None when val is missing/empty/unknown
+
+    Accepted false values (case-insensitive): false, 0, no, off
+    Accepted true values  (case-insensitive): true, 1, yes, on
+    """
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    s = str(val).strip().lower()
+    if not s:
+        return None
+    if s in {"false", "0", "no", "off"}:
+        return False
+    if s in {"true", "1", "yes", "on"}:
+        return True
+    return None
+
+
+# @beacon[
+#   id=carto-js-ts@_parse_show_span_fields-5i6q,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
+def _parse_show_span_fields(fields: dict[str, str]) -> tuple[bool, bool]:
+    """Return (show_span, show_span_explicit) from parsed beacon fields."""
+    raw = fields.get("show_span")
+    if raw is None:
+        return True, False
+    b = _coerce_boolish(raw)
+    if b is None:
+        # Fail-open: if malformed, behave like legacy (show span) but keep
+        # explicitness so it round-trips and is visible to humans.
+        return True, True
+    return b, True
+
+
+# @beacon[
+#   id=carto-js-ts@_beacon_show_span-8v9u,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
+def _beacon_show_span(beacon: dict[str, Any]) -> tuple[bool, bool]:
+    """Return (show_span, explicit) for a parsed beacon dict."""
+    explicit = bool(beacon.get("show_span_explicit"))
+    raw = beacon.get("show_span")
+    if isinstance(raw, bool):
+        return raw, explicit
+    b = _coerce_boolish(raw)
+    if b is None:
+        return True, explicit
+    return b, True
+
+
+# @beacon[
+#   id=carto-js-ts@_extract_show_span_from_note-1q2w,
+#   role=carto-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
+def _extract_show_span_from_note(note: str | None) -> Optional[bool]:
+    """Extract show_span from a Workflowy note (BEACON node note).
+
+    Expected line form (case-insensitive key):
+        show_span: false
+        show_span: true
+    """
+    if not isinstance(note, str) or not note:
+        return None
+    for line in note.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("show_span:"):
+            _, val = stripped.split(":", 1)
+            return _coerce_boolish(val)
+    return None
+
+
+# @beacon[
 #   id=carto-js-ts@parse_python_beacon_blocks,
 #   role=carto-js-ts,
 #   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
@@ -1572,7 +1663,9 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     else:
                         next_body = next_line
                     block_lines.append(next_body)
-                    if "]" in next_body:
+                    # Close only when the metadata delimiter line begins with ']'.
+                    # This avoids premature termination when a value contains a stray ']'.
+                    if next_body.strip().startswith("]"):
                         i += 1
                         break
                     i += 1
@@ -1606,6 +1699,8 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     # Unknown/unsupported kind – skip silently for now
                     continue
 
+                show_span, show_span_explicit = _parse_show_span_fields(fields)
+
                 beacon = {
                     "id": fields.get("id"),
                     "role": fields.get("role"),
@@ -1615,6 +1710,8 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     "end_snippet": fields.get("end_snippet"),
                     "comment": fields.get("comment"),
                     "comment_line": comment_line,
+                    "show_span": show_span,
+                    "show_span_explicit": show_span_explicit,
                 }
                 beacons.append(beacon)
                 continue
@@ -1647,7 +1744,7 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 body = stripped.lstrip("#").lstrip()
             else:
                 body = stripped
-            if "]" in body:
+            if body.strip().startswith("]"):
                 open_end = j
                 break
             j += 1
@@ -1794,6 +1891,8 @@ def apply_python_beacons(
     beacons = parse_python_beacon_blocks(lines)
     if not beacons:
         return
+    # Warn early if there are duplicate beacon IDs in the file.
+    _prepend_duplicate_beacon_id_warning_nodes(outline_nodes, beacons, language="PY")
 
     # Precompute AST-backed nodes and a helper for line lookups
     ast_nodes = list(_iter_ast_outline_nodes(outline_nodes))
@@ -1866,7 +1965,11 @@ def apply_python_beacons(
     #   slice_labels=carto-js-ts,ra-snippet-range-span-beacon,
     #   kind=ast,
     # ]
-    def _extract_python_beacon_context(comment_line: int, decor_start: Optional[int] = None) -> List[str]:
+    def _extract_python_beacon_context(
+        comment_line: int,
+        decor_start: Optional[int] = None,
+        beacon_id: Optional[str] = None,
+    ) -> List[str]:
         """Extract nearby comment-like lines around a Python beacon.
 
         Includes:
@@ -1890,7 +1993,7 @@ def apply_python_beacons(
                 body = stripped.lstrip("#").lstrip()
             else:
                 body = stripped
-            if "]" in body:
+            if body.strip().startswith("]"):
                 block_end = j
                 break
             j += 1
@@ -1940,6 +2043,39 @@ def apply_python_beacons(
                 continue
             if stripped.startswith("#"):
                 body = stripped.lstrip("#").lstrip()
+                # Never include beacon delimiter blocks as "context comments".
+                # Also support overlapping span beacons by only stopping on a
+                # matching @beacon-close id (when beacon_id is provided).
+                if body.startswith("@beacon["):
+                    # Skip nested opener metadata block.
+                    j += 1
+                    while j <= len(lines):
+                        nxt = lines[j - 1].lstrip()
+                        nb = nxt.lstrip("#").lstrip() if nxt.startswith("#") else nxt
+                        if nb.strip().startswith("]"):
+                            j += 1
+                            break
+                        j += 1
+                    continue
+                if body.startswith("@beacon-close["):
+                    close_id: Optional[str] = None
+                    j += 1
+                    while j <= len(lines):
+                        nxt = lines[j - 1].lstrip()
+                        nb = nxt.lstrip("#").lstrip() if nxt.startswith("#") else nxt
+                        nb_strip = nb.strip()
+                        if nb_strip.startswith("id=") and close_id is None:
+                            close_id = nb_strip.split("=", 1)[1].strip().strip(",").strip("]")
+                        if nb_strip.startswith("]"):
+                            break
+                        j += 1
+                    # Ignore close blocks for other beacon ids (supports overlap).
+                    if beacon_id and close_id and close_id != beacon_id:
+                        j += 1
+                        continue
+                    break
+                if body.startswith("@beacon"):
+                    break
                 if body:
                     context.append(body)
                 j += 1
@@ -2085,11 +2221,25 @@ def apply_python_beacons(
         if comment:
             meta_lines.append(f"comment: {comment}")
         note = chosen.get("note") or ""
-        meta_block = "\n".join(meta_lines)
         if note:
-            chosen["note"] = note + "\n\n" + meta_block
+            # Keep the identifier (AST_QUALNAME) at the top, then insert the
+            # BEACON metadata block, then the rest of the content.
+            note_lines = note.splitlines()
+            insert_idx = (
+                1
+                if (note_lines and note_lines[0].strip().startswith("AST_QUALNAME:"))
+                else 0
+            )
+            new_note_lines: list[str] = []
+            new_note_lines.extend(note_lines[:insert_idx])
+            new_note_lines.extend(meta_lines)
+            if insert_idx < len(note_lines):
+                if note_lines[insert_idx].strip():
+                    new_note_lines.append("")
+                new_note_lines.extend(note_lines[insert_idx:])
+            chosen["note"] = "\n".join(new_note_lines)
         else:
-            chosen["note"] = meta_block
+            chosen["note"] = "\n".join(meta_lines)
 
     # Pass 2: SPAN beacons
     for beacon in beacons:
@@ -2154,6 +2304,8 @@ def apply_python_beacons(
             role = b_id.split("@", 1)[0]
         slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
 
+        show_span, show_span_explicit = _beacon_show_span(beacon)
+
         display_role = role or b_id or "span-beacon"
         display_slice = slice_labels or "-"
 
@@ -2167,7 +2319,11 @@ def apply_python_beacons(
             dsl = enclosing.get("decor_start_lineno")
             if isinstance(dsl, int):
                 enclosing_decor_start = dsl
-        context_lines = _extract_python_beacon_context(comment_line, enclosing_decor_start)
+        context_lines = _extract_python_beacon_context(
+            comment_line,
+            enclosing_decor_start,
+            beacon_id=b_id,
+        )
         comment = beacon.get("comment")
 
         note_lines = [
@@ -2177,6 +2333,8 @@ def apply_python_beacons(
             f"slice_labels: {slice_labels}",
             "kind: span",
         ]
+        if show_span_explicit:
+            note_lines.append(f"show_span: {'true' if show_span else 'false'}")
         if comment:
             note_lines.append(f"comment: {comment}")
         if context_lines:
@@ -2198,28 +2356,6 @@ def apply_python_beacons(
                     span_text_lines.pop(0)
                 while span_text_lines and not span_text_lines[-1].strip():
                     span_text_lines.pop()
-
-        if span_text_lines and context_lines:
-            # Avoid duplicating the same comment block in both
-            # CONTEXT COMMENTS and SPAN TEXT.
-            while span_text_lines:
-                s0 = span_text_lines[0].lstrip()
-                if s0.startswith("#"):
-                    span_text_lines.pop(0)
-                    continue
-                if s0.startswith('"""') or s0.startswith("'''"):
-                    q = s0[:3]
-                    span_text_lines.pop(0)
-                    # Drop until the closing triple quote line (inclusive).
-                    while span_text_lines:
-                        if q in span_text_lines[0]:
-                            span_text_lines.pop(0)
-                            break
-                        span_text_lines.pop(0)
-                    continue
-                break
-            while span_text_lines and not span_text_lines[0].strip():
-                span_text_lines.pop(0)
 
         if span_text_lines:
             note_lines.append("")
@@ -2282,7 +2418,7 @@ def get_function_signature(node: ast.FunctionDef) -> str:
 # @beacon[
 #   id=carto-js-ts@parse_file_outline,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,ra-snippet-range-ast-py,
+#   slice_labels=carto-js-ts,ra-snippet-range-ast-py,ra-reconcile,
 #   kind=span,
 # ]
 # Phase 1 JS/TS: Python AST outline template.
@@ -2487,7 +2623,7 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
 # @beacon[
 #   id=carto-js-ts@parse_js_ts_outline,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,
+#   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,ra-reconcile,
 #   kind=span,
 # ]
 # Phase 1 JS/TS: placeholder anchor for the future parse_js_ts_outline(...)
@@ -3112,7 +3248,9 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     else:
                         next_body = next_line
                     block_lines.append(next_body)
-                    if "]" in next_body:
+                    # Close only when the metadata delimiter line begins with ']'.
+                    # This avoids premature termination when a value contains a stray ']'.
+                    if next_body.strip().startswith("]"):
                         i += 1
                         break
                     i += 1
@@ -3146,6 +3284,8 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     # Unknown/unsupported kind – skip silently for now
                     continue
 
+                show_span, show_span_explicit = _parse_show_span_fields(fields)
+
                 beacon = {
                     "id": fields.get("id"),
                     "role": fields.get("role"),
@@ -3155,6 +3295,8 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     "end_snippet": fields.get("end_snippet"),
                     "comment": fields.get("comment"),
                     "comment_line": comment_line,
+                    "show_span": show_span,
+                    "show_span_explicit": show_span_explicit,
                 }
                 beacons.append(beacon)
                 continue
@@ -3182,7 +3324,7 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 body = raw.lstrip("-").lstrip()
             else:
                 body = raw
-            if "]" in body:
+            if body.strip().startswith("]"):
                 open_end = j
                 break
             j += 1
@@ -3208,7 +3350,7 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     else:
                         next_body = next_raw
                     close_lines.append(next_body)
-                    if "]" in next_body:
+                    if next_body.strip().startswith("]"):
                         k += 1
                         break
                     k += 1
@@ -3336,6 +3478,8 @@ def parse_js_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
             if kind not in {"ast", "span"}:
                 continue
 
+            show_span, show_span_explicit = _parse_show_span_fields(fields)
+
             beacon = {
                 "id": fields.get("id"),
                 "role": fields.get("role"),
@@ -3346,6 +3490,8 @@ def parse_js_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 "comment": fields.get("comment"),
                 "comment_line": comment_line,
                 "kind_explicit": bool(kind_raw),
+                "show_span": show_span,
+                "show_span_explicit": show_span_explicit,
             }
             beacons.append(beacon)
         else:
@@ -3374,7 +3520,7 @@ def parse_js_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
         while j <= n:
             raw = lines[j - 1]
             body = _strip_js_comment_sugar(raw)
-            if "]" in body:
+            if body.strip().startswith("]"):
                 open_end = j
                 break
             j += 1
@@ -3392,7 +3538,7 @@ def parse_js_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     next_raw = lines[k - 1]
                     next_body = _strip_js_comment_sugar(next_raw)
                     close_lines.append(next_body)
-                    if "]" in next_body:
+                    if next_body.strip().startswith("]"):
                         k += 1
                         break
                     k += 1
@@ -3465,7 +3611,9 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     else:
                         next_body = next_line
                     block_lines.append(next_body)
-                    if "]" in next_body:
+                    # Close only when the metadata delimiter line begins with ']'.
+                    # This avoids premature termination when a value contains a stray ']'.
+                    if next_body.strip().startswith("]"):
                         i += 1
                         break
                     i += 1
@@ -3554,7 +3702,7 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     else:
                         next_body = next_raw
                     close_lines.append(next_body)
-                    if "]" in next_body:
+                    if next_body.strip().startswith("]"):
                         k += 1
                         break
                     k += 1
@@ -3739,24 +3887,50 @@ def parse_yaml_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
 # @beacon[
 #   id=auto-beacon@_extract_sql_beacon_context-9w82,
 #   role=_extract_sql_beacon_context,
-#   slice_labels=ra-reconcile,f9-f12-handlers,
+#   slice_labels=ra-reconcile,f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
-def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str]:
+def _extract_sql_beacon_context(
+    lines: list[str],
+    comment_line: int,
+    beacon_id: Optional[str] = None,
+) -> List[str]:
     """Extract nearby SQL comments (non-beacon) around a SQL beacon.
+    This populates the "CONTEXT COMMENTS (SQL)" section of Workflowy notes.
 
     Includes:
     - Lines that are part of a line comment starting with '--'
     - Lines that are part of a block comment /* ... */ above/below the beacon
       (we treat the entire contiguous comment region as context).
 
-    Skips:
-    - blank lines
-    - any line containing '@beacon' (metadata)
+    Excludes:
+    - Any @beacon[...] / @beacon-close[...] delimiter blocks (and their metadata lines).
+    Close-block semantics:
+    - When encountering a @beacon-close block, treat it as the terminator ONLY if
+      its id matches `beacon_id` (supports overlapping/nested span beacons).
     """
     context: List[str] = []
 
     n = len(lines)
+    # @beacon[
+    #   id=auto-beacon@_extract_sql_beacon_context._sql_body-lr4m,
+    #   role=_extract_sql_beacon_context._sql_body,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
+    def _sql_body(raw_line: str) -> str:
+        s = raw_line.lstrip()
+        if s.startswith("--"):
+            return s[2:].lstrip()
+        return s
+    # @beacon[
+    #   id=auto-beacon@_extract_sql_beacon_context._is_meta_block_end-y1eq,
+    #   role=_extract_sql_beacon_context._is_meta_block_end,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
+    def _is_meta_block_end(body: str) -> bool:
+        return body.strip().startswith("]")
 
     # Precompute which lines are comment-like and a cleaned text version.
     # For block comments we treat every line between /* and */ (inclusive)
@@ -3769,6 +3943,7 @@ def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str
         stripped = raw.lstrip()
         if not stripped:
             continue
+        # Do not treat beacon delimiter blocks as human context.
         if "@beacon" in stripped:
             continue
 
@@ -3807,12 +3982,8 @@ def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str
     j = comment_line
     block_end = comment_line
     while j <= n:
-        raw = lines[j - 1].lstrip()
-        if raw.startswith("--"):
-            body = raw.lstrip("-").lstrip()
-        else:
-            body = raw
-        if "]" in body:
+        body = _sql_body(lines[j - 1])
+        if _is_meta_block_end(body):
             block_end = j
             break
         j += 1
@@ -3838,6 +4009,33 @@ def _extract_sql_beacon_context(lines: list[str], comment_line: int) -> List[str
         if not raw.strip():
             j += 1
             continue
+        body = _sql_body(raw)
+        # Skip nested beacon opener blocks entirely.
+        if body.startswith("@beacon["):
+            j += 1
+            while j <= n:
+                inner_body = _sql_body(lines[j - 1])
+                if _is_meta_block_end(inner_body):
+                    j += 1
+                    break
+                j += 1
+            continue
+        # Stop at a matching close block; ignore close blocks for other beacon ids.
+        if body.startswith("@beacon-close["):
+            close_id: Optional[str] = None
+            j += 1
+            while j <= n:
+                inner_body = _sql_body(lines[j - 1]).strip()
+                if inner_body.startswith("id=") and close_id is None:
+                    close_id = inner_body.split("=", 1)[1].strip()
+                    close_id = close_id.rstrip(",").rstrip("]").strip()
+                if _is_meta_block_end(inner_body):
+                    j += 1
+                    break
+                j += 1
+            if beacon_id and close_id and close_id != beacon_id:
+                continue
+            break
         if comment_mask[j - 1]:
             if cleaned[j - 1]:
                 context.append(cleaned[j - 1])
@@ -3872,6 +4070,7 @@ def apply_sql_beacons(
         return
 
     n = len(lines)
+    _prepend_duplicate_beacon_id_warning_nodes(file_children, beacons, language="SQL")
 
     for beacon in beacons:
         if beacon.get("kind") != "span":
@@ -3886,6 +4085,8 @@ def apply_sql_beacons(
             role = b_id.split("@", 1)[0]
         slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
 
+        show_span, show_span_explicit = _beacon_show_span(beacon)
+
         display_role = role or b_id or "sql-span-beacon"
         display_slice = slice_labels or "-"
 
@@ -3894,7 +4095,11 @@ def apply_sql_beacons(
         if tag_suffix:
             name = f"{name} {tag_suffix}"
 
-        context_lines = _extract_sql_beacon_context(lines, beacon.get("comment_line") or 0)
+        context_lines = _extract_sql_beacon_context(
+            lines,
+            beacon.get("comment_line") or 0,
+            beacon_id=b_id,
+        )
         comment = beacon.get("comment")
 
         note_lines = [
@@ -3904,6 +4109,8 @@ def apply_sql_beacons(
             f"slice_labels: {slice_labels}",
             "kind: span",
         ]
+        if show_span_explicit:
+            note_lines.append(f"show_span: {'true' if show_span else 'false'}")
         if comment:
             note_lines.append(f"comment: {comment}")
         if context_lines:
@@ -3926,18 +4133,6 @@ def apply_sql_beacons(
                 while span_text_lines and not span_text_lines[-1].strip():
                     span_text_lines.pop()
 
-        if span_text_lines and context_lines:
-            # Avoid duplicating the same comment block in both
-            # CONTEXT COMMENTS and SPAN TEXT.
-            while span_text_lines:
-                s0 = span_text_lines[0].lstrip()
-                if s0.startswith("--") or s0.startswith("/*") or s0.startswith("*") or s0.startswith("*/"):
-                    span_text_lines.pop(0)
-                    continue
-                break
-            while span_text_lines and not span_text_lines[0].strip():
-                span_text_lines.pop(0)
-
         if span_text_lines:
             note_lines.append("")
             note_lines.append("SPAN TEXT:")
@@ -3955,54 +4150,132 @@ def apply_sql_beacons(
 # @beacon[
 #   id=auto-beacon@_extract_sh_beacon_context-s7r8,
 #   role=_extract_sh_beacon_context,
-#   slice_labels=ra-reconcile,f9-f12-handlers,
+#   slice_labels=ra-reconcile,f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
-def _extract_sh_beacon_context(lines: list[str], comment_line: int) -> List[str]:
-    """Extract nearby '#' comments (non-beacon) around a shell beacon.
+def _extract_sh_beacon_context(
+    lines: list[str],
+    comment_line: int,
+    beacon_id: Optional[str] = None,
+) -> List[str]:
+    """Extract nearby shell comments (non-beacon) around a shell @beacon block.
+    This populates the "CONTEXT COMMENTS (SH)" section of Workflowy notes.
+    Rules:
+    - Never include any @beacon[...] / @beacon-close[...] delimiter blocks (or their metadata lines).
+    - When encountering a @beacon-close block, treat it as the terminator ONLY if its id matches
+      `beacon_id` (supports overlapping/nested span beacons).
 
-    Includes lines starting with '#' above/below the block (excluding @beacon).
+    - Skip empty comment bodies and hash-only separators (e.g. "###").
     """
+    n = len(lines)
     context: List[str] = []
+    # @beacon[
+    #   id=auto-beacon@_extract_sh_beacon_context._strip_hash_prefix-89ha,
+    #   role=_extract_sh_beacon_context._strip_hash_prefix,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
+    def _strip_hash_prefix(raw_line: str) -> str:
+        s = raw_line.lstrip()
+        if s.startswith("#"):
+            # Remove only ONE leading '#'. This avoids turning '###' into ''
+            # (which produced blank lines in the extracted context).
+            return s[1:].lstrip()
+        return s
+    # @beacon[
+    #   id=auto-beacon@_extract_sh_beacon_context._is_meta_block_end-lxa3,
+    #   role=_extract_sh_beacon_context._is_meta_block_end,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
+    def _is_meta_block_end(body: str) -> bool:
+        # Close delimiter is a line that begins with ']'.
+        # We intentionally do NOT use substring matching to avoid false positives.
+        return body.strip().startswith("]")
+    # Locate the end of the opener metadata block so we can start scanning below it.
+    open_end = comment_line
 
     j = comment_line
-    block_end = comment_line
-    while j <= len(lines):
-        raw = lines[j - 1].lstrip()
-        if raw.startswith("#"):
-            body = raw.lstrip("#").lstrip()
-        else:
-            body = raw
-        if "]" in body:
-            block_end = j
+    while 1 <= j <= n:
+        body = _strip_hash_prefix(lines[j - 1])
+        if _is_meta_block_end(body):
+            open_end = j
             break
         j += 1
 
-    # Above
+    # ABOVE: collect contiguous comment bodies above the opener.
     j = comment_line - 1
     while j >= 1:
-        raw = lines[j - 1].lstrip()
-        if not raw:
+        raw = lines[j - 1]
+        if not raw.strip():
             j -= 1
             continue
-        if raw.startswith("#") and "@beacon" not in raw:
-            context.insert(0, raw.lstrip("#").lstrip())
+        stripped = raw.lstrip()
+        if not stripped.startswith("#"):
+            break
+        body = _strip_hash_prefix(raw)
+        if not body:
             j -= 1
             continue
-        break
+        if body.startswith("@beacon") or _is_meta_block_end(body):
+            break
+        if set(body.strip()) <= {"#"}:
+            j -= 1
+            continue
+        context.insert(0, body)
+        j -= 1
 
-    # Below
-    j = block_end + 1
-    while j <= len(lines):
-        raw = lines[j - 1].lstrip()
-        if not raw:
+    # BELOW: collect contiguous comment bodies below the opener until we hit
+    # a non-comment line or a matching @beacon-close block.
+    j = open_end + 1
+    while j <= n:
+        raw = lines[j - 1]
+        if not raw.strip():
             j += 1
             continue
-        if raw.startswith("#") and "@beacon" not in raw:
-            context.append(raw.lstrip("#").lstrip())
+        stripped = raw.lstrip()
+        if not stripped.startswith("#"):
+            break
+        body = _strip_hash_prefix(raw)
+        if not body:
             j += 1
             continue
-        break
+        # Skip nested opener blocks entirely (do not treat as a terminator).
+        if body.startswith("@beacon["):
+            j += 1
+            while j <= n:
+                inner_body = _strip_hash_prefix(lines[j - 1])
+                if _is_meta_block_end(inner_body):
+                    j += 1
+                    break
+                j += 1
+            continue
+        # Stop at a matching close block; ignore close blocks for other beacon ids.
+        if body.startswith("@beacon-close["):
+            close_id: Optional[str] = None
+            j += 1
+            while j <= n:
+                inner_body = _strip_hash_prefix(lines[j - 1]).strip()
+                if inner_body.startswith("id=") and close_id is None:
+                    close_id = inner_body.split("=", 1)[1].strip()
+                    # Drop common trailing punctuation
+                    close_id = close_id.rstrip(",").rstrip("]").strip()
+                if _is_meta_block_end(inner_body):
+                    j += 1
+                    break
+                j += 1
+            # Only stop when the close id matches this beacon id.
+            if beacon_id and close_id and close_id != beacon_id:
+                continue
+            break
+        # Any other beacon marker terminates the context region.
+        if body.startswith("@beacon"):
+            break
+        if set(body.strip()) <= {"#"}:
+            j += 1
+            continue
+        context.append(body)
+        j += 1
 
     return context
 
@@ -4015,6 +4288,52 @@ def _extract_sh_beacon_context(lines: list[str], comment_line: int) -> List[str]
 # ]
 # Phase 2 JS/TS: shell beacon attachment example.
 # Secondary template similar to SQL for span-only beacons.
+def _prepend_duplicate_beacon_id_warning_nodes(
+    children: List[Dict[str, Any]],
+    beacons: list[dict[str, Any]],
+    *,
+    language: str,
+) -> None:
+    """Prepend warning nodes when duplicate beacon IDs appear in a single file.
+    This is a UX guardrail. Duplicate beacon ids (often due to a mistaken
+    `@beacon[` opener where `@beacon-close[` was intended) cause ambiguous
+    id-based matching during F12 refresh.
+    We emit a *salvageable* warning node so the user sees the problem at the
+    top of the file subtree.
+    """
+    if not beacons:
+        return
+    seen_beacon_ids: set[str] = set()
+    duplicate_beacon_ids: set[str] = set()
+    for b in beacons:
+        bid = (b.get("id") or "").strip()
+        if not bid:
+            continue
+        if bid in seen_beacon_ids:
+            duplicate_beacon_ids.add(bid)
+        seen_beacon_ids.add(bid)
+    if not duplicate_beacon_ids:
+        return
+    warning_nodes: List[Dict[str, Any]] = []
+    for dup_id in sorted(duplicate_beacon_ids):
+        warning_nodes.append(
+            {
+                "name": f"🚨 Duplicate beacon ID ({language}): {dup_id}",
+                "note": (
+                    "This file contains multiple @beacon blocks with the same id.\n\n"
+                    "Why this matters:\n"
+                    "- F12 refresh matches nodes by beacon id.\n"
+                    "- Duplicate ids create ambiguous matches and may cause reorder storms.\n\n"
+                    "Fix:\n"
+                    "- Make beacon ids unique (or correct @beacon-close blocks).\n"
+                    "- Then press F12 again."
+                ),
+                "children": [],
+                "_position_hint": "top",
+            }
+        )
+    # Insert at the TOP so it is immediately visible in Workflowy.
+    children[:0] = warning_nodes
 def apply_sh_beacons(
     lines: list[str],
     file_children: List[Dict[str, Any]],
@@ -4029,6 +4348,7 @@ def apply_sh_beacons(
         return
 
     n = len(lines)
+    _prepend_duplicate_beacon_id_warning_nodes(file_children, beacons, language="SH")
 
     for beacon in beacons:
         if beacon.get("kind") != "span":
@@ -4042,6 +4362,8 @@ def apply_sh_beacons(
             role = b_id.split("@", 1)[0]
         slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
 
+        show_span, show_span_explicit = _beacon_show_span(beacon)
+
         display_role = role or b_id or "sh-span-beacon"
         display_slice = slice_labels or "-"
 
@@ -4050,7 +4372,11 @@ def apply_sh_beacons(
         if tag_suffix:
             name = f"{name} {tag_suffix}"
 
-        context_lines = _extract_sh_beacon_context(lines, beacon.get("comment_line") or 0)
+        context_lines = _extract_sh_beacon_context(
+            lines,
+            beacon.get("comment_line") or 0,
+            beacon_id=b_id,
+        )
         comment = beacon.get("comment")
 
         note_lines = [
@@ -4060,6 +4386,8 @@ def apply_sh_beacons(
             f"slice_labels: {slice_labels}",
             "kind: span",
         ]
+        if show_span_explicit:
+            note_lines.append(f"show_span: {'true' if show_span else 'false'}")
         if comment:
             note_lines.append(f"comment: {comment}")
         if context_lines:
@@ -4081,14 +4409,6 @@ def apply_sh_beacons(
                 while span_text_lines and not span_text_lines[-1].strip():
                     span_text_lines.pop()
 
-        if span_text_lines and context_lines:
-            # Avoid duplicating the same comment block in both
-            # CONTEXT COMMENTS and SPAN TEXT.
-            while span_text_lines and span_text_lines[0].lstrip().startswith("#"):
-                span_text_lines.pop(0)
-            while span_text_lines and not span_text_lines[0].strip():
-                span_text_lines.pop(0)
-
         if span_text_lines:
             note_lines.append("")
             note_lines.append("SPAN TEXT:")
@@ -4109,51 +4429,116 @@ def apply_sh_beacons(
 #   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-reconcile,
 #   kind=span,
 # ]
-def _extract_yaml_beacon_context(lines: list[str], comment_line: int) -> List[str]:
-    """Extract nearby YAML comments (non-beacon) around a YAML beacon.
+def _extract_yaml_beacon_context(
+    lines: list[str],
+    comment_line: int,
+    beacon_id: Optional[str] = None,
+) -> List[str]:
+    """Extract nearby YAML comments (non-beacon) around a YAML @beacon block.
+    Mirrors _extract_sh_beacon_context semantics:
+    - Exclude @beacon[...] / @beacon-close[...] delimiter blocks and their metadata.
 
-    Includes lines starting with '#' above/below the block (excluding @beacon).
+    - Stop at a matching @beacon-close (id match when beacon_id is provided).
+    - Skip empty/hash-only separator lines.
     """
+    n = len(lines)
     context: List[str] = []
+    # @beacon[
+    #   id=auto-beacon@_extract_yaml_beacon_context._strip_hash_prefix-5iy9,
+    #   role=_extract_yaml_beacon_context._strip_hash_prefix,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
+    def _strip_hash_prefix(raw_line: str) -> str:
+        s = raw_line.lstrip()
+        if s.startswith("#"):
+            return s[1:].lstrip()
+        return s
+    # @beacon[
+    #   id=auto-beacon@_extract_yaml_beacon_context._is_meta_block_end-c8x6,
+    #   role=_extract_yaml_beacon_context._is_meta_block_end,
+    #   slice_labels=ra-reconcile,
+    #   kind=ast,
+    # ]
+    def _is_meta_block_end(body: str) -> bool:
+        return body.strip().startswith("]")
+    open_end = comment_line
 
     j = comment_line
-    block_end = comment_line
-    while j <= len(lines):
-        raw = lines[j - 1].lstrip()
-        if raw.startswith("#"):
-            body = raw.lstrip("#").lstrip()
-        else:
-            body = raw
-        if "]" in body:
-            block_end = j
+    while 1 <= j <= n:
+        body = _strip_hash_prefix(lines[j - 1])
+        if _is_meta_block_end(body):
+            open_end = j
             break
         j += 1
 
     # Above
     j = comment_line - 1
     while j >= 1:
-        raw = lines[j - 1].lstrip()
-        if not raw:
+        raw = lines[j - 1]
+        if not raw.strip():
             j -= 1
             continue
-        if raw.startswith("#") and "@beacon" not in raw:
-            context.insert(0, raw.lstrip("#").lstrip())
+        stripped = raw.lstrip()
+        if not stripped.startswith("#"):
+            break
+        body = _strip_hash_prefix(raw)
+        if not body:
             j -= 1
             continue
-        break
+        if body.startswith("@beacon") or _is_meta_block_end(body):
+            break
+        if set(body.strip()) <= {"#"}:
+            j -= 1
+            continue
+        context.insert(0, body)
+        j -= 1
 
     # Below
-    j = block_end + 1
-    while j <= len(lines):
-        raw = lines[j - 1].lstrip()
-        if not raw:
+    j = open_end + 1
+    while j <= n:
+        raw = lines[j - 1]
+        if not raw.strip():
             j += 1
             continue
-        if raw.startswith("#") and "@beacon" not in raw:
-            context.append(raw.lstrip("#").lstrip())
+        stripped = raw.lstrip()
+        if not stripped.startswith("#"):
+            break
+        body = _strip_hash_prefix(raw)
+        if not body:
             j += 1
             continue
-        break
+        if body.startswith("@beacon["):
+            j += 1
+            while j <= n:
+                inner_body = _strip_hash_prefix(lines[j - 1])
+                if _is_meta_block_end(inner_body):
+                    j += 1
+                    break
+                j += 1
+            continue
+        if body.startswith("@beacon-close["):
+            close_id: Optional[str] = None
+            j += 1
+            while j <= n:
+                inner_body = _strip_hash_prefix(lines[j - 1]).strip()
+                if inner_body.startswith("id=") and close_id is None:
+                    close_id = inner_body.split("=", 1)[1].strip()
+                    close_id = close_id.rstrip(",").rstrip("]").strip()
+                if _is_meta_block_end(inner_body):
+                    j += 1
+                    break
+                j += 1
+            if beacon_id and close_id and close_id != beacon_id:
+                continue
+            break
+        if body.startswith("@beacon"):
+            break
+        if set(body.strip()) <= {"#"}:
+            j += 1
+            continue
+        context.append(body)
+        j += 1
 
     return context
 
@@ -4180,6 +4565,7 @@ def apply_yaml_beacons(
         return
 
     n = len(lines)
+    _prepend_duplicate_beacon_id_warning_nodes(file_children, beacons, language="YAML")
 
     for beacon in beacons:
         if beacon.get("kind") != "span":
@@ -4193,6 +4579,8 @@ def apply_yaml_beacons(
             role = b_id.split("@", 1)[0]
         slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
 
+        show_span, show_span_explicit = _beacon_show_span(beacon)
+
         display_role = role or b_id or "yaml-span-beacon"
         display_slice = slice_labels or "-"
 
@@ -4201,7 +4589,11 @@ def apply_yaml_beacons(
         if tag_suffix:
             name = f"{name} {tag_suffix}"
 
-        context_lines = _extract_yaml_beacon_context(lines, beacon.get("comment_line") or 0)
+        context_lines = _extract_yaml_beacon_context(
+            lines,
+            beacon.get("comment_line") or 0,
+            beacon_id=b_id,
+        )
         comment = beacon.get("comment")
 
         note_lines = [
@@ -4211,6 +4603,8 @@ def apply_yaml_beacons(
             f"slice_labels: {slice_labels}",
             "kind: span",
         ]
+        if show_span_explicit:
+            note_lines.append(f"show_span: {'true' if show_span else 'false'}")
         if comment:
             note_lines.append(f"comment: {comment}")
         if context_lines:
@@ -4231,14 +4625,6 @@ def apply_yaml_beacons(
                     span_text_lines.pop(0)
                 while span_text_lines and not span_text_lines[-1].strip():
                     span_text_lines.pop()
-
-        if span_text_lines and context_lines:
-            # Avoid duplicating the same comment block in both
-            # CONTEXT COMMENTS and SPAN TEXT.
-            while span_text_lines and span_text_lines[0].lstrip().startswith("#"):
-                span_text_lines.pop(0)
-            while span_text_lines and not span_text_lines[0].strip():
-                span_text_lines.pop(0)
 
         if span_text_lines:
             note_lines.append("")
@@ -4275,6 +4661,7 @@ def apply_js_beacons(
     ast_nodes = list(_iter_ast_outline_nodes(outline_nodes))
 
     n = len(lines)
+    _prepend_duplicate_beacon_id_warning_nodes(outline_nodes, beacons, language="JS/TS")
 
     def _js_next_anchor_line_after(line_no: int) -> Optional[int]:
         for idx in range(line_no + 1, n + 1):
@@ -4357,7 +4744,18 @@ def apply_js_beacons(
         block_end = comment_line
         while j <= n:
             raw = lines[j - 1]
-            if "]" in raw:
+            body = raw.lstrip()
+            if body.startswith("//"):
+                body = body[2:].lstrip()
+            if body.startswith("/*"):
+                body = body[2:].lstrip()
+            if body.startswith("*/"):
+                body = body[2:].lstrip()
+            if body.startswith("*"):
+                body = body[1:].lstrip()
+            if body.rstrip().endswith("*/"):
+                body = body.rstrip()[:-2].rstrip()
+            if body.strip().startswith("]"):
                 block_end = j
                 break
             j += 1
@@ -4514,11 +4912,25 @@ def apply_js_beacons(
             meta_lines.append("CONTEXT COMMENTS (JS/TS):")
             meta_lines.extend(context_lines)
         note = chosen.get("note") or ""
-        meta_block = "\n".join(meta_lines)
         if note:
-            chosen["note"] = note + "\n\n" + meta_block
+            # Keep the identifier (AST_QUALNAME) at the top, then insert the
+            # BEACON metadata block, then the rest of the content.
+            note_lines = note.splitlines()
+            insert_idx = (
+                1
+                if (note_lines and note_lines[0].strip().startswith("AST_QUALNAME:"))
+                else 0
+            )
+            new_note_lines: list[str] = []
+            new_note_lines.extend(note_lines[:insert_idx])
+            new_note_lines.extend(meta_lines)
+            if insert_idx < len(note_lines):
+                if note_lines[insert_idx].strip():
+                    new_note_lines.append("")
+                new_note_lines.extend(note_lines[insert_idx:])
+            chosen["note"] = "\n".join(new_note_lines)
         else:
-            chosen["note"] = meta_block
+            chosen["note"] = "\n".join(meta_lines)
 
     # Pass 2: SPAN beacons
     for beacon in beacons:
@@ -4572,6 +4984,8 @@ def apply_js_beacons(
             role = b_id.split("@", 1)[0]
         slice_labels = _canonicalize_slice_labels(raw_slice_labels, role)
 
+        show_span, show_span_explicit = _beacon_show_span(beacon)
+
         display_role = role or b_id or "js-span-beacon"
         display_slice = slice_labels or "-"
         tag_suffix = _slice_label_tags(slice_labels or display_slice)
@@ -4590,6 +5004,8 @@ def apply_js_beacons(
             f"slice_labels: {slice_labels}",
             "kind: span",
         ]
+        if show_span_explicit:
+            note_lines.append(f"show_span: {'true' if show_span else 'false'}")
         if comment:
             note_lines.append(f"comment: {comment}")
         if context_lines:
@@ -4611,23 +5027,6 @@ def apply_js_beacons(
                     span_text_lines.pop(0)
                 while span_text_lines and not span_text_lines[-1].strip():
                     span_text_lines.pop()
-
-        if span_text_lines and context_lines:
-            # Avoid duplicating the same comment block in both
-            # CONTEXT COMMENTS and SPAN TEXT.
-            while span_text_lines:
-                s0 = span_text_lines[0].lstrip()
-                if (
-                    s0.startswith("//")
-                    or s0.startswith("/*")
-                    or s0.startswith("*")
-                    or s0.startswith("*/")
-                ):
-                    span_text_lines.pop(0)
-                    continue
-                break
-            while span_text_lines and not span_text_lines[0].strip():
-                span_text_lines.pop(0)
 
         if span_text_lines:
             note_lines.append("")
@@ -4808,6 +5207,7 @@ def update_beacon_from_node_python(
         role: str,
         slice_labels: str,
         kind: str,
+        show_span: Optional[bool],
         comment_text: Optional[str],
     ) -> list[str]:
         meta_lines = [
@@ -4820,6 +5220,8 @@ def update_beacon_from_node_python(
             meta_lines.append(f"#   slice_labels={slice_labels},")
         if kind:
             meta_lines.append(f"#   kind={kind},")
+        if show_span is not None:
+            meta_lines.append(f"#   show_span={'true' if show_span else 'false'},")
         if comment_text:
             meta_lines.append(f"#   comment={comment_text},")
         meta_lines.append("# ]")
@@ -4839,6 +5241,8 @@ def update_beacon_from_node_python(
             elif stripped.startswith("comment:"):
                 comment_val = stripped.split(":", 1)[1].strip()
 
+        show_span_note = _extract_show_span_from_note(note)
+
         role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
         # Slice labels come **only** from Workflowy tags in the node name.
@@ -4856,19 +5260,28 @@ def update_beacon_from_node_python(
 
             # Preserve existing kind (span vs ast) when updating an on-disk beacon.
             existing_kind = "ast"
+            existing_show_span: Optional[bool] = None
             for b in beacons:
                 if (b.get("id") or "").strip() != (beacon_id or "").strip():
                     continue
                 k_val = (b.get("kind") or "").strip().lower()
                 if k_val in {"ast", "span"}:
                     existing_kind = k_val
+                # Preserve explicit show_span from disk when present.
+                if b.get("show_span_explicit"):
+                    existing_show_span = bool(b.get("show_span"))
                 break
+
+            show_span_to_write: Optional[bool] = (
+                show_span_note if show_span_note is not None else existing_show_span
+            )
 
             new_block = _build_beacon_block(
                 bid=beacon_id,
                 role=role_display or "",
                 slice_labels=slice_labels_canon,
                 kind=existing_kind,
+                show_span=show_span_to_write,
                 comment_text=comment_val,
             )
             new_block = _indent_beacon_block(new_block, lines, start_idx)
@@ -4925,6 +5338,7 @@ def update_beacon_from_node_python(
                 role=role_display or "",
                 slice_labels=slice_labels_canon,
                 kind="ast",
+                show_span=show_span_note,
                 comment_text=comment_val,
             )
             new_block = _indent_beacon_block(new_block, lines, insert_idx)
@@ -5075,6 +5489,7 @@ def update_beacon_from_node_python(
             role=role_display,
             slice_labels=slice_labels_canon,
             kind="ast",
+            show_span=None,
             comment_text=None,
         )
         new_block = _indent_beacon_block(new_block, lines, insert_idx)
@@ -5183,6 +5598,7 @@ def update_beacon_from_node_js_ts(
         role: str,
         slice_labels: str,
         kind: str,
+        show_span: Optional[bool],
         comment_text: Optional[str],
     ) -> list[str]:
         meta_lines = [
@@ -5195,6 +5611,8 @@ def update_beacon_from_node_js_ts(
             meta_lines.append(f"//   slice_labels={slice_labels},")
         if kind:
             meta_lines.append(f"//   kind={kind},")
+        if show_span is not None:
+            meta_lines.append(f"//   show_span={'true' if show_span else 'false'},")
         if comment_text:
             meta_lines.append(f"//   comment={comment_text},")
         meta_lines.append("// ]")
@@ -5210,6 +5628,8 @@ def update_beacon_from_node_js_ts(
                 role_val = stripped.split(":", 1)[1].strip()
             elif stripped.startswith("comment:"):
                 comment_val = stripped.split(":", 1)[1].strip()
+
+        show_span_note = _extract_show_span_from_note(note)
 
         role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
@@ -5229,19 +5649,27 @@ def update_beacon_from_node_js_ts(
 
             # Preserve existing kind (span vs ast) when updating an on-disk beacon.
             existing_kind = "ast"
+            existing_show_span: Optional[bool] = None
             for b in beacons:
                 if (b.get("id") or "").strip() != (beacon_id or "").strip():
                     continue
                 k_val = (b.get("kind") or "").strip().lower()
                 if k_val in {"ast", "span"}:
                     existing_kind = k_val
+                if b.get("show_span_explicit"):
+                    existing_show_span = bool(b.get("show_span"))
                 break
+
+            show_span_to_write: Optional[bool] = (
+                show_span_note if show_span_note is not None else existing_show_span
+            )
 
             new_block = _build_beacon_block(
                 bid=beacon_id,
                 role=role_display or "",
                 slice_labels=slice_labels_canon,
                 kind=existing_kind,
+                show_span=show_span_to_write,
                 comment_text=comment_val,
             )
             new_block = _indent_beacon_block(new_block, lines, start_idx)
@@ -5298,6 +5726,7 @@ def update_beacon_from_node_js_ts(
                 role=role_display or "",
                 slice_labels=slice_labels_canon,
                 kind="ast",
+                show_span=show_span_note,
                 comment_text=comment_val,
             )
             new_block = _indent_beacon_block(new_block, lines, insert_idx)
@@ -5441,6 +5870,7 @@ def update_beacon_from_node_js_ts(
             role=role_display,
             slice_labels=slice_labels_canon,
             kind="ast",
+            show_span=None,
             comment_text=None,
         )
         new_block = _indent_beacon_block(new_block, lines, insert_idx)
@@ -5548,6 +5978,7 @@ def update_beacon_from_node_markdown(
         role: str,
         slice_labels: str,
         kind: str,
+        show_span: Optional[bool],
         comment_text: Optional[str],
     ) -> list[str]:
         meta_lines = [
@@ -5561,6 +5992,8 @@ def update_beacon_from_node_markdown(
             meta_lines.append(f"  slice_labels={slice_labels},")
         if kind:
             meta_lines.append(f"  kind={kind},")
+        if show_span is not None:
+            meta_lines.append(f"  show_span={'true' if show_span else 'false'},")
         if comment_text:
             meta_lines.append(f"  comment={comment_text},")
         meta_lines.append(" ]")
@@ -5577,6 +6010,8 @@ def update_beacon_from_node_markdown(
                 role_val = stripped.split(":", 1)[1].strip()
             elif stripped.startswith("comment:"):
                 comment_val = stripped.split(":", 1)[1].strip()
+
+        show_span_note = _extract_show_span_from_note(note)
 
         role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
@@ -5596,19 +6031,27 @@ def update_beacon_from_node_markdown(
 
             # Preserve existing kind (span vs ast) when updating an on-disk beacon.
             existing_kind = "ast"
+            existing_show_span: Optional[bool] = None
             for b in beacons:
                 if (b.get("id") or "").strip() != (beacon_id or "").strip():
                     continue
                 k_val = (b.get("kind") or "").strip().lower()
                 if k_val in {"ast", "span"}:
                     existing_kind = k_val
+                if b.get("show_span_explicit"):
+                    existing_show_span = bool(b.get("show_span"))
                 break
+
+            show_span_to_write: Optional[bool] = (
+                show_span_note if show_span_note is not None else existing_show_span
+            )
 
             new_block = _build_beacon_block(
                 bid=beacon_id,
                 role=role_display or "",
                 slice_labels=slice_labels_canon,
                 kind=existing_kind,
+                show_span=show_span_to_write,
                 comment_text=comment_val,
             )
             new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
@@ -5647,6 +6090,7 @@ def update_beacon_from_node_markdown(
                 role=role_display or "",
                 slice_labels=slice_labels_canon,
                 kind="ast",
+                show_span=show_span_note,
                 comment_text=comment_val,
             )
             new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
@@ -5851,6 +6295,7 @@ def update_beacon_from_node_markdown(
             role=role_display,
             slice_labels=slice_labels_canon,
             kind="ast",
+            show_span=None,
             comment_text=None,
         )
         new_block = _indent_beacon_block(new_block, lines, insert_idx)
@@ -5916,6 +6361,14 @@ def update_beacon_from_node_sql(
     # Use robust parser
     beacons = parse_sql_beacon_blocks(lines)
 
+    existing_show_span: Optional[bool] = None
+    for b in beacons:
+        if (b.get("id") or "").strip() != (beacon_id or "").strip():
+            continue
+        if b.get("show_span_explicit"):
+            existing_show_span = bool(b.get("show_span"))
+        break
+
     # Derive role/comment from note; slice_labels from Workflowy name tags only.
     role_val: str | None = None
     comment_val: str | None = None
@@ -5925,6 +6378,11 @@ def update_beacon_from_node_sql(
             role_val = stripped.split(":", 1)[1].strip()
         elif stripped.startswith("comment:"):
             comment_val = stripped.split(":", 1)[1].strip()
+
+    show_span_note = _extract_show_span_from_note(note)
+    show_span_to_write: Optional[bool] = (
+        show_span_note if show_span_note is not None else existing_show_span
+    )
 
     role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
@@ -5982,6 +6440,7 @@ def update_beacon_from_node_sql(
         role: str,
         slice_labels: str,
         kind: str,
+        show_span: Optional[bool],
         comment_text: Optional[str],
     ) -> list[str]:
         meta_lines = [
@@ -5994,6 +6453,8 @@ def update_beacon_from_node_sql(
             meta_lines.append(f"--   slice_labels={slice_labels},")
         if kind:
             meta_lines.append(f"--   kind={kind},")
+        if show_span is not None:
+            meta_lines.append(f"--   show_span={'true' if show_span else 'false'},")
         if comment_text:
             meta_lines.append(f"--   comment={comment_text},")
         meta_lines.append("-- ]")
@@ -6004,6 +6465,7 @@ def update_beacon_from_node_sql(
         role=role_display or "",
         slice_labels=slice_labels_canon,
         kind=existing_kind,
+        show_span=show_span_to_write,
         comment_text=comment_val,
     )
     new_block = _indent_beacon_block(new_block, lines, start_idx)
@@ -6065,6 +6527,14 @@ def update_beacon_from_node_shell(
     # Use robust parser instead of manual scan
     beacons = parse_sh_beacon_blocks(lines)
 
+    existing_show_span: Optional[bool] = None
+    for b in beacons:
+        if (b.get("id") or "").strip() != (beacon_id or "").strip():
+            continue
+        if b.get("show_span_explicit"):
+            existing_show_span = bool(b.get("show_span"))
+        break
+
     def _find_beacon_block_by_id(bid: str) -> Optional[tuple[int, int, str]]:
         bid = (bid or "").strip()
         if not bid:
@@ -6117,6 +6587,11 @@ def update_beacon_from_node_shell(
         elif stripped.startswith("comment:"):
             comment_val = stripped.split(":", 1)[1].strip()
 
+    show_span_note = _extract_show_span_from_note(note)
+    show_span_to_write: Optional[bool] = (
+        show_span_note if show_span_note is not None else existing_show_span
+    )
+
     role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
     extra_label_tokens = [t.lstrip("#") for t in tags]
@@ -6131,6 +6606,7 @@ def update_beacon_from_node_shell(
         role: str,
         slice_labels: str,
         kind: str,
+        show_span: Optional[bool],
         comment_text: Optional[str],
     ) -> list[str]:
         meta_lines = [
@@ -6143,6 +6619,8 @@ def update_beacon_from_node_shell(
             meta_lines.append(f"#   slice_labels={slice_labels},")
         if kind:
             meta_lines.append(f"#   kind={kind},")
+        if show_span is not None:
+            meta_lines.append(f"#   show_span={'true' if show_span else 'false'},")
         if comment_text:
             meta_lines.append(f"#   comment={comment_text},")
         meta_lines.append("# ]")
@@ -6153,6 +6631,7 @@ def update_beacon_from_node_shell(
         role=role_display or "",
         slice_labels=slice_labels_canon,
         kind=existing_kind,
+        show_span=show_span_to_write,
         comment_text=comment_val,
     )
     new_block = _indent_beacon_block(new_block, lines, start_idx)
@@ -6214,6 +6693,14 @@ def update_beacon_from_node_yaml(
     # Use robust parser
     beacons = parse_yaml_beacon_blocks(lines)
 
+    existing_show_span: Optional[bool] = None
+    for b in beacons:
+        if (b.get("id") or "").strip() != (beacon_id or "").strip():
+            continue
+        if b.get("show_span_explicit"):
+            existing_show_span = bool(b.get("show_span"))
+        break
+
     def _find_beacon_block_by_id(bid: str) -> Optional[tuple[int, int, str]]:
         bid = (bid or "").strip()
         if not bid:
@@ -6264,6 +6751,11 @@ def update_beacon_from_node_yaml(
         elif stripped.startswith("comment:"):
             comment_val = stripped.split(":", 1)[1].strip()
 
+    show_span_note = _extract_show_span_from_note(note)
+    show_span_to_write: Optional[bool] = (
+        show_span_note if show_span_note is not None else existing_show_span
+    )
+
     role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
     extra_label_tokens = [t.lstrip("#") for t in tags]
@@ -6278,6 +6770,7 @@ def update_beacon_from_node_yaml(
         role: str,
         slice_labels: str,
         kind: str,
+        show_span: Optional[bool],
         comment_text: Optional[str],
     ) -> list[str]:
         meta_lines = [
@@ -6290,6 +6783,8 @@ def update_beacon_from_node_yaml(
             meta_lines.append(f"#   slice_labels={slice_labels},")
         if kind:
             meta_lines.append(f"#   kind={kind},")
+        if show_span is not None:
+            meta_lines.append(f"#   show_span={'true' if show_span else 'false'},")
         if comment_text:
             meta_lines.append(f"#   comment={comment_text},")
         meta_lines.append("# ]")
@@ -6300,6 +6795,7 @@ def update_beacon_from_node_yaml(
         role=role_display or "",
         slice_labels=slice_labels_canon,
         kind=existing_kind,
+        show_span=show_span_to_write,
         comment_text=comment_val,
     )
     new_block = _indent_beacon_block(new_block, lines, start_idx)
@@ -6323,6 +6819,12 @@ def update_beacon_from_node_yaml(
     return result
 
 
+# @beacon[
+#   id=auto-beacon@reconcile_trees-sbk1,
+#   role=reconcile_trees,
+#   slice_labels=ra-reconcile,
+#   kind=ast,
+# ]
 def reconcile_trees(source_node: Dict[str, Any], ether_node: Dict[str, Any]) -> None:
     """
     Recursively match source nodes with ether nodes to preserve UUIDs.
