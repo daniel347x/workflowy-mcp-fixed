@@ -937,7 +937,7 @@ def apply_markdown_beacons(
                     span_text_lines.pop(0)
                 while span_text_lines and not span_text_lines[-1].strip():
                     span_text_lines.pop()
-        if span_text_lines:
+        if show_span and span_text_lines:
             note_lines.append("")
             note_lines.append("SPAN TEXT:")
             note_lines.extend(span_text_lines)
@@ -2357,7 +2357,7 @@ def apply_python_beacons(
                 while span_text_lines and not span_text_lines[-1].strip():
                     span_text_lines.pop()
 
-        if span_text_lines:
+        if show_span and span_text_lines:
             note_lines.append("")
             note_lines.append("SPAN TEXT:")
             note_lines.extend(span_text_lines)
@@ -2623,7 +2623,7 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
 # @beacon[
 #   id=carto-js-ts@parse_js_ts_outline,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,ra-reconcile,
+#   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,ra-reconcile,test,test2,
 #   kind=span,
 # ]
 # Phase 1 JS/TS: placeholder anchor for the future parse_js_ts_outline(...)
@@ -4133,7 +4133,7 @@ def apply_sql_beacons(
                 while span_text_lines and not span_text_lines[-1].strip():
                     span_text_lines.pop()
 
-        if span_text_lines:
+        if show_span and span_text_lines:
             note_lines.append("")
             note_lines.append("SPAN TEXT:")
             note_lines.extend(span_text_lines)
@@ -4409,7 +4409,7 @@ def apply_sh_beacons(
                 while span_text_lines and not span_text_lines[-1].strip():
                     span_text_lines.pop()
 
-        if span_text_lines:
+        if show_span and span_text_lines:
             note_lines.append("")
             note_lines.append("SPAN TEXT:")
             note_lines.extend(span_text_lines)
@@ -4626,7 +4626,7 @@ def apply_yaml_beacons(
                 while span_text_lines and not span_text_lines[-1].strip():
                     span_text_lines.pop()
 
-        if span_text_lines:
+        if show_span and span_text_lines:
             note_lines.append("")
             note_lines.append("SPAN TEXT:")
             note_lines.extend(span_text_lines)
@@ -5028,7 +5028,7 @@ def apply_js_beacons(
                 while span_text_lines and not span_text_lines[-1].strip():
                     span_text_lines.pop()
 
-        if span_text_lines:
+        if show_span and span_text_lines:
             note_lines.append("")
             note_lines.append("SPAN TEXT:")
             note_lines.extend(span_text_lines)
