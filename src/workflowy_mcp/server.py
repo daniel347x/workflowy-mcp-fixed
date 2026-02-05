@@ -547,6 +547,7 @@ def _launch_windsurf(file_path: str, line: int | None = None) -> None:
     # Try multiple possible Windsurf install locations
     exe_candidates = [
         r"C:\Users\danie\AppData\Local\Programs\Windsurf\Windsurf.exe",
+        r"C:\Users\Daniel.Nissenbaum\AppData\Local\Programs\Windsurf\Windsurf.exe",
         os.path.expandvars(r"%LOCALAPPDATA%\Programs\Windsurf\Windsurf.exe"),
         os.path.expandvars(r"%PROGRAMFILES%\Windsurf\Windsurf.exe"),
         r"C:\Program Files\Windsurf\Windsurf.exe",
