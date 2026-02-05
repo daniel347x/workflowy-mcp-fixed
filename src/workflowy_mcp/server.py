@@ -530,6 +530,8 @@ def _launch_windsurf(file_path: str, line: int | None = None) -> None:
     Quick robustness fix:
     - If the provided file_path does not exist, retry the *same* path with the
       drive letter swapped to C: (no other changes).
+    - If that still doesn't exist, try removing `__Dan_Root` path segment from
+      the C: version.
     """
     import os
     import subprocess
@@ -548,6 +550,16 @@ def _launch_windsurf(file_path: str, line: int | None = None) -> None:
                     "WS_HANDLER",
                 )
                 file_path = alt_path
+            
+            # If C: path still doesn't exist, try removing __Dan_Root segment
+            if not os.path.exists(file_path) and "__Dan_Root" in file_path:
+                alt_path_no_dan_root = file_path.replace("\\__Dan_Root\\", "\\")
+                if os.path.exists(alt_path_no_dan_root):
+                    log_event(
+                        f"WindSurf C: path still missing: {file_path} — trying __Dan_Root removal: {alt_path_no_dan_root}",
+                        "WS_HANDLER",
+                    )
+                    file_path = alt_path_no_dan_root
     except Exception as e:  # noqa: BLE001
         # Best-effort only; do not block launch.
         log_event(f"WindSurf path existence check failed for {file_path}: {e}", "WS_HANDLER")
