@@ -1,10 +1,16 @@
 """WorkFlowy MCP server implementation using FastMCP."""
 
 import sys
+import os
 from datetime import datetime
 # Also log to file to debug deployment/environment
 try:
-    with open(r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log", "a", encoding="utf-8") as f:
+    # Derive project_root dynamically for startup log
+    server_dir_startup = os.path.dirname(os.path.abspath(__file__))
+    mcp_servers_dir_startup = os.path.dirname(server_dir_startup)
+    project_root_startup = os.path.dirname(mcp_servers_dir_startup)
+    startup_log_path = os.path.join(project_root_startup, "temp", "reconcile_debug.log")
+    with open(startup_log_path, "a", encoding="utf-8") as f:
         f.write(f"[{datetime.now().isoformat()}] DEBUG: Workflowy MCP Server loaded from {__file__}\n")
 except Exception:
     pass
@@ -382,7 +388,11 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         # Also append to persistent UUID Explorer log file
         try:
             from datetime import datetime
-            log_path = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\uuid_and_glimpse_explorer\uuid_explorer.md"
+            # Derive project_root dynamically
+            server_dir_uuid = os.path.dirname(os.path.abspath(__file__))
+            mcp_servers_dir_uuid = os.path.dirname(server_dir_uuid)
+            project_root_uuid = os.path.dirname(mcp_servers_dir_uuid)
+            log_path = os.path.join(project_root_uuid, "temp", "uuid_and_glimpse_explorer", "uuid_explorer.md")
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"## {timestamp}\n\n")
@@ -2053,9 +2063,11 @@ def _gc_carto_jobs(carto_jobs_base: str, max_age_seconds: int = 3600) -> None:
 
         # 2) Per-file F12 artifacts under temp/cartographer_file_refresh
         try:
-            file_refresh_dir = Path(
-                r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\cartographer_file_refresh"
-            )
+            # Derive project_root dynamically
+            server_dir_gc = os.path.dirname(os.path.abspath(__file__))
+            mcp_servers_dir_gc = os.path.dirname(server_dir_gc)
+            project_root_gc = os.path.dirname(mcp_servers_dir_gc)
+            file_refresh_dir = Path(os.path.join(project_root_gc, "temp", "cartographer_file_refresh"))
             if file_refresh_dir.exists():
                 for path in file_refresh_dir.iterdir():
                     try:
@@ -2115,8 +2127,9 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
             "error": f"Invalid mode {mode!r}; expected 'file' or 'folder'.",
         }
 
-    # Job directory under workflowy_mcp temp
-    carto_jobs_base = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\MCP_Servers\workflowy_mcp\temp\cartographer_jobs"
+    # Job directory under workflowy_mcp temp (derive dynamically)
+    server_dir_carto = os.path.dirname(os.path.abspath(__file__))
+    carto_jobs_base = os.path.join(server_dir_carto, "temp", "cartographer_jobs")
     os.makedirs(carto_jobs_base, exist_ok=True)
 
     # Opportunistic GC of old completed/cancelled CARTO_REFRESH jobs.
@@ -2187,9 +2200,12 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
 
     env["WORKFLOWY_API_KEY"] = api_key
     # NEXUS_RUNS_BASE is only used for WEAVE, but safe to pass through here as well
+    # Derive nexus_runs dynamically
+    mcp_servers_dir_env = os.path.dirname(server_dir_carto)
+    project_root_env = os.path.dirname(mcp_servers_dir_env)
     env.setdefault(
         "NEXUS_RUNS_BASE",
-        r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs",
+        os.path.join(project_root_env, "temp", "nexus_runs"),
     )
 
     cmd = [
@@ -2293,11 +2309,13 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
     from pathlib import Path
     import json as json_module
 
-    # Determine nexus_runs directory
-    # TODO: make this configurable or derive from client
-    nexus_runs_base = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs"
+    # Derive directories dynamically from this file's location
+    server_dir = os.path.dirname(os.path.abspath(__file__))
+    mcp_servers_dir = os.path.dirname(server_dir)
+    project_root = os.path.dirname(mcp_servers_dir)
+    nexus_runs_base = os.path.join(project_root, "temp", "nexus_runs")
     # CARTO_REFRESH job directory (server-managed)
-    carto_jobs_base = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\MCP_Servers\workflowy_mcp\temp\cartographer_jobs"
+    carto_jobs_base = os.path.join(server_dir, "temp", "cartographer_jobs")
 
     def _scan_weave_journals(base_dir_str: str) -> list[dict[str, Any]]:
         """Scan nexus_runs/ for WEAVE journal files and summarize their status.
@@ -2596,7 +2614,11 @@ def validate_secret_code(provided_code: str | None, function_name: str) -> tuple
     import os
     import secrets
     
-    SECRET_FILE = r"E:\__daniel347x\glimpse_etch.txt"
+    # Derive project_root dynamically from this file's location
+    server_dir = os.path.dirname(os.path.abspath(__file__))
+    mcp_servers_dir = os.path.dirname(server_dir)
+    project_root = os.path.dirname(mcp_servers_dir)
+    SECRET_FILE = os.path.join(project_root, "glimpse_etch.txt")
     
     # Generate code if file doesn't exist
     if not os.path.exists(SECRET_FILE):

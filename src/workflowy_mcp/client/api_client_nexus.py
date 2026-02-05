@@ -43,7 +43,12 @@ def _log_glimpse_to_file(operation_type: str, node_id: str, result: dict[str, An
     try:
         import json as json_module
         
-        base_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\uuid_and_glimpse_explorer"
+        # Derive project_root dynamically from this file's location
+        client_dir = os.path.dirname(os.path.abspath(__file__))
+        wf_mcp_dir = os.path.dirname(client_dir)
+        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+        project_root = os.path.dirname(mcp_servers_dir)
+        base_dir = os.path.join(project_root, "temp", "uuid_and_glimpse_explorer")
         filename = f"{operation_type}.md"
         log_path = os.path.join(base_dir, filename)
         
@@ -317,9 +322,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # ]
     def _get_nexus_dir(self, nexus_tag: str) -> str:
         """Resolve base directory for a CORINTHIAN NEXUS run."""
-        base_dir = Path(
-            r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs"
-        )
+        # Derive project_root dynamically from this file's location
+        client_dir = os.path.dirname(os.path.abspath(__file__))
+        wf_mcp_dir = os.path.dirname(client_dir)
+        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+        project_root = os.path.dirname(mcp_servers_dir)
+        base_dir = Path(os.path.join(project_root, "temp", "nexus_runs"))
         if not base_dir.exists():
             raise NetworkError(
                 "No NEXUS runs directory; run nexus_scry/nexus_glimpse first"
@@ -2629,7 +2637,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # Environment
         env = os.environ.copy()
         env['WORKFLOWY_API_KEY'] = self.config.api_key.get_secret_value()
-        env['NEXUS_RUNS_BASE'] = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs"
+        # Derive nexus_runs dynamically
+        client_dir = os.path.dirname(os.path.abspath(__file__))
+        wf_mcp_dir = os.path.dirname(client_dir)
+        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+        project_root = os.path.dirname(mcp_servers_dir)
+        env['NEXUS_RUNS_BASE'] = os.path.join(project_root, "temp", "nexus_runs")
         
         log_handle = open(log_file, 'w', encoding='utf-8')
         
@@ -3071,7 +3084,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if json_file_ctx and os.path.exists(json_file_ctx):
                     log_path = os.path.join(os.path.dirname(json_file_ctx), "reconcile_debug.log")
                 else:
-                    log_path = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log"
+                    # Derive project_root dynamically
+                    client_dir = os.path.dirname(os.path.abspath(__file__))
+                    wf_mcp_dir = os.path.dirname(client_dir)
+                    mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+                    project_root = os.path.dirname(mcp_servers_dir)
+                    log_path = os.path.join(project_root, "temp", "reconcile_debug.log")
                 ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                 with open(log_path, "a", encoding="utf-8") as dbg:
                     dbg.write(f"[{ts}] ERROR: {error_msg}\n")
@@ -3104,7 +3122,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # ]
     def nexus_list_keystones(self) -> dict[str, Any]:
         """List NEXUS Keystone backups."""
-        backup_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_backups"
+        # Derive project_root dynamically
+        client_dir = os.path.dirname(os.path.abspath(__file__))
+        wf_mcp_dir = os.path.dirname(client_dir)
+        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+        project_root = os.path.dirname(mcp_servers_dir)
+        backup_dir = os.path.join(project_root, "temp", "nexus_backups")
         if not os.path.exists(backup_dir):
             return {"success": True, "keystones": [], "message": "No backup dir"}
         
@@ -3127,7 +3150,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
     async def nexus_restore_keystone(self, keystone_id: str) -> dict[str, Any]:
         """Restore from Keystone backup."""
-        backup_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_backups"
+        # Derive project_root dynamically
+        client_dir = os.path.dirname(os.path.abspath(__file__))
+        wf_mcp_dir = os.path.dirname(client_dir)
+        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+        project_root = os.path.dirname(mcp_servers_dir)
+        backup_dir = os.path.join(project_root, "temp", "nexus_backups")
         
         target_file = None
         for filename in os.listdir(backup_dir):
@@ -3142,7 +3170,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
     def nexus_purge_keystones(self, keystone_ids: list[str]) -> dict[str, Any]:
         """Delete Keystone backups."""
-        backup_dir = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\temp\\nexus_backups"
+        # Derive project_root dynamically
+        client_dir = os.path.dirname(os.path.abspath(__file__))
+        wf_mcp_dir = os.path.dirname(client_dir)
+        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+        project_root = os.path.dirname(mcp_servers_dir)
+        backup_dir = os.path.join(project_root, "temp", "nexus_backups")
         purged = []
         errors = []
 
