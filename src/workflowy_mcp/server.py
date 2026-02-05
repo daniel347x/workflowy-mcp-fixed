@@ -537,42 +537,59 @@ def _launch_windsurf(file_path: str, line: int | None = None) -> None:
     app activation, while still allowing Windsurf itself to reuse the
     existing window (no explicit "new window" flag is used here).
 
-    Quick robustness fix:
-    - If the provided file_path does not exist, retry the *same* path with the
-      drive letter swapped to C: (no other changes).
-    - If that still doesn't exist, try removing `__Dan_Root` path segment from
-      the C: version.
+    Bidirectional path normalization:
+    - If path doesn't exist + non-C drive → try C:, then C: with __Dan_Root removed
+    - If path doesn't exist + C: drive → try E: with __Dan_Root added back
     """
     import os
     import subprocess
 
     exe = r"C:\\Users\\danie\\AppData\\Local\\Programs\\Windsurf\\Windsurf.exe"
 
-    # If the file is missing (common when the Cartographer source map was built
-    # on a different drive), try the same path on C:.
+    # Bidirectional path normalization (matches normalize_cartographer_path logic)
     try:
         if file_path and isinstance(file_path, str) and not os.path.exists(file_path):
             drive, tail = os.path.splitdrive(file_path)
-            if drive and drive.upper() != "C:":
-                alt_path = "C:" + tail
-                log_event(
-                    f"WindSurf path missing: {file_path} — trying C: fallback: {alt_path}",
-                    "WS_HANDLER",
-                )
-                file_path = alt_path
             
-            # If C: path still doesn't exist, try removing __Dan_Root segment
-            if not os.path.exists(file_path) and "__Dan_Root" in file_path:
-                alt_path_no_dan_root = file_path.replace("\\__Dan_Root\\", "\\")
-                if os.path.exists(alt_path_no_dan_root):
+            # BRANCH A: non-C drive → try C: variants
+            if drive and drive.upper() != "C:":
+                # Try C: drive
+                alt_c_path = "C:" + tail
+                if os.path.exists(alt_c_path):
                     log_event(
-                        f"WindSurf C: path still missing: {file_path} — trying __Dan_Root removal: {alt_path_no_dan_root}",
+                        f"WindSurf path normalized: {file_path} → {alt_c_path} (C: drive)",
                         "WS_HANDLER",
                     )
-                    file_path = alt_path_no_dan_root
+                    file_path = alt_c_path
+                # Try C: with __Dan_Root removed
+                elif "__Dan_Root" in alt_c_path:
+                    alt_no_dan_root = alt_c_path.replace("\\__Dan_Root\\", "\\")
+                    if os.path.exists(alt_no_dan_root):
+                        log_event(
+                            f"WindSurf path normalized: {file_path} → {alt_no_dan_root} (__Dan_Root removed)",
+                            "WS_HANDLER",
+                        )
+                        file_path = alt_no_dan_root
+            
+            # BRANCH B: C: drive → try E: with __Dan_Root added back
+            elif drive and drive.upper() == "C:":
+                # Pattern: C:\__daniel347x\__repos\... → E:\__daniel347x\__Dan_Root\__repos\...
+                parts = tail.split(os.sep)
+                # parts[0] = '', parts[1] = '__daniel347x', parts[2] = '__repos', ...
+                if len(parts) >= 3 and parts[1] == "__daniel347x":
+                    # Insert __Dan_Root after __daniel347x
+                    new_parts = parts[:2] + ["__Dan_Root"] + parts[2:]
+                    new_tail = os.sep.join(new_parts)
+                    alt_e_with_dan_root = "E:" + new_tail
+                    if os.path.exists(alt_e_with_dan_root):
+                        log_event(
+                            f"WindSurf path normalized: {file_path} → {alt_e_with_dan_root} (E: + __Dan_Root)",
+                            "WS_HANDLER",
+                        )
+                        file_path = alt_e_with_dan_root
     except Exception as e:  # noqa: BLE001
         # Best-effort only; do not block launch.
-        log_event(f"WindSurf path existence check failed for {file_path}: {e}", "WS_HANDLER")
+        log_event(f"WindSurf path normalization failed for {file_path}: {e}", "WS_HANDLER")
 
     if line is not None and isinstance(line, int) and line > 0:
         # -g file:line (reuse existing window semantics left to Windsurf)

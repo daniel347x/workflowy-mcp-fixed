@@ -96,10 +96,10 @@ def parse_path_or_root_from_note(note_str: str | None) -> str | None:
 def normalize_cartographer_path(file_path: str | None) -> str | None:
     """Normalize a Cartographer Path:/Root: value for cross-machine portability.
 
-    Applies the same fallback logic as _launch_windsurf:
+    Bidirectional fallback logic:
     1. Try given path as-is
-    2. If missing + non-C drive → swap to C: drive
-    3. If still missing + contains __Dan_Root → remove \__Dan_Root\ segment
+    2. If missing + non-C drive → try C: drive, then C: with __Dan_Root removed
+    3. If missing + C: drive → try E: drive with __Dan_Root added back
 
     Returns the first path that exists, or the original if none exist (so
     Cartographer can fail with a clear error showing the actual path).
@@ -112,9 +112,11 @@ def normalize_cartographer_path(file_path: str | None) -> str | None:
         if os.path.exists(file_path):
             return file_path
 
-        # Step 2: Try C: drive if not already C:
         drive, tail = os.path.splitdrive(file_path)
+        
+        # BRANCH A: Original is non-C drive (e.g., E:) → try C: variants
         if drive and drive.upper() != "C:":
+            # Step 2a: Try C: drive
             alt_c_path = "C:" + tail
             if os.path.exists(alt_c_path):
                 log_event(
@@ -123,7 +125,7 @@ def normalize_cartographer_path(file_path: str | None) -> str | None:
                 )
                 return alt_c_path
 
-            # Step 3: Try removing __Dan_Root segment from C: path
+            # Step 3a: Try removing __Dan_Root segment from C: path
             if "__Dan_Root" in alt_c_path:
                 alt_no_dan_root = alt_c_path.replace("\\__Dan_Root\\", "\\")
                 if os.path.exists(alt_no_dan_root):
@@ -132,6 +134,25 @@ def normalize_cartographer_path(file_path: str | None) -> str | None:
                         "CARTO_PATH",
                     )
                     return alt_no_dan_root
+        
+        # BRANCH B: Original is C: drive → try E: with __Dan_Root added
+        elif drive and drive.upper() == "C:":
+            # Step 2b: Try E: drive with __Dan_Root segment inserted
+            # Pattern: C:\__daniel347x\__repos\... → E:\__daniel347x\__Dan_Root\__repos\...
+            # Insert __Dan_Root after the first path component (__daniel347x)
+            parts = tail.split(os.sep)
+            # parts[0] = '', parts[1] = '__daniel347x', parts[2] = '__repos', ...
+            if len(parts) >= 3 and parts[1] == "__daniel347x":
+                # Insert __Dan_Root after __daniel347x
+                new_parts = parts[:2] + ["__Dan_Root"] + parts[2:]
+                new_tail = os.sep.join(new_parts)
+                alt_e_with_dan_root = "E:" + new_tail
+                if os.path.exists(alt_e_with_dan_root):
+                    log_event(
+                        f"Cartographer path normalized: {file_path} → {alt_e_with_dan_root} (E: + __Dan_Root)",
+                        "CARTO_PATH",
+                    )
+                    return alt_e_with_dan_root
 
         # No fallback succeeded; return original so error messages are clear
         return file_path
