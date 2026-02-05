@@ -544,7 +544,26 @@ def _launch_windsurf(file_path: str, line: int | None = None) -> None:
     import os
     import subprocess
 
-    exe = r"C:\\Users\\danie\\AppData\\Local\\Programs\\Windsurf\\Windsurf.exe"
+    # Try multiple possible Windsurf install locations
+    exe_candidates = [
+        r"C:\Users\danie\AppData\Local\Programs\Windsurf\Windsurf.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Windsurf\Windsurf.exe"),
+        os.path.expandvars(r"%PROGRAMFILES%\Windsurf\Windsurf.exe"),
+        r"C:\Program Files\Windsurf\Windsurf.exe",
+    ]
+    
+    exe = None
+    for candidate in exe_candidates:
+        if os.path.exists(candidate):
+            exe = candidate
+            break
+    
+    if not exe:
+        log_event(
+            f"WindSurf executable not found in any of: {exe_candidates}",
+            "WS_HANDLER",
+        )
+        raise FileNotFoundError("Windsurf.exe not found in standard install locations")
 
     # Bidirectional path normalization (matches normalize_cartographer_path logic)
     try:
