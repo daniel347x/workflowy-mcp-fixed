@@ -93,6 +93,55 @@ def parse_path_or_root_from_note(note_str: str | None) -> str | None:
     return None
 
 
+def normalize_cartographer_path(file_path: str | None) -> str | None:
+    """Normalize a Cartographer Path:/Root: value for cross-machine portability.
+
+    Applies the same fallback logic as _launch_windsurf:
+    1. Try given path as-is
+    2. If missing + non-C drive → swap to C: drive
+    3. If still missing + contains __Dan_Root → remove \__Dan_Root\ segment
+
+    Returns the first path that exists, or the original if none exist (so
+    Cartographer can fail with a clear error showing the actual path).
+    """
+    if not file_path or not isinstance(file_path, str):
+        return file_path
+
+    try:
+        # Step 1: Try original path
+        if os.path.exists(file_path):
+            return file_path
+
+        # Step 2: Try C: drive if not already C:
+        drive, tail = os.path.splitdrive(file_path)
+        if drive and drive.upper() != "C:":
+            alt_c_path = "C:" + tail
+            if os.path.exists(alt_c_path):
+                log_event(
+                    f"Cartographer path normalized: {file_path} → {alt_c_path} (C: drive)",
+                    "CARTO_PATH",
+                )
+                return alt_c_path
+
+            # Step 3: Try removing __Dan_Root segment from C: path
+            if "__Dan_Root" in alt_c_path:
+                alt_no_dan_root = alt_c_path.replace("\\__Dan_Root\\", "\\")
+                if os.path.exists(alt_no_dan_root):
+                    log_event(
+                        f"Cartographer path normalized: {file_path} → {alt_no_dan_root} (__Dan_Root removed)",
+                        "CARTO_PATH",
+                    )
+                    return alt_no_dan_root
+
+        # No fallback succeeded; return original so error messages are clear
+        return file_path
+
+    except Exception as e:  # noqa: BLE001
+        # Best-effort only; failures should not break F12.
+        log_event(f"normalize_cartographer_path failed for {file_path}: {e}", "CARTO_PATH")
+        return file_path
+
+
 def is_pid_running(pid: int) -> bool:
     """Check if a process ID is currently running."""
     try:
@@ -3315,6 +3364,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 f"File node {file_node_id} note is missing 'Path:'/'Root:' line; cannot refresh",
             )
 
+        # Normalize path for cross-machine portability (E: → C:, remove __Dan_Root)
+        source_path = normalize_cartographer_path(source_path) or source_path
+
         if not os.path.isfile(source_path):
             raise NetworkError(f"Source file not found at Path: {source_path}")
 
@@ -3709,6 +3761,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 raise NetworkError(
                     f"File node {file_node_id} note is missing 'Path:'/'Root:' line; cannot build incremental map",
                 )
+
+            # Normalize path for cross-machine portability (E: → C:, remove __Dan_Root)
+            source_path = normalize_cartographer_path(source_path) or source_path
 
             # NEW: directory-aware routing – if Path/Root points to a directory,
             # delegate to the FOLDER-level Cartographer sync instead of the
@@ -4305,6 +4360,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 f"node {node_id!r}",
             )
 
+        # Normalize path for cross-machine portability (E: → C:, remove __Dan_Root)
+        source_path = normalize_cartographer_path(source_path) or source_path
+
         ext = os.path.splitext(source_path)[1].lower()
 
         # 3) Import nexus_map_codebase and delegate to language-specific helper.
@@ -4764,6 +4822,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         # Root Path: (may be None or a directory path)
         root_path = _parse_path_from_note(note_text_root) if note_text_root else None
+        # Normalize for cross-machine portability
+        if root_path:
+            root_path = normalize_cartographer_path(root_path) or root_path
         if root_path and not os.path.isdir(root_path):
             log_event(
                 f"refresh_folder_cartographer_sync: root Path=\"{root_path}\" is not a directory; ignoring disk sync",
@@ -4828,6 +4889,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             source_path = _parse_path_from_note(str(note))
             if not source_path:
                 continue
+
+            # Normalize for cross-machine portability
+            source_path = normalize_cartographer_path(source_path) or source_path
 
             canonical = _canonical_path(source_path)
             exists = os.path.isfile(source_path)
