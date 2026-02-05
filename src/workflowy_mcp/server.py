@@ -93,7 +93,7 @@ def get_client() -> WorkFlowyClient:
 # @beacon[
 #   id=auto-beacon@get_ws_connection-bjsi,
 #   role=get_ws_connection,
-#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,
+#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,nexus--glimpse-extension,
 #   kind=ast,
 # ]
 def get_ws_connection():
@@ -122,7 +122,7 @@ def _log(message: str, component: str = "SERVER") -> None:
 # @beacon[
 #   id=auto-beacon@_resolve_uuid_path_and_respond-fu2j,
 #   role=_resolve_uuid_path_and_respond,
-#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,
+#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,ra-reconcile,
 #   kind=ast,
 # ]
 async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, format_mode: str = "f3") -> None:
@@ -421,7 +421,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
 # @beacon[
 #   id=auto-beacon@_guess_line_number_from_name-wlsn,
 #   role=_guess_line_number_from_name,
-#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-websocket,
+#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-websocket,ra-reconcile,
 #   kind=ast,
 # ]
 def _guess_line_number_from_name(file_path: str, node_name: str | None) -> int:
@@ -526,10 +526,31 @@ def _launch_windsurf(file_path: str, line: int | None = None) -> None:
     Uses PowerShell Start-Process so that Windows treats this like a normal
     app activation, while still allowing Windsurf itself to reuse the
     existing window (no explicit "new window" flag is used here).
+
+    Quick robustness fix:
+    - If the provided file_path does not exist, retry the *same* path with the
+      drive letter swapped to C: (no other changes).
     """
+    import os
     import subprocess
 
     exe = r"C:\\Users\\danie\\AppData\\Local\\Programs\\Windsurf\\Windsurf.exe"
+
+    # If the file is missing (common when the Cartographer source map was built
+    # on a different drive), try the same path on C:.
+    try:
+        if file_path and isinstance(file_path, str) and not os.path.exists(file_path):
+            drive, tail = os.path.splitdrive(file_path)
+            if drive and drive.upper() != "C:":
+                alt_path = "C:" + tail
+                log_event(
+                    f"WindSurf path missing: {file_path} — trying C: fallback: {alt_path}",
+                    "WS_HANDLER",
+                )
+                file_path = alt_path
+    except Exception as e:  # noqa: BLE001
+        # Best-effort only; do not block launch.
+        log_event(f"WindSurf path existence check failed for {file_path}: {e}", "WS_HANDLER")
 
     if line is not None and isinstance(line, int) and line > 0:
         # -g file:line (reuse existing window semantics left to Windsurf)
@@ -560,7 +581,7 @@ def _launch_windsurf(file_path: str, line: int | None = None) -> None:
 # @beacon[
 #   id=auto-beacon@_maybe_create_ast_beacon_from_tags-adiu,
 #   role=_maybe_create_ast_beacon_from_tags,
-#   slice_labels=f9-f12-handlers,ra-websocket,
+#   slice_labels=f9-f12-handlers,ra-websocket,ra-reconcile,
 #   kind=ast,
 # ]
 async def _maybe_create_ast_beacon_from_tags(
@@ -873,7 +894,7 @@ async def _maybe_create_ast_beacon_from_tags(
 # @beacon[
 #   id=auto-beacon@_handle_refresh_file_node-7irr,
 #   role=_handle_refresh_file_node,
-#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-websocket,
+#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-websocket,ra-reconcile,
 #   kind=ast,
 # ]
 async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
@@ -1092,7 +1113,7 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
 # @beacon[
 #   id=auto-beacon@_handle_refresh_folder_node-tgyl,
 #   role=_handle_refresh_folder_node,
-#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-websocket,
+#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-websocket,ra-reconcile,
 #   kind=ast,
 # ]
 async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
@@ -1316,7 +1337,7 @@ async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None
 # @beacon[
 #   id=auto-beacon@websocket_handler-kgmz,
 #   role=websocket_handler,
-#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,
+#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,nexus--glimpse-extension,
 #   kind=ast,
 # ]
 async def websocket_handler(websocket):
@@ -1766,7 +1787,7 @@ async def websocket_handler(websocket):
 # @beacon[
 #   id=auto-beacon@start_websocket_server-xel3,
 #   role=start_websocket_server,
-#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,
+#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-websocket,nexus--glimpse-extension,
 #   kind=ast,
 # ]
 async def start_websocket_server():
@@ -3001,6 +3022,12 @@ async def move_node(
         "No Workflowy API calls, instant, you control granularity by expanding nodes."
     ),
 )
+# @beacon[
+#   id=auto-beacon@nexus_glimpse-mvqp,
+#   role=nexus_glimpse,
+#   slice_labels=nexus--glimpse-extension,
+#   kind=ast,
+# ]
 async def nexus_glimpse(
     nexus_tag: str,
     workflowy_root_id: str,
@@ -3096,6 +3123,12 @@ async def workflowy_refresh_nodes_export_cache() -> dict:
         "Later, you will IGNITE the ETHER more deeply on selected SHARDS."
     ),
 )
+# @beacon[
+#   id=auto-beacon@nexus_scry-xmj3,
+#   role=nexus_scry,
+#   slice_labels=nexus--glimpse-extension,
+#   kind=ast,
+# ]
 async def nexus_scry(
     nexus_tag: str,
     workflowy_root_id: str,
@@ -3678,6 +3711,12 @@ def generate_markdown(
     name="workflowy_glimpse",
     description="Load entire node tree into context (no file intermediary). GLIMPSE command for direct context loading. Optional output_file writes TERRAIN export (WebSocket+API merge with full NEXUS semantics)."
 )
+# @beacon[
+#   id=auto-beacon@glimpse-rxug,
+#   role=glimpse,
+#   slice_labels=nexus--glimpse-extension,
+#   kind=ast,
+# ]
 async def glimpse(
     node_id: str,
     output_file: str | None = None,
@@ -3743,6 +3782,12 @@ async def glimpse(
     name="workflowy_scry",
     description="Load entire node tree via API (bypass WebSocket). Use when Key Files doesn't have parent UUID for ETCH, or when Dan wants complete tree regardless of expansion state."
 )
+# @beacon[
+#   id=auto-beacon@glimpse_full-ktij,
+#   role=glimpse_full,
+#   slice_labels=nexus--glimpse-extension,
+#   kind=ast,
+# ]
 async def glimpse_full(
     node_id: str,
     depth: int | None = None,
@@ -3975,7 +4020,7 @@ async def etch_async(
 # @beacon[
 #   id=auto-beacon@beacon_get_code_snippet-kxet,
 #   role=beacon_get_code_snippet,
-#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,
+#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 async def beacon_get_code_snippet(
@@ -4029,7 +4074,7 @@ async def beacon_get_code_snippet(
 # @beacon[
 #   id=auto-beacon@_read_text_snippet_impl-lsln,
 #   role=_read_text_snippet_impl,
-#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,
+#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 async def _read_text_snippet_impl(
@@ -4142,7 +4187,7 @@ async def _read_text_snippet_impl(
 # @beacon[
 #   id=auto-beacon@read_text_snippet-37kd,
 #   role=read_text_snippet,
-#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,
+#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 async def read_text_snippet(
@@ -4189,7 +4234,7 @@ async def read_text_snippet(
 # @beacon[
 #   id=auto-beacon@read_text_snippet_by_uuid-ji9w,
 #   role=read_text_snippet_by_uuid,
-#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,
+#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 async def read_text_snippet_by_uuid(
@@ -4228,7 +4273,7 @@ async def read_text_snippet_by_uuid(
 # @beacon[
 #   id=auto-beacon@read_text_snippet_by_symbol-ewti,
 #   role=read_text_snippet_by_symbol,
-#   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-snippet-range,
+#   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-snippet-range,ra-reconcile,
 #   kind=ast,
 # ]
 async def read_text_snippet_by_symbol(
@@ -4397,7 +4442,7 @@ async def beacon_refresh_code_node(
 # @beacon[
 #   id=auto-beacon@update_beacon_from_node-kiam,
 #   role=update_beacon_from_node,
-#   slice_labels=f9-f12-handlers,
+#   slice_labels=f9-f12-handlers,ra-reconcile,
 #   kind=ast,
 # ]
 async def update_beacon_from_node(
