@@ -591,29 +591,26 @@ def _launch_windsurf(file_path: str, line: int | None = None) -> None:
         # Best-effort only; do not block launch.
         log_event(f"WindSurf path normalization failed for {file_path}: {e}", "WS_HANDLER")
 
+    # Build Windsurf command directly (avoid PowerShell quote hell)
     if line is not None and isinstance(line, int) and line > 0:
         # -g file:line (reuse existing window semantics left to Windsurf)
-        arglist = f"-g \"{file_path}:{line}\""
+        ws_args = ["-g", f"{file_path}:{line}"]
     else:
         # Reuse existing window and just open the file
-        arglist = f"-r \"{file_path}\""
-
-    ps_cmd = (
-        "Start-Process -FilePath '" + exe + "' "
-        "-ArgumentList '" + arglist + "' "
-        "-WindowStyle Normal"
-    )
+        ws_args = ["-r", file_path]
 
     try:
+        # Launch Windsurf directly without PowerShell wrapper
         subprocess.Popen(
-            ["powershell.exe", "-Command", ps_cmd],
+            [exe] + ws_args,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0,
         )
-        log_event(f"Launched WindSurf for {file_path} (line={line}) via PowerShell", "WS_HANDLER")
+        log_event(f"Launched WindSurf for {file_path} (line={line}) args={ws_args}", "WS_HANDLER")
     except Exception as e:  # noqa: BLE001
         # Let callers surface a structured error if needed
-        log_event(f"Failed to launch WindSurf for {file_path} via PowerShell: {e}", "WS_HANDLER")
+        log_event(f"Failed to launch WindSurf for {file_path}: {e}", "WS_HANDLER")
         raise
 
 
