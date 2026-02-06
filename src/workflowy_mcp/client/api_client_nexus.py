@@ -164,40 +164,55 @@ def normalize_cartographer_path(file_path: str | None) -> str | None:
                     new_parts = parts[:2] + ["__Dan_Root"] + parts[2:]
                     _add((d or "") + os.sep.join(new_parts))
 
-        # 4) Cross-machine Obsidian vault mapping.
+        # 4) Cross-machine root mapping based on path markers.
         #
-        # We try to be robust by mapping based on the *"\\__Obsidian\\" marker*
-        # when present, rather than only hardcoding one absolute prefix.
-        # This helps when:
-        # - drive letters differ (E: vs C:)
-        # - username differs (Daniel.Nissenbaum vs danie)
-        # - the vault root is moved under OneDrive/Documents/etc.
+        # This is the *real* portability layer. We map by locating a known marker
+        # segment (e.g. "\\__repos\\" or "\\__Obsidian\\") inside the stored
+        # path, then re-rooting the suffix under candidate roots on this machine.
+        #
+        # This avoids hardcoding one absolute path that may not exist on the laptop
+        # (different username, different drive, you may even rename/obfuscate some
+        # directories during travel).
         user_profile = os.environ.get("USERPROFILE") or ""
 
-        common_obsidian_roots = [
-            # Most common locations
-            os.path.join(user_profile, "__Obsidian"),
-            os.path.join(user_profile, "Documents", "__Obsidian"),
-            os.path.join(user_profile, "OneDrive", "__Obsidian"),
-            # Workstation-style fallback
-            r"C:\\__daniel347x\\__Obsidian",
-            r"E:\\__daniel347x\\__Obsidian",
-        ]
+        marker_root_candidates: dict[str, list[str]] = {
+            "__repos": [
+                os.path.join(user_profile, "__repos"),
+                os.path.join(user_profile, "Documents", "__repos"),
+                os.path.join(user_profile, "OneDrive", "__repos"),
+                r"C:\\__daniel347x\\__repos",
+                r"E:\\__daniel347x\\__repos",
+                r"E:\\__daniel347x\\__Dan_Root\\__repos",
+            ],
+            "__Obsidian": [
+                os.path.join(user_profile, "__Obsidian"),
+                os.path.join(user_profile, "Documents", "__Obsidian"),
+                os.path.join(user_profile, "OneDrive", "__Obsidian"),
+                r"C:\\__daniel347x\\__Obsidian",
+                r"E:\\__daniel347x\\__Obsidian",
+            ],
+        }
 
-        marker = "\\\\__Obsidian\\\\"
-        for p in list(candidates):
-            if marker.lower() in p.lower():
-                # Keep original casing for suffix extraction by using a lower-index.
+        for marker_name, roots in marker_root_candidates.items():
+            marker = f"\\\\{marker_name}\\\\"
+            for p in list(candidates):
+                if marker.lower() not in p.lower():
+                    continue
                 idx = p.lower().find(marker.lower())
                 suffix = p[idx + len(marker):]
-                for root in common_obsidian_roots:
+                for root in roots:
                     if root and os.path.isdir(root):
                         _add(os.path.join(root, suffix))
 
         # Backward-compatible explicit prefix mapping (kept as a last-resort).
         prefix_maps = [
+            # Obsidian vault
             (r"E:\\__daniel347x\\__Obsidian\\", os.path.join(user_profile, "__Obsidian") + "\\"),
             (os.path.join(user_profile, "__Obsidian") + "\\", r"E:\\__daniel347x\\__Obsidian\\"),
+            # Repos root (with/without __Dan_Root)
+            (r"E:\\__daniel347x\\__Dan_Root\\__repos\\", os.path.join(user_profile, "__repos") + "\\"),
+            (r"E:\\__daniel347x\\__repos\\", os.path.join(user_profile, "__repos") + "\\"),
+            (os.path.join(user_profile, "__repos") + "\\", r"E:\\__daniel347x\\__Dan_Root\\__repos\\"),
         ]
         for p in list(candidates):
             for src, dst in prefix_maps:
