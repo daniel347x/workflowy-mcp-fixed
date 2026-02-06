@@ -164,15 +164,44 @@ def normalize_cartographer_path(file_path: str | None) -> str | None:
                     new_parts = parts[:2] + ["__Dan_Root"] + parts[2:]
                     _add((d or "") + os.sep.join(new_parts))
 
-        # 4) Laptop prefix mapping (workstation Obsidian vault ↔ laptop Obsidian vault)
-        # NOTE: this is intentionally minimal and explicit.
+        # 4) Cross-machine Obsidian vault mapping.
+        #
+        # We try to be robust by mapping based on the *"\\__Obsidian\\" marker*
+        # when present, rather than only hardcoding one absolute prefix.
+        # This helps when:
+        # - drive letters differ (E: vs C:)
+        # - username differs (Daniel.Nissenbaum vs danie)
+        # - the vault root is moved under OneDrive/Documents/etc.
+        user_profile = os.environ.get("USERPROFILE") or ""
+
+        common_obsidian_roots = [
+            # Most common locations
+            os.path.join(user_profile, "__Obsidian"),
+            os.path.join(user_profile, "Documents", "__Obsidian"),
+            os.path.join(user_profile, "OneDrive", "__Obsidian"),
+            # Workstation-style fallback
+            r"C:\\__daniel347x\\__Obsidian",
+            r"E:\\__daniel347x\\__Obsidian",
+        ]
+
+        marker = "\\\\__Obsidian\\\\"
+        for p in list(candidates):
+            if marker.lower() in p.lower():
+                # Keep original casing for suffix extraction by using a lower-index.
+                idx = p.lower().find(marker.lower())
+                suffix = p[idx + len(marker):]
+                for root in common_obsidian_roots:
+                    if root and os.path.isdir(root):
+                        _add(os.path.join(root, suffix))
+
+        # Backward-compatible explicit prefix mapping (kept as a last-resort).
         prefix_maps = [
-            (r"E:\\__daniel347x\\__Obsidian\\", r"C:\\Users\\Daniel.Nissenbaum\\__Obsidian\\"),
-            (r"C:\\Users\\Daniel.Nissenbaum\\__Obsidian\\", r"E:\\__daniel347x\\__Obsidian\\"),
+            (r"E:\\__daniel347x\\__Obsidian\\", os.path.join(user_profile, "__Obsidian") + "\\"),
+            (os.path.join(user_profile, "__Obsidian") + "\\", r"E:\\__daniel347x\\__Obsidian\\"),
         ]
         for p in list(candidates):
             for src, dst in prefix_maps:
-                if p.lower().startswith(src.lower()):
+                if src and dst and p.lower().startswith(src.lower()):
                     _add(dst + p[len(src):])
 
         # 5) Return first existing candidate

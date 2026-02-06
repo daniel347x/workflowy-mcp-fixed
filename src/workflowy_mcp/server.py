@@ -1355,6 +1355,35 @@ async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None
         )
         return
 
+    # Normalize the path before launching WindSurf (critical for laptop vs workstation).
+    # We intentionally fail closed: if the mapped path does not exist, do NOT open
+    # WindSurf with a phantom E:\... path (it will appear as an empty buffer).
+    try:
+        from .client.api_client_nexus import normalize_cartographer_path  # local import to avoid cycles
+
+        normalized = normalize_cartographer_path(file_path) or file_path
+        if not os.path.exists(normalized):
+            await websocket.send(
+                json.dumps(
+                    {
+                        "action": "open_node_in_windsurf_result",
+                        "success": False,
+                        "node_id": node_id,
+                        "file_path": normalized,
+                        "line": line_number,
+                        "error": (
+                            "Resolved source path does not exist on disk after normalization; "
+                            "refusing to launch WindSurf."
+                        ),
+                    }
+                )
+            )
+            return
+        file_path = normalized
+    except Exception:
+        # Best-effort only; if normalization fails, continue with original path.
+        pass
+
     # 3) If we still do not have a concrete line number (non-beacon case),
     # perform a very lightweight in-file search using the node_name hint.
     if not line_number or not isinstance(line_number, int) or line_number <= 0:
