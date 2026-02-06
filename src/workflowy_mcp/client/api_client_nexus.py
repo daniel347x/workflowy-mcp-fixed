@@ -213,6 +213,10 @@ def normalize_cartographer_path(file_path: str | None) -> str | None:
             (r"E:\\__daniel347x\\__Dan_Root\\__repos\\", os.path.join(user_profile, "__repos") + "\\"),
             (r"E:\\__daniel347x\\__repos\\", os.path.join(user_profile, "__repos") + "\\"),
             (os.path.join(user_profile, "__repos") + "\\", r"E:\\__daniel347x\\__Dan_Root\\__repos\\"),
+            # Work-trip laptop explicit repo root
+            (r"E:\\__daniel347x\\__Dan_Root\\__repos\\", r"C:\\__daniel347x\\__repos\\"),
+            (r"E:\\__daniel347x\\__repos\\", r"C:\\__daniel347x\\__repos\\"),
+            (r"C:\\__daniel347x\\__repos\\", r"E:\\__daniel347x\\__Dan_Root\\__repos\\"),
         ]
         for p in list(candidates):
             for src, dst in prefix_maps:
