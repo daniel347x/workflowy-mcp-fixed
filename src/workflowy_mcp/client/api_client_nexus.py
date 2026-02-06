@@ -96,69 +96,98 @@ def parse_path_or_root_from_note(note_str: str | None) -> str | None:
 def normalize_cartographer_path(file_path: str | None) -> str | None:
     """Normalize a Cartographer Path:/Root: value for cross-machine portability.
 
-    Bidirectional fallback logic:
-    1. Try given path as-is
-    2. If missing + non-C drive → try C: drive, then C: with __Dan_Root removed
-    3. If missing + C: drive → try E: drive with __Dan_Root added back
+    IMPORTANT SAFETY PRINCIPLE
+    --------------------------
+    This helper should be *best-effort* at finding a real on-disk path for the
+    string stored in Workflowy ("Path:" / "Root:"). When it cannot find a real
+    path, it should *not* attempt to be clever beyond obvious mappings.
 
-    Returns the first path that exists, or the original if none exist (so
-    Cartographer can fail with a clear error showing the actual path).
+    Why: if we silently proceed with a non-existent path, Cartographer may
+    produce an empty tree and F12 reconcile can then (correctly) delete all
+    existing structural nodes under that FILE node. That is catastrophic when
+    the emptiness is caused by a path-mapping miss.
+
+    Current heuristics:
+    - Cleanse invisible whitespace (NBSP/ZWSP) and surrounding quotes.
+    - Drive swapping: E: ↔ C:
+    - __Dan_Root add/remove
+    - Prefix mapping for the business laptop (Daniel.Nissenbaum)
+
+    Returns:
+      - The first candidate path that exists on disk.
+      - If none exist: returns the *cleansed original* path (caller MUST
+        existence-check and fail closed for F12).
     """
     if not file_path or not isinstance(file_path, str):
         return file_path
 
+    def _cleanse(p: str) -> str:
+        # Common invisible whitespace that can appear from copy/paste / WF rendering
+        p = p.replace("\u00a0", " ")  # NBSP
+        p = p.replace("\u200b", "")   # zero-width space
+        p = p.replace("\ufeff", "")   # BOM
+        # Strip surrounding quotes
+        p = p.strip().strip('"').strip("'")
+        return p
+
+    file_path = _cleanse(file_path)
+
     try:
-        # Step 1: Try original path
-        if os.path.exists(file_path):
-            return file_path
+        candidates: list[str] = []
+
+        def _add(p: str) -> None:
+            p2 = _cleanse(p)
+            if p2 and p2 not in candidates:
+                candidates.append(p2)
+
+        # 1) Original
+        _add(file_path)
 
         drive, tail = os.path.splitdrive(file_path)
-        
-        # BRANCH A: Original is non-C drive (e.g., E:) → try C: variants
-        if drive and drive.upper() != "C:":
-            # Step 2a: Try C: drive
-            alt_c_path = "C:" + tail
-            if os.path.exists(alt_c_path):
-                log_event(
-                    f"Cartographer path normalized: {file_path} → {alt_c_path} (C: drive)",
-                    "CARTO_PATH",
-                )
-                return alt_c_path
 
-            # Step 3a: Try removing __Dan_Root segment from C: path
-            if "__Dan_Root" in alt_c_path:
-                alt_no_dan_root = alt_c_path.replace("\\__Dan_Root\\", "\\")
-                if os.path.exists(alt_no_dan_root):
+        # 2) Drive swap (E: ↔ C:)
+        if drive:
+            if drive.upper() == "E:":
+                _add("C:" + tail)
+            elif drive.upper() == "C:":
+                _add("E:" + tail)
+
+        # 3) __Dan_Root add/remove (both directions)
+        for p in list(candidates):
+            if "\\__Dan_Root\\" in p:
+                _add(p.replace("\\__Dan_Root\\", "\\"))
+            else:
+                # Only attempt insertion for the standard repo-style path
+                d, t = os.path.splitdrive(p)
+                parts = t.split(os.sep)
+                if len(parts) >= 3 and parts[1] == "__daniel347x":
+                    new_parts = parts[:2] + ["__Dan_Root"] + parts[2:]
+                    _add((d or "") + os.sep.join(new_parts))
+
+        # 4) Laptop prefix mapping (workstation Obsidian vault ↔ laptop Obsidian vault)
+        # NOTE: this is intentionally minimal and explicit.
+        prefix_maps = [
+            (r"E:\\__daniel347x\\__Obsidian\\", r"C:\\Users\\Daniel.Nissenbaum\\__Obsidian\\"),
+            (r"C:\\Users\\Daniel.Nissenbaum\\__Obsidian\\", r"E:\\__daniel347x\\__Obsidian\\"),
+        ]
+        for p in list(candidates):
+            for src, dst in prefix_maps:
+                if p.lower().startswith(src.lower()):
+                    _add(dst + p[len(src):])
+
+        # 5) Return first existing candidate
+        for cand in candidates:
+            if os.path.exists(cand):
+                if cand != file_path:
                     log_event(
-                        f"Cartographer path normalized: {file_path} → {alt_no_dan_root} (__Dan_Root removed)",
+                        f"Cartographer path normalized: {file_path} → {cand}",
                         "CARTO_PATH",
                     )
-                    return alt_no_dan_root
-        
-        # BRANCH B: Original is C: drive → try E: with __Dan_Root added
-        elif drive and drive.upper() == "C:":
-            # Step 2b: Try E: drive with __Dan_Root segment inserted
-            # Pattern: C:\__daniel347x\__repos\... → E:\__daniel347x\__Dan_Root\__repos\...
-            # Insert __Dan_Root after the first path component (__daniel347x)
-            parts = tail.split(os.sep)
-            # parts[0] = '', parts[1] = '__daniel347x', parts[2] = '__repos', ...
-            if len(parts) >= 3 and parts[1] == "__daniel347x":
-                # Insert __Dan_Root after __daniel347x
-                new_parts = parts[:2] + ["__Dan_Root"] + parts[2:]
-                new_tail = os.sep.join(new_parts)
-                alt_e_with_dan_root = "E:" + new_tail
-                if os.path.exists(alt_e_with_dan_root):
-                    log_event(
-                        f"Cartographer path normalized: {file_path} → {alt_e_with_dan_root} (E: + __Dan_Root)",
-                        "CARTO_PATH",
-                    )
-                    return alt_e_with_dan_root
+                return cand
 
-        # No fallback succeeded; return original so error messages are clear
         return file_path
 
     except Exception as e:  # noqa: BLE001
-        # Best-effort only; failures should not break F12.
         log_event(f"normalize_cartographer_path failed for {file_path}: {e}", "CARTO_PATH")
         return file_path
 
@@ -3785,6 +3814,17 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
             # Normalize path for cross-machine portability (E: → C:, remove __Dan_Root)
             source_path = normalize_cartographer_path(source_path) or source_path
+
+            # FAIL CLOSED: if the path does not exist, do NOT proceed.
+            # Proceeding with a non-existent path can yield an empty Cartographer tree,
+            # and then reconcile_tree would delete all structural nodes under the FILE.
+            if not os.path.exists(source_path):
+                raise NetworkError(
+                    "Cartographer source path does not exist on disk after normalization: "
+                    f"{source_path!r} (file_node_id={file_node_id}). "
+                    "Refusing to run F12 refresh to avoid destructive deletes."
+                )
+
 
             # NEW: directory-aware routing – if Path/Root points to a directory,
             # delegate to the FOLDER-level Cartographer sync instead of the
