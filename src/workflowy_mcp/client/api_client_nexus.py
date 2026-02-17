@@ -93,6 +93,12 @@ def parse_path_or_root_from_note(note_str: str | None) -> str | None:
     return None
 
 
+# @beacon[
+#   id=auto-beacon@_cleanse_cartographer_path_value-7m0d,
+#   role=_cleanse_cartographer_path_value,
+#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
 def _cleanse_cartographer_path_value(file_path: str | None) -> str | None:
     """Cleanse a Cartographer path value without trying to re-root it.
 
@@ -111,6 +117,12 @@ def _cleanse_cartographer_path_value(file_path: str | None) -> str | None:
     return p
 
 
+# @beacon[
+#   id=auto-beacon@_extract_path_header_from_note-vp2c,
+#   role=_extract_path_header_from_note,
+#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
 def _extract_path_header_from_note(note_str: str | None) -> tuple[str, str] | None:
     """Return (kind, value) for the first Path:/Root: line in a note."""
     for line in (note_str or "").splitlines():
@@ -124,6 +136,12 @@ def _extract_path_header_from_note(note_str: str | None) -> tuple[str, str] | No
     return None
 
 
+# @beacon[
+#   id=auto-beacon@_looks_absolute_path-6aj1,
+#   role=_looks_absolute_path,
+#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
 def _looks_absolute_path(path_str: str) -> bool:
     # os.path.isabs is fine for most cases but is a bit permissive/opaque on Windows.
     # We treat these as absolute:
@@ -142,6 +160,12 @@ def _to_portable_relpath(rel_path: str) -> str:
     return rel_path.replace("\\", "/")
 
 
+# @beacon[
+#   id=auto-beacon@_rewrite_note_path_or_root_header-7b4e,
+#   role=_rewrite_note_path_or_root_header,
+#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
 def _rewrite_note_path_or_root_header(note_text: str, new_value: str, *, prefer: str = "Path") -> str:
     """Rewrite the first Path:/Root: header line in a note, preserving the rest."""
     if not isinstance(note_text, str):
@@ -169,6 +193,12 @@ def _rewrite_note_path_or_root_header(note_text: str, new_value: str, *, prefer:
     return "\n".join(out)
 
 
+# @beacon[
+#   id=auto-beacon@resolve_cartographer_path_from_node-0yq8,
+#   role=resolve_cartographer_path_from_node,
+#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
 def resolve_cartographer_path_from_node(
     *,
     node_id: str,
