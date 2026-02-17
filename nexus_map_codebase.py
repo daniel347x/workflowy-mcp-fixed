@@ -3079,43 +3079,96 @@ def map_codebase(
     convenience and advanced workflows.
     """
 
-    # Load .nexusignore patterns (optional, rooted at the mapping root)
+    # Load .nexusignore patterns (optional) with ancestor walk.
+    #
+    # Semantics:
+    # - Start at root_path (directory mapping root).
+    # - Walk upward, loading any .nexusignore files found.
+    # - Stop when we reach repo_root (when provided) or the filesystem root.
+    #
+    # Patterns are basename-only globs (no path separators).
     ignore_patterns: List[str] | None = None
+    ignore_sources: List[str] = []
+
+    def _collect_nexusignore_patterns(
+        *,
+        start_dir: str,
+        stop_dir: str | None,
+    ) -> tuple[List[str], List[str]]:
+        patterns_out: List[str] = []
+        sources_out: List[str] = []
+
+        cur = os.path.normpath(start_dir)
+        stop_norm = os.path.normcase(os.path.normpath(stop_dir)) if stop_dir else None
+
+        visited: set[str] = set()
+        while cur and cur not in visited:
+            visited.add(cur)
+
+            ig_path = os.path.join(cur, ".nexusignore")
+            if os.path.isfile(ig_path):
+                sources_out.append(ig_path)
+                invalid: List[str] = []
+                with open(ig_path, "r", encoding="utf-8") as ig:
+                    for line in ig:
+                        raw = line.rstrip("\n\r")
+                        stripped = raw.strip()
+                        if not stripped or stripped.startswith("#"):
+                            continue
+                        if "/" in stripped or "\\" in stripped:
+                            invalid.append(stripped)
+                            continue
+                        patterns_out.append(stripped)
+
+                if invalid:
+                    print(
+                        "[NEXUS MAP] Ignoring .nexusignore patterns with path separators in "
+                        f"{ig_path!r}: {invalid!r}",
+                        file=sys.stderr,
+                    )
+
+            if stop_norm and os.path.normcase(cur) == stop_norm:
+                break
+
+            parent = os.path.dirname(cur)
+            if not parent or parent == cur:
+                break
+            cur = parent
+
+        # De-dupe while preserving order
+        seen: set[str] = set()
+        deduped: List[str] = []
+        for p in patterns_out:
+            if p not in seen:
+                seen.add(p)
+                deduped.append(p)
+
+        return (deduped, sources_out)
+
     try:
-        ignore_path = os.path.join(root_path, ".nexusignore")
-        if os.path.isfile(ignore_path):
-            patterns: List[str] = []
-            invalid: List[str] = []
-            with open(ignore_path, "r", encoding="utf-8") as ig:
-                for line in ig:
-                    raw = line.rstrip("\n\r")
-                    stripped = raw.strip()
-                    if not stripped or stripped.startswith("#"):
-                        continue
-                    if "/" in stripped or "\\" in stripped:
-                        invalid.append(stripped)
-                        continue
-                    patterns.append(stripped)
-            if patterns:
-                ignore_patterns = patterns
+        start_dir = root_path if os.path.isdir(root_path) else os.path.dirname(root_path)
+        if start_dir and os.path.isdir(start_dir):
+            ignore_patterns, ignore_sources = _collect_nexusignore_patterns(
+                start_dir=str(start_dir),
+                stop_dir=str(repo_root) if repo_root else None,
+            )
+            if ignore_patterns:
                 print(
-                    f"[NEXUS MAP] Using .nexusignore at {ignore_path!r} with patterns={patterns!r}",
+                    f"[NEXUS MAP] Using .nexusignore patterns={ignore_patterns!r} from sources={ignore_sources!r}",
                     file=sys.stderr,
                 )
-            if invalid:
-                print(
-                    "[NEXUS MAP] Ignoring .nexusignore patterns with path separators: "
-                    f"{invalid!r}",
-                    file=sys.stderr,
-                )
+            else:
+                ignore_patterns = None
     except Exception as e:  # pragma: no cover - safety net
         print(
-            f"[NEXUS MAP] Failed to load .nexusignore under {root_path!r}: {e}",
+            f"[NEXUS MAP] Failed to discover .nexusignore via ancestor walk from {root_path!r}: {e}",
             file=sys.stderr,
         )
         ignore_patterns = None
 
     def _is_ignored_name(name: str) -> bool:
+        if name == "__pycache__":
+            return True
         if not ignore_patterns:
             return False
         # Simple fnmatch-style globbing over basenames (no path semantics).

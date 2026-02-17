@@ -223,6 +223,12 @@ def resolve_cartographer_path_from_node(
     Returns dict:
       {abs_path, base_abs, base_node_id, base_kind, rel_chain, visited_ids, root_abs}
     """
+    # @beacon[
+    #   id=auto-beacon@resolve_cartographer_path_from_node._segment_from_node_name-r8w7,
+    #   role=resolve_cartographer_path_from_node._segment_from_node_name,
+    #   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,
+    #   kind=ast,
+    # ]
     def _segment_from_node_name(raw_name: str) -> str:
         """Best-effort: derive a filesystem segment from a Cartographer node name.
 
@@ -5764,15 +5770,39 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     )
                     include_exts = None
 
-            # Load .nexusignore patterns (optional, rooted at the folder Path)
+            # Load .nexusignore patterns (optional) with ancestor walk.
+            #
+            # Desired semantics:
+            # - Start at the folder being refreshed (root_path).
+            # - Walk upward, loading any .nexusignore found.
+            # - Stop when we reach the Cartographer repo root (repo_root_abs), if known.
+            #
+            # Patterns are *basename-only* globs (no path separators). This is intentionally
+            # fail-closed: if discovery fails for any reason, we disable ignore filtering
+            # rather than risk destructive behavior.
             ignore_patterns: list[str] | None = None
-            if root_path:
-                try:
-                    ignore_path = os.path.join(root_path, ".nexusignore")
-                    if os.path.isfile(ignore_path):
-                        patterns: list[str] = []
+            ignore_sources: list[str] = []
+
+            def _collect_nexusignore_patterns(
+                *,
+                start_dir: str,
+                stop_dir: str | None,
+            ) -> tuple[list[str], list[str]]:
+                patterns_out: list[str] = []
+                sources_out: list[str] = []
+
+                cur = os.path.normpath(start_dir)
+                stop_norm = os.path.normcase(os.path.normpath(stop_dir)) if stop_dir else None
+
+                visited: set[str] = set()
+                while cur and cur not in visited:
+                    visited.add(cur)
+
+                    ig_path = os.path.join(cur, ".nexusignore")
+                    if os.path.isfile(ig_path):
+                        sources_out.append(ig_path)
                         invalid: list[str] = []
-                        with open(ignore_path, "r", encoding="utf-8") as ig:
+                        with open(ig_path, "r", encoding="utf-8") as ig:
                             for line in ig:
                                 raw = line.rstrip("\n\r")
                                 stripped = raw.strip()
@@ -5781,30 +5811,64 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 if "/" in stripped or "\\" in stripped:
                                     invalid.append(stripped)
                                     continue
-                                patterns.append(stripped)
-                        if patterns:
-                            ignore_patterns = patterns
-                            log_event(
-                                "refresh_folder_cartographer_sync: using .nexusignore at "
-                                f"{ignore_path!r} with patterns={patterns!r}",
-                                "BEACON",
-                            )
+                                patterns_out.append(stripped)
+
                         if invalid:
                             log_event(
                                 "refresh_folder_cartographer_sync: ignoring .nexusignore patterns with "
-                                f"path separators: {invalid!r}",
+                                f"path separators in {ig_path!r}: {invalid!r}",
                                 "BEACON",
                             )
+
+                    # Stop at repo root (when provided)
+                    if stop_norm and os.path.normcase(cur) == stop_norm:
+                        break
+
+                    parent = os.path.dirname(cur)
+                    if not parent or parent == cur:
+                        break
+                    cur = parent
+
+                # De-dupe while preserving order
+                seen: set[str] = set()
+                deduped: list[str] = []
+                for p in patterns_out:
+                    if p not in seen:
+                        seen.add(p)
+                        deduped.append(p)
+
+                return (deduped, sources_out)
+
+            if root_path:
+                try:
+                    ignore_patterns, ignore_sources = _collect_nexusignore_patterns(
+                        start_dir=str(root_path),
+                        stop_dir=str(repo_root_abs) if repo_root_abs else None,
+                    )
+                    if ignore_patterns:
+                        log_event(
+                            "refresh_folder_cartographer_sync: using .nexusignore patterns="
+                            f"{ignore_patterns!r} from sources={ignore_sources!r}",
+                            "BEACON",
+                        )
+                    else:
+                        ignore_patterns = None
                 except Exception as e:  # noqa: BLE001
                     log_event(
-                        f"refresh_folder_cartographer_sync: failed to load .nexusignore under {root_path}: {e}",
+                        "refresh_folder_cartographer_sync: failed to discover .nexusignore patterns via ancestor walk "
+                        f"(root_path={root_path!r}, repo_root_abs={repo_root_abs!r}): {e}",
                         "BEACON",
                     )
                     ignore_patterns = None
 
             def _is_ignored_name(name: str) -> bool:
+                # Always ignore common junk directories regardless of .nexusignore.
+                if name == "__pycache__":
+                    return True
+
                 if not ignore_patterns:
                     return False
+
                 # Simple fnmatch-style globbing over basenames (no path semantics).
                 import fnmatch
 
@@ -5817,8 +5881,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             try:
                 for dirpath, dirnames, filenames in os.walk(root_path):
                     # Prune ignored subdirectories so os.walk does not descend into them.
-                    if ignore_patterns:
-                        dirnames[:] = [d for d in dirnames if not _is_ignored_name(d)]
+                    dirnames[:] = [d for d in dirnames if not _is_ignored_name(d)]
 
                     for fname in filenames:
                         if fname == ".nexusignore":
