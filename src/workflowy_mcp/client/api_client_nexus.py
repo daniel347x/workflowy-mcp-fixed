@@ -5862,6 +5862,35 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         parent_uuid = folder_uuid
                         current_rel = next_rel
 
+                    # Guardrail: never create a duplicate FILE node subtree if a matching
+                    # child already exists under the intended parent folder.
+                    #
+                    # This is intentionally name/header based (not resolver based) so we can
+                    # fail-closed even if path resolution has edge cases.
+                    target_seg = os.path.basename(str(file_path).rstrip("\\/"))
+                    if target_seg:
+                        existing_children = children_by_parent.get(str(parent_uuid), [])
+                        already_present = False
+                        for ch in existing_children:
+                            if _is_folder_node(ch):
+                                continue
+                            ch_name = str(ch.get("name") or "")
+                            ch_note = ch.get("note") or ch.get("no") or ""
+                            if isinstance(ch_note, str):
+                                ch_header = _extract_path_header_from_note(ch_note)
+                                if ch_header and ch_header[0] == "Path":
+                                    ch_val = _cleanse_cartographer_path_value(ch_header[1]) or ""
+                                    if ch_val == target_seg:
+                                        already_present = True
+                                        break
+                            # Fallback: name contains basename (e.g. "🟨 api_client_core.py")
+                            if target_seg in ch_name:
+                                already_present = True
+                                break
+
+                        if already_present:
+                            continue
+
                     # Now create the FILE subtree under parent_uuid using Cartographer
                     try:
                         file_map = cartographer.map_codebase(  # type: ignore[attr-defined]
