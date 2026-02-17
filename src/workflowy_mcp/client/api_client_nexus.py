@@ -5379,6 +5379,22 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # - Never touch Root: headers.
         # - Only rewrite when we can resolve abs_path and it is under repo_root_abs.
         if (not dry_run) and repo_root_abs:
+            repo_root_base = os.path.basename(str(repo_root_abs).rstrip("\\/")) if repo_root_abs else ""
+
+            def _segment_from_node_name_for_path(raw_name: str) -> str:
+                """Best-effort: derive a single-segment Path value from a Cartographer node name."""
+                s = (raw_name or "").strip()
+
+                # Strip leading emoji/bullets/decoration.
+                while s and (not s[0].isalnum()) and s[0] not in "._/\\-_":
+                    s = s[1:].lstrip()
+
+                # Strip trailing tags.
+                if "#" in s:
+                    s = s.split("#", 1)[0].rstrip()
+
+                return s
+
             for n in flat_nodes:
                 nid = n.get("id")
                 if not nid:
@@ -5399,16 +5415,40 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 # Only rewrite legacy-looking values.
                 #
                 # NOTE: In segments-mode, we normally expect *all* Path: values to be
-                # single-segment. However, a prior bug may have rewritten some folder
-                # nodes to the repo-root basename (e.g. Path: workflowy_mcp), which then
-                # breaks path resolution and snippet tools.
-                repo_root_base = os.path.basename(str(repo_root_abs).rstrip("\\/")) if repo_root_abs else ""
+                # single-segment. However, a prior bug may have rewritten some descendant
+                # nodes to the repo-root basename (e.g. Path: typingmind_mcp_connector),
+                # which then breaks path resolution and snippet tools.
                 is_legacy = (
                     _looks_absolute_path(raw_val)
                     or ("/" in raw_val or "\\" in raw_val)
                     or (repo_root_base and raw_val == repo_root_base and s_nid != str(folder_node_id))
                 )
                 if (not raw_val) or (not is_legacy):
+                    continue
+
+                # SAFETY FAST-PATH: if a descendant node's Path is literally the repo basename,
+                # do NOT rely on resolver output (which may collapse to repo root). Instead,
+                # derive the intended segment from the node's name (📂 folder or 🟨 file).
+                if repo_root_base and raw_val == repo_root_base and s_nid != str(folder_node_id):
+                    seg_guess = _segment_from_node_name_for_path(str(n.get("name") or ""))
+                    if seg_guess and seg_guess != repo_root_base:
+                        new_note = _rewrite_note_path_or_root_header(note_str, seg_guess, prefer="Path")
+                        if new_note != note_str:
+                            log_event(
+                                "refresh_folder_cartographer_sync: segment migration (poison-repair) "
+                                f"node_id={s_nid} raw_val={raw_val!r} seg_guess={seg_guess!r}",
+                                "CARTO_PATH",
+                            )
+                            await self.update_node(
+                                s_nid,
+                                NodeUpdateRequest(name=None, note=new_note, layoutMode=None),
+                            )
+                    else:
+                        log_event(
+                            "refresh_folder_cartographer_sync: segment migration skip (poisoned Path but no good name-derived seg) "
+                            f"node_id={s_nid} raw_val={raw_val!r} seg_guess={seg_guess!r}",
+                            "CARTO_PATH",
+                        )
                     continue
 
                 try:
@@ -5429,8 +5469,22 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     if not seg:
                         continue
 
+                    # GUARDRAIL: refuse to rewrite a descendant to the repo basename.
+                    if repo_root_base and seg == repo_root_base and s_nid != str(folder_node_id):
+                        log_event(
+                            "refresh_folder_cartographer_sync: segment migration guardrail hit (refusing repo-basename rewrite) "
+                            f"node_id={s_nid} raw_val={raw_val!r} abs_path={abs_path!r} resolved={resolved!r}",
+                            "CARTO_PATH",
+                        )
+                        continue
+
                     new_note = _rewrite_note_path_or_root_header(note_str, seg, prefer="Path")
                     if new_note != note_str:
+                        log_event(
+                            "refresh_folder_cartographer_sync: segment migration rewrite "
+                            f"node_id={s_nid} raw_val={raw_val!r} abs_path={abs_path!r} seg={seg!r} fallback={resolved.get('fallback_used')!r}",
+                            "CARTO_PATH",
+                        )
                         await self.update_node(
                             s_nid,
                             NodeUpdateRequest(name=None, note=new_note, layoutMode=None),
