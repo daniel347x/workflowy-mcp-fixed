@@ -92,10 +92,11 @@ def format_file_note(
     (refresh_file_node_beacons) so that FILE nodes always expose a consistent
     header block.
 
-    Portability policy (PR1):
-    - If repo_root is provided and path is under repo_root, store a RELATIVE
-      Path: in the note.
-    - Otherwise store the raw path.
+    Portability policy (PR2 - segments mode):
+    - When repo_root is provided and `path` is under repo_root, store ONLY the
+      final path segment in the note (folder name or filename). This makes
+      Cartographer Workflowy trees portable and robust under folder moves.
+    - Otherwise (no Root context), store the raw absolute path.
 
         Path: ...
         LINE COUNT: N
@@ -104,11 +105,22 @@ def format_file_note(
     LINE COUNT and Source-SHA1 are optional and omitted when not provided.
     """
     used_path = path
+
+    # Segments mode: when we are in a Root-mapped tree (repo_root provided)
+    # and this path is under repo_root, store ONLY the final segment.
     if repo_root and isinstance(path, str) and isinstance(repo_root, str):
-        if os.path.isabs(path) and os.path.isabs(repo_root):
-            rel = _portable_relpath(path, repo_root)
-            if rel:
-                used_path = rel
+        try:
+            if os.path.isabs(path) and os.path.isabs(repo_root):
+                root_norm = os.path.normcase(os.path.normpath(repo_root))
+                path_norm = os.path.normcase(os.path.normpath(path))
+                if os.path.commonpath([path_norm, root_norm]) == root_norm:
+                    # Strip trailing separators so basename works for directories.
+                    seg = os.path.basename(path.rstrip("\\/"))
+                    if seg:
+                        used_path = seg
+        except Exception:
+            # Fail closed: if any path math goes sideways, keep raw path.
+            used_path = path
 
     lines: list[str] = [f"Path: {used_path}"]
     if line_count is not None:

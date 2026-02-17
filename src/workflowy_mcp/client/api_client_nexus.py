@@ -4139,13 +4139,14 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             header_kind = header[0] if header else None
 
             if repo_root_abs and header_kind == "Path":
+                # Segments mode: descendants under a Root store only their own segment
+                # (folder name or filename). This is the global default for portability.
                 try:
-                    rel_note = _to_portable_relpath(os.path.relpath(source_path, repo_root_abs))
-                    # Only write clean in-repo paths (avoid '.' and '..' escape paths).
-                    if rel_note and rel_note not in {".", "./"} and not rel_note.startswith(".."):
+                    seg = os.path.basename(str(source_path).rstrip("\\/"))
+                    if seg:
                         new_note_text = _rewrite_note_path_or_root_header(
                             note_text,
-                            rel_note,
+                            seg,
                             prefer="Path",
                         )
                         if (not dry_run) and new_note_text != note_text:
@@ -4156,7 +4157,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             note_text = new_note_text
                 except Exception as e:  # noqa: BLE001
                     log_event(
-                        "refresh_file_node_beacons: failed to rewrite Path header to relative "
+                        "refresh_file_node_beacons: failed to rewrite Path header to segment "
                         f"for file_node_id={file_node_id}: {e}",
                         "CARTO_PATH",
                     )
@@ -5258,6 +5259,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         # Resolve possibly-relative Path:/Root: values via ancestor chain.
         # If this fails (e.g. cache missing), fall back to the legacy normalize helper.
+        repo_root_abs: str | None = None
         if root_path:
             try:
                 resolved_root = resolve_cartographer_path_from_node(
@@ -5265,6 +5267,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     nodes_by_id=(nodes_by_id_global or node_by_id),
                 )
                 root_path = str(resolved_root.get("abs_path") or root_path)
+                repo_root_abs = str(resolved_root.get("root_abs") or "") or None
             except Exception:
                 root_path = normalize_cartographer_path(root_path) or root_path
 
@@ -5274,6 +5277,67 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "BEACON",
             )
             root_path = None
+
+        # Segments mode migration:
+        # If this folder sync is operating under a Root (repo_root_abs present),
+        # then any descendant nodes that still have absolute paths or multi-segment
+        # relative paths are legacy. Best-effort rewrite them to single-segment
+        # Path: headers (folder name / filename) BEFORE any create/delete logic.
+        #
+        # Guardrails:
+        # - Never touch Root: headers.
+        # - Only rewrite when we can resolve abs_path and it is under repo_root_abs.
+        if (not dry_run) and repo_root_abs:
+            for n in flat_nodes:
+                nid = n.get("id")
+                if not nid:
+                    continue
+                s_nid = str(nid)
+                note_str = n.get("note") or n.get("no") or ""
+                if not isinstance(note_str, str) or not note_str.strip():
+                    continue
+                header = _extract_path_header_from_note(note_str)
+                if not header:
+                    continue
+                kind, raw_val = header
+                if kind != "Path":
+                    continue
+
+                raw_val = _cleanse_cartographer_path_value(raw_val) or ""
+                # Only rewrite legacy-looking values.
+                if (not raw_val) or (not _looks_absolute_path(raw_val) and ("/" not in raw_val and "\\" not in raw_val)):
+                    continue
+
+                try:
+                    resolved = resolve_cartographer_path_from_node(
+                        node_id=s_nid,
+                        nodes_by_id=(nodes_by_id_global or node_by_id),
+                    )
+                    abs_path = str(resolved.get("abs_path") or "")
+                    if not abs_path:
+                        continue
+                    # Only rewrite in-repo nodes.
+                    root_norm = os.path.normcase(os.path.normpath(str(repo_root_abs)))
+                    abs_norm = os.path.normcase(os.path.normpath(abs_path))
+                    if os.path.commonpath([abs_norm, root_norm]) != root_norm:
+                        continue
+
+                    seg = os.path.basename(abs_path.rstrip("\\/"))
+                    if not seg:
+                        continue
+
+                    new_note = _rewrite_note_path_or_root_header(note_str, seg, prefer="Path")
+                    if new_note != note_str:
+                        await self.update_node(
+                            s_nid,
+                            NodeUpdateRequest(name=None, note=new_note, layoutMode=None),
+                        )
+                except Exception as e:  # noqa: BLE001
+                    log_event(
+                        "refresh_folder_cartographer_sync: segment migration failed for node "
+                        f"node_id={s_nid}: {e}",
+                        "CARTO_PATH",
+                    )
 
         # 1a) Stash immediate Notes[...] subtrees keyed by ABSOLUTE PATH.
         #
