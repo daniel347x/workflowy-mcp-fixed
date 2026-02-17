@@ -215,8 +215,13 @@ def resolve_cartographer_path_from_node(
     - Collect relative Path/Root values until we find an absolute base.
     - Join base + reversed(relative_chain).
 
+    Enhancement (PR1.1):
+    - Even if the immediate base is an absolute Path:, continue walking upward
+      to find an absolute Root: (repo root) so callers can rewrite Path headers
+      to portable relative paths.
+
     Returns dict:
-      {abs_path, base_abs, base_node_id, base_kind, rel_chain, visited_ids}
+      {abs_path, base_abs, base_node_id, base_kind, rel_chain, visited_ids, root_abs}
     """
     current_id: str | None = str(node_id)
     visited: set[str] = set()
@@ -225,6 +230,8 @@ def resolve_cartographer_path_from_node(
     base_abs: str | None = None
     base_node_id: str | None = None
     base_kind: str | None = None
+
+    root_abs: str | None = None
 
     while current_id and current_id not in visited:
         visited.add(current_id)
@@ -240,15 +247,23 @@ def resolve_cartographer_path_from_node(
 
             if val:
                 if _looks_absolute_path(val):
-                    # Absolute base. Allow normalize_cartographer_path to do
-                    # cross-machine drive/root heuristics ONLY at this absolute base.
-                    base_abs = normalize_cartographer_path(val) or val
-                    base_node_id = str(current_id)
-                    base_kind = kind
-                    break
+                    abs_val = normalize_cartographer_path(val) or val
+
+                    # First absolute encountered becomes the base used for joining
+                    # the collected relative segments.
+                    if base_abs is None:
+                        base_abs = abs_val
+                        base_node_id = str(current_id)
+                        base_kind = kind
+
+                    # Any absolute Root encountered becomes the repo root.
+                    if kind == "Root" and root_abs is None:
+                        root_abs = abs_val
+
                 else:
-                    # Relative segment.
-                    rel_chain.append(val)
+                    # Only collect relatives until we have an absolute base.
+                    if base_abs is None:
+                        rel_chain.append(val)
 
         parent_id_val = n.get("parent_id") or n.get("parentId")
         current_id = str(parent_id_val) if parent_id_val else None
@@ -258,6 +273,9 @@ def resolve_cartographer_path_from_node(
             "resolve_cartographer_path_from_node: no absolute Path:/Root: base was found "
             f"for node_id={node_id} (visited_chain={list(visited)})"
         )
+
+    if root_abs is None and base_kind == "Root":
+        root_abs = base_abs
 
     # Join base + collected relatives (from top-most relative to leaf-most relative).
     abs_path = base_abs
@@ -274,7 +292,7 @@ def resolve_cartographer_path_from_node(
         "base_kind": base_kind,
         "rel_chain": list(reversed(rel_chain)),
         "visited_ids": list(visited),
-        "root_abs": base_abs if base_kind == "Root" else None,
+        "root_abs": root_abs,
     }
 
 
@@ -1326,48 +1344,36 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             )
 
         file_note = file_node.get("note") or file_node.get("no") or ""
-        file_path: str | None = None
 
-        def _extract_path_from_note(note_str: str | None) -> str | None:
-            if not isinstance(note_str, str):
-                return None
-            for line in note_str.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("Path:"):
-                    val = stripped.split(":", 1)[1].strip()
-                    if val:
-                        return val
-            return None
+        file_id = str(file_node.get("id") or "")
+        if not file_id:
+            raise NetworkError(
+                f"beacon_get_code_snippet: enclosing FILE node missing id for {beacon_node_id!r}"
+            )
 
-        # First attempt: use the /nodes-export snapshot (may be slightly stale).
-        file_path = _extract_path_from_note(file_note)
-
-        # If snapshot does not yet reflect the Path header (e.g. after a recent
-        # Cartographer refresh that has not been mirrored into the cached
-        # /nodes-export), fall back to a targeted /nodes/<id> fetch for this FILE
-        # node to obtain its most up-to-date note.
-        if not file_path:
-            try:
-                file_id = str(file_node.get("id"))
-                fresh_node = await self.get_node(file_id)
-                fresh_dict = fresh_node.model_dump()
-                fresh_note = fresh_dict.get("note") or fresh_dict.get("no")
-                file_path = _extract_path_from_note(fresh_note)
-                if not file_path:
-                    logger.warning(
-                        "beacon_get_code_snippet: FILE node %r still missing 'Path:' after fresh get_node",
-                        file_id,
-                    )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "beacon_get_code_snippet: failed to refresh FILE node %r for Path lookup: %s",
-                    file_node.get("id"),
-                    e,
-                )
+        # Resolve possibly-relative Path:/Root: to an on-disk absolute path.
+        # This is required for portability once Path: becomes relative.
+        try:
+            resolved = resolve_cartographer_path_from_node(
+                node_id=file_id,
+                nodes_by_id=nodes_by_id,
+            )
+            file_path = str(resolved.get("abs_path") or "")
+        except Exception as e:  # noqa: BLE001
+            raise NetworkError(
+                "beacon_get_code_snippet: failed to resolve FILE Path:/Root: to absolute path "
+                f"for file_node_id={file_id}: {e}"
+            ) from e
 
         if not file_path:
             raise NetworkError(
-                f"Ancestor FILE node for {beacon_node_id!r} is missing a 'Path:' line"
+                f"beacon_get_code_snippet: resolved empty file_path for file_node_id={file_id}"
+            )
+
+        if not os.path.exists(file_path):
+            raise NetworkError(
+                "beacon_get_code_snippet: resolved file_path does not exist on disk: "
+                f"{file_path!r} (file_node_id={file_id})"
             )
 
         # Step 4A: Beacon-aware snippet (AST/span) using helper module
@@ -1875,62 +1881,96 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         # 2) Identify Cartographer FILE nodes via Path:/Root: headers,
         # excluding any that live under a "HIDE CARTOGRAPHER" sentinel.
-        file_nodes: list[tuple[dict[str, Any], str]] = []
+        #
+        # Portability (PR1.1): we resolve each Path:/Root: to an on-disk absolute
+        # path so symbol resolution continues to work when Path: becomes relative.
+        file_nodes: list[tuple[dict[str, Any], str, str | None]] = []
         for n in nodes_by_id.values():
             n_note = n.get("note") or n.get("no") or ""
-            path = parse_path_or_root_from_note(str(n_note))
-            if not path:
+            path_header = parse_path_or_root_from_note(str(n_note))
+            if not path_header:
                 continue
             nid = n.get("id")
             sid = str(nid) if nid else None
             if sid and _is_under_hidden_subtree(sid):
                 continue
-            file_nodes.append((n, path))
+
+            abs_path: str | None = None
+            if sid:
+                try:
+                    resolved = resolve_cartographer_path_from_node(
+                        node_id=sid,
+                        nodes_by_id=nodes_by_id,
+                    )
+                    abs_path = str(resolved.get("abs_path") or "") or None
+                except Exception:
+                    abs_path = None
+
+            file_nodes.append((n, path_header, abs_path))
 
         if not file_nodes:
             raise NetworkError(
                 "read_text_snippet_by_symbol: no Cartographer-mapped FILE nodes with Path:/Root: found",
             )
 
-        # 3) Restrict FILE set by file_path when provided (full path or basename).
-        search_roots: list[tuple[dict[str, Any], str]]
+        def _normalize_note_path(p: str) -> str:
+            # normalize to forward slashes for comparison
+            p2 = (p or "").strip().replace("\\", "/")
+            while p2.startswith("./"):
+                p2 = p2[2:]
+            return p2
+
+        # 3) Restrict FILE set by file_path when provided.
+        #
+        # - If file_path is absolute, match against resolved abs_path.
+        # - If file_path is relative with separators, match against the note header.
+        # - If file_path is a basename, match by basename of the note header.
+        search_roots: list[tuple[dict[str, Any], str, str | None]]
         if file_path:
             fp = file_path.strip()
             if not fp:
                 search_roots = file_nodes
             else:
-                is_full = any(sep in fp for sep in ("\\", "/")) or ":" in fp
-                matches: list[tuple[dict[str, Any], str]]
-                if is_full:
+                is_abs = _looks_absolute_path(fp)
+                fp_norm = _normalize_note_path(fp)
+
+                matches: list[tuple[dict[str, Any], str, str | None]] = []
+                if is_abs:
                     target_norm = _canonical_path(fp)
                     matches = [
-                        (n, p) for (n, p) in file_nodes
-                        if _canonical_path(p) == target_norm
+                        (n, p, ap) for (n, p, ap) in file_nodes
+                        if ap and _canonical_path(ap) == target_norm
                     ]
                 else:
-                    matches = [
-                        (n, p) for (n, p) in file_nodes
-                        if os.path.basename(p) == fp
-                    ]
+                    if "/" in fp_norm or "\\" in fp:
+                        # Relative path filter
+                        matches = [
+                            (n, p, ap) for (n, p, ap) in file_nodes
+                            if _normalize_note_path(p) == fp_norm
+                        ]
+                    else:
+                        # Basename filter
+                        matches = [
+                            (n, p, ap) for (n, p, ap) in file_nodes
+                            if os.path.basename(p) == fp
+                        ]
+
                 if not matches:
                     raise NetworkError(
-                        "read_text_snippet_by_symbol: no FILE node with Path: matching "
+                        "read_text_snippet_by_symbol: no FILE node with Path:/Root: matching "
                         f"{file_path!r} was found",
                     )
 
-                # Prefer matches that correspond to real files on disk and do
-                # not contain an ellipsis placeholder in the path. This avoids
-                # false-positive ambiguities from stale or placeholder Path:
-                # values such as "E:\\...\\TODO\\nexus_map_codebase.py".
+                # Prefer matches that correspond to real files on disk.
                 existing_matches = [
-                    (n, p)
-                    for (n, p) in matches
-                    if os.path.isfile(p) and "..." not in p
+                    (n, p, ap)
+                    for (n, p, ap) in matches
+                    if ap and os.path.isfile(ap)
                 ]
                 if existing_matches:
                     matches = existing_matches
 
-                paths = sorted({p for _, p in matches})
+                paths = sorted({(ap or p) for _, p, ap in matches})
                 if len(paths) > 1:
                     raise NetworkError(
                         "read_text_snippet_by_symbol: ambiguous file_path; matches: "
@@ -2069,17 +2109,18 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         use_name = symbol_kind in {"auto", "name"}
 
         # 5) Scan selected FILE subtrees and collect matches.
-        for file_node, owner_path in search_roots:
+        for file_node, owner_path, owner_abs_path in search_roots:
             root_id = str(file_node.get("id")) if file_node.get("id") else None
             if not root_id:
                 continue
+            owner_path_for_record = owner_abs_path or owner_path
             for node in _iter_subtree(root_id):
                 note_str = str(node.get("note") or node.get("no") or "")
 
                 if use_beacon:
                     beacon_id_val, role_val = _extract_beacon_fields(note_str)
                     if beacon_id_val == symbol or role_val == symbol:
-                        _record_hit(node, owner_path, "beacon")
+                        _record_hit(node, owner_path_for_record, "beacon")
 
                 if use_ast:
                     ast_q = _extract_ast_qualname(note_str)
