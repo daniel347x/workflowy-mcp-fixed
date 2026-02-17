@@ -65,7 +65,15 @@ class _ClientLogger:
 
     def info(self, msg: object, *args: object, **kwargs: object) -> None:  # noqa: D401
         """Info-level log (no explicit level tag; message already descriptive)."""
+        # @beacon[
+        #   id=ra-tracking@9u9jey25632626234562,
+        #   slice_labels=ra-tracking,
+        #   kind=span,
+        # ]
         _log(self._msg(msg), self._component)
+        # @beacon-close[
+        #   id=ra-tracking@9u9jey25632626234562,
+        # ]
 
     def warning(self, msg: object, *args: object, **kwargs: object) -> None:
         _log(f"WARNING: {self._msg(msg)}", self._component)
@@ -475,9 +483,11 @@ class WorkFlowyClientCore:
                 # Preserve whitelisted markup exactly as-is
                 result_chars.append(seg["value"])
             else:
-                # Plain text: escape < and > so they can't break rendering
+                # Plain text: escape &, < and > so they can't break rendering
                 for ch in seg["value"]:
-                    if ch == '<':
+                    if ch == '&':
+                        result_chars.append('&amp;')
+                    elif ch == '<':
                         result_chars.append('&lt;')
                     elif ch == '>':
                         result_chars.append('&gt;')
@@ -674,7 +684,7 @@ class WorkFlowyClientCore:
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientCore.update_cached_node_name-c84o,
     #   role=WorkFlowyClientCore.update_cached_node_name,
-    #   slice_labels=f9-f12-handlers,
+    #   slice_labels=f9-f12-handlers,ra-reconcile,
     #   kind=ast,
     # ]
     async def update_cached_node_name(self, node_id: str, new_name: str) -> bool:
