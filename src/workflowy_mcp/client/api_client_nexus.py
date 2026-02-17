@@ -5976,6 +5976,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     segments: list[str] = []
                     current = nid
                     visited_ids: set[str] = set()
+
+                    # Notes/diagnostic emoji whitelist (matches _is_notes_name prefixes).
+                    notes_prefixes = {
+                        "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
+                        "⚠", "❌", "✅", "🚨", "🔴", "🛑", "⛔", "❗",
+                    }
+
                     while current and current not in visited_ids:
                         visited_ids.add(current)
                         if current == str(folder_node_id):
@@ -5984,18 +5991,48 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         if not node_local:
                             return None
                         if _is_folder_node(node_local):
-                            raw_name = str(node_local.get("name") or "")
-                            txt = raw_name
-                            # Strip leading emoji/bullets
-                            while txt and not txt[0].isalnum():
-                                txt = txt[1:]
-                            base = txt.strip() or raw_name.strip()
-                            # NEW: strip trailing #tags (e.g. "📂 folder #tag1 #tag2")
-                            tokens = base.split()
-                            while tokens and str(tokens[-1]).startswith("#"):
-                                tokens.pop()
-                            folder_name = " ".join(tokens) if tokens else base
-                            segments.append(folder_name)
+                            folder_seg: str | None = None
+
+                            # Prefer Path: header when it is a clean single segment.
+                            # This allows cosmetic name edits while keeping folder mapping stable.
+                            note_here = node_local.get("note") or node_local.get("no") or ""
+                            if isinstance(note_here, str) and note_here.strip():
+                                header_here = _extract_path_header_from_note(note_here)
+                                if header_here and header_here[0] == "Path":
+                                    raw_val_here = _cleanse_cartographer_path_value(header_here[1]) or ""
+                                    if (
+                                        raw_val_here
+                                        and (not _looks_absolute_path(raw_val_here))
+                                        and ("/" not in raw_val_here and "\\" not in raw_val_here)
+                                        and (":" not in raw_val_here)
+                                    ):
+                                        folder_seg = raw_val_here
+
+                            if not folder_seg:
+                                raw_name = str(node_local.get("name") or "")
+                                txt = raw_name
+                                # Strip leading emoji/bullets
+                                while txt and not txt[0].isalnum():
+                                    txt = txt[1:]
+                                base = txt.strip() or raw_name.strip()
+
+                                # Strip trailing tags and trailing notes/diagnostic emoji tokens.
+                                tokens = base.split()
+                                while tokens:
+                                    last = str(tokens[-1])
+                                    if last.startswith("#"):
+                                        tokens.pop()
+                                        continue
+                                    if last and last[0] in notes_prefixes:
+                                        tokens.pop()
+                                        continue
+                                    break
+
+                                folder_name = " ".join(tokens) if tokens else base
+                                folder_seg = folder_name
+
+                            if folder_seg:
+                                segments.append(folder_seg)
                         parent_id_local = parent_of.get(current)
                         if not parent_id_local:
                             return None
