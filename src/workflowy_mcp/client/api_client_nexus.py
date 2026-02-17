@@ -93,6 +93,161 @@ def parse_path_or_root_from_note(note_str: str | None) -> str | None:
     return None
 
 
+def _cleanse_cartographer_path_value(file_path: str | None) -> str | None:
+    """Cleanse a Cartographer path value without trying to re-root it.
+
+    This is safe for both absolute and relative paths.
+    """
+    if not file_path or not isinstance(file_path, str):
+        return file_path
+
+    p = file_path
+    # Common invisible whitespace that can appear from copy/paste / WF rendering
+    p = p.replace("\u00a0", " ")  # NBSP
+    p = p.replace("\u200b", "")  # zero-width space
+    p = p.replace("\ufeff", "")  # BOM
+    # Strip surrounding quotes
+    p = p.strip().strip('"').strip("'")
+    return p
+
+
+def _extract_path_header_from_note(note_str: str | None) -> tuple[str, str] | None:
+    """Return (kind, value) for the first Path:/Root: line in a note."""
+    for line in (note_str or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Root:"):
+            val = stripped.split(":", 1)[1].strip()
+            return ("Root", val)
+        if stripped.startswith("Path:"):
+            val = stripped.split(":", 1)[1].strip()
+            return ("Path", val)
+    return None
+
+
+def _looks_absolute_path(path_str: str) -> bool:
+    # os.path.isabs is fine for most cases but is a bit permissive/opaque on Windows.
+    # We treat these as absolute:
+    # - Drive letter paths: C:\..., E:/...
+    # - UNC paths: \\server\share\...
+    p = path_str.replace("/", "\\")
+    if p.startswith("\\\\"):
+        return True
+    if len(p) >= 3 and p[1] == ":" and p[2] in ("\\", "/"):
+        return True
+    return os.path.isabs(p)
+
+
+def _to_portable_relpath(rel_path: str) -> str:
+    """Convert a relpath to a portable note form (forward slashes)."""
+    return rel_path.replace("\\", "/")
+
+
+def _rewrite_note_path_or_root_header(note_text: str, new_value: str, *, prefer: str = "Path") -> str:
+    """Rewrite the first Path:/Root: header line in a note, preserving the rest."""
+    if not isinstance(note_text, str):
+        note_text = str(note_text or "")
+
+    lines = note_text.splitlines()
+    out: list[str] = []
+    replaced = False
+
+    for raw in lines:
+        stripped = raw.strip()
+        if not replaced and (stripped.startswith("Path:") or stripped.startswith("Root:")):
+            key = "Path" if prefer == "Path" else ("Root" if prefer == "Root" else None)
+            if key is None:
+                key = "Path" if stripped.startswith("Path:") else "Root"
+            out.append(f"{key}: {new_value}")
+            replaced = True
+        else:
+            out.append(raw)
+
+    if not replaced:
+        # If the note didn't have a header line at all, insert at top.
+        out.insert(0, f"{prefer}: {new_value}")
+
+    return "\n".join(out)
+
+
+def resolve_cartographer_path_from_node(
+    *,
+    node_id: str,
+    nodes_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Resolve a Cartographer Path:/Root: value into an on-disk absolute path.
+
+    Supports the portability model:
+    - A top-level ancestor has an absolute Root: (repo root).
+    - Descendants may have relative Path: values.
+
+    Strategy:
+    - Walk ancestors starting at node_id.
+    - Collect relative Path/Root values until we find an absolute base.
+    - Join base + reversed(relative_chain).
+
+    Returns dict:
+      {abs_path, base_abs, base_node_id, base_kind, rel_chain, visited_ids}
+    """
+    current_id: str | None = str(node_id)
+    visited: set[str] = set()
+
+    rel_chain: list[str] = []
+    base_abs: str | None = None
+    base_node_id: str | None = None
+    base_kind: str | None = None
+
+    while current_id and current_id not in visited:
+        visited.add(current_id)
+        n = nodes_by_id.get(str(current_id))
+        if not n:
+            break
+
+        note_str = n.get("note") or n.get("no") or ""
+        header = _extract_path_header_from_note(str(note_str))
+        if header:
+            kind, raw_val = header
+            val = _cleanse_cartographer_path_value(raw_val) or ""
+
+            if val:
+                if _looks_absolute_path(val):
+                    # Absolute base. Allow normalize_cartographer_path to do
+                    # cross-machine drive/root heuristics ONLY at this absolute base.
+                    base_abs = normalize_cartographer_path(val) or val
+                    base_node_id = str(current_id)
+                    base_kind = kind
+                    break
+                else:
+                    # Relative segment.
+                    rel_chain.append(val)
+
+        parent_id_val = n.get("parent_id") or n.get("parentId")
+        current_id = str(parent_id_val) if parent_id_val else None
+
+    if not base_abs:
+        raise NetworkError(
+            "resolve_cartographer_path_from_node: no absolute Path:/Root: base was found "
+            f"for node_id={node_id} (visited_chain={list(visited)})"
+        )
+
+    # Join base + collected relatives (from top-most relative to leaf-most relative).
+    abs_path = base_abs
+    for rel in reversed(rel_chain):
+        rel2 = rel.replace("/", os.sep)
+        abs_path = os.path.join(abs_path, rel2)
+
+    abs_path = os.path.normpath(abs_path)
+
+    return {
+        "abs_path": abs_path,
+        "base_abs": base_abs,
+        "base_node_id": base_node_id,
+        "base_kind": base_kind,
+        "rel_chain": list(reversed(rel_chain)),
+        "visited_ids": list(visited),
+        "root_abs": base_abs if base_kind == "Root" else None,
+    }
+
+
 def normalize_cartographer_path(file_path: str | None) -> str | None:
     """Normalize a Cartographer Path:/Root: value for cross-machine portability.
 
@@ -3860,15 +4015,58 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     f"File node {file_node_id} note is missing 'Path:'/'Root:' line; cannot build incremental map",
                 )
 
-            # Normalize path for cross-machine portability (E: → C:, remove __Dan_Root)
-            source_path = normalize_cartographer_path(source_path) or source_path
+            # Resolve possibly-relative Path:/Root: values via ancestor chain.
+            if not nodes_by_id_cache:
+                raise NetworkError(
+                    "refresh_file_node_beacons: /nodes-export cache unavailable; cannot resolve relative Path:/Root: "
+                    f"for file_node_id={file_node_id}"
+                )
+
+            try:
+                resolved_path = resolve_cartographer_path_from_node(
+                    node_id=str(file_node_id),
+                    nodes_by_id=nodes_by_id_cache,
+                )
+            except Exception as e:  # noqa: BLE001
+                raise NetworkError(
+                    "refresh_file_node_beacons: failed to resolve Cartographer Path:/Root: to absolute path "
+                    f"for file_node_id={file_node_id}: {e}"
+                ) from e
+
+            source_path = str(resolved_path.get("abs_path") or "")
+            repo_root_abs = resolved_path.get("root_abs")
+
+            # If we have an absolute Root base, rewrite this FILE node's Path: header
+            # to a portable relative path so the Workflowy tree is machine-agnostic.
+            if repo_root_abs:
+                try:
+                    rel_note = _to_portable_relpath(os.path.relpath(source_path, repo_root_abs))
+                    # Only write clean in-repo paths (avoid '..' escape paths).
+                    if rel_note and not rel_note.startswith(".."):
+                        new_note_text = _rewrite_note_path_or_root_header(
+                            note_text,
+                            rel_note,
+                            prefer="Path",
+                        )
+                        if (not dry_run) and new_note_text != note_text:
+                            await self.update_node(
+                                str(file_node_id),
+                                NodeUpdateRequest(name=None, note=new_note_text, layoutMode=None),
+                            )
+                            note_text = new_note_text
+                except Exception as e:  # noqa: BLE001
+                    log_event(
+                        "refresh_file_node_beacons: failed to rewrite FILE Path header to relative "
+                        f"for file_node_id={file_node_id}: {e}",
+                        "CARTO_PATH",
+                    )
 
             # FAIL CLOSED: if the path does not exist, do NOT proceed.
             # Proceeding with a non-existent path can yield an empty Cartographer tree,
             # and then reconcile_tree would delete all structural nodes under the FILE.
             if not os.path.exists(source_path):
                 raise NetworkError(
-                    "Cartographer source path does not exist on disk after normalization: "
+                    "Cartographer source path does not exist on disk after resolution: "
                     f"{source_path!r} (file_node_id={file_node_id}). "
                     "Refusing to run F12 refresh to avoid destructive deletes."
                 )
@@ -3939,7 +4137,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 ) from e
 
             try:
-                file_map = cartographer.map_codebase(source_path)  # type: ignore[attr-defined]
+                # Pass repo_root when available so Cartographer emits relative Path: notes.
+                file_map = cartographer.map_codebase(  # type: ignore[attr-defined]
+                    source_path,
+                    repo_root=repo_root_abs,
+                )
             except Exception as e:  # noqa: BLE001
                 raise NetworkError(
                     f"Cartographer map_codebase failed for {source_path} (incremental scaffold): {e}",
@@ -4469,9 +4671,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 f"node {node_id!r}",
             )
 
-        # Normalize path for cross-machine portability (E: → C:, remove __Dan_Root)
-        source_path = normalize_cartographer_path(source_path) or source_path
+        # Resolve possibly-relative Path:/Root: values via ancestor chain so we can
+        # update source files regardless of where the repo lives on disk.
+        try:
+            resolved_path = resolve_cartographer_path_from_node(
+                node_id=str(file_node.get("id")),
+                nodes_by_id=nodes_by_id,
+            )
+        except Exception as e:  # noqa: BLE001
+            raise NetworkError(
+                "update_beacon_from_node: failed to resolve Cartographer Path:/Root: to absolute path "
+                f"for node {node_id!r}: {e}"
+            ) from e
 
+        source_path = str(resolved_path.get("abs_path") or "")
         ext = os.path.splitext(source_path)[1].lower()
 
         # 3) Import nexus_map_codebase and delegate to language-specific helper.
@@ -4852,6 +5065,17 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "BEACON",
         )
 
+        # 0) Load global /nodes-export cache so we can resolve relative Path:/Root:
+        # values via ancestor chain.
+        try:
+            raw_global = await export_nodes_impl(self, node_id=None, use_cache=True, force_refresh=False)
+            all_nodes_global = raw_global.get("nodes", []) or []
+            nodes_by_id_global: dict[str, dict[str, Any]] = {
+                str(n.get("id")): n for n in all_nodes_global if n.get("id")
+            }
+        except Exception:
+            nodes_by_id_global = {}
+
         # 1) Export subtree under the folder root
         try:
             raw = await export_nodes_impl(self, folder_node_id)
@@ -4931,9 +5155,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         # Root Path: (may be None or a directory path)
         root_path = _parse_path_from_note(note_text_root) if note_text_root else None
-        # Normalize for cross-machine portability
+
+        # Resolve possibly-relative Path:/Root: values via ancestor chain.
+        # If this fails (e.g. cache missing), fall back to the legacy normalize helper.
         if root_path:
-            root_path = normalize_cartographer_path(root_path) or root_path
+            try:
+                resolved_root = resolve_cartographer_path_from_node(
+                    node_id=str(folder_node_id),
+                    nodes_by_id=(nodes_by_id_global or node_by_id),
+                )
+                root_path = str(resolved_root.get("abs_path") or root_path)
+            except Exception:
+                root_path = normalize_cartographer_path(root_path) or root_path
+
         if root_path and not os.path.isdir(root_path):
             log_event(
                 f"refresh_folder_cartographer_sync: root Path=\"{root_path}\" is not a directory; ignoring disk sync",
@@ -4941,12 +5175,14 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             )
             root_path = None
 
-        # 1a) Stash immediate Notes[...] subtrees keyed by PATH.
+        # 1a) Stash immediate Notes[...] subtrees keyed by ABSOLUTE PATH.
         #
-        # stashed_notes_by_path maps canonical Path (or None) → list of Notes node IDs.
-        # For folder-level sync we physically move Notes under the folder root
-        # so they survive any per-file mutations, then later reattach by PATH.
-        stashed_notes_by_path: dict[str | None, list[str]] = {}
+        # IMPORTANT: during this same folder sync run, we may rewrite FILE nodes
+        # from absolute Path: → relative Path: (for portability). If we keyed
+        # stashed notes by the raw Path header, reattachment would fail.
+        #
+        # Therefore we key by resolved on-disk absolute path instead.
+        stashed_notes_by_abs_path: dict[str | None, list[str]] = {}
         notes_moved_to_root = 0
 
         # @beacon[
@@ -4955,9 +5191,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,
         #   kind=ast,
         # ]
-        def _stash_notes_node(notes_node_id: str, owner_path: str | None) -> None:
-            key = _canonical_path(owner_path) if owner_path else None
-            stashed_notes_by_path.setdefault(key, []).append(notes_node_id)
+        def _stash_notes_node(notes_node_id: str, owner_abs_path: str | None) -> None:
+            key = _canonical_path(owner_abs_path) if owner_abs_path else None
+            stashed_notes_by_abs_path.setdefault(key, []).append(notes_node_id)
 
         # Stash Notes directly under the folder root (they conceptually belong
         # to the folder-level Path, if any).
@@ -4995,34 +5231,48 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if _is_folder_node(n):
                 continue
 
-            source_path = _parse_path_from_note(str(note))
-            if not source_path:
+            source_path_header = _parse_path_from_note(str(note))
+            if not source_path_header:
                 continue
 
-            # Normalize for cross-machine portability
-            source_path = normalize_cartographer_path(source_path) or source_path
+            # Resolve possibly-relative Path:/Root: values via ancestor chain.
+            source_path_abs: str | None = None
+            try:
+                resolved_file = resolve_cartographer_path_from_node(
+                    node_id=str(s_nid),
+                    nodes_by_id=(nodes_by_id_global or node_by_id),
+                )
+                source_path_abs = str(resolved_file.get("abs_path") or "")
+            except Exception as e:  # noqa: BLE001
+                source_path_abs = None
+                msg = (
+                    "refresh_folder_cartographer_sync: failed to resolve FILE Path:/Root: to absolute path "
+                    f"for node_id={s_nid} Path={source_path_header!r}: {e}"
+                )
+                log_event(msg, "BEACON")
+                refresh_errors.append(msg)
 
-            canonical = _canonical_path(source_path)
-            exists = os.path.isfile(source_path)
+            canonical = _canonical_path(source_path_abs or source_path_header)
+            exists = bool(source_path_abs) and os.path.isfile(source_path_abs)
             if exists:
                 present_files.add(canonical)
-                # Prefer first-seen raw path for reporting
-                present_paths_raw.setdefault(canonical, source_path)
+                # Prefer first-seen raw path for reporting (the note header, which may be relative)
+                present_paths_raw.setdefault(canonical, source_path_header)
                 log_event(
                     "refresh_folder_cartographer_sync: FILE present on disk "
-                    f"node_id={s_nid} Path=\"{source_path}\" canonical=\"{canonical}\"",
+                    f"node_id={s_nid} Path=\"{source_path_header}\" abs=\"{source_path_abs}\" canonical=\"{canonical}\"",
                     "BEACON",
                 )
             else:
-                missing_paths.append(source_path)
+                missing_paths.append(source_path_header)
                 log_event(
                     "refresh_folder_cartographer_sync: FILE missing on disk "
-                    f"node_id={s_nid} Path=\"{source_path}\" canonical=\"{canonical}\"",
+                    f"node_id={s_nid} Path=\"{source_path_header}\" abs=\"{source_path_abs}\" canonical=\"{canonical}\"",
                     "BEACON",
                 )
 
             # Record this FILE node for later refresh/deletion
-            file_nodes_info.append((s_nid, source_path, exists))
+            file_nodes_info.append((s_nid, source_path_abs or source_path_header, exists))
 
             # Stash immediate Notes[...] children for this FILE node by its Path.
             file_children = children_by_parent.get(s_nid, [])
@@ -5033,7 +5283,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 cname = str(child.get("name") or "")
                 if not _is_notes_name(cname):
                     continue
-                _stash_notes_node(str(cid), source_path)
+                _stash_notes_node(str(cid), source_path_abs)
                 # Physically move under the folder root so that these Notes are
                 # decoupled from any structural changes to this FILE node.
                 parent_for_child = parent_of.get(str(cid))
@@ -5415,6 +5665,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                     folder_path,
                                     line_count=None,
                                     sha1=None,
+                                    repo_root=root_path,
                                 )
                             except Exception:
                                 folder_note = f"Path: {folder_path}"
@@ -5434,7 +5685,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
                     # Now create the FILE subtree under parent_uuid using Cartographer
                     try:
-                        file_map = cartographer.map_codebase(file_path)  # type: ignore[attr-defined]
+                        file_map = cartographer.map_codebase(  # type: ignore[attr-defined]
+                            file_path,
+                            repo_root=root_path,
+                        )
                     except Exception as e:  # noqa: BLE001
                         log_event(
                             f"refresh_folder_cartographer_sync: map_codebase failed for {file_path}: {e}",
@@ -5455,8 +5709,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         notes_reattached = 0
         notes_unmatched = 0
 
-        if stashed_notes_by_path:
-            # Re-export the refreshed subtree to discover current Path → node_id mapping.
+        if stashed_notes_by_abs_path:
+            # Re-export the refreshed subtree to discover current ABS PATH → node_id mapping.
             refreshed_nodes: list[dict[str, Any]] = []
             try:
                 refreshed_raw = await export_nodes_impl(self, folder_node_id)
@@ -5469,42 +5723,50 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 )
                 refreshed_nodes = []
 
-            path_to_node_id: dict[str, str] = {}
+            abs_to_node_id: dict[str, str] = {}
             for n in refreshed_nodes or []:
                 nid = n.get("id")
                 if not nid:
                     continue
-                note_val = n.get("note") or n.get("no") or ""
-                if not isinstance(note_val, str):
-                    continue
-                node_path = _parse_path_from_note(str(note_val))
-                if not node_path:
-                    continue
-                key = _canonical_path(node_path)
-                # Last writer wins; Paths should be unique per FILE/FOLDER.
-                path_to_node_id[key] = str(nid)
 
-            total_stashed = sum(len(v) for v in stashed_notes_by_path.values())
+                # Resolve possibly-relative Path:/Root: to absolute so we can match
+                # stashed notes even if the note header changed from abs → relative.
+                try:
+                    resolved_here = resolve_cartographer_path_from_node(
+                        node_id=str(nid),
+                        nodes_by_id=(nodes_by_id_global or {}),
+                    )
+                    abs_path_here = str(resolved_here.get("abs_path") or "")
+                except Exception:
+                    abs_path_here = ""
+
+                if not abs_path_here:
+                    continue
+
+                key = _canonical_path(abs_path_here)
+                abs_to_node_id[key] = str(nid)
+
+            total_stashed = sum(len(v) for v in stashed_notes_by_abs_path.values())
 
             if dry_run:
                 # In dry-run mode, just compute how many would be reattached vs left
-                for key, ids_list in stashed_notes_by_path.items():
-                    if key is not None and key in path_to_node_id:
+                for key, ids_list in stashed_notes_by_abs_path.items():
+                    if key is not None and key in abs_to_node_id:
                         notes_reattached += len(ids_list)
                     else:
                         notes_unmatched += len(ids_list)
             else:
-                for key, ids_list in stashed_notes_by_path.items():
-                    if key is not None and key in path_to_node_id:
-                        target_parent_id = path_to_node_id[key]
-                        for nid in ids_list:
+                for key, ids_list in stashed_notes_by_abs_path.items():
+                    if key is not None and key in abs_to_node_id:
+                        target_parent_id = abs_to_node_id[key]
+                        for nid2 in ids_list:
                             try:
-                                await self.move_node(nid, target_parent_id, "bottom")
+                                await self.move_node(nid2, target_parent_id, "bottom")
                                 notes_reattached += 1
                             except Exception as e:  # noqa: BLE001
                                 log_event(
                                     "refresh_folder_cartographer_sync: failed to reattach Notes "
-                                    f"node {nid} under {target_parent_id}: {e}",
+                                    f"node {nid2} under {target_parent_id}: {e}",
                                     "BEACON",
                                 )
                     else:

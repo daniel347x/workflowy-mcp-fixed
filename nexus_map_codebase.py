@@ -58,12 +58,44 @@ def _get_line_count(path: str) -> Optional[int]:
         return None
 
 
-def format_file_note(path: str, line_count: int | None = None, sha1: str | None = None) -> str:
+def _portable_relpath(abs_path: str, repo_root: str) -> str | None:
+    """Return a portable (forward-slash) relpath, or None if not safe/possible."""
+    try:
+        # Normalize separators but keep semantics.
+        abs_norm = os.path.normpath(abs_path)
+        root_norm = os.path.normpath(repo_root)
+
+        # os.path.commonpath throws on Windows when drives differ.
+        common = os.path.commonpath([abs_norm, root_norm])
+        if os.path.normcase(common) != os.path.normcase(root_norm):
+            return None
+
+        rel = os.path.relpath(abs_norm, root_norm)
+        rel = rel.replace("\\", "/")
+        if not rel or rel.startswith(".."):
+            return None
+        return rel
+    except Exception:
+        return None
+
+
+def format_file_note(
+    path: str,
+    line_count: int | None = None,
+    sha1: str | None = None,
+    *,
+    repo_root: str | None = None,
+) -> str:
     """Format the standard FILE-node note header.
 
     Shared between Cartographer (map_codebase) and per-file beacon refresh
     (refresh_file_node_beacons) so that FILE nodes always expose a consistent
-    header block:
+    header block.
+
+    Portability policy (PR1):
+    - If repo_root is provided and path is under repo_root, store a RELATIVE
+      Path: in the note.
+    - Otherwise store the raw path.
 
         Path: ...
         LINE COUNT: N
@@ -71,7 +103,14 @@ def format_file_note(path: str, line_count: int | None = None, sha1: str | None 
 
     LINE COUNT and Source-SHA1 are optional and omitted when not provided.
     """
-    lines: list[str] = [f"Path: {path}"]
+    used_path = path
+    if repo_root and isinstance(path, str) and isinstance(repo_root, str):
+        if os.path.isabs(path) and os.path.isabs(repo_root):
+            rel = _portable_relpath(path, repo_root)
+            if rel:
+                used_path = rel
+
+    lines: list[str] = [f"Path: {used_path}"]
     if line_count is not None:
         lines.append(f"LINE COUNT: {line_count}")
     if sha1 is not None:
@@ -3011,7 +3050,13 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
 # Phase 1 JS/TS: directory + single-file dispatcher. This will be extended
 # to call the JS/TS outline builder (parse_js_ts_outline) for .js/.ts/.tsx
 # files alongside parse_file_outline for Python.
-def map_codebase(root_path: str, include_exts: List[str] = None, exclude_patterns: List[str] = None) -> Dict[str, Any]:
+def map_codebase(
+    root_path: str,
+    include_exts: List[str] = None,
+    exclude_patterns: List[str] = None,
+    *,
+    repo_root: str | None = None,
+) -> Dict[str, Any]:
     """
     Wraps the inner file parsing into a directory walker.
     Returns a single root NEXUS node representing the codebase tree.
@@ -3069,6 +3114,15 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
                 return True
         return False
 
+    # Portability: descendant FILE/FOLDER nodes should usually store relative Path:
+    # values. When repo_root is supplied, we use it; otherwise, for directory maps
+    # we default to root_path as the note root.
+    repo_root_for_notes: str | None = None
+    if repo_root and isinstance(repo_root, str):
+        repo_root_for_notes = repo_root
+    elif os.path.isdir(root_path):
+        repo_root_for_notes = root_path
+
     # @beacon[
     #   id=auto-beacon@map_codebase.should_include-td2v,
     #   role=map_codebase.should_include,
@@ -3120,7 +3174,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
                     # include_exts apply to files, not folders.
                     children = scan_dir(full_path)
                     if children:  # Only add non-empty directories
-                        folder_note = format_file_note(full_path)
+                        folder_note = format_file_note(full_path, repo_root=repo_root_for_notes)
                         nodes.append({
                             "name": f"{EMOJI_FOLDER} {item}",
                             "note": folder_note,
@@ -3174,7 +3228,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
                         children = []  # Generic file = Leaf node
                         line_count = _get_line_count(full_path)
 
-                    note = format_file_note(full_path, line_count=line_count)
+                    note = format_file_note(full_path, line_count=line_count, repo_root=repo_root_for_notes)
 
                     nodes.append({
                         "name": f"{icon} {item}",
@@ -3195,7 +3249,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
         if ext == '.py':
             children = parse_file_outline(root_path)
             lc = _get_line_count(root_path)
-            note = format_file_note(root_path, line_count=lc)
+            note = format_file_note(root_path, line_count=lc, repo_root=repo_root_for_notes)
             return {
                 "name": f"{EMOJI_PYTHON} {os.path.basename(root_path)}",
                 "note": note,
@@ -3204,7 +3258,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
         elif ext == '.md':
             children = parse_markdown_structure(root_path)
             lc = _get_line_count(root_path)
-            note = format_file_note(root_path, line_count=lc)
+            note = format_file_note(root_path, line_count=lc, repo_root=repo_root_for_notes)
             return {
                 "name": f"{EMOJI_MARKDOWN} {os.path.basename(root_path)}",
                 "note": note,
@@ -3213,7 +3267,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
         elif ext in ('.js', '.jsx'):
             children = parse_js_ts_outline(root_path)
             lc = _get_line_count(root_path)
-            note = format_file_note(root_path, line_count=lc)
+            note = format_file_note(root_path, line_count=lc, repo_root=repo_root_for_notes)
             return {
                 "name": f"{EMOJI_JS} {os.path.basename(root_path)}",
                 "note": note,
@@ -3222,7 +3276,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
         elif ext in ('.ts', '.tsx'):
             children = parse_js_ts_outline(root_path)
             lc = _get_line_count(root_path)
-            note = format_file_note(root_path, line_count=lc)
+            note = format_file_note(root_path, line_count=lc, repo_root=repo_root_for_notes)
             return {
                 "name": f"{EMOJI_TS} {os.path.basename(root_path)}",
                 "note": note,
@@ -3234,7 +3288,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
             children: List[Dict[str, Any]] = []
             sql_beacons = parse_sql_beacon_blocks(sql_lines)
             apply_sql_beacons(sql_lines, children, sql_beacons)
-            note = format_file_note(root_path, line_count=len(sql_lines))
+            note = format_file_note(root_path, line_count=len(sql_lines), repo_root=repo_root_for_notes)
             return {
                 "name": f"{EMOJI_SQL} {os.path.basename(root_path)}",
                 "note": note,
@@ -3246,7 +3300,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
             children: List[Dict[str, Any]] = []
             sh_beacons = parse_sh_beacon_blocks(sh_lines)
             apply_sh_beacons(sh_lines, children, sh_beacons)
-            note = format_file_note(root_path, line_count=len(sh_lines))
+            note = format_file_note(root_path, line_count=len(sh_lines), repo_root=repo_root_for_notes)
             return {
                 "name": f"{EMOJI_SHELL} {os.path.basename(root_path)}",
                 "note": note,
@@ -3258,7 +3312,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
             children: List[Dict[str, Any]] = []
             yml_beacons = parse_yaml_beacon_blocks(yml_lines)
             apply_yaml_beacons(yml_lines, children, yml_beacons)
-            note = format_file_note(root_path, line_count=len(yml_lines))
+            note = format_file_note(root_path, line_count=len(yml_lines), repo_root=repo_root_for_notes)
             return {
                 "name": f"{EMOJI_FILE} {os.path.basename(root_path)}",
                 "note": note,
@@ -3266,7 +3320,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
             }
         else:
              lc = _get_line_count(root_path)
-             note = format_file_note(root_path, line_count=lc)
+             note = format_file_note(root_path, line_count=lc, repo_root=repo_root_for_notes)
              return {
                 "name": f"{EMOJI_FILE} {os.path.basename(root_path)}",
                 "note": note,
@@ -3276,7 +3330,7 @@ def map_codebase(root_path: str, include_exts: List[str] = None, exclude_pattern
     # Directory mode
     return {
         "name": f"🗺️ Source Map: {root_name}",
-        "note": f"Root: {root_path}",
+        "note": f"Root: {repo_root_for_notes or root_path}",
         "children": scan_dir(root_path)
     }
 
