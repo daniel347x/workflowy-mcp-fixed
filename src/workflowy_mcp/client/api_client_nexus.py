@@ -249,6 +249,38 @@ def resolve_cartographer_path_from_node(
         while s and (not s[0].isalnum()) and s[0] not in "._/\\-_":
             s = s[1:].lstrip()
 
+        # STRICT suffix cutoff for cosmetic markers in names.
+        # When deriving filesystem segments from node names, treat any suffix that
+        # starts with a '#tag' or a Notes/diagnostic emoji (whitelist) as cosmetic.
+        # We truncate at the FIRST occurrence (character-wise), not just at the end.
+        _notes_marker_cps = {
+            "\U0001F4DD",  # 📝
+            "\U0001F17F",  # 🅿
+            "\U0001F9E9",  # 🧩
+            "\U0001F4A5",  # 💥
+            "\U0001F31F",  # 🌟
+            "\U0001F4A1",  # 💡
+            "\U0001F4CC",  # 📌
+            "\U0001F4D3",  # 📓
+            "\U0001F9FE",  # 🧾
+            "\U0001F9E0",  # 🧠
+            "\U0001F56F",  # 🕯
+            "\U0001F9E8",  # 🧨
+            "\u26A0",      # ⚠
+            "\u274C",      # ❌
+            "\u2705",      # ✅
+            "\U0001F6A8",  # 🚨
+            "\U0001F534",  # 🔴
+            "\U0001F6D1",  # 🛑
+            "\u26D4",      # ⛔
+            "\u2757",      # ❗
+        }
+        for _i, _ch in enumerate(s):
+            if _ch == "#" or _ch in _notes_marker_cps:
+                s = s[:_i].rstrip()
+                break
+        return s
+
         tokens = s.split()
         if tokens:
             notes_prefixes = {
@@ -5423,6 +5455,38 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 while s and (not s[0].isalnum()) and s[0] not in "._/\\-_":
                     s = s[1:].lstrip()
 
+                # STRICT suffix cutoff for cosmetic markers in names.
+                # When deriving filesystem segments from node names, treat any suffix that
+                # starts with a '#tag' or a Notes/diagnostic emoji (whitelist) as cosmetic.
+                # We truncate at the FIRST occurrence (character-wise), not just at the end.
+                _notes_marker_cps = {
+                    "\U0001F4DD",  # 📝
+                    "\U0001F17F",  # 🅿
+                    "\U0001F9E9",  # 🧩
+                    "\U0001F4A5",  # 💥
+                    "\U0001F31F",  # 🌟
+                    "\U0001F4A1",  # 💡
+                    "\U0001F4CC",  # 📌
+                    "\U0001F4D3",  # 📓
+                    "\U0001F9FE",  # 🧾
+                    "\U0001F9E0",  # 🧠
+                    "\U0001F56F",  # 🕯
+                    "\U0001F9E8",  # 🧨
+                    "\u26A0",      # ⚠
+                    "\u274C",      # ❌
+                    "\u2705",      # ✅
+                    "\U0001F6A8",  # 🚨
+                    "\U0001F534",  # 🔴
+                    "\U0001F6D1",  # 🛑
+                    "\u26D4",      # ⛔
+                    "\u2757",      # ❗
+                }
+                for _i, _ch in enumerate(s):
+                    if _ch == "#" or _ch in _notes_marker_cps:
+                        s = s[:_i].rstrip()
+                        break
+                return s
+
                 tokens = s.split()
                 if tokens:
                     notes_prefixes = {
@@ -6072,20 +6136,38 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                     txt = txt[1:]
                                 base = txt.strip() or raw_name.strip()
 
-                                # Strip trailing tags and trailing notes/diagnostic emoji tokens.
-                                tokens = base.split()
-                                while tokens:
-                                    last = str(tokens[-1])
-                                    if last.startswith("#"):
-                                        tokens.pop()
-                                        continue
-                                    if last and last[0] in notes_prefixes:
-                                        tokens.pop()
-                                        continue
-                                    break
-
-                                folder_name = " ".join(tokens) if tokens else base
-                                folder_seg = folder_name
+                                # STRICT suffix cutoff for cosmetic markers in names.
+                                # When deriving filesystem segments from node names, treat any suffix that
+                                # starts with a '#tag' or a Notes/diagnostic emoji (whitelist) as cosmetic.
+                                # We truncate at the FIRST occurrence (character-wise), not just at the end.
+                                _notes_marker_cps = {
+                                    "\U0001F4DD",  # 📝
+                                    "\U0001F17F",  # 🅿
+                                    "\U0001F9E9",  # 🧩
+                                    "\U0001F4A5",  # 💥
+                                    "\U0001F31F",  # 🌟
+                                    "\U0001F4A1",  # 💡
+                                    "\U0001F4CC",  # 📌
+                                    "\U0001F4D3",  # 📓
+                                    "\U0001F9FE",  # 🧾
+                                    "\U0001F9E0",  # 🧠
+                                    "\U0001F56F",  # 🕯
+                                    "\U0001F9E8",  # 🧨
+                                    "\u26A0",      # ⚠
+                                    "\u274C",      # ❌
+                                    "\u2705",      # ✅
+                                    "\U0001F6A8",  # 🚨
+                                    "\U0001F534",  # 🔴
+                                    "\U0001F6D1",  # 🛑
+                                    "\u26D4",      # ⛔
+                                    "\u2757",      # ❗
+                                }
+                                _cut_base = base
+                                for _i, _ch in enumerate(_cut_base):
+                                    if _ch == "#" or _ch in _notes_marker_cps:
+                                        _cut_base = _cut_base[:_i].rstrip()
+                                        break
+                                folder_seg = _cut_base
 
                             if folder_seg:
                                 segments.append(folder_seg)
