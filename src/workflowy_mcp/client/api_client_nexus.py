@@ -4107,13 +4107,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             source_path = str(resolved_path.get("abs_path") or "")
             repo_root_abs = resolved_path.get("root_abs")
 
-            # If we have an absolute Root base, rewrite this FILE node's Path: header
+            # If we have an absolute Root base, we may rewrite this node's Path: header
             # to a portable relative path so the Workflowy tree is machine-agnostic.
-            if repo_root_abs:
+            #
+            # GUARDRAIL (PR1.2): never rewrite a Cartographer ROOT node (Root: ...)
+            # into a Path: ... line (especially "Path: ."). Root must stay absolute.
+            header = _extract_path_header_from_note(note_text)
+            header_kind = header[0] if header else None
+
+            if repo_root_abs and header_kind == "Path":
                 try:
                     rel_note = _to_portable_relpath(os.path.relpath(source_path, repo_root_abs))
-                    # Only write clean in-repo paths (avoid '..' escape paths).
-                    if rel_note and not rel_note.startswith(".."):
+                    # Only write clean in-repo paths (avoid '.' and '..' escape paths).
+                    if rel_note and rel_note not in {".", "./"} and not rel_note.startswith(".."):
                         new_note_text = _rewrite_note_path_or_root_header(
                             note_text,
                             rel_note,
@@ -4127,7 +4133,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             note_text = new_note_text
                 except Exception as e:  # noqa: BLE001
                     log_event(
-                        "refresh_file_node_beacons: failed to rewrite FILE Path header to relative "
+                        "refresh_file_node_beacons: failed to rewrite Path header to relative "
                         f"for file_node_id={file_node_id}: {e}",
                         "CARTO_PATH",
                     )
