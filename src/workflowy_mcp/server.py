@@ -1671,9 +1671,8 @@ async def websocket_handler(websocket):
                         from pathlib import Path
                         import json as json_module  # type: ignore[redefined-builtin]
 
-                        carto_jobs_base = (
-                            r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\MCP_Servers\\workflowy_mcp\\temp\\cartographer_jobs"
-                        )
+                        server_dir = os.path.dirname(os.path.abspath(__file__))
+                        carto_jobs_base = os.path.join(server_dir, "temp", "cartographer_jobs")
                         base_dir = Path(carto_jobs_base)
                         jobs: list[dict[str, Any]] = []
                         if base_dir.exists():
@@ -1757,9 +1756,8 @@ async def websocket_handler(websocket):
                             )
                             continue
 
-                        carto_jobs_base = (
-                            r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\MCP_Servers\\workflowy_mcp\\temp\\cartographer_jobs"
-                        )
+                        server_dir = os.path.dirname(os.path.abspath(__file__))
+                        carto_jobs_base = os.path.join(server_dir, "temp", "cartographer_jobs")
                         base_dir = Path(carto_jobs_base)
                         found = False
 
@@ -2618,7 +2616,9 @@ async def mcp_cancel_job(job_id: str) -> dict:
     from pathlib import Path
     import json as json_module
 
-    carto_jobs_base = r"E:\\__daniel347x\\__Obsidian\\__Inking into Mind\\--TypingMind\\Projects - All\\Projects - Individual\\TODO\\MCP_Servers\\workflowy_mcp\\temp\\cartographer_jobs"
+    # Derive CARTO_REFRESH job directory dynamically from this file's location
+    server_dir = os.path.dirname(os.path.abspath(__file__))
+    carto_jobs_base = os.path.join(server_dir, "temp", "cartographer_jobs")
     base_dir = Path(carto_jobs_base)
     if base_dir.exists():
         for job_path in base_dir.glob("*.json"):
