@@ -5367,8 +5367,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     continue
 
                 raw_val = _cleanse_cartographer_path_value(raw_val) or ""
+
                 # Only rewrite legacy-looking values.
-                if (not raw_val) or (not _looks_absolute_path(raw_val) and ("/" not in raw_val and "\\" not in raw_val)):
+                #
+                # NOTE: In segments-mode, we normally expect *all* Path: values to be
+                # single-segment. However, a prior bug may have rewritten some folder
+                # nodes to the repo-root basename (e.g. Path: workflowy_mcp), which then
+                # breaks path resolution and snippet tools.
+                repo_root_base = os.path.basename(str(repo_root_abs).rstrip("\\/")) if repo_root_abs else ""
+                is_legacy = (
+                    _looks_absolute_path(raw_val)
+                    or ("/" in raw_val or "\\" in raw_val)
+                    or (repo_root_base and raw_val == repo_root_base and s_nid != str(folder_node_id))
+                )
+                if (not raw_val) or (not is_legacy):
                     continue
 
                 try:
