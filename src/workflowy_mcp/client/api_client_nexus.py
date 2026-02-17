@@ -227,6 +227,11 @@ def resolve_cartographer_path_from_node(
     visited: set[str] = set()
 
     rel_chain: list[str] = []
+    # If we see a relative Path value that already looks like a full repo-relative
+    # path (contains a separator, e.g. "client/api_client.py"), treat it as
+    # terminal and do NOT accumulate additional relative segments above it.
+    saw_full_relpath: bool = False
+
     base_abs: str | None = None
     base_node_id: str | None = None
     base_kind: str | None = None
@@ -261,9 +266,19 @@ def resolve_cartographer_path_from_node(
                         root_abs = abs_val
 
                 else:
+                    # Relative segment.
                     # Only collect relatives until we have an absolute base.
-                    if base_abs is None:
+                    # If we already captured a "full" relative path (e.g. "client/api_client.py"),
+                    # do not accumulate additional segments above it.
+                    if base_abs is None and not saw_full_relpath:
                         rel_chain.append(val)
+                        if "/" in val or "\\" in val:
+                            saw_full_relpath = True
+
+        # If we have found both a base_abs and a root_abs, we already have
+        # enough information to resolve abs_path; no need to keep walking.
+        if base_abs is not None and root_abs is not None:
+            break
 
         parent_id_val = n.get("parent_id") or n.get("parentId")
         current_id = str(parent_id_val) if parent_id_val else None
