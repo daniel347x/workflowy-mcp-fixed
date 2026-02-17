@@ -236,20 +236,46 @@ def resolve_cartographer_path_from_node(
         - "🐍 api_client_nexus.py"
         - "📂 client"
 
-        We strip leading emoji/bullets and trailing #tags.
+        Supports cosmetic suffixes in names:
+        - trailing #tags
+        - trailing Notes/diagnostic emoji tokens (same whitelist as _is_notes_name)
+
+        We strip from the RIGHT: once we encounter a #tag or a whitelisted emoji token,
+        we drop that token and everything to its right.
         """
         s = (raw_name or "").strip()
 
         # Strip leading non-filename decoration (emoji, bullets, etc.)
         while s and (not s[0].isalnum()) and s[0] not in "._/\\-_":
-
             s = s[1:].lstrip()
 
-        # Strip trailing tags
-        if "#" in s:
-            s = s.split("#", 1)[0].rstrip()
+        tokens = s.split()
+        if tokens:
+            notes_prefixes = {
+                "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
+                "⚠", "❌", "✅", "🚨", "🔴", "🛑", "⛔", "❗",
+            }
 
-        return s
+            cut = len(tokens)
+            for i in range(len(tokens) - 1, -1, -1):
+                t = str(tokens[i])
+                if t.startswith("#"):
+                    cut = i
+                    continue
+                if t and t[0] in notes_prefixes:
+                    cut = i
+                    continue
+                break
+
+            tokens = tokens[:cut]
+
+        s2 = " ".join(tokens).strip() if tokens else s.strip()
+
+        # Final safety: if any inline '#' remains, drop everything after the first '#'.
+        if "#" in s2:
+            s2 = s2.split("#", 1)[0].rstrip()
+
+        return s2
 
     current_id: str | None = str(node_id)
     visited: set[str] = set()
@@ -5382,18 +5408,48 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             repo_root_base = os.path.basename(str(repo_root_abs).rstrip("\\/")) if repo_root_abs else ""
 
             def _segment_from_node_name_for_path(raw_name: str) -> str:
-                """Best-effort: derive a single-segment Path value from a Cartographer node name."""
+                """Best-effort: derive a single-segment Path value from a Cartographer node name.
+
+                Supports cosmetic suffixes in names:
+                - trailing #tags
+                - trailing Notes/diagnostic emoji tokens (same whitelist as _is_notes_name)
+
+                We strip from the RIGHT: once we encounter a #tag or a whitelisted emoji token,
+                we drop that token and everything to its right.
+                """
                 s = (raw_name or "").strip()
 
                 # Strip leading emoji/bullets/decoration.
                 while s and (not s[0].isalnum()) and s[0] not in "._/\\-_":
                     s = s[1:].lstrip()
 
-                # Strip trailing tags.
-                if "#" in s:
-                    s = s.split("#", 1)[0].rstrip()
+                tokens = s.split()
+                if tokens:
+                    notes_prefixes = {
+                        "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
+                        "⚠", "❌", "✅", "🚨", "🔴", "🛑", "⛔", "❗",
+                    }
 
-                return s
+                    cut = len(tokens)
+                    for i in range(len(tokens) - 1, -1, -1):
+                        t = str(tokens[i])
+                        if t.startswith("#"):
+                            cut = i
+                            continue
+                        if t and t[0] in notes_prefixes:
+                            cut = i
+                            continue
+                        break
+
+                    tokens = tokens[:cut]
+
+                s2 = " ".join(tokens).strip() if tokens else s.strip()
+
+                # Final safety: if any inline '#' remains, drop everything after the first '#'.
+                if "#" in s2:
+                    s2 = s2.split("#", 1)[0].rstrip()
+
+                return s2
 
             for n in flat_nodes:
                 nid = n.get("id")
