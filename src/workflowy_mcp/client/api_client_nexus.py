@@ -278,7 +278,15 @@ def resolve_cartographer_path_from_node(
         root_abs = base_abs
 
     # Join base + collected relatives (from top-most relative to leaf-most relative).
-    abs_path = base_abs
+    #
+    # IMPORTANT PORTABILITY INVARIANT:
+    # - When root_abs is available, relative Path: values are interpreted as
+    #   repo-root-relative (e.g. "client/api_client_core.py").
+    # - In that case we MUST join against root_abs, not against an intermediate
+    #   absolute Path: base (e.g. an absolute ".../client" folder Path), or we
+    #   will generate duplicated segments like ".../client/client/...".
+    join_base = root_abs or base_abs
+    abs_path = join_base
     for rel in reversed(rel_chain):
         rel2 = rel.replace("/", os.sep)
         abs_path = os.path.join(abs_path, rel2)
