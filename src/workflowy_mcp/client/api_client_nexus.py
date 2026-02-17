@@ -223,10 +223,32 @@ def resolve_cartographer_path_from_node(
     Returns dict:
       {abs_path, base_abs, base_node_id, base_kind, rel_chain, visited_ids, root_abs}
     """
+    def _segment_from_node_name(raw_name: str) -> str:
+        """Best-effort: derive a filesystem segment from a Cartographer node name.
+
+        Expected inputs:
+        - "🐍 api_client_nexus.py"
+        - "📂 client"
+
+        We strip leading emoji/bullets and trailing #tags.
+        """
+        s = (raw_name or "").strip()
+
+        # Strip leading non-filename decoration (emoji, bullets, etc.)
+        while s and (not s[0].isalnum()) and s[0] not in "._/\\-":
+            s = s[1:].lstrip()
+
+        # Strip trailing tags
+        if "#" in s:
+            s = s.split("#", 1)[0].rstrip()
+
+        return s
+
     current_id: str | None = str(node_id)
     visited: set[str] = set()
 
     rel_chain: list[str] = []
+    rel_chain_by_name: list[str] = []
     # If we see a relative Path value that already looks like a full repo-relative
     # path (contains a separator, e.g. "client/api_client.py"), treat it as
     # terminal and do NOT accumulate additional relative segments above it.
@@ -272,6 +294,11 @@ def resolve_cartographer_path_from_node(
                     # do not accumulate additional segments above it.
                     if base_abs is None and not saw_full_relpath:
                         rel_chain.append(val)
+
+                        raw_name = n.get("name") or n.get("nm") or ""
+                        seg_name = _segment_from_node_name(str(raw_name))
+                        rel_chain_by_name.append(seg_name or val)
+
                         if "/" in val or "\\" in val:
                             saw_full_relpath = True
 
@@ -308,14 +335,49 @@ def resolve_cartographer_path_from_node(
 
     abs_path = os.path.normpath(abs_path)
 
+    # Emergency robustness: In segments-mode, it's possible for Workflowy notes to
+    # temporarily contain a wrong segment (e.g. a folder node says Path: workflowy_mcp
+    # instead of Path: client). When that happens, the note-based rel_chain produces
+    # a non-existent path like "...\\workflowy_mcp\\workflowy_mcp\\api_client_nexus.py".
+    #
+    # To keep snippet tools + F12 refresh functional, we attempt safe, existence-checked
+    # fallbacks when the computed path doesn't exist.
+    fallback_used: str | None = None
+    if not os.path.exists(abs_path) and root_abs:
+        # (1) Drop any accidental segment that duplicates the repo root basename.
+        root_base = os.path.basename(os.path.normpath(root_abs))
+        if root_base:
+            rel_chain_filtered = [seg for seg in rel_chain if seg != root_base]
+            if rel_chain_filtered != rel_chain:
+                abs_path2 = root_abs
+                for rel in reversed(rel_chain_filtered):
+                    abs_path2 = os.path.join(abs_path2, rel.replace("/", os.sep))
+                abs_path2 = os.path.normpath(abs_path2)
+                if os.path.exists(abs_path2):
+                    abs_path = abs_path2
+                    rel_chain = rel_chain_filtered
+                    fallback_used = "drop_root_basename_segment"
+
+        # (2) Reconstruct using the actual node names as single segments.
+        if not os.path.exists(abs_path) and rel_chain_by_name:
+            abs_path3 = root_abs
+            for rel in reversed(rel_chain_by_name):
+                abs_path3 = os.path.join(abs_path3, rel.replace("/", os.sep))
+            abs_path3 = os.path.normpath(abs_path3)
+            if os.path.exists(abs_path3):
+                abs_path = abs_path3
+                fallback_used = "node_name_segments"
+
     return {
         "abs_path": abs_path,
         "base_abs": base_abs,
         "base_node_id": base_node_id,
         "base_kind": base_kind,
         "rel_chain": list(reversed(rel_chain)),
+        "rel_chain_by_name": list(reversed(rel_chain_by_name)),
         "visited_ids": list(visited),
         "root_abs": root_abs,
+        "fallback_used": fallback_used,
     }
 
 
