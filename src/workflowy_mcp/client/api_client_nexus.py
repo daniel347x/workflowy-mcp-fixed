@@ -345,22 +345,11 @@ def resolve_cartographer_path_from_node(
     # fallbacks when the computed path doesn't exist.
     fallback_used: str | None = None
     if not os.path.exists(abs_path) and root_abs:
-        # (1) Drop any accidental segment that duplicates the repo root basename.
-        root_base = os.path.basename(os.path.normpath(root_abs))
-        if root_base:
-            rel_chain_filtered = [seg for seg in rel_chain if seg != root_base]
-            if rel_chain_filtered != rel_chain:
-                abs_path2 = root_abs
-                for rel in reversed(rel_chain_filtered):
-                    abs_path2 = os.path.join(abs_path2, rel.replace("/", os.sep))
-                abs_path2 = os.path.normpath(abs_path2)
-                if os.path.exists(abs_path2):
-                    abs_path = abs_path2
-                    rel_chain = rel_chain_filtered
-                    fallback_used = "drop_root_basename_segment"
-
         # (2) Reconstruct using the actual node names as single segments.
-        if not os.path.exists(abs_path) and rel_chain_by_name:
+        # Prefer this over dropping segments, because it is the most semantically
+        # meaningful under segments-mode (folder/file node names are the intended
+        # segments).
+        if rel_chain_by_name:
             abs_path3 = root_abs
             for rel in reversed(rel_chain_by_name):
                 abs_path3 = os.path.join(abs_path3, rel.replace("/", os.sep))
@@ -368,6 +357,31 @@ def resolve_cartographer_path_from_node(
             if os.path.exists(abs_path3):
                 abs_path = abs_path3
                 fallback_used = "node_name_segments"
+
+        # (1) Drop any accidental segment that duplicates the repo root basename.
+        # Guardrail: do NOT allow a non-root node to collapse to root_abs.
+        if not os.path.exists(abs_path):
+            root_base = os.path.basename(os.path.normpath(root_abs))
+            if root_base:
+                rel_chain_filtered = [seg for seg in rel_chain if seg != root_base]
+                if rel_chain_filtered != rel_chain:
+                    abs_path2 = root_abs
+                    for rel in reversed(rel_chain_filtered):
+                        abs_path2 = os.path.join(abs_path2, rel.replace("/", os.sep))
+                    abs_path2 = os.path.normpath(abs_path2)
+
+                    # If dropping yields the repo root itself, only accept it when the
+                    # base node was actually a Root: header (true repo root node).
+                    if (
+                        os.path.exists(abs_path2)
+                        and (
+                            os.path.normcase(abs_path2) != os.path.normcase(os.path.normpath(root_abs))
+                            or base_kind == "Root"
+                        )
+                    ):
+                        abs_path = abs_path2
+                        rel_chain = rel_chain_filtered
+                        fallback_used = "drop_root_basename_segment"
 
     return {
         "abs_path": abs_path,
