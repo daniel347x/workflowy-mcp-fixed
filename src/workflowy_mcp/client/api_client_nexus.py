@@ -329,12 +329,20 @@ def resolve_cartographer_path_from_node(
     # Join base + collected relatives (from top-most relative to leaf-most relative).
     #
     # IMPORTANT PORTABILITY INVARIANT:
-    # - When root_abs is available, relative Path: values are interpreted as
-    #   repo-root-relative (e.g. "client/api_client_core.py").
+    # - When root_abs is available AND we have a relative chain, relative Path:
+    #   values are interpreted as repo-root-relative (e.g. "client/api_client_core.py").
     # - In that case we MUST join against root_abs, not against an intermediate
     #   absolute Path: base (e.g. an absolute ".../client" folder Path), or we
     #   will generate duplicated segments like ".../client/client/...".
-    join_base = root_abs or base_abs
+    #
+    # CRITICAL EDGE CASE (fix):
+    # - Some Cartographer trees may still contain absolute Path: values on FILE nodes
+    #   (legacy non-portable mode). In that scenario rel_chain is empty and base_abs is
+    #   already the correct on-disk file path; we must NOT override it with root_abs.
+    join_base = base_abs
+    if root_abs and rel_chain:
+        join_base = root_abs
+
     abs_path = join_base
     for rel in reversed(rel_chain):
         rel2 = rel.replace("/", os.sep)
