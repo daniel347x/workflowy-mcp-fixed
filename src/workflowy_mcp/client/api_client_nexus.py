@@ -5296,9 +5296,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 continue
             s_nid = str(nid)
             note = n.get("note") or n.get("no") or ""
-            if not isinstance(note, str) or "Path:" not in note:
+            if not isinstance(note, str):
                 continue
-            # Skip folder nodes; we only treat files here
+
+            # Legacy heuristic: folders are usually marked by 📂. Keep it, but do NOT rely on it.
+            # We also classify by resolved on-disk path below.
             if _is_folder_node(n):
                 continue
 
@@ -5317,33 +5319,46 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             except Exception as e:  # noqa: BLE001
                 source_path_abs = None
                 msg = (
-                    "refresh_folder_cartographer_sync: failed to resolve FILE Path:/Root: to absolute path "
+                    "refresh_folder_cartographer_sync: failed to resolve Path:/Root: to absolute path "
                     f"for node_id={s_nid} Path={source_path_header!r}: {e}"
                 )
                 log_event(msg, "BEACON")
                 refresh_errors.append(msg)
 
+            # Guardrail: if the resolved path is a directory, this is a folder-ish node
+            # (including Cartographer roots like Path: "."). Never treat it as a FILE.
+            if source_path_abs and os.path.isdir(source_path_abs):
+                log_event(
+                    "refresh_folder_cartographer_sync: skipping directory node during FILE scan "
+                    f"node_id={s_nid} Path=\"{source_path_header}\" abs=\"{source_path_abs}\"",
+                    "BEACON",
+                )
+                continue
+
             canonical = _canonical_path(source_path_abs or source_path_header)
             exists = bool(source_path_abs) and os.path.isfile(source_path_abs)
-            if exists:
-                present_files.add(canonical)
-                # Prefer first-seen raw path for reporting (the note header, which may be relative)
-                present_paths_raw.setdefault(canonical, source_path_header)
-                log_event(
-                    "refresh_folder_cartographer_sync: FILE present on disk "
-                    f"node_id={s_nid} Path=\"{source_path_header}\" abs=\"{source_path_abs}\" canonical=\"{canonical}\"",
-                    "BEACON",
-                )
-            else:
+            if not exists:
+                # Guardrail: do not delete or refresh nodes whose file does not exist.
+                # Missing paths may be stale, malformed, or refer to folders.
                 missing_paths.append(source_path_header)
                 log_event(
-                    "refresh_folder_cartographer_sync: FILE missing on disk "
+                    "refresh_folder_cartographer_sync: skipping missing/non-file node during FILE scan "
                     f"node_id={s_nid} Path=\"{source_path_header}\" abs=\"{source_path_abs}\" canonical=\"{canonical}\"",
                     "BEACON",
                 )
+                continue
 
-            # Record this FILE node for later refresh/deletion
-            file_nodes_info.append((s_nid, source_path_abs or source_path_header, exists))
+            present_files.add(canonical)
+            # Prefer first-seen raw path for reporting (the note header, which may be relative)
+            present_paths_raw.setdefault(canonical, source_path_header)
+            log_event(
+                "refresh_folder_cartographer_sync: FILE present on disk "
+                f"node_id={s_nid} Path=\"{source_path_header}\" abs=\"{source_path_abs}\" canonical=\"{canonical}\"",
+                "BEACON",
+            )
+
+            # Record this FILE node for later per-file refresh (NO deletion)
+            file_nodes_info.append((s_nid, source_path_abs or source_path_header, True))
 
             # Stash immediate Notes[...] children for this FILE node by its Path.
             file_children = children_by_parent.get(s_nid, [])
