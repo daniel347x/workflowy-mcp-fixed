@@ -235,7 +235,8 @@ def resolve_cartographer_path_from_node(
         s = (raw_name or "").strip()
 
         # Strip leading non-filename decoration (emoji, bullets, etc.)
-        while s and (not s[0].isalnum()) and s[0] not in "._/\\-":
+        while s and (not s[0].isalnum()) and s[0] not in "._/\\-_":
+
             s = s[1:].lstrip()
 
         # Strip trailing tags
