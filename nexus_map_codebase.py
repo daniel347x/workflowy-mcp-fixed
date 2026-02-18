@@ -29,18 +29,138 @@ if sys.platform == 'win32':
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 # --- Configuration (Synced) ---
+
+# @beacon[
+#   id=auto-beacon@EMOJI_FOLDER-1o5m,
+#   role=EMOJI_FOLDER — 📂 folder,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
 EMOJI_FOLDER = "📂"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_FOLDER-1o5m,
+# ]
+
+# @beacon[
+#   id=auto-beacon@EMOJI_FILE-0c0j,
+#   role=EMOJI_FILE — 📄 file,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
 EMOJI_FILE = "📄"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_FILE-0c0j,
+# ]
+
+# @beacon[
+#   id=auto-beacon@EMOJI_PYTHON-pp3q,
+#   role=EMOJI_PYTHON — 🐍 .py,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
 EMOJI_PYTHON = "🐍"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_PYTHON-pp3q,
+# ]
+
+# @beacon[
+#   id=auto-beacon@EMOJI_MARKDOWN-nq2i,
+#   role=EMOJI_MARKDOWN — 📝 .md,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
 EMOJI_MARKDOWN = "📝"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_MARKDOWN-nq2i,
+# ]
+
+# @beacon[
+#   id=auto-beacon@EMOJI_SQL-1x3e,
+#   role=EMOJI_SQL — 🗄️ .sql,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
 EMOJI_SQL = "🗄️"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_SQL-1x3e,
+# ]
+
+# @beacon[
+#   id=auto-beacon@EMOJI_SHELL-n7l1,
+#   role=EMOJI_SHELL — 🐚 shell,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
 EMOJI_SHELL = "🐚"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_SHELL-n7l1,
+# ]
+
+# @beacon[
+#   id=auto-beacon@EMOJI_CLASS-td8j,
+#   role=EMOJI_CLASS — 📦 class,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
 EMOJI_CLASS = "📦"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_CLASS-td8j,
+# ]
+
+# @beacon[
+#   id=auto-beacon@EMOJI_FUNC-l9m0,
+#   role=EMOJI_FUNC — ƒ function,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
 EMOJI_FUNC = "ƒ"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_FUNC-l9m0,
+# ]
+
+# @beacon[
+#   id=auto-beacon@EMOJI_ASYNC-zx2s,
+#   role=EMOJI_ASYNC — ⚡ async,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
 EMOJI_ASYNC = "⚡"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_ASYNC-zx2s,
+# ]
+
+# @beacon[
+#   id=auto-beacon@EMOJI_CONST-4qzz,
+#   role=EMOJI_CONST — 💎 const,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
 EMOJI_CONST = "💎"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_CONST-4qzz,
+# ]
+
+# @beacon[
+#   id=auto-beacon@EMOJI_JS-y6yc,
+#   role=EMOJI_JS — 🟨 .js,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
 EMOJI_JS = "🟨"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_JS-y6yc,
+# ]
+
+# @beacon[
+#   id=auto-beacon@EMOJI_TS-98pq,
+#   role=EMOJI_TS — 🟦 .ts,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
 EMOJI_TS = "🟦"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_TS-98pq,
+# ]
 
 # Debug flags (controlled via environment variables)
 DEBUG_MD_BEACONS = bool(os.environ.get("CARTOGRAPHER_MD_BEACONS"))
@@ -3090,6 +3210,12 @@ def map_codebase(
     ignore_patterns: List[str] | None = None
     ignore_sources: List[str] = []
 
+    # @beacon[
+    #   id=auto-beacon@map_codebase._collect_nexusignore_patterns-3h3e,
+    #   role=map_codebase._collect_nexusignore_patterns,
+    #   slice_labels=f9-f12-handlers,
+    #   kind=ast,
+    # ]
     def _collect_nexusignore_patterns(
         *,
         start_dir: str,

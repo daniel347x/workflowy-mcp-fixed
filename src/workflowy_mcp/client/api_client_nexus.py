@@ -77,7 +77,7 @@ def _log_glimpse_to_file(operation_type: str, node_id: str, result: dict[str, An
 # @beacon[
 #   id=auto-beacon@parse_path_or_root_from_note-cw31,
 #   role=parse_path_or_root_from_note,
-#   slice_labels=parse_path_or_root_from_note,nexus-test,
+#   slice_labels=parse_path_or_root_from_note,nexus-test,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def parse_path_or_root_from_note(note_str: str | None) -> str | None:
@@ -96,7 +96,7 @@ def parse_path_or_root_from_note(note_str: str | None) -> str | None:
 # @beacon[
 #   id=auto-beacon@_cleanse_cartographer_path_value-7m0d,
 #   role=_cleanse_cartographer_path_value,
-#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,
+#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def _cleanse_cartographer_path_value(file_path: str | None) -> str | None:
@@ -120,7 +120,7 @@ def _cleanse_cartographer_path_value(file_path: str | None) -> str | None:
 # @beacon[
 #   id=auto-beacon@_extract_path_header_from_note-vp2c,
 #   role=_extract_path_header_from_note,
-#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,
+#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def _extract_path_header_from_note(note_str: str | None) -> tuple[str, str] | None:
@@ -139,7 +139,7 @@ def _extract_path_header_from_note(note_str: str | None) -> tuple[str, str] | No
 # @beacon[
 #   id=auto-beacon@_looks_absolute_path-6aj1,
 #   role=_looks_absolute_path,
-#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,
+#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def _looks_absolute_path(path_str: str) -> bool:
@@ -163,7 +163,7 @@ def _to_portable_relpath(rel_path: str) -> str:
 # @beacon[
 #   id=auto-beacon@_rewrite_note_path_or_root_header-7b4e,
 #   role=_rewrite_note_path_or_root_header,
-#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,
+#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def _rewrite_note_path_or_root_header(note_text: str, new_value: str, *, prefer: str = "Path") -> str:
@@ -196,7 +196,7 @@ def _rewrite_note_path_or_root_header(note_text: str, new_value: str, *, prefer:
 # @beacon[
 #   id=auto-beacon@resolve_cartographer_path_from_node-0yq8,
 #   role=resolve_cartographer_path_from_node,
-#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,
+#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def resolve_cartographer_path_from_node(
@@ -226,7 +226,7 @@ def resolve_cartographer_path_from_node(
     # @beacon[
     #   id=auto-beacon@resolve_cartographer_path_from_node._segment_from_node_name-r8w7,
     #   role=resolve_cartographer_path_from_node._segment_from_node_name,
-    #   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,
+    #   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
     #   kind=ast,
     # ]
     def _segment_from_node_name(raw_name: str) -> str:
@@ -468,6 +468,12 @@ def resolve_cartographer_path_from_node(
     }
 
 
+# @beacon[
+#   id=auto-beacon@normalize_cartographer_path-vw5a,
+#   role=normalize_cartographer_path,
+#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
+#   kind=ast,
+# ]
 def normalize_cartographer_path(file_path: str | None) -> str | None:
     """Normalize a Cartographer Path:/Root: value for cross-machine portability.
 
@@ -1279,7 +1285,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.beacon_get_code_snippet-c2ov,
     #   role=WorkFlowyClientNexus.beacon_get_code_snippet,
-    #   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,
+    #   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,ra-read-text-snippet,
     #   kind=ast,
     # ]
     async def beacon_get_code_snippet(
@@ -1941,7 +1947,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol-ozt9,
     #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol,
-    #   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-snippet-range,ra-reconcile,
+    #   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-snippet-range,ra-reconcile,ra-read-text-snippet,
     #   kind=ast,
     # ]
     async def read_text_snippet_by_symbol(
@@ -2002,7 +2008,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._is_hide_cartographer_node-9s4h,
         #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._is_hide_cartographer_node,
-        #   slice_labels=ra-snippet-range,
+        #   slice_labels=ra-snippet-range,ra-read-text-snippet,
         #   kind=ast,
         # ]
         def _is_hide_cartographer_node(node: dict[str, Any]) -> bool:
@@ -2029,7 +2035,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._is_under_hidden_subtree-y3qp,
         #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._is_under_hidden_subtree,
-        #   slice_labels=ra-snippet-range,
+        #   slice_labels=ra-snippet-range,ra-read-text-snippet,
         #   kind=ast,
         # ]
         def _is_under_hidden_subtree(node_id: str) -> bool:
@@ -2163,7 +2169,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._iter_subtree-gums,
         #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._iter_subtree,
-        #   slice_labels=f9-f12-handlers,ra-reconcile,
+        #   slice_labels=f9-f12-handlers,ra-reconcile,ra-read-text-snippet,
         #   kind=ast,
         # ]
         def _iter_subtree(root_id: str):
@@ -2186,7 +2192,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._extract_beacon_fields-gb8d,
         #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._extract_beacon_fields,
-        #   slice_labels=f9-f12-handlers,ra-reconcile,
+        #   slice_labels=f9-f12-handlers,ra-reconcile,ra-read-text-snippet,
         #   kind=ast,
         # ]
         def _extract_beacon_fields(note_str: str) -> tuple[str | None, str | None]:
@@ -2205,7 +2211,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._extract_ast_qualname-0hpl,
         #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._extract_ast_qualname,
-        #   slice_labels=f9-f12-handlers,ra-reconcile,
+        #   slice_labels=f9-f12-handlers,ra-reconcile,ra-read-text-snippet,
         #   kind=ast,
         # ]
         def _extract_ast_qualname(note_str: str) -> str | None:
@@ -2218,7 +2224,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._normalize_node_name-rkap,
         #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._normalize_node_name,
-        #   slice_labels=f9-f12-handlers,ra-reconcile,
+        #   slice_labels=f9-f12-handlers,ra-reconcile,ra-read-text-snippet,
         #   kind=ast,
         # ]
         def _normalize_node_name(raw_name: str | None) -> str:
@@ -2259,7 +2265,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._record_hit-oous,
         #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._record_hit,
-        #   slice_labels=f9-f12-handlers,ra-reconcile,
+        #   slice_labels=f9-f12-handlers,ra-reconcile,ra-read-text-snippet,
         #   kind=ast,
         # ]
         def _record_hit(node: dict[str, Any], owner_path: str, bucket: str) -> None:
@@ -5368,7 +5374,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync._parse_path_from_note-cm7o,
         #   role=WorkFlowyClientNexus.refresh_folder_cartographer_sync._parse_path_from_note,
-        #   slice_labels=ra-notes,
+        #   slice_labels=ra-notes,ra-notes-salvage,
         #   kind=ast,
         # ]
         def _parse_path_from_note(note_str: str) -> str | None:
@@ -5386,7 +5392,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync._is_folder_node-6j3u,
         #   role=WorkFlowyClientNexus.refresh_folder_cartographer_sync._is_folder_node,
-        #   slice_labels=ra-notes,
+        #   slice_labels=ra-notes,ra-notes-salvage,
         #   kind=ast,
         # ]
         def _is_folder_node(node: dict[str, Any]) -> bool:
@@ -5396,7 +5402,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync._canonical_path-z2s0,
         #   role=WorkFlowyClientNexus.refresh_folder_cartographer_sync._canonical_path,
-        #   slice_labels=ra-notes,
+        #   slice_labels=ra-notes,ra-notes-salvage,
         #   kind=ast,
         # ]
         def _canonical_path(path: str) -> str:
@@ -6747,7 +6753,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus._restore_notes_for_file._ensure_salvaged_root-s2b8,
         #   role=WorkFlowyClientNexus._restore_notes_for_file._ensure_salvaged_root,
-        #   slice_labels=ra-notes,
+        #   slice_labels=ra-notes,ra-notes-salvage,
         #   kind=ast,
         # ]
         async def _ensure_salvaged_root() -> str | None:
