@@ -259,28 +259,7 @@ def resolve_cartographer_path_from_node(
         # When deriving filesystem segments from node names, treat any suffix that
         # starts with a '#tag' or a Notes/diagnostic emoji (whitelist) as cosmetic.
         # We truncate at the FIRST occurrence (character-wise), not just at the end.
-        _notes_marker_cps = {
-            "\U0001F4DD",  # 📝
-            "\U0001F17F",  # 🅿
-            "\U0001F9E9",  # 🧩
-            "\U0001F4A5",  # 💥
-            "\U0001F31F",  # 🌟
-            "\U0001F4A1",  # 💡
-            "\U0001F4CC",  # 📌
-            "\U0001F4D3",  # 📓
-            "\U0001F9FE",  # 🧾
-            "\U0001F9E0",  # 🧠
-            "\U0001F56F",  # 🕯
-            "\U0001F9E8",  # 🧨
-            "\u26A0",      # ⚠
-            "\u274C",      # ❌
-            "\u2705",      # ✅
-            "\U0001F6A8",  # 🚨
-            "\U0001F534",  # 🔴
-            "\U0001F6D1",  # 🛑
-            "\u26D4",      # ⛔
-            "\u2757",      # ❗
-        }
+        _notes_marker_cps = NOTES_MARKER_FIRST_CODEPOINTS
         for _i, _ch in enumerate(s):
             if _ch == "#" or _ch in _notes_marker_cps:
                 s = s[:_i].rstrip()
@@ -298,10 +277,7 @@ def resolve_cartographer_path_from_node(
             #   slice_labels=ra-notes,ra-notes-salvage,
             #   kind=span,
             # ]
-            notes_prefixes = {
-                "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
-                "⚠", "❌", "✅", "🚨", "🔴", "🛑", "⛔", "❗",
-            }
+            notes_prefixes = NOTES_MARKER_FIRST_CODEPOINTS
             cut = len(tokens)
             for i in range(len(tokens) - 1, -1, -1):
                 t = str(tokens[i])
@@ -726,6 +702,32 @@ def scan_active_weaves(nexus_runs_base: str) -> list[dict[str, Any]]:
     return active
 
 
+# -----------------------------------------------------------------------------
+# NOTES marker emoji prefixes (canonical)
+# -----------------------------------------------------------------------------
+# These prefixes are used to identify persistent Notes[...] roots in Workflowy.
+# IMPORTANT: This set must NOT overlap with file-type emojis (e.g. EMOJI_MARKDOWN).
+#
+# @beacon[
+#   id=auto-beacon@NOTES_MARKER_PREFIXES-3x1k,
+#   role=NOTES_MARKER_PREFIXES (canonical),
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
+NOTES_MARKER_PREFIXES: frozenset[str] = frozenset({
+    "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
+    "⚠", "❌", "✅", "🚨", "🔴", "🛑", "⛔", "❗",
+})
+# @beacon-close[
+#   id=auto-beacon@NOTES_MARKER_PREFIXES-3x1k,
+# ]
+
+# First-codepoint view (variation selectors like "⚠️" are handled by taking name[0]).
+NOTES_MARKER_FIRST_CODEPOINTS: frozenset[str] = frozenset(
+    p[0] for p in NOTES_MARKER_PREFIXES
+)
+
+
 # @beacon[
 #   id=auto-beacon@_is_notes_name-bpic,
 #   role=_is_notes_name,
@@ -775,20 +777,8 @@ def _is_notes_name(raw_name: str, note: str | None = None) -> bool:
     first = name[0]
     # NOTE: some emoji may appear with variation selectors (e.g. "⚠️");
     # checking the first codepoint (name[0]) still works for those.
-    # @beacon[
-    #   id=auto-beacon@_is_notes_name-r800-inner1,
-    #   role=LIST OF notes_prefixes,
-    #   slice_labels=ra-notes,ra-notes-salvage,
-    #   kind=span,
-    # ]
-    notes_prefixes = {
-        "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
-        "⚠", "❌", "✅", "🚨", "🔴", "🛑", "⛔", "❗",
-    }
-    # @beacon-close[
-    #   id=auto-beacon@_is_notes_name-r800-inner1,
-    # ]
-    if first not in notes_prefixes:
+    # Canonical notes-marker emoji set (see NOTES_MARKER_PREFIXES above).
+    if first not in NOTES_MARKER_FIRST_CODEPOINTS:
         return False
 
     # --- Strict path: emoji + "Notes..." prefix (existing behavior) ---
@@ -5525,28 +5515,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 #   slice_labels=ra-notes,ra-notes-salvage,
                 #   kind=span,
                 # ]
-                _notes_marker_cps = {
-                    "\U0001F4DD",  # 📝
-                    "\U0001F17F",  # 🅿
-                    "\U0001F9E9",  # 🧩
-                    "\U0001F4A5",  # 💥
-                    "\U0001F31F",  # 🌟
-                    "\U0001F4A1",  # 💡
-                    "\U0001F4CC",  # 📌
-                    "\U0001F4D3",  # 📓
-                    "\U0001F9FE",  # 🧾
-                    "\U0001F9E0",  # 🧠
-                    "\U0001F56F",  # 🕯
-                    "\U0001F9E8",  # 🧨
-                    "\u26A0",      # ⚠
-                    "\u274C",      # ❌
-                    "\u2705",      # ✅
-                    "\U0001F6A8",  # 🚨
-                    "\U0001F534",  # 🔴
-                    "\U0001F6D1",  # 🛑
-                    "\u26D4",      # ⛔
-                    "\u2757",      # ❗
-                }
+                _notes_marker_cps = NOTES_MARKER_FIRST_CODEPOINTS
                 for _i, _ch in enumerate(s):
                     if _ch == "#" or _ch in _notes_marker_cps:
                         s = s[:_i].rstrip()
@@ -5564,10 +5533,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 #   kind=span,
                 # ]
                 if tokens:
-                    notes_prefixes = {
-                        "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
-                        "⚠", "❌", "✅", "🚨", "🔴", "🛑", "⛔", "❗",
-                    }
+                    notes_prefixes = NOTES_MARKER_FIRST_CODEPOINTS
 
                     cut = len(tokens)
                     for i in range(len(tokens) - 1, -1, -1):
@@ -6211,10 +6177,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     #   slice_labels=ra-notes,ra-notes-salvage,
                     #   kind=span,
                     # ]
-                    notes_prefixes = {
-                        "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
-                        "⚠", "❌", "✅", "🚨", "🔴", "🛑", "⛔", "❗",
-                    }
+                    notes_prefixes = NOTES_MARKER_FIRST_CODEPOINTS
                     # @beacon-close[
                     #   id=auto-beacon@refresh_folder_cartographer_sync-r800-inner3,
                     # ]
@@ -6262,28 +6225,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 #   slice_labels=ra-notes,ra-notes-salvage,
                                 #   kind=span,
                                 # ]
-                                _notes_marker_cps = {
-                                    "\U0001F4DD",  # 📝
-                                    "\U0001F17F",  # 🅿
-                                    "\U0001F9E9",  # 🧩
-                                    "\U0001F4A5",  # 💥
-                                    "\U0001F31F",  # 🌟
-                                    "\U0001F4A1",  # 💡
-                                    "\U0001F4CC",  # 📌
-                                    "\U0001F4D3",  # 📓
-                                    "\U0001F9FE",  # 🧾
-                                    "\U0001F9E0",  # 🧠
-                                    "\U0001F56F",  # 🕯
-                                    "\U0001F9E8",  # 🧨
-                                    "\u26A0",      # ⚠
-                                    "\u274C",      # ❌
-                                    "\u2705",      # ✅
-                                    "\U0001F6A8",  # 🚨
-                                    "\U0001F534",  # 🔴
-                                    "\U0001F6D1",  # 🛑
-                                    "\u26D4",      # ⛔
-                                    "\u2757",      # ❗
-                                }
+                                _notes_marker_cps = NOTES_MARKER_FIRST_CODEPOINTS
                                 _cut_base = base
                                 for _i, _ch in enumerate(_cut_base):
                                     if _ch == "#" or _ch in _notes_marker_cps:

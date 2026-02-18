@@ -65,11 +65,11 @@ EMOJI_PYTHON = "🐍"
 
 # @beacon[
 #   id=auto-beacon@EMOJI_MARKDOWN-nq2i,
-#   role=EMOJI_MARKDOWN — 📝 .md,
+#   role=EMOJI_MARKDOWN — 📘 .md,
 #   slice_labels=ra-notes,ra-notes-salvage,
 #   kind=span,
 # ]
-EMOJI_MARKDOWN = "📝"
+EMOJI_MARKDOWN = "📘"
 # @beacon-close[
 #   id=auto-beacon@EMOJI_MARKDOWN-nq2i,
 # ]
