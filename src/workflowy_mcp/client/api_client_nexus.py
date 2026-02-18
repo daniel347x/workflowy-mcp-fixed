@@ -249,6 +249,12 @@ def resolve_cartographer_path_from_node(
         while s and (not s[0].isalnum()) and s[0] not in "._/\\-_":
             s = s[1:].lstrip()
 
+        # @beacon[
+        #   id=auto-beacon@resolve_cartographer_path_from_node._segment_from_node_name-r8w7-inner,
+        #   role=LIST OF _notes_marker_cps EMOJIS,
+        #   slice_labels=ra-notes,ra-notes-salvage,
+        #   kind=span,
+        # ]
         # STRICT suffix cutoff for cosmetic markers in names.
         # When deriving filesystem segments from node names, treat any suffix that
         # starts with a '#tag' or a Notes/diagnostic emoji (whitelist) as cosmetic.
@@ -280,14 +286,22 @@ def resolve_cartographer_path_from_node(
                 s = s[:_i].rstrip()
                 break
         return s
+        # @beacon-close[
+        #   id=auto-beacon@resolve_cartographer_path_from_node._segment_from_node_name-r8w7-inner,
+        # ]
 
         tokens = s.split()
         if tokens:
+            # @beacon[
+            #   id=auto-beacon@resolve_cartographer_path_from_node._segment_from_node_name-r8w7-inner2,
+            #   role=LIST OF notes_prefixes,
+            #   slice_labels=ra-notes,ra-notes-salvage,
+            #   kind=span,
+            # ]
             notes_prefixes = {
                 "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
                 "⚠", "❌", "✅", "🚨", "🔴", "🛑", "⛔", "❗",
             }
-
             cut = len(tokens)
             for i in range(len(tokens) - 1, -1, -1):
                 t = str(tokens[i])
@@ -298,6 +312,9 @@ def resolve_cartographer_path_from_node(
                     cut = i
                     continue
                 break
+            # @beacon-close[
+            #   id=auto-beacon@resolve_cartographer_path_from_node._segment_from_node_name-r8w7-inner2,
+            # ]
 
             tokens = tokens[:cut]
 
@@ -758,10 +775,19 @@ def _is_notes_name(raw_name: str, note: str | None = None) -> bool:
     first = name[0]
     # NOTE: some emoji may appear with variation selectors (e.g. "⚠️");
     # checking the first codepoint (name[0]) still works for those.
+    # @beacon[
+    #   id=auto-beacon@_is_notes_name-r800-inner1,
+    #   role=LIST OF notes_prefixes,
+    #   slice_labels=ra-notes,ra-notes-salvage,
+    #   kind=span,
+    # ]
     notes_prefixes = {
         "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
         "⚠", "❌", "✅", "🚨", "🔴", "🛑", "⛔", "❗",
     }
+    # @beacon-close[
+    #   id=auto-beacon@_is_notes_name-r800-inner1,
+    # ]
     if first not in notes_prefixes:
         return False
 
@@ -3933,6 +3959,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             mode="legacy",
         )
 
+        # @beacon[
+        #   id=auto-beacon@_refresh_file_node_beacons_legacy-s800-inner1,
+        #   role=_is_notes_name is called here,
+        #   slice_labels=ra-notes,ra-notes-salvage,
+        #   kind=span,
+        # ]
         # 6) Delete structural subtree under file node (non-Notes and non-parking)
         structural_deleted = 0
         if file_children:
@@ -3957,6 +3989,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             f"Failed to delete child {sid} under file node {file_node_id}: {e}",
                             "BEACON",
                         )
+            # @beacon-close[
+            #   id=auto-beacon@_refresh_file_node_beacons_legacy-s800-inner1,
+            # ]
 
         # 7) Rebuild structural subtree from Cartographer single-file map
         try:
@@ -4411,6 +4446,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             #
             # We detect this by recognizing Cartographer's parse-error sentinel nodes
             # (e.g. "⚠️ Parse Error", "⚠️ Parse Error (JS/TS)").
+            # @beacon[
+            #   id=auto-beacon@refresh_file_node_beacons-s801-inner1,
+            #   role=_is_notes_name is called here,
+            #   slice_labels=ra-notes,ra-notes-salvage,
+            #   kind=span,
+            # ]
             if diagnostic_parent_id and new_children:
                 parse_error_nodes: list[dict[str, Any]] = []
                 kept_children: list[dict[str, Any]] = []
@@ -4419,10 +4460,14 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     cname = str(child.get("name") or "")
                     # Recognize Cartographer parse-error sentinel nodes, regardless of
                     # which salvageable emoji we use at the front.
-                    if cname and "parse error" in cname.casefold() and _is_notes_name(cname):
+                    child_note_for_notes = child.get("note") or child.get("no") or ""
+                    if cname and "parse error" in cname.casefold() and _is_notes_name(cname, child_note_for_notes):
                         parse_error_nodes.append(child)
                     else:
                         kept_children.append(child)
+                    # @beacon-close[
+                    #   id=auto-beacon@refresh_file_node_beacons-s801-inner1,
+                    # ]
 
                 # Remove parse-error nodes from the FILE subtree when we're promoting.
                 if parse_error_nodes:
@@ -4527,6 +4572,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     explicitly_preserved_ids.add(cid_str)
                     _collect_notes_descendants(cid_str)
 
+            # @beacon[
+            #   id=auto-beacon@refresh_file_node_beacons-s801-inner2,
+            #   role=_is_notes_name is called here,
+            #   slice_labels=ra-notes,ra-notes-salvage,
+            #   kind=span,
+            # ]
             for n in flat_nodes:
                 nid = n.get("id")
                 if not nid:
@@ -4548,6 +4599,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "original_ids_seen": sorted(original_ids_seen),
                 "explicitly_preserved_ids": sorted(explicitly_preserved_ids),
             }
+            # @beacon-close[
+            #   id=auto-beacon@refresh_file_node_beacons-s801-inner2,
+            # ]
 
             # 6) Persist JSON for inspection.
             #
@@ -5465,6 +5519,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 # When deriving filesystem segments from node names, treat any suffix that
                 # starts with a '#tag' or a Notes/diagnostic emoji (whitelist) as cosmetic.
                 # We truncate at the FIRST occurrence (character-wise), not just at the end.
+                # @beacon[
+                #   id=auto-beacon@refresh_folder_cartographer_sync-r800-inner1,
+                #   role=LIST OF _notes_marker_cps,
+                #   slice_labels=ra-notes,ra-notes-salvage,
+                #   kind=span,
+                # ]
                 _notes_marker_cps = {
                     "\U0001F4DD",  # 📝
                     "\U0001F17F",  # 🅿
@@ -5492,8 +5552,17 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         s = s[:_i].rstrip()
                         break
                 return s
+                # @beacon-close[
+                #   id=auto-beacon@refresh_folder_cartographer_sync-r800-inner1,
+                # ]
 
                 tokens = s.split()
+                # @beacon[
+                #   id=auto-beacon@refresh_folder_cartographer_sync-r800-inner2,
+                #   role=LIST OF notes_prefixes,
+                #   slice_labels=ra-notes,ra-notes-salvage,
+                #   kind=span,
+                # ]
                 if tokens:
                     notes_prefixes = {
                         "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
@@ -5512,6 +5581,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         break
 
                     tokens = tokens[:cut]
+                    # @beacon-close[
+                    #   id=auto-beacon@refresh_folder_cartographer_sync-r800-inner2,
+                    # ]
 
                 s2 = " ".join(tokens).strip() if tokens else s.strip()
 
@@ -5644,6 +5716,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         # Stash Notes directly under the folder root (they conceptually belong
         # to the folder-level Path, if any).
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync-kj4d-0001,
+        #   role=_is_notes_name is called here,
+        #   slice_labels=ra-notes,ra-notes-salvage,
+        #   kind=span,
+        # ]
         if root_node is not None:
             root_children = children_by_parent.get(str(folder_node_id), [])
             for child in root_children:
@@ -5651,9 +5729,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if not cid:
                     continue
                 cname = str(child.get("name") or "")
-                if _is_notes_name(cname):
+                cnote = child.get("note") or child.get("no") or ""
+                if _is_notes_name(cname, cnote):
                     _stash_notes_node(str(cid), root_path)
                     # Already under the folder root; no move needed.
+        # @beacon-close[
+        #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync-kj4d-0001,
+        # ]
 
         # 2) Find descendant FILE nodes and refresh them via refresh_file_node_beacons
         present_files: set[str] = set()
@@ -5737,13 +5819,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             file_nodes_info.append((s_nid, source_path_abs or source_path_header, True))
 
             # Stash immediate Notes[...] children for this FILE node by its Path.
+            # @beacon[
+            #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync-kj4d-0002,
+            #   role=_is_notes_name is called here,
+            #   slice_labels=ra-notes,ra-notes-salvage,
+            #   kind=span,
+            # ]
             file_children = children_by_parent.get(s_nid, [])
             for child in file_children:
                 cid = child.get("id")
                 if not cid:
                     continue
                 cname = str(child.get("name") or "")
-                if not _is_notes_name(cname):
+                cnote = child.get("note") or child.get("no") or ""
+                if not _is_notes_name(cname, cnote):
                     continue
                 _stash_notes_node(str(cid), source_path_abs)
                 # Physically move under the folder root so that these Notes are
@@ -5763,6 +5852,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             f"{cid} under folder root {folder_node_id}: {e}",
                             "BEACON",
                         )
+            # @beacon-close[
+            #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync-kj4d-0002,
+            # ]
 
         # Compute total number of existing FILE nodes for optional job progress reporting.
         total_existing_files = sum(1 for _nid, _path, _exists in file_nodes_info if _exists)
@@ -5870,6 +5962,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 # (⚠️ Parse error..., ❌ Error..., etc.) that may have a Path: line
                 # purely for reporting. These are user-facing diagnostics and should
                 # persist after the folder refresh completes.
+                # @beacon[
+                #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync-kj4d-0003,
+                #   role=_is_notes_name is called here,
+                #   slice_labels=ra-notes,ra-notes-salvage,
+                #   kind=span,
+                # ]
                 node_local = node_by_id.get(str(s_nid))
                 if node_local is not None:
                     n_name = str(node_local.get("name") or "")
@@ -5881,6 +5979,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             "BEACON",
                         )
                         continue
+                # @beacon-close[
+                #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync-kj4d-0003,
+                # ]
 
                 try:
                     deleted_ok = await self.delete_node(s_nid)
@@ -6104,10 +6205,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     visited_ids: set[str] = set()
 
                     # Notes/diagnostic emoji whitelist (matches _is_notes_name prefixes).
+                    # @beacon[
+                    #   id=auto-beacon@refresh_folder_cartographer_sync-r800-inner3,
+                    #   role=LIST OF notes_prefixes,
+                    #   slice_labels=ra-notes,ra-notes-salvage,
+                    #   kind=span,
+                    # ]
                     notes_prefixes = {
                         "📝", "🅿️", "🧩", "💥", "🌟", "💡", "📌", "📓", "🧾", "🧠", "🕯️", "🧨",
                         "⚠", "❌", "✅", "🚨", "🔴", "🛑", "⛔", "❗",
                     }
+                    # @beacon-close[
+                    #   id=auto-beacon@refresh_folder_cartographer_sync-r800-inner3,
+                    # ]
 
                     while current and current not in visited_ids:
                         visited_ids.add(current)
@@ -6146,6 +6256,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 # When deriving filesystem segments from node names, treat any suffix that
                                 # starts with a '#tag' or a Notes/diagnostic emoji (whitelist) as cosmetic.
                                 # We truncate at the FIRST occurrence (character-wise), not just at the end.
+                                # @beacon[
+                                #   id=auto-beacon@refresh_folder_cartographer_sync-r800-inner4,
+                                #   role=LIST OF _notes_marker_cps,
+                                #   slice_labels=ra-notes,ra-notes-salvage,
+                                #   kind=span,
+                                # ]
                                 _notes_marker_cps = {
                                     "\U0001F4DD",  # 📝
                                     "\U0001F17F",  # 🅿
@@ -6174,6 +6290,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                         _cut_base = _cut_base[:_i].rstrip()
                                         break
                                 folder_seg = _cut_base
+                                # @beacon-close[
+                                #   id=auto-beacon@refresh_folder_cartographer_sync-r800-inner4,
+                                # ]
 
                             if folder_seg:
                                 segments.append(folder_seg)
@@ -6483,6 +6602,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 children_by_parent.setdefault(str(pid), []).append(n)
 
         # 1) FILE-level Notes[...] roots keyed by canonical Path.
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus._collect_notes_salvage_context_for_file-lj4d-1000,
+        #   role=_is_notes_name is called here,
+        #   slice_labels=ra-notes,ra-notes-salvage,
+        #   kind=span,
+        # ]
         file_children = children_by_parent.get(str(file_node_id), [])
         file_path_key = _canonical_path(source_path) if source_path else None
         for child in file_children:
@@ -6505,6 +6630,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     )
             except Exception:
                 pass
+        # @beacon-close[
+        #   id=auto-beacon@WorkFlowyClientNexus._collect_notes_salvage_context_for_file-lj4d-1000,
+        # ]
 
         # 2) Beacon-scoped Notes[...] subtrees.
         for n in flat_nodes:
@@ -6524,6 +6652,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if not beacon_id_val:
                 continue
 
+            # @beacon[
+            #   id=auto-beacon@WorkFlowyClientNexus._collect_notes_salvage_context_for_file-lj4d-1001,
+            #   role=_is_notes_name is called here,
+            #   slice_labels=ra-notes,ra-notes-salvage,
+            #   kind=span,
+            # ]
             sid = str(nid)
             children = children_by_parent.get(sid, [])
             for child in children:
@@ -6545,6 +6679,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         )
                     except Exception:
                         pass
+            # @beacon-close[
+            #   id=auto-beacon@WorkFlowyClientNexus._collect_notes_salvage_context_for_file-lj4d-1001,
+            # ]
 
         # 3) Generic Notes[...] under non-FILE, non-beacon parents. These would
         # otherwise block deletion of their structural parents during
@@ -6553,6 +6690,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         for ids_list in ctx.saved_notes_by_beacon.values():
             salvaged_ids.update(ids_list)
 
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus._collect_notes_salvage_context_for_file-lj4d-1002,
+        #   role=_is_notes_name is called here,
+        #   slice_labels=ra-notes,ra-notes-salvage,
+        #   kind=span,
+        # ]
         for parent_id, children in children_by_parent.items():
             if parent_id == str(file_node_id):
                 continue
@@ -6586,6 +6729,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         )
                     except Exception:
                         pass
+        # @beacon-close[
+        #   id=auto-beacon@WorkFlowyClientNexus._collect_notes_salvage_context_for_file-lj4d-1002,
+        # ]
 
         # 4) Optional: pre-salvage moves.
         #
@@ -6594,6 +6740,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # structural subtree. In incremental mode we avoid a parking node but
         # still physically move NOTES up under the FILE node so they are
         # decoupled from any reconcile_tree mutations.
+        # @beacon[
+        #   id=auto-beacon@WorkFlowyClientNexus._collect_notes_salvage_context_for_file-lj4d-1003,
+        #   role=_is_notes_name is called here,
+        #   slice_labels=ra-notes,ra-notes-salvage,
+        #   kind=span,
+        # ]
         if mode == "legacy":
             # Locate existing parking node if present.
             for child in file_children:
@@ -6639,6 +6791,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 f"Failed to move notes node {nid} to parking: {e}",
                                 "BEACON",
                             )
+            # @beacon-close[
+            #   id=auto-beacon@WorkFlowyClientNexus._collect_notes_salvage_context_for_file-lj4d-1003,
+            # ]
         elif mode == "incremental":
             # In incremental mode we skip a parking node but still, when not
             # dry_run, move beacon-scoped and generic Notes[...] roots directly
@@ -6766,6 +6921,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 return salvaged_root_id
 
             # Try to locate an existing salvaged root first.
+            # @beacon[
+            #   id=auto-beacon@WorkFlowyClientNexus._restore_notes_for_file._ensure_salvaged_root._is_notes_name-nj4d-1000,
+            #   role=_is_notes_name is called here,
+            #   slice_labels=ra-notes,ra-notes-salvage,
+            #   kind=span,
+            # ]
             for child in children_by_parent.get(str(file_node_id), []) or []:
                 cid = child.get("id")
                 if not cid:
@@ -6774,6 +6935,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if _is_notes_name(cname) and "salvaged" in cname.lower():
                     salvaged_root_id = str(cid)
                     return salvaged_root_id
+                # @beacon-close[
+                #   id=auto-beacon@WorkFlowyClientNexus._restore_notes_for_file._ensure_salvaged_root._is_notes_name-nj4d-1000,
+                # ]
 
             # Create a new salvaged root.
             req = NodeCreateRequest(
