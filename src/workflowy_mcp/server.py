@@ -4117,7 +4117,7 @@ async def etch_async(
 # @beacon[
 #   id=auto-beacon@beacon_get_code_snippet-kxet,
 #   role=beacon_get_code_snippet,
-#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,
+#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,ra-read-text-snippet,
 #   kind=ast,
 # ]
 async def beacon_get_code_snippet(
@@ -4171,7 +4171,7 @@ async def beacon_get_code_snippet(
 # @beacon[
 #   id=auto-beacon@_read_text_snippet_impl-lsln,
 #   role=_read_text_snippet_impl,
-#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,
+#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,ra-read-text-snippet,
 #   kind=ast,
 # ]
 async def _read_text_snippet_impl(
@@ -4284,7 +4284,7 @@ async def _read_text_snippet_impl(
 # @beacon[
 #   id=auto-beacon@read_text_snippet-37kd,
 #   role=read_text_snippet,
-#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,
+#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,ra-read-text-snippet,
 #   kind=ast,
 # ]
 async def read_text_snippet(
@@ -4331,7 +4331,7 @@ async def read_text_snippet(
 # @beacon[
 #   id=auto-beacon@read_text_snippet_by_uuid-ji9w,
 #   role=read_text_snippet_by_uuid,
-#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,
+#   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,ra-read-text-snippet,
 #   kind=ast,
 # ]
 async def read_text_snippet_by_uuid(
@@ -4370,7 +4370,7 @@ async def read_text_snippet_by_uuid(
 # @beacon[
 #   id=auto-beacon@read_text_snippet_by_symbol-ewti,
 #   role=read_text_snippet_by_symbol,
-#   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-snippet-range,ra-reconcile,
+#   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-snippet-range,ra-reconcile,ra-read-text-snippet,
 #   kind=ast,
 # ]
 async def read_text_snippet_by_symbol(
@@ -4415,28 +4415,53 @@ async def read_text_snippet_by_symbol(
     """
     client = get_client()
 
-    if _rate_limiter:
-        await _rate_limiter.acquire()
+    async def _call(file_path_arg: str | None) -> dict:
+        if _rate_limiter:
+            await _rate_limiter.acquire()
+
+        try:
+            r = await client.read_text_snippet_by_symbol(
+                file_path=file_path_arg,
+                symbol=symbol,
+                symbol_kind=symbol_kind,
+                context=context,
+            )
+            if _rate_limiter:
+                _rate_limiter.on_success()
+        except Exception as e:  # noqa: BLE001
+            if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
+                _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
+            raise
+
+        if not isinstance(r, dict):
+            raise RuntimeError("Unexpected result from read_text_snippet_by_symbol")
+
+        if not r.get("success", False):
+            raise RuntimeError(r.get("error", "Unknown error from read_text_snippet_by_symbol"))
+
+        return r
 
     try:
-        result = await client.read_text_snippet_by_symbol(
-            file_path=file_path,
-            symbol=symbol,
-            symbol_kind=symbol_kind,
-            context=context,
-        )
-        if _rate_limiter:
-            _rate_limiter.on_success()
-    except Exception as e:  # noqa: BLE001
-        if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
-            _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
-        raise
-
-    if not isinstance(result, dict):
-        raise RuntimeError("Unexpected result from read_text_snippet_by_symbol")
-
-    if not result.get("success", False):
-        raise RuntimeError(result.get("error", "Unknown error from read_text_snippet_by_symbol"))
+        result = await _call(file_path)
+    except Exception as e_original:  # noqa: BLE001
+        # Common failure mode: caller over-specifies file_path (wrong basename or
+        # a partial/incorrect path). In those cases, resolving by symbol alone
+        # often succeeds.
+        fp = (file_path or "").strip()
+        if fp:
+            log_event(
+                "read_text_snippet_by_symbol: first attempt failed with file_path="
+                f"{file_path!r}; retrying without file_path. Error: {e_original}",
+                "SNIPPET",
+            )
+            try:
+                result = await _call(None)
+            except Exception:  # noqa: BLE001
+                # Prefer surfacing the original error (it contains the path that
+                # was requested, which is useful for debugging).
+                raise e_original
+        else:
+            raise
 
     snippet = result.get("snippet", "")
     if not isinstance(snippet, str):
