@@ -6052,7 +6052,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             continue
 
                         # Normalize Windows slashes.
-                        normalized = stripped.replace("\\\\", "/")
+                        normalized = stripped.replace("\\", "/")
+
 
                         # Classify:
                         # - if it contains '/', treat as a path pattern
