@@ -81,6 +81,8 @@ async def reconcile_tree(
     skip_delete_bulk_export_wait: bool = False,
     debug_log_path: Optional[str] = None,
     allow_pure_reorder: bool = False,
+    cancel_callback: Optional[Callable[[], bool]] = None,
+    cancel_check_interval: int = 25,
 ) -> Optional[Dict[str, Any]]:
     """
     Reconcile the Workflowy subtree under parent_uuid to match source_json.
@@ -141,6 +143,60 @@ async def reconcile_tree(
         except Exception as e2:  # noqa: BLE001
             # Journal failures must never break reconciliation; log and continue.
             log(f"   [WARN] Failed to append weave journal entry: {type(e2).__name__}: {e2}")
+
+    # ------------------ cancellation (best-effort, co-operative) ------------------
+    # For long WEAVEs / CARTO_REFRESH refreshes, the caller may provide a
+    # cancel_callback (e.g. reading a CARTO job JSON that can be toggled to
+    # status='cancelled'). We must check this callback not only between files,
+    # but also during the long CREATE/MOVE/REORDER/UPDATE/DELETE apply loops.
+
+    _cancel_check_counter = 0
+    _cancel_requested = False
+
+    def _check_cancel(*, force: bool = False, where: str = "") -> bool:
+        """Return True if cancellation is requested.
+
+        Cancellation is cooperative/best-effort:
+        - We check at a configurable interval to avoid excessive IO (job JSON reads).
+        - If the callback raises, we fail-open (treat as not cancelled) and keep going.
+        """
+        nonlocal _cancel_check_counter, _cancel_requested
+
+        if _cancel_requested:
+            return True
+        if cancel_callback is None:
+            return False
+
+        _cancel_check_counter += 1
+        if (not force) and cancel_check_interval and (
+            _cancel_check_counter % int(cancel_check_interval) != 0
+        ):
+            return False
+
+        try:
+            if cancel_callback():
+                _cancel_requested = True
+                msg = "Cancellation requested; stopping reconcile_tree early"
+                if where:
+                    msg += f" ({where})"
+                log(f"   [CANCEL] {msg}")
+                journal(
+                    {
+                        "op": "cancel",
+                        "status": "requested",
+                        "where": where,
+                        "resumability_safe": False,
+                        "message": msg,
+                    }
+                )
+                return True
+        except Exception as e:  # noqa: BLE001
+            # Fail-open: cancellation is best-effort. If the callback errors,
+            # log but proceed rather than risking a partial apply due to a
+            # transient read error.
+            log(f"   [WARN] cancel_callback raised: {type(e).__name__}: {e}")
+
+        return False
 
     # Planning containers for summary and dry-run plan
     planned_creates: List[Dict[str, Any]] = []
@@ -726,6 +782,8 @@ async def reconcile_tree(
             source_path_prefix = []
 
         for idx, n in enumerate(nodes):
+            if _check_cancel(where="create"):
+                return
             nid = n.get('id')
             node_name = n.get('name', 'unnamed')
             current_path = source_path_prefix + [idx]
@@ -873,7 +931,14 @@ async def reconcile_tree(
             await ensure_created(n.get('children', []), n.get('id'), current_path)
 
     log(f"\n[PHASE 1] START - CREATE (top-down)")
+    if _check_cancel(force=True, where="before_create_phase"):
+        return log_summary_and_close(note="Cancelled before CREATE phase")
+
     await ensure_created(source_nodes, parent_uuid)
+
+    if _check_cancel(force=True, where="after_create_phase"):
+        return log_summary_and_close(note="Cancelled during CREATE phase")
+
     log(f"   CREATE phase complete - created {create_count} new nodes")
 
     # Recompute desired maps now that new nodes have IDs
@@ -884,6 +949,8 @@ async def reconcile_tree(
 
     move_count = 0
     for n in preorder(source_nodes):
+        if _check_cancel(where="move"):
+            return log_summary_and_close(note="Cancelled during MOVE phase")
         nid = n['id']
         desired_parent = n.get('_desired_parent')
         current_parent = Parent_T.get(nid)
@@ -959,6 +1026,8 @@ async def reconcile_tree(
     else:
         reorder_count = 0
         for p, desired in Order_S.items():
+            if _check_cancel(where="reorder"):
+                return log_summary_and_close(note="Cancelled during REORDER phase")
             if p is None:
                 continue
             desired_ids = [x for x in desired if x is not None]
@@ -1012,6 +1081,8 @@ async def reconcile_tree(
             log(f"   Parent {p}: Reordering {len(desired_ids)} children")
             log(f"      Desired order (reversed for TOP positioning): {list(reversed(desired_ids))}")
             for idx, cid in enumerate(reversed(desired_ids)):
+                if _check_cancel(where="reorder"):
+                    return log_summary_and_close(note="Cancelled during REORDER phase")
                 reorder_count += 1
                 if dry_run:
                     log(f"      [DRY-RUN] Would REORDER: move {cid} to TOP of parent {p}")
@@ -1030,6 +1101,8 @@ async def reconcile_tree(
     log(f"\n[PHASE 4] START - UPDATE content")
     update_count = 0
     for nid, tgt in list(Map_T.items()):
+        if _check_cancel(where="update"):
+            return log_summary_and_close(note="Cancelled during UPDATE phase")
         src = Map_S.get(nid)
         if src:
             if not node_data_equal(src, tgt):
@@ -1287,6 +1360,8 @@ async def reconcile_tree(
         return log_summary_and_close(note="Aborted by delete threshold")
 
     for d in planned_delete_roots:
+        if _check_cancel(where="delete"):
+            return log_summary_and_close(note="Cancelled during DELETE phase")
         try:
             node_name = Map_T2.get(d, {}).get('name', 'unknown')
             log(f"   >>> DELETING root: {d} (name: {node_name})")

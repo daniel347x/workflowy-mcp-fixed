@@ -4749,6 +4749,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     log_weave_entry=log_weave_entry_fn,
                     log_to_file_msg=lambda m: _log_to_file_helper(m, "reconcile"),
                     allow_pure_reorder=True,
+                    cancel_callback=cancel_callback,
+                    cancel_check_interval=10,
                 )
                 if f12_journal and f12_journal_path:
                     try:
@@ -6135,6 +6137,22 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             # Walk filesystem under root_path and collect files matching whitelist and .nexusignore
             try:
                 for dirpath, dirnames, filenames in os.walk(root_path):
+                    # Best-effort cancellation while scanning filesystem.
+                    if cancel_callback is not None:
+                        try:
+                            if cancel_callback():
+                                log_event(
+                                    "refresh_folder_cartographer_sync: cancellation requested during os.walk; stopping disk scan early",
+                                    "BEACON",
+                                )
+                                break
+                        except Exception as e:  # noqa: BLE001
+                            log_event(
+                                "refresh_folder_cartographer_sync: cancel_callback raised during os.walk: "
+                                f"{type(e).__name__}: {e}",
+                                "BEACON",
+                            )
+
                     # Prune ignored subdirectories so os.walk does not descend into them.
                     dirnames[:] = [d for d in dirnames if not _is_ignored_name(d)]
 
@@ -6256,6 +6274,25 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
                 async def _create_subtree(parent_uuid: str, node: dict[str, Any]) -> None:
                     nonlocal new_files_created
+
+                    # Cancellation: node creation can be the longest phase of a folder refresh.
+                    # Check cancellation on *every* node create so the user can stop a huge
+                    # creation storm (thousands of nodes) promptly.
+                    if cancel_callback is not None:
+                        try:
+                            if cancel_callback():
+                                log_event(
+                                    "refresh_folder_cartographer_sync: cancellation requested during create_subtree; stopping node creation",
+                                    "BEACON",
+                                )
+                                return
+                        except Exception as e:  # noqa: BLE001
+                            log_event(
+                                "refresh_folder_cartographer_sync: cancel_callback raised during create_subtree: "
+                                f"{type(e).__name__}: {e}",
+                                "BEACON",
+                            )
+
                     name = str(node.get("name") or "").strip() or "..."
                     note = node.get("note")
                     data = node.get("data") or {}
@@ -6275,6 +6312,21 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
                 # Create missing FILE nodes and any required intermediate FOLDER nodes
                 for key in sorted(only_on_disk_keys):
+                    if cancel_callback is not None:
+                        try:
+                            if cancel_callback():
+                                log_event(
+                                    "refresh_folder_cartographer_sync: cancellation requested during disk-create phase; stopping before remaining creates",
+                                    "BEACON",
+                                )
+                                break
+                        except Exception as e:  # noqa: BLE001
+                            log_event(
+                                "refresh_folder_cartographer_sync: cancel_callback raised during disk-create phase: "
+                                f"{type(e).__name__}: {e}",
+                                "BEACON",
+                            )
+
                     file_path = disk_files_norm.get(key)
                     if not file_path:
                         continue
@@ -6291,6 +6343,21 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     parent_uuid = str(folder_node_id)
                     current_rel = ""
                     for seg in dir_parts:
+                        if cancel_callback is not None:
+                            try:
+                                if cancel_callback():
+                                    log_event(
+                                        "refresh_folder_cartographer_sync: cancellation requested during intermediate folder creation; aborting remaining creates",
+                                        "BEACON",
+                                    )
+                                    break
+                            except Exception as e:  # noqa: BLE001
+                                log_event(
+                                    "refresh_folder_cartographer_sync: cancel_callback raised during intermediate folder creation: "
+                                    f"{type(e).__name__}: {e}",
+                                    "BEACON",
+                                )
+
                         next_rel = seg if not current_rel else os.path.join(current_rel, seg)
                         folder_uuid = folder_node_by_relpath.get(next_rel)
                         if not folder_uuid:
@@ -6317,6 +6384,23 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             new_folders_created += 1
                         parent_uuid = folder_uuid
                         current_rel = next_rel
+
+                    # If cancellation was requested during intermediate folder creation,
+                    # stop immediately before mapping/creating more nodes.
+                    if cancel_callback is not None:
+                        try:
+                            if cancel_callback():
+                                log_event(
+                                    "refresh_folder_cartographer_sync: cancellation requested before file subtree create; aborting disk-create phase",
+                                    "BEACON",
+                                )
+                                break
+                        except Exception as e:  # noqa: BLE001
+                            log_event(
+                                "refresh_folder_cartographer_sync: cancel_callback raised before file subtree create: "
+                                f"{type(e).__name__}: {e}",
+                                "BEACON",
+                            )
 
                     # Guardrail: never create a duplicate FILE node subtree if a matching
                     # child already exists under the intended parent folder.
@@ -6348,6 +6432,21 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             continue
 
                     # Now create the FILE subtree under parent_uuid using Cartographer
+                    if cancel_callback is not None:
+                        try:
+                            if cancel_callback():
+                                log_event(
+                                    "refresh_folder_cartographer_sync: cancellation requested before map_codebase; skipping remaining file subtree creates",
+                                    "BEACON",
+                                )
+                                break
+                        except Exception as e:  # noqa: BLE001
+                            log_event(
+                                "refresh_folder_cartographer_sync: cancel_callback raised before map_codebase: "
+                                f"{type(e).__name__}: {e}",
+                                "BEACON",
+                            )
+
                     try:
                         file_map = cartographer.map_codebase(  # type: ignore[attr-defined]
                             file_path,
