@@ -6006,6 +6006,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
             sources = _discover_nexusignore_sources(start_dir=start_dir, stop_dir=stop_dir)
 
+            # @beacon[
+            #   id=auto-beacon@refresh_folder_cartographer_sync._read_ignore_lines_best_effort-w6p1,
+            #   role=refresh_folder_cartographer_sync._read_ignore_lines_best_effort,
+            #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-reconcile,
+            #   kind=ast,
+            #   comment=.nexusignore helper: read ignore file lines with BOM/UTF-16 tolerance,
+            # ]
             def _read_ignore_lines_best_effort(path: str) -> tuple[list[str], str | None]:
                 """Read ignore file lines, best-effort across common encodings.
 
