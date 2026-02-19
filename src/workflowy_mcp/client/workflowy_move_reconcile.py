@@ -153,6 +153,13 @@ async def reconcile_tree(
     _cancel_check_counter = 0
     _cancel_requested = False
 
+    # @beacon[
+    #   id=carto-cancel@reconcile_tree._check_cancel,
+    #   role=reconcile_tree._check_cancel,
+    #   slice_labels=ra-carto-jobs,ra-reconcile,f9-f12-handlers,
+    #   kind=ast,
+    #   comment=Cooperative cancellation check used during long apply loops (CREATE/MOVE/REORDER/UPDATE/DELETE),
+    # ]
     def _check_cancel(*, force: bool = False, where: str = "") -> bool:
         """Return True if cancellation is requested.
 
@@ -174,8 +181,17 @@ async def reconcile_tree(
             return False
 
         try:
+            # @beacon[
+            #   id=carto-cancel@reconcile_tree.cancel_callback_invoke,
+            #   role=reconcile_tree _check_cancel invokes cancel_callback,
+            #   slice_labels=ra-carto-jobs,ra-reconcile,
+            #   kind=span,
+            # ]
             if cancel_callback():
                 _cancel_requested = True
+                # @beacon-close[
+                #   id=carto-cancel@reconcile_tree.cancel_callback_invoke,
+                # ]
                 msg = "Cancellation requested; stopping reconcile_tree early"
                 if where:
                     msg += f" ({where})"
@@ -782,8 +798,17 @@ async def reconcile_tree(
             source_path_prefix = []
 
         for idx, n in enumerate(nodes):
+            # @beacon[
+            #   id=carto-cancel@reconcile_tree.create_loop_cancel_check,
+            #   role=reconcile_tree create loop cancellation check,
+            #   slice_labels=ra-carto-jobs,ra-reconcile,
+            #   kind=span,
+            # ]
             if _check_cancel(where="create"):
                 return
+            # @beacon-close[
+            #   id=carto-cancel@reconcile_tree.create_loop_cancel_check,
+            # ]
             nid = n.get('id')
             node_name = n.get('name', 'unnamed')
             current_path = source_path_prefix + [idx]
@@ -1360,8 +1385,17 @@ async def reconcile_tree(
         return log_summary_and_close(note="Aborted by delete threshold")
 
     for d in planned_delete_roots:
+        # @beacon[
+        #   id=carto-cancel@reconcile_tree.delete_loop_cancel_check,
+        #   role=reconcile_tree delete loop cancellation check,
+        #   slice_labels=ra-carto-jobs,ra-reconcile,
+        #   kind=span,
+        # ]
         if _check_cancel(where="delete"):
             return log_summary_and_close(note="Cancelled during DELETE phase")
+        # @beacon-close[
+        #   id=carto-cancel@reconcile_tree.delete_loop_cancel_check,
+        # ]
         try:
             node_name = Map_T2.get(d, {}).get('name', 'unknown')
             log(f"   >>> DELETING root: {d} (name: {node_name})")
