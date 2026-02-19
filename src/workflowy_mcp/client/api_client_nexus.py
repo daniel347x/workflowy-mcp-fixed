@@ -5953,6 +5953,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # Debug flags (keep logs bounded).
         _ignore_debug_emitted = False
         _ignore_debug_tests_emitted = False
+        _ignore_debug_miss_emitted = 0
         _os_walk_debug_emitted = 0
 
         # @beacon[
@@ -6262,6 +6263,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # ]
         def is_ignored_path(abs_path: str) -> tuple[bool, str]:
             """Return (ignored, reason)."""
+            nonlocal _ignore_debug_miss_emitted
 
             # Always ignore some junk regardless of .nexusignore contents.
             try:
@@ -6304,6 +6306,44 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 for pat in path_patterns:
                     if _match_path(rel, pat):
                         return (True, f"path:{pat} base={base_label} rel={rel}")
+
+            # Debug: if we *expected* .venv/node_modules/site-packages to be ignored
+            # (because a segment pattern exists), but we got no match, emit a bounded
+            # diagnostic including relpath calculations.
+            try:
+                base_name_dbg = os.path.basename(abs_path)
+            except Exception:
+                base_name_dbg = ""
+
+            if (
+                base_name_dbg in {".venv", "node_modules", "site-packages"}
+                and _ignore_debug_miss_emitted < 10
+                and any(p in segment_patterns for p in {".venv", "node_modules", "site-packages"})
+            ):
+                _ignore_debug_miss_emitted += 1
+                try:
+                    rel_repo_dbg = _safe_relpath(abs_path, base_repo_root) if base_repo_root else None
+                    rel_folder_dbg = _safe_relpath(abs_path, base_folder_root) if base_folder_root else None
+                    rels_dbg: list[tuple[str, str]] = []
+                    if rel_repo_dbg is not None:
+                        rels_dbg.append(("repo_root", rel_repo_dbg))
+                    if rel_folder_dbg is not None:
+                        rels_dbg.append(("folder_root", rel_folder_dbg))
+
+                    log_event(
+                        "refresh_folder_cartographer_sync: nexusignore debug (MISS) "
+                        f"abs={abs_path!r} base_name={base_name_dbg!r} base_repo_root={base_repo_root!r} "
+                        f"base_folder_root={base_folder_root!r} rels={rels_dbg!r} "
+                        f"seg_has_venv={'.venv' in segment_patterns} seg_has_node_modules={'node_modules' in segment_patterns} "
+                        f"seg_has_site_packages={'site-packages' in segment_patterns}",
+                        "BEACON",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log_event(
+                        "refresh_folder_cartographer_sync: nexusignore debug (MISS) emit failed: "
+                        f"{type(e).__name__}: {e}",
+                        "BEACON",
+                    )
 
             return (False, "")
 
