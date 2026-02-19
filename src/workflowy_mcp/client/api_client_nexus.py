@@ -4642,6 +4642,61 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "nodes_moved": 0,
             }
 
+            # Best-effort job progress for CARTO_REFRESH (drives UUID widget status text).
+            # The detached weave_worker sets CARTO_JOB_FILE in the environment.
+            carto_job_file = os.getenv("CARTO_JOB_FILE")
+            _carto_pending = {
+                "nodes_created": 0,
+                "nodes_updated": 0,
+                "nodes_moved": 0,
+                "nodes_deleted": 0,
+            }
+            _carto_ops = 0
+
+            def _carto_flush_progress(*, force: bool = False, phase: str | None = None) -> None:
+                nonlocal _carto_ops
+                if not carto_job_file:
+                    return
+
+                _carto_ops += 1
+                if (not force) and (_carto_ops % 10 != 0):
+                    return
+
+                # Only write if there is something to report.
+                if (not force) and (not phase) and all(int(v or 0) == 0 for v in _carto_pending.values()):
+                    return
+
+                try:
+                    with open(carto_job_file, "r", encoding="utf-8") as jf:
+                        job_local = json_module.load(jf)
+                except Exception:
+                    return
+
+                try:
+                    progress_local = job_local.get("progress") or {}
+                    job_local["progress"] = progress_local
+
+                    if phase:
+                        progress_local["current_phase"] = phase
+
+                    for k, v in list(_carto_pending.items()):
+                        if not v:
+                            continue
+                        try:
+                            progress_local[k] = int(progress_local.get(k) or 0) + int(v)
+                        except Exception:
+                            # Fail-open: ignore malformed counters
+                            continue
+                        _carto_pending[k] = 0
+
+                    job_local["updated_at"] = datetime.datetime.utcnow().isoformat()
+
+                    with open(carto_job_file, "w", encoding="utf-8") as jf:
+                        json_module.dump(job_local, jf, indent=2)
+                except Exception:
+                    # Never let progress writing affect refresh behavior.
+                    return
+
             async def list_wrapper(parent_uuid: str) -> list[dict[str, Any]]:
                 request = NodeListRequest(parentId=parent_uuid)
                 nodes, _ = await self.list_nodes(request)
@@ -4662,6 +4717,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 node = await self.create_node(req, _internal_call=True)
                 stats["api_calls"] += 1
                 stats["nodes_created"] += 1
+                if not dry_run:
+                    _carto_pending["nodes_created"] += 1
+                    _carto_flush_progress(phase="apply_reconcile")
                 return node.id
 
             async def update_wrapper(node_uuid: str, data: dict) -> None:
@@ -4674,18 +4732,27 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 await self.update_node(node_uuid, req)
                 stats["api_calls"] += 1
                 stats["nodes_updated"] += 1
+                if not dry_run:
+                    _carto_pending["nodes_updated"] += 1
+                    _carto_flush_progress(phase="apply_reconcile")
 
             async def delete_wrapper(node_uuid: str) -> None:
                 _log_to_file_helper(f"F12 DELETE: {node_uuid}", "reconcile")
                 await self.delete_node(node_uuid)
                 stats["api_calls"] += 1
                 stats["nodes_deleted"] += 1
+                if not dry_run:
+                    _carto_pending["nodes_deleted"] += 1
+                    _carto_flush_progress(phase="apply_reconcile")
 
             async def move_wrapper(node_uuid: str, new_parent: str, position: str = "top") -> None:
                 _log_to_file_helper(f"F12 MOVE: {node_uuid}", "reconcile")
                 await self.move_node(node_uuid, new_parent, position)
                 stats["api_calls"] += 1
                 stats["nodes_moved"] += 1
+                if not dry_run:
+                    _carto_pending["nodes_moved"] += 1
+                    _carto_flush_progress(phase="apply_reconcile")
 
             async def export_wrapper(node_uuid: str) -> dict:
                 # Use the same bulk export helper as the rest of the client.
@@ -6300,6 +6367,60 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     if rel is not None and rel not in folder_node_by_relpath:
                         folder_node_by_relpath[rel] = nid
 
+                # Best-effort CARTO_REFRESH progress for long disk-create phase.
+                # The detached weave_worker sets CARTO_JOB_FILE in the environment.
+                carto_job_file = os.getenv("CARTO_JOB_FILE")
+                _carto_pending_nodes_created = 0
+                _carto_bump_counter = 0
+
+                def _carto_bump(*, nodes_created: int = 0, phase: str | None = None, force: bool = False) -> None:
+                    """Best-effort update of CARTO job JSON progress.
+
+                    Kept intentionally lightweight + throttled, since disk-create can
+                    generate thousands of nodes.
+                    """
+                    nonlocal _carto_pending_nodes_created, _carto_bump_counter
+                    if not carto_job_file:
+                        return
+
+                    try:
+                        if nodes_created:
+                            _carto_pending_nodes_created += int(nodes_created)
+                    except Exception:
+                        pass
+
+                    _carto_bump_counter += 1
+                    if (not force) and (not phase) and (_carto_bump_counter % 25 != 0):
+                        return
+
+                    if (not force) and (not phase) and (not _carto_pending_nodes_created):
+                        return
+
+                    try:
+                        import json as json_module
+                        import datetime as _datetime
+
+                        with open(carto_job_file, "r", encoding="utf-8") as jf:
+                            job_local = json_module.load(jf)
+
+                        progress_local = job_local.get("progress") or {}
+                        job_local["progress"] = progress_local
+
+                        if phase:
+                            progress_local["current_phase"] = phase
+
+                        if _carto_pending_nodes_created:
+                            progress_local["nodes_created"] = int(progress_local.get("nodes_created") or 0) + int(
+                                _carto_pending_nodes_created
+                            )
+                            _carto_pending_nodes_created = 0
+
+                        job_local["updated_at"] = _datetime.datetime.utcnow().isoformat()
+                        with open(carto_job_file, "w", encoding="utf-8") as jf:
+                            json_module.dump(job_local, jf, indent=2)
+                    except Exception:
+                        return
+
                 async def _create_subtree(parent_uuid: str, node: dict[str, Any]) -> None:
                     nonlocal new_files_created
 
@@ -6343,11 +6464,17 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         position="bottom",
                     )
                     wf_node = await self.create_node(req, _internal_call=True)
+                    # Disk-create can take a long time; bump job progress so the UUID widget can
+                    # show that we're actively creating nodes.
+                    if not dry_run:
+                        _carto_bump(nodes_created=1, phase="disk_create")
 
                     for child in node.get("children") or []:
                         await _create_subtree(wf_node.id, child)
 
                 # Create missing FILE nodes and any required intermediate FOLDER nodes
+                if not dry_run:
+                    _carto_bump(phase="disk_create", force=True)
                 for key in sorted(only_on_disk_keys):
                     # @beacon[
                     #   id=carto-cancel@refresh_folder_cartographer_sync.disk_create_cancel_check,

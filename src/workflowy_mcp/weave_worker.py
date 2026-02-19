@@ -279,6 +279,15 @@ async def main():
         progress = job.get('progress') or {}
         job['progress'] = progress
         progress.setdefault('current_phase', 'refresh')
+        # Initialize optional counters used by the UUID widget for richer status text.
+        progress.setdefault('nodes_created', 0)
+        progress.setdefault('nodes_updated', 0)
+        progress.setdefault('nodes_moved', 0)
+        progress.setdefault('nodes_deleted', 0)
+
+        # Expose job file to downstream Cartographer refresh helpers so they can
+        # report fine-grained apply-phase progress (best-effort).
+        os.environ["CARTO_JOB_FILE"] = str(job_path)
 
         result_summary = job.get('result_summary') or {}
         job['result_summary'] = result_summary
