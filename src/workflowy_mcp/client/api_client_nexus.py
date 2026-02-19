@@ -6219,7 +6219,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if os.path.commonpath([abs_norm, base_norm]) != base_norm:
                     return None
                 rel = os.path.relpath(abs_path, base)
-                return rel.replace("\\\\", "/")
+                return rel.replace("\\", "/")
             except Exception:
                 return None
 
