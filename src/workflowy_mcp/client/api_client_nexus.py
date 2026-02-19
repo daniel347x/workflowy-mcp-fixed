@@ -4653,6 +4653,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             }
             _carto_ops = 0
 
+            # @beacon[
+            #   id=carto-progress@refresh_file_node_beacons._carto_flush_progress,
+            #   role=refresh_file_node_beacons _carto_flush_progress,
+            #   slice_labels=ra-carto-jobs,ra-reconcile,f9-f12-handlers,
+            #   kind=ast,
+            #   comment=Flush apply-phase node counters + phase into CARTO job JSON (best-effort),
+            # ]
             def _carto_flush_progress(*, force: bool = False, phase: str | None = None) -> None:
                 nonlocal _carto_ops
                 if not carto_job_file:
@@ -6373,6 +6380,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 _carto_pending_nodes_created = 0
                 _carto_bump_counter = 0
 
+                # @beacon[
+                #   id=carto-progress@refresh_folder_cartographer_sync._carto_bump,
+                #   role=refresh_folder_cartographer_sync _carto_bump,
+                #   slice_labels=ra-carto-jobs,f9-f12-handlers,
+                #   kind=ast,
+                #   comment=Bump disk-create phase progress (nodes_created + current_phase) into CARTO job JSON (throttled),
+                # ]
                 def _carto_bump(*, nodes_created: int = 0, phase: str | None = None, force: bool = False) -> None:
                     """Best-effort update of CARTO job JSON progress.
 
