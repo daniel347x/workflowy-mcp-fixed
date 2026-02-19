@@ -4734,6 +4734,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             try:
                 if source_json_path:
                     _current_weave_context["json_file"] = source_json_path
+
+                # @beacon[
+                #   id=carto-cancel@refresh_file_node_beacons.reconcile_tree_cancel_callback,
+                #   role=refresh_file_node_beacons passes cancel_callback into reconcile_tree,
+                #   slice_labels=ra-carto-jobs,ra-reconcile,f9-f12-handlers,
+                #   kind=span,
+                # ]
                 reconcile_result = await _reconcile_tree_for_f12(
                     source_json=source_json,
                     parent_uuid=str(file_node_id),
@@ -4752,6 +4759,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     cancel_callback=cancel_callback,
                     cancel_check_interval=10,
                 )
+                # @beacon-close[
+                #   id=carto-cancel@refresh_file_node_beacons.reconcile_tree_cancel_callback,
+                # ]
                 if f12_journal and f12_journal_path:
                     try:
                         f12_journal["last_run_completed"] = True
@@ -5844,6 +5854,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 continue
 
             # Best-effort cancellation hook for long-running folder jobs (e.g. CARTO_REFRESH)
+            # @beacon[
+            #   id=carto-cancel@refresh_folder_cartographer_sync.per_file_cancel_check,
+            #   role=refresh_folder_cartographer_sync per-file cancel check,
+            #   slice_labels=ra-carto-jobs,f9-f12-handlers,
+            #   kind=span,
+            # ]
             if cancel_callback is not None:
                 try:
                     if cancel_callback():
@@ -5859,6 +5875,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         f"for FILE node_id={s_nid} Path=\"{source_path}\": {e}",
                         "BEACON",
                     )
+            # @beacon-close[
+            #   id=carto-cancel@refresh_folder_cartographer_sync.per_file_cancel_check,
+            # ]
 
             try:
                 log_event(
@@ -6138,6 +6157,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             try:
                 for dirpath, dirnames, filenames in os.walk(root_path):
                     # Best-effort cancellation while scanning filesystem.
+                    # @beacon[
+                    #   id=carto-cancel@refresh_folder_cartographer_sync.os_walk_cancel_check,
+                    #   role=refresh_folder_cartographer_sync cancellation check inside os.walk,
+                    #   slice_labels=ra-carto-jobs,
+                    #   kind=span,
+                    # ]
                     if cancel_callback is not None:
                         try:
                             if cancel_callback():
@@ -6152,6 +6177,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 f"{type(e).__name__}: {e}",
                                 "BEACON",
                             )
+                    # @beacon-close[
+                    #   id=carto-cancel@refresh_folder_cartographer_sync.os_walk_cancel_check,
+                    # ]
 
                     # Prune ignored subdirectories so os.walk does not descend into them.
                     dirnames[:] = [d for d in dirnames if not _is_ignored_name(d)]
@@ -6278,6 +6306,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     # Cancellation: node creation can be the longest phase of a folder refresh.
                     # Check cancellation on *every* node create so the user can stop a huge
                     # creation storm (thousands of nodes) promptly.
+                    # @beacon[
+                    #   id=carto-cancel@refresh_folder_cartographer_sync.create_subtree_cancel_check,
+                    #   role=refresh_folder_cartographer_sync cancel check inside _create_subtree,
+                    #   slice_labels=ra-carto-jobs,
+                    #   kind=span,
+                    # ]
                     if cancel_callback is not None:
                         try:
                             if cancel_callback():
@@ -6292,6 +6326,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 f"{type(e).__name__}: {e}",
                                 "BEACON",
                             )
+                    # @beacon-close[
+                    #   id=carto-cancel@refresh_folder_cartographer_sync.create_subtree_cancel_check,
+                    # ]
 
                     name = str(node.get("name") or "").strip() or "..."
                     note = node.get("note")
@@ -6312,6 +6349,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
                 # Create missing FILE nodes and any required intermediate FOLDER nodes
                 for key in sorted(only_on_disk_keys):
+                    # @beacon[
+                    #   id=carto-cancel@refresh_folder_cartographer_sync.disk_create_cancel_check,
+                    #   role=refresh_folder_cartographer_sync cancel check inside disk-create loop,
+                    #   slice_labels=ra-carto-jobs,
+                    #   kind=span,
+                    # ]
                     if cancel_callback is not None:
                         try:
                             if cancel_callback():
@@ -6326,6 +6369,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 f"{type(e).__name__}: {e}",
                                 "BEACON",
                             )
+                    # @beacon-close[
+                    #   id=carto-cancel@refresh_folder_cartographer_sync.disk_create_cancel_check,
+                    # ]
 
                     file_path = disk_files_norm.get(key)
                     if not file_path:
