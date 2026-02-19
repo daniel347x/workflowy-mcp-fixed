@@ -6000,25 +6000,61 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
             sources = _discover_nexusignore_sources(start_dir=start_dir, stop_dir=stop_dir)
 
+            def _read_ignore_lines_best_effort(path: str) -> tuple[list[str], str | None]:
+                """Read ignore file lines, best-effort across common encodings.
+
+                Rationale: a surprising number of Windows-created dotfiles end up as
+                UTF-16 (or with a BOM). If we fail to read, ignore filtering silently
+                degrades and huge dependency trees (e.g. .venv/site-packages) get mapped.
+                """
+                encodings = [
+                    "utf-8-sig",  # handles UTF-8 BOM
+                    "utf-8",
+                    "utf-16",
+                    "utf-16-le",
+                    "utf-16-be",
+                ]
+                last_exc: Exception | None = None
+                for enc in encodings:
+                    try:
+                        with open(path, "r", encoding=enc) as f:
+                            return (f.read().splitlines(), enc)
+                    except Exception as e:  # noqa: BLE001
+                        last_exc = e
+                        continue
+
+                if last_exc is not None:
+                    log_event(
+                        "refresh_folder_cartographer_sync: failed to decode .nexusignore with common encodings "
+                        f"file={path!r}: {type(last_exc).__name__}: {last_exc}",
+                        "BEACON",
+                    )
+                return ([], None)
+
             for ig_path in sources:
                 try:
-                    with open(ig_path, "r", encoding="utf-8") as ig:
-                        for line in ig:
-                            raw = line.rstrip("\n\r")
-                            stripped = raw.strip()
-                            if not stripped or stripped.startswith("#"):
-                                continue
+                    lines, enc_used = _read_ignore_lines_best_effort(ig_path)
+                    if enc_used:
+                        log_event(
+                            f"refresh_folder_cartographer_sync: read .nexusignore file={ig_path!r} encoding={enc_used}",
+                            "BEACON",
+                        )
 
-                            # Normalize Windows slashes.
-                            normalized = stripped.replace("\\\\", "/")
+                    for raw in lines:
+                        stripped = str(raw).strip().lstrip("\ufeff")
+                        if not stripped or stripped.startswith("#"):
+                            continue
 
-                            # Classify:
-                            # - if it contains '/', treat as a path pattern
-                            # - else treat as a segment pattern
-                            if "/" in normalized:
-                                path_out.append(normalized)
-                            else:
-                                seg_out.append(normalized)
+                        # Normalize Windows slashes.
+                        normalized = stripped.replace("\\\\", "/")
+
+                        # Classify:
+                        # - if it contains '/', treat as a path pattern
+                        # - else treat as a segment pattern
+                        if "/" in normalized:
+                            path_out.append(normalized)
+                        else:
+                            seg_out.append(normalized)
                 except Exception as e:  # noqa: BLE001
                     log_event(
                         "refresh_folder_cartographer_sync: failed to read .nexusignore "
