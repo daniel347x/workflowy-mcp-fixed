@@ -5950,6 +5950,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         base_repo_root = str(repo_root_abs) if (repo_root_abs and os.path.isdir(str(repo_root_abs))) else None
         base_folder_root = str(root_path) if (root_path and os.path.isdir(str(root_path))) else None
 
+        # Debug flags (keep logs bounded).
+        _ignore_debug_emitted = False
+        _ignore_debug_tests_emitted = False
+        _os_walk_debug_emitted = 0
+
         # @beacon[
         #   id=auto-beacon@refresh_folder_cartographer_sync._discover_nexusignore_sources-g9d4,
         #   role=refresh_folder_cartographer_sync._discover_nexusignore_sources,
@@ -6103,6 +6108,25 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         f"segment={segment_patterns!r} path={path_patterns!r} sources={ignore_sources!r}",
                         "BEACON",
                     )
+
+                # Debug: emit one concise summary that makes it obvious whether
+                # ignores are being discovered/parsed correctly. (No per-path tests
+                # here, since is_ignored_path is defined later.)
+                if not _ignore_debug_emitted:
+                    _ignore_debug_emitted = True
+                    try:
+                        log_event(
+                            "refresh_folder_cartographer_sync: nexusignore debug (loaded patterns) "
+                            f"base_folder_root={base_folder_root!r} base_repo_root={base_repo_root!r} "
+                            f"sources={ignore_sources!r} seg_count={len(segment_patterns)} path_count={len(path_patterns)}",
+                            "BEACON",
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        log_event(
+                            "refresh_folder_cartographer_sync: nexusignore debug emit failed: "
+                            f"{type(e).__name__}: {e}",
+                            "BEACON",
+                        )
         except Exception as e:  # noqa: BLE001
             log_event(
                 "refresh_folder_cartographer_sync: failed to discover .nexusignore patterns (fail-open): "
@@ -6285,6 +6309,37 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         ignored_existing_files = 0
         ignored_disk_files = 0
+
+        # Debug: after is_ignored_path is defined, test a couple of canonical
+        # ignores so we can diagnose cases where .venv/node_modules are still
+        # being mapped despite .nexusignore.
+        if not _ignore_debug_tests_emitted:
+            _ignore_debug_tests_emitted = True
+            try:
+                test_base = base_folder_root or base_repo_root
+                test_abs = os.path.join(test_base, ".venv") if test_base else None
+                test_abs2 = os.path.join(test_base, "node_modules") if test_base else None
+
+                def _test_one(p: str | None) -> str:
+                    if not p:
+                        return "(none)"
+                    try:
+                        ign, reason = is_ignored_path(p)
+                        return f"ignored={ign} reason={reason}"
+                    except Exception as e:  # noqa: BLE001
+                        return f"error={type(e).__name__}: {e}"
+
+                log_event(
+                    "refresh_folder_cartographer_sync: nexusignore debug (tests) "
+                    f"test_.venv={_test_one(test_abs)} test_node_modules={_test_one(test_abs2)}",
+                    "BEACON",
+                )
+            except Exception as e:  # noqa: BLE001
+                log_event(
+                    "refresh_folder_cartographer_sync: nexusignore debug tests emit failed: "
+                    f"{type(e).__name__}: {e}",
+                    "BEACON",
+                )
 
         # Now perform per-file refresh only when the file exists on disk
         for s_nid, source_path, exists in file_nodes_info:
@@ -6559,6 +6614,25 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         maybe_reload_nexusignore()
                     except Exception:
                         pass
+
+                    # Debug: show whether the top-level '.venv' directory is being
+                    # recognized as ignored (log only a couple times).
+                    if _os_walk_debug_emitted < 3:
+                        try:
+                            if ".venv" in dirnames:
+                                _os_walk_debug_emitted += 1
+                                abs_venv = os.path.join(dirpath, ".venv")
+                                try:
+                                    ign, rsn = is_ignored_path(abs_venv)
+                                except Exception as e:  # noqa: BLE001
+                                    ign, rsn = (False, f"error={type(e).__name__}: {e}")
+                                log_event(
+                                    "refresh_folder_cartographer_sync: nexusignore debug (os.walk) "
+                                    f"dirpath={dirpath!r} has_.venv=True ignored={ign} reason={rsn}",
+                                    "BEACON",
+                                )
+                        except Exception:
+                            pass
 
                     # Prune ignored subdirectories so os.walk does not descend into them.
                     pruned: list[str] = []
