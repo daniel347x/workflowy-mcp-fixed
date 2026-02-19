@@ -5950,6 +5950,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         base_repo_root = str(repo_root_abs) if (repo_root_abs and os.path.isdir(str(repo_root_abs))) else None
         base_folder_root = str(root_path) if (root_path and os.path.isdir(str(root_path))) else None
 
+        # @beacon[
+        #   id=auto-beacon@refresh_folder_cartographer_sync._discover_nexusignore_sources-g9d4,
+        #   role=refresh_folder_cartographer_sync._discover_nexusignore_sources,
+        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,
+        #   kind=ast,
+        #   comment=.nexusignore v2 helper: discover ignore sources via ancestor walk,
+        # ]
         def _discover_nexusignore_sources(*, start_dir: str, stop_dir: str | None) -> list[str]:
             """Return ordered list of .nexusignore files found from start_dir → ancestors.
 
@@ -5977,6 +5984,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
             return sources_out
 
+        # @beacon[
+        #   id=auto-beacon@refresh_folder_cartographer_sync._load_nexusignore_patterns-7m1p,
+        #   role=refresh_folder_cartographer_sync._load_nexusignore_patterns,
+        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,
+        #   kind=ast,
+        #   comment=.nexusignore v2 helper: parse patterns into segment vs path pattern lists,
+        # ]
         def _load_nexusignore_patterns(*, start_dir: str, stop_dir: str | None) -> None:
             """(Re)load .nexusignore into segment_patterns/path_patterns, updating sources+mtimes."""
             nonlocal segment_patterns, path_patterns, ignore_sources, ignore_mtimes
@@ -6128,6 +6142,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     "BEACON",
                 )
 
+        # @beacon[
+        #   id=auto-beacon@refresh_folder_cartographer_sync._safe_relpath-v3c2,
+        #   role=refresh_folder_cartographer_sync._safe_relpath,
+        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,
+        #   kind=ast,
+        #   comment=.nexusignore v2 helper: safe relpath + in-tree guard (commonpath),
+        # ]
         def _safe_relpath(abs_path: str, base: str) -> str | None:
             """Return abs_path relative to base if abs_path is under base; else None."""
             try:
@@ -6140,6 +6161,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             except Exception:
                 return None
 
+        # @beacon[
+        #   id=auto-beacon@refresh_folder_cartographer_sync._match_segment-2f4q,
+        #   role=refresh_folder_cartographer_sync._match_segment,
+        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,
+        #   kind=ast,
+        #   comment=.nexusignore v2 helper: segment (no-slash) pattern match,
+        # ]
         def _match_segment(seg: str) -> str | None:
             if seg == "__pycache__":
                 return "__pycache__"
@@ -6148,6 +6176,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     return pat
             return None
 
+        # @beacon[
+        #   id=auto-beacon@refresh_folder_cartographer_sync._match_path-5h8n,
+        #   role=refresh_folder_cartographer_sync._match_path,
+        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,
+        #   kind=ast,
+        #   comment=.nexusignore v2 helper: slash-pattern (relpath) match (anchored + unanchored),
+        # ]
         def _match_path(rel: str, pat: str) -> bool:
             # Normalize leading ./
             rel2 = rel.lstrip("./")
@@ -6158,6 +6193,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             # unanchored: allow match anywhere
             return fnmatch.fnmatch(rel2, pat) or fnmatch.fnmatch(rel2, f"*/{pat}")
 
+        # @beacon[
+        #   id=auto-beacon@refresh_folder_cartographer_sync.is_ignored_path-0r7k,
+        #   role=refresh_folder_cartographer_sync.is_ignored_path,
+        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,
+        #   kind=ast,
+        #   comment=.nexusignore v2 helper: unified ignore decision + reason string,
+        # ]
         def is_ignored_path(abs_path: str) -> tuple[bool, str]:
             """Return (ignored, reason)."""
 
