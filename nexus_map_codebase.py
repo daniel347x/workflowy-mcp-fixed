@@ -1434,6 +1434,48 @@ def _extract_md_path_from_note(note: str | None) -> list[str] | None:
     return path_lines or None
 
 
+def _extract_vue_section_key_from_note(note: str | None) -> str | None:
+    """Extract a stable identity key for Vue section nodes.
+
+    Section nodes are virtual wrappers (template/script/style). They do not
+    naturally have Beacon IDs or AST_QUALNAMEs, so name-only matching can
+    cause churn when we adjust display formatting (e.g. '<script>' → '[script]').
+
+    We therefore match section nodes by a key derived from their note fields.
+    """
+    if not isinstance(note, str):
+        return None
+
+    section: str | None = None
+    content_row0: str | None = None
+    script_index: str | None = None
+    style_index: str | None = None
+
+    for raw in note.splitlines():
+        s = raw.strip()
+        if s.startswith("VUE_SECTION:"):
+            section = s.split(":", 1)[1].strip() or None
+        elif s.startswith("VUE_CONTENT_ROW0:"):
+            content_row0 = s.split(":", 1)[1].strip() or None
+        elif s.startswith("VUE_SCRIPT_INDEX:"):
+            script_index = s.split(":", 1)[1].strip() or None
+        elif s.startswith("VUE_STYLE_INDEX:"):
+            style_index = s.split(":", 1)[1].strip() or None
+
+    if not section:
+        return None
+
+    # Prefer explicit indices when present.
+    if script_index is not None:
+        return f"{section}:script:{script_index}"
+    if style_index is not None:
+        return f"{section}:style:{style_index}"
+    if content_row0 is not None:
+        return f"{section}:row0:{content_row0}"
+
+    return section
+
+
 # @beacon[
 #   id=auto-beacon@reconcile_trees_cartographer-2hsq,
 #   role=reconcile_trees_cartographer,
@@ -1473,6 +1515,7 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
     ether_by_beacon: dict[str, dict[str, Any]] = {}
     ether_by_ast: dict[str, dict[str, Any]] = {}
     ether_by_mdpath: dict[tuple[str, ...], dict[str, Any]] = {}
+    ether_by_vuekey: dict[str, dict[str, Any]] = {}
     ether_by_name: dict[str, dict[str, Any]] = {}
 
     # CARTO-DEBUG targeting is disabled by default; set this to a real
@@ -1497,6 +1540,10 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
             key = tuple(whiten_text_for_header_compare(line) for line in md_path if line.strip())
             if key and key not in ether_by_mdpath:
                 ether_by_mdpath[key] = e
+        # 3.5) Vue section key
+        vue_key = _extract_vue_section_key_from_note(note_e)
+        if vue_key and vue_key not in ether_by_vuekey:
+            ether_by_vuekey[vue_key] = e
         # 4) Raw name fallback
         if isinstance(name_e, str) and name_e not in ether_by_name:
             ether_by_name[name_e] = e
@@ -1587,6 +1634,19 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                                 file=_carto_debug_sys.stderr,
                                 flush=True,
                             )
+                # 3.5) Vue section key
+                if match is None:
+                    vue_key_s = _extract_vue_section_key_from_note(note_s)
+                    if vue_key_s and vue_key_s in ether_by_vuekey:
+                        match = ether_by_vuekey[vue_key_s]
+                        if debug_hit:
+                            print(
+                                "[CARTO-DEBUG]   MATCH via VUE_SECTION key:",
+                                {"vue_key_s": vue_key_s, "match_id": match.get("id")},
+                                file=_carto_debug_sys.stderr,
+                                flush=True,
+                            )
+
                 # 4) Raw name fallback
                 if match is None and isinstance(name_s, str) and name_s in ether_by_name:
                     match = ether_by_name[name_s]
@@ -3595,9 +3655,13 @@ def parse_vue_outline(file_path: str) -> List[Dict[str, Any]]:
         content_row0 = int(blk.get("content_row0") or 0)
 
         # Section node
-        section_name = f"⦿ {start_tag_compact}"
+        # NOTE: Workflowy treats '<...>' as tag-like markup and may render it as blank.
+        # Use square brackets to ensure section headings are visible.
+        display_tag = start_tag_compact.replace("<", "[").replace(">", "]")
+        section_name = f"⦿ {display_tag}"
         section_note_lines = [
             f"VUE_SECTION: {btype}",
+            f"VUE_START_TAG: {start_tag_compact}",
             f"VUE_CONTENT_ROW0: {content_row0}",
         ]
 
