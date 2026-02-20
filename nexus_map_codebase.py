@@ -2894,16 +2894,19 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
         return [{
             "name": "⚠️ JS/TS parsing not available",
             "note": (
-                "Tree-sitter / tree_sitter_languages could not be imported. "
-                "Install 'tree_sitter' and 'tree_sitter_languages' in the Windows "
-                "Python environment to enable JS/TS Cartographer support."
+                "Tree-sitter / tree_sitter_language_pack could not be imported. "
+                "Install 'tree_sitter' and 'tree_sitter-language-pack' "
+                "(plus language wheels like 'tree-sitter-javascript' and 'tree-sitter-typescript') "
+                "in the Windows Python environment to enable JS/TS Cartographer support."
             ),
             "children": [],
         }]
 
     language_name = "javascript"
-    if ext in {".ts", ".tsx"}:
+    if ext == ".ts":
         language_name = "typescript"
+    elif ext == ".tsx":
+        language_name = "tsx"
 
     try:
         with open(file_path, "r", encoding="utf-8") as f:
