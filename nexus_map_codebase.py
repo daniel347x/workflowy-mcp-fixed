@@ -1359,7 +1359,14 @@ def whiten_text_for_header_compare(text: str | None) -> str:
     s = s.replace('"', "")
 
     # Remove emoji / other symbolic decoration.
-    s = "".join(ch for ch in s if unicodedata.category(ch) != "So")
+    #
+    # NOTE: We *preserve* the trident (🔱) because it is a semantic UI marker
+    # for Cartographer beacon-decorated nodes. If we strip it here, the
+    # Cartographer no-op suppression in reconcile_trees_cartographer(...) will
+    # treat names with/without 🔱 as equal and may "restore" the old Ether name,
+    # causing the trident to vanish after a file refresh.
+    _PRESERVE_SO = {"🔱"}
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "So" or ch in _PRESERVE_SO)
 
     # Collapse and remove whitespace entirely.
     s = re.sub(r"\s+", "", s)
