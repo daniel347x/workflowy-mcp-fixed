@@ -5836,7 +5836,7 @@ def apply_js_beacons(
             ast_candidates: list[dict[str, Any]] = []
             for node in ast_nodes:
                 ast_type = node.get("ast_type")
-                if ast_type not in {"class", "function", "method"}:
+                if ast_type not in {"class", "function", "method", "const_decl", "let_decl", "var_decl"}:
                     continue
                 ln = node.get("orig_lineno_start_unused")
                 if isinstance(ln, int) and ln == anchor:
@@ -5892,7 +5892,7 @@ def apply_js_beacons(
             ast_candidates = [
                 node
                 for node in ast_nodes
-                if node.get("ast_type") in {"class", "function", "method"}
+                if node.get("ast_type") in {"class", "function", "method", "const_decl", "let_decl", "var_decl"}
                 and isinstance(node.get("orig_lineno_start_unused"), int)
                 and node["orig_lineno_start_unused"] == anchor
             ]
