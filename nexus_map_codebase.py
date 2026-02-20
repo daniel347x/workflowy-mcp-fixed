@@ -5618,9 +5618,11 @@ def apply_js_beacons(
     outline_nodes: List[Dict[str, Any]],
     beacons: list[dict[str, Any]],
 ) -> None:
-    if not outline_nodes or not beacons:
+    if not beacons:
         return
 
+    # NOTE: outline_nodes may be empty for "flat" modules (no class/function/method
+    # declarations). We still want to attach SPAN beacons at file-level in that case.
     ast_nodes = list(_iter_ast_outline_nodes(outline_nodes))
 
     n = len(lines)
