@@ -5743,8 +5743,13 @@ def apply_js_beacons(
         return _strip_beacon_meta_blocks_from_context(context)
 
     # Pre-pass: for snippet-less beacons (span OR ast), compute anchor lineno.
-    # For span beacons, auto-upgrade to AST when anchor is a class/function/method.
-    # For ast beacons without start_snippet, we still need _anchor_lineno for matching.
+    # For span beacons, we *sometimes* auto-upgrade to AST when anchor is a
+    # class/function/method.
+    #
+    # IMPORTANT VUE/JS/TS RULE:
+    # - If a span beacon has an explicit closing delimiter (span_lineno_end is set),
+    #   it is a TRUE SPAN region and must NOT be auto-upgraded to AST.
+    #   (Auto-upgrade is only for single-beacon, snippet-less "inline" anchors.)
     for beacon in beacons:
         kind = beacon.get("kind")
         start_snippet = beacon.get("start_snippet")
@@ -5759,6 +5764,10 @@ def apply_js_beacons(
                 continue
             beacon["_anchor_lineno"] = anchor
 
+            # Never auto-upgrade an explicit span region (paired opener/closer).
+            if kind == "span" and isinstance(beacon.get("span_lineno_end"), int):
+                continue
+
             ast_candidates: list[dict[str, Any]] = []
             for node in ast_nodes:
                 ast_type = node.get("ast_type")
@@ -5767,7 +5776,7 @@ def apply_js_beacons(
                 ln = node.get("orig_lineno_start_unused")
                 if isinstance(ln, int) and ln == anchor:
                     ast_candidates.append(node)
-            if len(ast_candidates) == 1:
+            if kind == "span" and len(ast_candidates) == 1:
                 beacon["kind"] = "ast"
 
     # Pass 1: AST beacons
