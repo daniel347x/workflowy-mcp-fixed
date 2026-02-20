@@ -1794,6 +1794,73 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     "candidates": metadata.get("candidates"),
                 }
 
+        # For Vue script AST nodes, prefer AST_QUALNAME when present.
+        if ext == ".vue":
+            ast_qualname: str | None = None
+            if isinstance(note, str):
+                for line in note.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("AST_QUALNAME:"):
+                        ast_qualname = stripped.split(":", 1)[1].strip()
+                        break
+
+            if ast_qualname:
+                try:
+                    import importlib
+
+                    client_dir = os.path.dirname(os.path.abspath(__file__))
+                    wf_mcp_dir = os.path.dirname(client_dir)
+                    mcp_servers_dir = os.path.dirname(wf_mcp_dir)
+                    project_root = os.path.dirname(mcp_servers_dir)
+                    if project_root not in sys.path:
+                        sys.path.insert(0, project_root)
+
+                    bos = importlib.import_module("beacon_obtain_code_snippet")
+                except Exception as e:  # noqa: BLE001
+                    raise NetworkError(
+                        "Could not import beacon_obtain_code_snippet module for Vue AST_QUALNAME-based "
+                        f"resolution; underlying error: {e}"
+                    ) from e
+
+                try:
+                    snippet_result = bos.get_snippet_for_ast_qualname_vue(  # type: ignore[attr-defined]
+                        file_path,
+                        ast_qualname,
+                        context,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    raise NetworkError(
+                        f"Failed to obtain Vue AST_QUALNAME-based snippet for node {beacon_node_id!r} "
+                        f"in file {file_path!r}: {e}"
+                    ) from e
+
+                if isinstance(snippet_result, tuple) and len(snippet_result) == 7:
+                    start, end, lines, core_start, core_end, beacon_line, metadata = snippet_result
+                else:
+                    raise NetworkError(
+                        "get_snippet_for_ast_qualname_vue returned unexpected shape; expected 7-tuple."
+                    )
+
+                snippet_text = "\n".join(lines[start - 1 : end]) if lines else ""
+
+                return {
+                    "success": True,
+                    "file_path": file_path,
+                    "beacon_node_id": beacon_node_id,
+                    "beacon_id": ast_qualname,
+                    "kind": "node",
+                    "start_line": start,
+                    "end_line": end,
+                    "core_start_line": core_start,
+                    "core_end_line": core_end,
+                    "beacon_line": beacon_line,
+                    "snippet": snippet_text,
+                    "resolution_strategy": metadata.get("resolution_strategy"),
+                    "confidence": metadata.get("confidence"),
+                    "ambiguity": metadata.get("ambiguity"),
+                    "candidates": metadata.get("candidates"),
+                }
+
         # For Markdown heading nodes, prefer MD_PATH when present; otherwise fall through
         # to text-like file handling below.
         if ext in {".md", ".markdown"}:
@@ -1891,6 +1958,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             ".js",
             ".ts",
             ".tsx",
+            ".vue",
             ".css",
             ".html",
             ".c",
@@ -5094,6 +5162,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             helper = getattr(cartographer, "update_beacon_from_node_python", None)
         elif ext in {".js", ".jsx", ".ts", ".tsx"}:
             helper = getattr(cartographer, "update_beacon_from_node_js_ts", None)
+        elif ext == ".vue":
+            helper = getattr(cartographer, "update_beacon_from_node_vue", None)
         elif ext in {".md", ".markdown"}:
             helper = getattr(cartographer, "update_beacon_from_node_markdown", None)
         elif ext == ".sql":

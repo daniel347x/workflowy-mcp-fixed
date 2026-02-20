@@ -119,7 +119,7 @@ def _read_lines(path: str) -> List[str]:
 # @beacon[
 #   id=carto-js-ts@_python_resolve_ast_node_heuristic,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,f9-f12-handlers,ra-reconcile,
 #   kind=span,
 # ]
 # Phase 3 JS/TS: Python AST heuristic template.
@@ -146,8 +146,17 @@ def _python_resolve_ast_node_heuristic(
     if nexus_map_codebase is None:
         raise RuntimeError("nexus_map_codebase could not be imported")
 
+    # @beacon[
+    #   id=carto-js-ts@_python_resolve_ast_node_heuristic-TEST,
+    #   role=carto-js-ts-TEST,
+    #   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,f9-f12-handlers,ra-reconcile,
+    #   kind=span,
+    # ]
     lines = _read_lines(file_path)
     n = len(lines)
+    # @beacon-close[
+    #   id=carto-js-ts@_python_resolve_ast_node_heuristic-TEST,
+    # ]
 
     try:
         outline_nodes = nexus_map_codebase.parse_file_outline(file_path)  # type: ignore[attr-defined]
@@ -366,7 +375,7 @@ def _python_resolve_ast_node_heuristic(
 # @beacon[
 #   id=carto-js-ts@_js_ts_resolve_ast_node_heuristic,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-js-ts,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-js-ts,f9-f12-handlers,ra-reconcile,
 #   kind=span,
 # ]
 # Phase 3 JS/TS: JS/TS AST heuristic helper.
@@ -595,7 +604,7 @@ def _js_ts_resolve_ast_node_heuristic(
 # @beacon[
 #   id=auto-beacon@_python_find_closing_beacon_span-6az7,
 #   role=_python_find_closing_beacon_span,
-#   slice_labels=ra-snippet-range-span-beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _python_find_closing_beacon_span(
@@ -763,7 +772,7 @@ def _python_find_ast_node_for_beacon(
 # @beacon[
 #   id=auto-beacon@_python_comment_block_span-7bt5,
 #   role=_python_comment_block_span,
-#   slice_labels=ra-snippet-range-span-beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _python_comment_block_span(
@@ -852,7 +861,7 @@ def _python_comment_block_span(
 # @beacon[
 #   id=carto-js-ts@_python_snippet_for_beacon,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-py,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-py,ra-read-text-snippet,
 #   kind=span,
 # ]
 # Phase 3 JS/TS: Python beacon snippet template.
@@ -1012,7 +1021,7 @@ def _python_snippet_for_beacon(
 # @beacon[
 #   id=auto-beacon@_js_ts_find_closing_beacon_span-9kja,
 #   role=_js_ts_find_closing_beacon_span,
-#   slice_labels=ra-snippet-range-span-beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _js_ts_find_closing_beacon_span(
@@ -1167,7 +1176,7 @@ def _js_ts_find_ast_node_for_beacon(
 # @beacon[
 #   id=carto-js-ts@_js_ts_snippet_for_beacon,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-js-ts,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-js-ts,ra-read-text-snippet,
 #   kind=span,
 # ]
 # Phase 3 JS/TS: JS/TS beacon snippet helper.
@@ -1311,7 +1320,7 @@ def _js_ts_snippet_for_beacon(
 # @beacon[
 #   id=auto-beacon@_markdown_find_closing_beacon_span-r36i,
 #   role=_markdown_find_closing_beacon_span,
-#   slice_labels=ra-snippet-range-span-beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _markdown_find_closing_beacon_span(
@@ -1420,7 +1429,7 @@ def _markdown_find_closing_beacon_span(
 # @beacon[
 #   id=auto-beacon@_markdown_comment_block_span-y6pq,
 #   role=_markdown_comment_block_span,
-#   slice_labels=ra-snippet-range-span-beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _markdown_comment_block_span(
@@ -1494,7 +1503,7 @@ def _markdown_comment_block_span(
 # @beacon[
 #   id=auto-beacon@_markdown_snippet_for_beacon-1whb,
 #   role=_markdown_snippet_for_beacon,
-#   slice_labels=ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-md,
+#   slice_labels=ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-md,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _markdown_snippet_for_beacon(
@@ -1609,7 +1618,7 @@ def _markdown_snippet_for_beacon(
 # @beacon[
 #   id=auto-beacon@_yaml_comment_block_span-1whb,
 #   role=_yaml_comment_block_span,
-#   slice_labels=ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-yaml,
+#   slice_labels=ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-yaml,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _yaml_comment_block_span(
@@ -1683,7 +1692,7 @@ def _yaml_comment_block_span(
 # @beacon[
 #   id=auto-beacon@_yaml_snippet_for_beacon-1whb,
 #   role=_yaml_snippet_for_beacon,
-#   slice_labels=ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-yaml,
+#   slice_labels=ra-snippet-range-span-beacon,ra-snippet-range-ast-beacon-yaml,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _yaml_snippet_for_beacon(
@@ -1770,7 +1779,7 @@ def _yaml_snippet_for_beacon(
 # @beacon[
 #   id=auto-beacon@_sql_find_closing_beacon_span-1obv,
 #   role=_sql_find_closing_beacon_span,
-#   slice_labels=ra-snippet-range-span-beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _sql_find_closing_beacon_span(
@@ -1878,7 +1887,7 @@ def _sql_find_closing_beacon_span(
 # @beacon[
 #   id=auto-beacon@_sql_comment_block_span-mrwt,
 #   role=_sql_comment_block_span,
-#   slice_labels=ra-snippet-range-span-beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _sql_comment_block_span(
@@ -1952,7 +1961,7 @@ def _sql_comment_block_span(
 # @beacon[
 #   id=auto-beacon@_sql_snippet_for_beacon-7pxi,
 #   role=_sql_snippet_for_beacon,
-#   slice_labels=ra-snippet-range-span-beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _sql_snippet_for_beacon(
@@ -2077,7 +2086,7 @@ def _print_snippet(
 # @beacon[
 #   id=auto-beacon@_sh_find_closing_beacon_span-4gfg,
 #   role=_sh_find_closing_beacon_span,
-#   slice_labels=ra-snippet-range-span-beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _sh_find_closing_beacon_span(
@@ -2186,7 +2195,7 @@ def _sh_find_closing_beacon_span(
 # @beacon[
 #   id=auto-beacon@_sh_comment_block_span-bul0,
 #   role=_sh_comment_block_span,
-#   slice_labels=ra-snippet-range-span-beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _sh_comment_block_span(
@@ -2260,7 +2269,7 @@ def _sh_comment_block_span(
 # @beacon[
 #   id=auto-beacon@_sh_snippet_for_beacon-vegx,
 #   role=_sh_snippet_for_beacon,
-#   slice_labels=ra-snippet-range-span-beacon,
+#   slice_labels=ra-snippet-range-span-beacon,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def _sh_snippet_for_beacon(
@@ -2342,7 +2351,7 @@ def _sh_snippet_for_beacon(
 # @beacon[
 #   id=carto-js-ts@get_snippet_for_ast_qualname,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,f9-f12-handlers,ra-read-text-snippet,
 #   kind=span,
 # ]
 # Phase 3 JS/TS: AST-qualname snippet template.
@@ -2432,7 +2441,7 @@ def get_snippet_for_ast_qualname(
 # @beacon[
 #   id=carto-js-ts@get_snippet_for_ast_qualname_js_ts,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-js-ts,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-js-ts,f9-f12-handlers,ra-read-text-snippet,
 #   kind=span,
 # ]
 # JS/TS AST-qualname snippet helper.
@@ -2506,6 +2515,244 @@ def get_snippet_for_ast_qualname_js_ts(
     return start_line, end_line, lines, core_start, core_end, core_start, metadata
 
 
+# @beacon[
+#   id=auto-beacon@get_snippet_for_ast_qualname_vue-3v1c,
+#   role=get_snippet_for_ast_qualname_vue,
+#   slice_labels=carto-js-ts,ra-read-text-snippet,
+#   kind=ast,
+# ]
+def get_snippet_for_ast_qualname_vue(
+    file_path: str,
+    ast_qualname: str,
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int, dict]:
+    """Resolve snippet for a Vue script AST node identified by its AST_QUALNAME.
+
+    Strategy:
+    - Use nexus_map_codebase.parse_vue_outline(...) to obtain the rebased
+      JS/TS AST nodes (which already have absolute file line numbers).
+    - Match ast_qualname exactly.
+    """
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    ast_qualname = (ast_qualname or "").strip()
+    if not ast_qualname:
+        raise RuntimeError("Empty ast_qualname for Vue AST snippet resolution")
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+
+    try:
+        outline_nodes = nexus_map_codebase.parse_vue_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed to parse Vue outline for {file_path}: {e}") from e
+
+    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
+        for node in nodes or []:
+            if isinstance(node, dict):
+                yield node
+                for ch in node.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+
+    matches: List[dict] = []
+    for node in _iter_nodes(outline_nodes):
+        qual = node.get("ast_qualname")
+        if isinstance(qual, str) and qual == ast_qualname:
+            matches.append(node)
+
+    if not matches:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} not found in Vue file {file_path!r}"
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"AST_QUALNAME {ast_qualname!r} is ambiguous in Vue file {file_path!r} "
+            f"({len(matches)} matches); refresh Cartographer mapping."
+        )
+
+    node = matches[0]
+    start = node.get("orig_lineno_start_unused")
+    end = node.get("orig_lineno_end_unused") or start
+    if not isinstance(start, int) or start <= 0:
+        raise RuntimeError(
+            f"AST node {ast_qualname!r} has invalid start line {start!r} in {file_path!r}"
+        )
+    if not isinstance(end, int) or end < start:
+        end = start
+
+    core_start = start
+    core_end = end
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+
+    metadata = {
+        "resolution_strategy": "vue_ast_qualname_exact",
+        "confidence": 1.0,
+        "ambiguity": "none",
+        "candidates": None,
+    }
+    return start_line, end_line, lines, core_start, core_end, core_start, metadata
+
+
+def _vue_snippet_for_beacon(
+    file_path: str,
+    beacon_id: str,
+    context: int,
+) -> Tuple[int, int, List[str], int, int, int]:
+    """Beacon snippet helper for .vue files.
+
+    Supports:
+    - AST beacons in <script> blocks (via parse_vue_outline + note metadata)
+    - SPAN beacons in <template>, <script>, and <style> (via delimiter scanning)
+    """
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase could not be imported")
+
+    lines = _read_lines(file_path)
+    n = len(lines)
+    target = (beacon_id or "").strip()
+    if not target:
+        raise RuntimeError("Empty beacon id for Vue beacon snippet resolution")
+
+    # 1) Try AST-path using the mapped outline (script beacons decorate AST nodes).
+    try:
+        outline_nodes = nexus_map_codebase.parse_vue_outline(file_path)  # type: ignore[attr-defined]
+    except Exception as e:  # noqa: BLE001
+        outline_nodes = []
+
+    def _iter_nodes(nodes: Iterable[dict]) -> Iterable[dict]:
+        for node in nodes or []:
+            if isinstance(node, dict):
+                yield node
+                for ch in node.get("children") or []:
+                    if isinstance(ch, dict):
+                        yield from _iter_nodes([ch])
+
+    ast_hit: Optional[dict] = None
+    for node in _iter_nodes(outline_nodes):
+        note = node.get("note") or ""
+        if not isinstance(note, str) or "BEACON (JS/TS AST)" not in note:
+            continue
+        for ln in note.splitlines():
+            s = ln.strip()
+            if s.startswith("id:") and s.split(":", 1)[1].strip() == target:
+                ast_hit = node
+                break
+        if ast_hit is not None:
+            break
+
+    def _find_beacon_comment_line() -> Optional[int]:
+        # Best-effort: find the line that contains '@beacon[' and 'id=<target>' within the same block.
+        i = 1
+        while i <= n:
+            if "@beacon[" not in lines[i - 1]:
+                i += 1
+                continue
+            j = i
+            block = [lines[i - 1]]
+            while j + 1 <= n and "]" not in lines[j - 1]:
+                j += 1
+                block.append(lines[j - 1])
+                if "]" in lines[j - 1]:
+                    break
+            block_text = "\n".join(block)
+            if f"id={target}" in block_text:
+                return i
+            i = j + 1
+        return None
+
+    def _comment_block_span(comment_line: int) -> Tuple[int, int]:
+        # Expand to include a leading '<!--' line when present.
+        start = comment_line
+        if comment_line > 1 and lines[comment_line - 2].strip() == "<!--":
+            start = comment_line - 1
+        end = comment_line
+        j = comment_line
+        while j <= n:
+            if "]" in lines[j - 1]:
+                end = j
+                break
+            j += 1
+        # Include trailing '-->' when present.
+        if end < n and lines[end].strip() == "-->":
+            end = end + 1
+        return start, end
+
+    # AST hit: use node range as core, prepend beacon comment if found.
+    if ast_hit is not None:
+        start_code = ast_hit.get("orig_lineno_start_unused")
+        end_code = ast_hit.get("orig_lineno_end_unused")
+        if isinstance(start_code, int) and isinstance(end_code, int) and start_code > 0 and end_code >= start_code:
+            cl = _find_beacon_comment_line()
+            core_start = start_code
+            if cl is not None:
+                cb_start, _cb_end = _comment_block_span(cl)
+                core_start = min(core_start, cb_start)
+            core_end = end_code
+            start_line = max(1, core_start - context)
+            end_line = min(n, core_end + context)
+            beacon_line = cl if cl is not None else start_code
+            return start_line, end_line, lines, core_start, core_end, beacon_line
+
+    # 2) Span path: find opening beacon block and optional close block.
+    open_line = _find_beacon_comment_line()
+    if open_line is None:
+        raise RuntimeError(f"Beacon id {beacon_id!r} not found in Vue file {file_path!r}")
+
+    cb_start, cb_end = _comment_block_span(open_line)
+
+    # Find close block with matching id
+    close_line: Optional[int] = None
+    j = cb_end + 1
+    while j <= n:
+        if "@beacon-close[" not in lines[j - 1]:
+            j += 1
+            continue
+        k = j
+        block = [lines[j - 1]]
+        while k + 1 <= n and "]" not in lines[k - 1]:
+            k += 1
+            block.append(lines[k - 1])
+            if "]" in lines[k - 1]:
+                break
+        block_text = "\n".join(block)
+        if f"id={target}" in block_text:
+            close_line = j
+            break
+        j = k + 1
+
+    if close_line is not None:
+        core_start = cb_start
+        core_end = max(cb_end, close_line - 1)
+        # Span body ends right before close block begins.
+        body_end = close_line - 1
+        core_end = max(core_end, body_end)
+    else:
+        # Single-beacon heuristic: include the first following non-blank line.
+        anchor = cb_end
+        j = cb_end + 1
+        while j <= n:
+            s = lines[j - 1].strip()
+            if not s:
+                j += 1
+                continue
+            # Skip comment-like lines for all syntaxes.
+            if s.startswith("//") or s.startswith("/*") or s.startswith("*") or s.startswith("--"):
+                j += 1
+                continue
+            anchor = j
+            break
+        core_start = cb_start
+        core_end = anchor
+
+    start_line = max(1, core_start - context)
+    end_line = min(n, core_end + context)
+    beacon_line = open_line
+    return start_line, end_line, lines, core_start, core_end, beacon_line
+
+
 # ---------------------------------------------------------------------------
 # Public library API: beacon snippet extraction
 # ---------------------------------------------------------------------------
@@ -2514,7 +2761,7 @@ def get_snippet_for_ast_qualname_js_ts(
 # @beacon[
 #   id=carto-js-ts@get_snippet_data,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-snippets,nexus-md-header-path,ra-snippet-range,f9-f12-handlers,
+#   slice_labels=carto-js-ts,carto-js-ts-snippets,nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-read-text-snippet,
 #   kind=span,
 # ]
 # Phase 3 JS/TS: central dispatch point for snippet resolution.
@@ -2577,6 +2824,10 @@ def get_snippet_data(
         )
     elif ext in {".js", ".jsx", ".ts", ".tsx"}:
         start, end, lines, core_start, core_end, beacon_line = _js_ts_snippet_for_beacon(
+            file_path, beacon_id, context
+        )
+    elif ext == ".vue":
+        start, end, lines, core_start, core_end, beacon_line = _vue_snippet_for_beacon(
             file_path, beacon_id, context
         )
     elif ext in {".md", ".markdown"}:
@@ -2661,7 +2912,7 @@ if __name__ == "__main__":  # pragma: no cover
 # @beacon[
 #   id=auto-beacon@get_snippet_for_md_path-8iyg,
 #   role=get_snippet_for_md_path,
-#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,f9-f12-handlers,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,f9-f12-handlers,ra-read-text-snippet,
 #   kind=ast,
 # ]
 def get_snippet_for_md_path(

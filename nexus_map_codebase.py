@@ -162,6 +162,17 @@ EMOJI_TS = "🟦"
 #   id=auto-beacon@EMOJI_TS-98pq,
 # ]
 
+# @beacon[
+#   id=auto-beacon@EMOJI_VUE-m8x1,
+#   role=EMOJI_VUE — 🟩 .vue,
+#   slice_labels=ra-notes,ra-notes-salvage,
+#   kind=span,
+# ]
+EMOJI_VUE = "🟩"
+# @beacon-close[
+#   id=auto-beacon@EMOJI_VUE-m8x1,
+# ]
+
 # Debug flags (controlled via environment variables)
 DEBUG_MD_BEACONS = bool(os.environ.get("CARTOGRAPHER_MD_BEACONS"))
 
@@ -3176,6 +3187,549 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
         }]
 
 
+def _vue_compact_start_tag_text(raw: str) -> str:
+    """Return a stable single-line representation of a Vue start tag."""
+    s = (raw or "").replace("\t", " ").replace("\r", "").replace("\n", " ")
+    while "  " in s:
+        s = s.replace("  ", " ")
+    return s.strip()
+
+
+def _vue_rebase_beacons(beacons: list[dict[str, Any]], line_offset0: int) -> list[dict[str, Any]]:
+    """Return a shallow-copied beacon list with line numbers rebased to file lines.
+
+    line_offset0 is 0-based file row of the first line in the section's raw_text.
+    """
+    out: list[dict[str, Any]] = []
+    for b in beacons or []:
+        if not isinstance(b, dict):
+            continue
+        b2 = dict(b)
+        for k in ("comment_line", "span_lineno_start", "span_lineno_end"):
+            v = b2.get(k)
+            if isinstance(v, int) and v > 0:
+                b2[k] = v + line_offset0
+        out.append(b2)
+    return out
+
+
+def _parse_js_ts_outline_from_source(
+    *,
+    source_text: str,
+    file_path: str,
+    language_name: str,
+    line_offset0: int,
+    vue_qual_prefix: str,
+) -> List[Dict[str, Any]]:
+    """Parse JS/TS AST from a source string and rebase node line numbers.
+
+    - line_offset0: 0-based file row where source_text line 1 lives.
+    - vue_qual_prefix: prefix to prepend to every AST_QUALNAME for uniqueness.
+    """
+    if not _HAVE_TREE_SITTER:
+        return [{
+            "name": "⚠️ JS/TS parsing not available",
+            "note": (
+                "Tree-sitter / tree_sitter_language_pack could not be imported. "
+                "Install 'tree_sitter' and 'tree_sitter-language-pack' "
+                "(plus language wheels like 'tree-sitter-javascript' and 'tree-sitter-typescript') "
+                "in the Windows Python environment to enable JS/TS Cartographer support."
+            ),
+            "children": [],
+        }]
+
+    try:
+        source_bytes = source_text.encode("utf-8")
+
+        parser = Parser()
+        language = get_language(language_name)  # type: ignore[operator]
+        parser.language = language
+        tree = parser.parse(source_bytes)
+        root = tree.root_node
+
+        lines_local = source_text.splitlines()
+        n_local = len(lines_local)
+
+        # Precompute comment mask and cleaned comment text for JS/TS files so
+        # AST nodes can slurp nearby comments into their Workflowy notes.
+        def _build_js_comment_mask(src_lines: list[str]) -> tuple[list[bool], list[str]]:
+            comment_mask: list[bool] = [False] * len(src_lines)
+            cleaned: list[str] = ["" for _ in range(len(src_lines))]
+            in_block = False
+
+            for idx, raw in enumerate(src_lines, start=1):
+                stripped = raw.lstrip()
+                if not stripped:
+                    continue
+                if "@beacon" in stripped:
+                    continue
+
+                is_comment = False
+                text = ""
+
+                if not in_block:
+                    if stripped.startswith("//"):
+                        is_comment = True
+                        text = stripped[2:].lstrip()
+                    elif "/*" in stripped:
+                        is_comment = True
+                        in_block = True
+                        after = stripped.split("/*", 1)[1]
+                        if "*/" in after:
+                            before_close, _ = after.split("*/", 1)
+                            text = before_close.strip()
+                            in_block = False
+                        else:
+                            text = after.strip()
+                else:
+                    is_comment = True
+                    if "*/" in stripped:
+                        before_close, _ = stripped.split("*/", 1)
+                        text = before_close.strip()
+                        in_block = False
+                    else:
+                        text = stripped
+
+                if is_comment:
+                    comment_mask[idx - 1] = True
+                    cleaned[idx - 1] = text
+
+            return comment_mask, cleaned
+
+        comment_mask, cleaned_comments = _build_js_comment_mask(lines_local)
+
+        def _extract_js_ast_comment_context(start_line_local: int) -> list[str]:
+            ctx: list[str] = []
+
+            j = start_line_local - 1
+            while j >= 1:
+                raw = lines_local[j - 1]
+                stripped = raw.lstrip()
+                if not stripped:
+                    j -= 1
+                    continue
+                if stripped.startswith("@"):  # decorator-like
+                    j -= 1
+                    continue
+                if comment_mask[j - 1]:
+                    text = cleaned_comments[j - 1]
+                    if text:
+                        ctx.insert(0, text)
+                    j -= 1
+                    continue
+                break
+
+            j = start_line_local + 1
+            while j <= n_local:
+                raw = lines_local[j - 1]
+                stripped = raw.lstrip()
+                if not stripped:
+                    j += 1
+                    continue
+                if comment_mask[j - 1]:
+                    text = cleaned_comments[j - 1]
+                    if text:
+                        ctx.append(text)
+                    j += 1
+                    continue
+                break
+
+            return ctx
+
+        priority_counter = [100]
+
+        def node_text(n) -> str:
+            if n is None:
+                return ""
+            return source_bytes[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
+
+        def make_note(qual: str, start_line_local: int | None = None) -> str:
+            note_lines: List[str] = [f"AST_QUALNAME: {qual}"]
+            if isinstance(start_line_local, int):
+                ctx = _extract_js_ast_comment_context(start_line_local)
+                if ctx:
+                    note_lines.append("")
+                    note_lines.append("CONTEXT COMMENTS (JS/TS):")
+                    note_lines.extend(ctx)
+            return "\n".join(note_lines)
+
+        def _qual(inner_qual: str) -> str:
+            pref = (vue_qual_prefix or "").strip()
+            if pref and not pref.endswith(":"):
+                pref = pref + ":"
+            return f"{pref}{inner_qual}" if pref else inner_qual
+
+        def walk(node, qual_prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+            results: List[Dict[str, Any]] = []
+
+            for child in node.children:
+                t = child.type
+
+                if t == "class_declaration":
+                    name_node = child.child_by_field_name("name")
+                    class_name = node_text(name_node).strip() or "AnonymousClass"
+                    inner = class_name if not qual_prefix else f"{qual_prefix}.{class_name}"
+                    qual = _qual(inner)
+                    start_line_local = child.start_point[0] + 1
+                    end_line_local = child.end_point[0] + 1
+                    start_line_abs = start_line_local + line_offset0
+                    end_line_abs = end_line_local + line_offset0
+
+                    note_text = make_note(qual, start_line_local)
+
+                    class_node: Dict[str, Any] = {
+                        "name": f"{EMOJI_CLASS} class {class_name}",
+                        "priority": priority_counter[0],
+                        "note": note_text,
+                        "children": [],
+                        "ast_type": "class",
+                        "ast_name": class_name,
+                        "ast_qualname": qual,
+                        "file_path": file_path,
+                        "orig_lineno_start_unused": start_line_abs,
+                        "orig_lineno_end_unused": end_line_abs,
+                    }
+                    priority_counter[0] += 100
+
+                    body = child.child_by_field_name("body")
+                    if body is not None:
+                        class_node["children"] = walk(body, qual_prefix=inner)
+
+                    results.append(class_node)
+                    continue
+
+                if t == "function_declaration":
+                    name_node = child.child_by_field_name("name")
+                    func_name = node_text(name_node).strip() or "anonymous"
+                    inner = func_name if not qual_prefix else f"{qual_prefix}.{func_name}"
+                    qual = _qual(inner)
+                    start_line_local = child.start_point[0] + 1
+                    end_line_local = child.end_point[0] + 1
+                    start_line_abs = start_line_local + line_offset0
+                    end_line_abs = end_line_local + line_offset0
+
+                    signature = func_name
+                    params_node = child.child_by_field_name("parameters")
+                    if params_node is not None:
+                        params_text = node_text(params_node).strip()
+                        signature = f"{func_name}{params_text}"
+
+                    note_text = make_note(qual, start_line_local)
+
+                    func_node: Dict[str, Any] = {
+                        "name": f"{EMOJI_FUNC} function {signature}",
+                        "priority": priority_counter[0],
+                        "note": note_text,
+                        "children": [],
+                        "ast_type": "function",
+                        "ast_name": func_name,
+                        "ast_qualname": qual,
+                        "file_path": file_path,
+                        "orig_lineno_start_unused": start_line_abs,
+                        "orig_lineno_end_unused": end_line_abs,
+                    }
+                    priority_counter[0] += 100
+
+                    body = child.child_by_field_name("body")
+                    if body is not None:
+                        func_node["children"] = walk(body, qual_prefix=inner)
+
+                    results.append(func_node)
+                    continue
+
+                if t == "method_definition":
+                    name_node = child.child_by_field_name("name")
+                    method_name = node_text(name_node).strip() or "anonymous"
+                    inner = method_name if not qual_prefix else f"{qual_prefix}.{method_name}"
+                    qual = _qual(inner)
+                    start_line_local = child.start_point[0] + 1
+                    end_line_local = child.end_point[0] + 1
+                    start_line_abs = start_line_local + line_offset0
+                    end_line_abs = end_line_local + line_offset0
+
+                    params_node = child.child_by_field_name("parameters")
+                    signature = method_name
+                    if params_node is not None:
+                        params_text = node_text(params_node).strip()
+                        signature = f"{method_name}{params_text}"
+
+                    note_text = make_note(qual, start_line_local)
+
+                    method_node: Dict[str, Any] = {
+                        "name": f"{EMOJI_FUNC} method {signature}",
+                        "priority": priority_counter[0],
+                        "note": note_text,
+                        "children": [],
+                        "ast_type": "method",
+                        "ast_name": method_name,
+                        "ast_qualname": qual,
+                        "file_path": file_path,
+                        "orig_lineno_start_unused": start_line_abs,
+                        "orig_lineno_end_unused": end_line_abs,
+                    }
+                    priority_counter[0] += 100
+
+                    body = child.child_by_field_name("body")
+                    if body is not None:
+                        method_node["children"] = walk(body, qual_prefix=inner)
+
+                    results.append(method_node)
+                    continue
+
+                if child.children:
+                    results.extend(walk(child, qual_prefix=qual_prefix))
+
+            return results
+
+        return walk(root)
+
+    except Exception as e:  # pragma: no cover
+        return [{
+            "name": "⚠️ Parse Error (VUE script JS/TS)",
+            "note": str(e),
+            "children": [],
+        }]
+
+
+def parse_vue_outline(file_path: str) -> List[Dict[str, Any]]:
+    """Parse a Vue SFC (.vue) file into deterministic section subnodes.
+
+    Structure:
+      - ⦿ <template ...>  (span beacons only, MVP)
+      - ⦿ <script ...> / <script setup ...> (AST + span beacons)
+      - ⦿ <style ...> (span beacons only, MVP)
+
+    Script AST nodes are built by running the existing JS/TS outline builder
+    against the extracted script raw_text, then rebasing line numbers back
+    into the .vue file.
+    """
+    if not _HAVE_TREE_SITTER:
+        return [{
+            "name": "⚠️ Vue parsing not available",
+            "note": (
+                "Tree-sitter / tree_sitter_language_pack could not be imported. "
+                "Install 'tree_sitter' and 'tree_sitter-language-pack' "
+                "in the Windows Python environment to enable .vue Cartographer support."
+            ),
+            "children": [],
+        }]
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            source_text = f.read()
+    except Exception as e:  # noqa: BLE001
+        return [{
+            "name": "⚠️ Parse Error (VUE)",
+            "note": f"failed_to_read_file: {e}",
+            "children": [],
+        }]
+
+    source_bytes = source_text.encode("utf-8")
+    file_lines = source_text.splitlines()
+
+    try:
+        parser = Parser()
+        parser.language = get_language("vue")  # type: ignore[operator]
+        tree = parser.parse(source_bytes)
+        root = tree.root_node
+    except Exception as e:  # pragma: no cover
+        return [{
+            "name": "⚠️ Parse Error (VUE)",
+            "note": str(e),
+            "children": [],
+        }]
+
+    # Collect top-level SFC blocks in order of appearance.
+    blocks: list[dict[str, Any]] = []
+    for ch in root.children:
+        if ch.type not in {"template_element", "script_element", "style_element"}:
+            continue
+
+        start_tag = None
+        raw_text = None
+        end_tag = None
+        for c2 in ch.children:
+            if c2.type == "start_tag":
+                start_tag = c2
+            elif c2.type == "raw_text":
+                raw_text = c2
+            elif c2.type == "end_tag":
+                end_tag = c2
+
+        if start_tag is None:
+            continue
+
+        start_tag_text = source_bytes[start_tag.start_byte:start_tag.end_byte].decode("utf-8", errors="ignore")
+        start_tag_compact = _vue_compact_start_tag_text(start_tag_text)
+
+        # Extract content bytes.
+        if raw_text is not None:
+            # script/style blocks: raw_text is present.
+            content_row0 = int(raw_text.start_point[0])
+            content_text = source_bytes[raw_text.start_byte:raw_text.end_byte].decode("utf-8", errors="ignore")
+        else:
+            # template blocks: Vue grammar expands inner HTML into child nodes.
+            if end_tag is None:
+                continue
+            content_row0 = int(start_tag.end_point[0])
+            content_text = source_bytes[start_tag.end_byte:end_tag.start_byte].decode("utf-8", errors="ignore")
+
+        blocks.append({
+            "type": ch.type,
+            "start_tag": start_tag_compact,
+            "content_row0": content_row0,
+            "raw_text": content_text,
+        })
+
+    # Build section nodes.
+    out_nodes: list[dict[str, Any]] = []
+    priority = 100
+
+    script_ix = 0
+    style_ix = 0
+
+    for blk in blocks:
+        btype = blk.get("type")
+        start_tag_compact = str(blk.get("start_tag") or "").strip() or "<unknown>"
+        raw_text_str = str(blk.get("raw_text") or "")
+        content_row0 = int(blk.get("content_row0") or 0)
+
+        # Section node
+        section_name = f"⦿ {start_tag_compact}"
+        section_note_lines = [
+            f"VUE_SECTION: {btype}",
+            f"VUE_CONTENT_ROW0: {content_row0}",
+        ]
+
+        section_children: list[dict[str, Any]] = []
+
+        if btype == "template_element":
+            # Template: HTML-comment beacons (Markdown-style) as SPAN nodes.
+            try:
+                local_lines = raw_text_str.splitlines()
+                beacons_local = parse_markdown_beacon_blocks(local_lines)
+                beacons_abs = _vue_rebase_beacons(beacons_local, content_row0)
+            except Exception:
+                beacons_abs = []
+
+            for b in beacons_abs:
+                if (b.get("kind") or "").strip().lower() != "span":
+                    continue
+                bid = (b.get("id") or "").strip()
+                role = (b.get("role") or "").strip() or (bid.split("@", 1)[0] if "@" in bid else "")
+                slice_labels = _canonicalize_slice_labels((b.get("slice_labels") or "").strip(), role)
+                show_span, show_span_explicit = _beacon_show_span(b)
+
+                tag_suffix = _slice_label_tags(slice_labels)
+                name = f"🔱 {role or bid or 'vue-template-span'}"
+                if tag_suffix:
+                    name = f"{name} {tag_suffix}"
+
+                note_lines = [
+                    "BEACON (VUE TEMPLATE SPAN)",
+                    f"id: {bid}",
+                    f"role: {role}",
+                    f"slice_labels: {slice_labels}",
+                    "kind: span",
+                ]
+                if show_span_explicit:
+                    note_lines.append(f"show_span: {'true' if show_span else 'false'}")
+                comment = b.get("comment")
+                if comment:
+                    note_lines.append(f"comment: {comment}")
+
+                span_node = {"name": name, "note": "\n".join(note_lines), "children": []}
+                section_children.append(span_node)
+
+        elif btype == "script_element":
+            # Determine language for this script block (ts/tsx vs js).
+            lang = "javascript"
+            start_tag_low = start_tag_compact.lower()
+            if "lang=\"ts\"" in start_tag_low or "lang='ts'" in start_tag_low or "lang=ts" in start_tag_low:
+                lang = "typescript"
+            if "lang=\"tsx\"" in start_tag_low or "lang='tsx'" in start_tag_low or "lang=tsx" in start_tag_low:
+                lang = "tsx"
+
+            vue_prefix = f"vue:script{script_ix}"
+            section_note_lines.append(f"VUE_SCRIPT_INDEX: {script_ix}")
+            section_note_lines.append(f"VUE_SCRIPT_LANG: {lang}")
+
+            outline_nodes = _parse_js_ts_outline_from_source(
+                source_text=raw_text_str,
+                file_path=file_path,
+                language_name=lang,
+                line_offset0=content_row0,
+                vue_qual_prefix=vue_prefix,
+            )
+
+            # Attach JS/TS beacons inside this script block.
+            try:
+                local_lines = raw_text_str.splitlines()
+                beacons_local = parse_js_beacon_blocks(local_lines)
+                beacons_abs = _vue_rebase_beacons(beacons_local, content_row0)
+                apply_js_beacons(file_path, file_lines, outline_nodes, beacons_abs)
+            except Exception:
+                pass
+
+            section_children.extend(outline_nodes)
+            script_ix += 1
+
+        elif btype == "style_element":
+            section_note_lines.append(f"VUE_STYLE_INDEX: {style_ix}")
+
+            # Style: CSS comment beacons (block-comment syntax) treated as span-only.
+            try:
+                local_lines = raw_text_str.splitlines()
+                beacons_local = parse_js_beacon_blocks(local_lines)
+                beacons_abs = _vue_rebase_beacons(beacons_local, content_row0)
+            except Exception:
+                beacons_abs = []
+
+            for b in beacons_abs:
+                if (b.get("kind") or "").strip().lower() != "span":
+                    continue
+                bid = (b.get("id") or "").strip()
+                role = (b.get("role") or "").strip() or (bid.split("@", 1)[0] if "@" in bid else "")
+                slice_labels = _canonicalize_slice_labels((b.get("slice_labels") or "").strip(), role)
+                show_span, show_span_explicit = _beacon_show_span(b)
+
+                tag_suffix = _slice_label_tags(slice_labels)
+                name = f"🔱 {role or bid or 'vue-style-span'}"
+                if tag_suffix:
+                    name = f"{name} {tag_suffix}"
+
+                note_lines = [
+                    "BEACON (VUE STYLE SPAN)",
+                    f"id: {bid}",
+                    f"role: {role}",
+                    f"slice_labels: {slice_labels}",
+                    "kind: span",
+                ]
+                if show_span_explicit:
+                    note_lines.append(f"show_span: {'true' if show_span else 'false'}")
+                comment = b.get("comment")
+                if comment:
+                    note_lines.append(f"comment: {comment}")
+
+                span_node = {"name": name, "note": "\n".join(note_lines), "children": []}
+                section_children.append(span_node)
+
+            style_ix += 1
+
+        # Default: section node
+        out_nodes.append(
+            {
+                "name": section_name,
+                "priority": priority,
+                "note": "\n".join(section_note_lines),
+                "children": section_children,
+            }
+        )
+        priority += 100
+
+    return out_nodes
+
+
 # @beacon[
 #   id=carto-js-ts@map_codebase,
 #   role=carto-js-ts,
@@ -3401,6 +3955,10 @@ def map_codebase(
                         icon = EMOJI_TS
                         children = parse_js_ts_outline(full_path)
                         line_count = _get_line_count(full_path)
+                    elif ext == '.vue':
+                        icon = EMOJI_VUE
+                        children = parse_vue_outline(full_path)
+                        line_count = _get_line_count(full_path)
                     elif ext == '.sql':
                         icon = EMOJI_SQL
                         with open(full_path, 'r', encoding='utf-8') as f:
@@ -3473,6 +4031,15 @@ def map_codebase(
             note = format_file_note(root_path, line_count=lc, repo_root=repo_root_for_notes)
             return {
                 "name": f"{EMOJI_TS} {os.path.basename(root_path)}",
+                "note": note,
+                "children": children,
+            }
+        elif ext == '.vue':
+            children = parse_vue_outline(root_path)
+            lc = _get_line_count(root_path)
+            note = format_file_note(root_path, line_count=lc, repo_root=repo_root_for_notes)
+            return {
+                "name": f"{EMOJI_VUE} {os.path.basename(root_path)}",
                 "note": note,
                 "children": children,
             }
@@ -6212,6 +6779,482 @@ def update_beacon_from_node_js_ts(
             }
         )
         return result
+
+    return result
+
+
+def update_beacon_from_node_vue(
+    file_path: str,
+    name: str,
+    note: str,
+) -> Dict[str, Any]:
+    """Update/create/delete Vue (.vue) @beacon[...] blocks for a single node.
+
+    MVP behavior:
+    - Script blocks: supports AST + SPAN beacons (JS/TS syntax inside <script>).\
+      AST anchoring uses AST_QUALNAME with a vue:script{N}: prefix.
+    - Template blocks: SPAN beacons only (HTML comment syntax).
+    - Style blocks: SPAN beacons only (/* ... */ syntax).
+
+    This helper performs on-disk edits ONLY.
+    """
+    base_name, tags = split_name_and_tags(name)
+    beacon_id = _extract_beacon_id_from_note(note)
+    ast_qualname = _extract_ast_qualname_from_note(note)
+
+    result: Dict[str, Any] = {
+        "language": "vue",
+        "file_path": file_path,
+        "base_name": base_name,
+        "tags": tags,
+        "beacon_id": beacon_id,
+        "ast_qualname": ast_qualname,
+        "operation": "noop",
+    }
+
+    if not _HAVE_TREE_SITTER:
+        result["error"] = "tree_sitter_not_available"
+        return result
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            source_text = f.read()
+        lines = source_text.splitlines()
+    except Exception as e:  # noqa: BLE001
+        result["error"] = f"failed_to_read_file: {e}"
+        return result
+
+    # Extract blocks with basic range metadata.
+    source_bytes = source_text.encode("utf-8")
+    try:
+        parser = Parser(); parser.language = get_language("vue")  # type: ignore[operator]
+        tree = parser.parse(source_bytes)
+        root = tree.root_node
+    except Exception as e:  # noqa: BLE001
+        result["error"] = f"failed_to_parse_vue: {e}"
+        return result
+
+    blocks: list[dict[str, Any]] = []
+    for ch in root.children:
+        if ch.type not in {"template_element", "script_element", "style_element"}:
+            continue
+        start_tag = None
+        raw_text = None
+        end_tag = None
+        for c2 in ch.children:
+            if c2.type == "start_tag":
+                start_tag = c2
+            elif c2.type == "raw_text":
+                raw_text = c2
+            elif c2.type == "end_tag":
+                end_tag = c2
+        if start_tag is None:
+            continue
+
+        start_tag_text = source_bytes[start_tag.start_byte:start_tag.end_byte].decode("utf-8", errors="ignore")
+        start_tag_compact = _vue_compact_start_tag_text(start_tag_text)
+
+        if raw_text is not None:
+            content_row0 = int(raw_text.start_point[0])
+            content_text = source_bytes[raw_text.start_byte:raw_text.end_byte].decode("utf-8", errors="ignore")
+            block_row1 = int(end_tag.end_point[0]) if end_tag is not None else int(raw_text.end_point[0])
+        else:
+            if end_tag is None:
+                continue
+            content_row0 = int(start_tag.end_point[0])
+            content_text = source_bytes[start_tag.end_byte:end_tag.start_byte].decode("utf-8", errors="ignore")
+            block_row1 = int(end_tag.end_point[0])
+
+        blocks.append({
+            "type": ch.type,
+            "start_tag": start_tag_compact,
+            "content_row0": content_row0,
+            "raw_text": content_text,
+            "block_row0": int(start_tag.start_point[0]),
+            "block_row1": block_row1,
+        })
+
+    # Determine which block we're targeting.
+    # Prefer explicit AST_QUALNAME prefix for scripts.
+    target_script_ix: int | None = None
+    if isinstance(ast_qualname, str) and ast_qualname.startswith("vue:script"):
+        try:
+            rest = ast_qualname[len("vue:script") :]
+            ix_str = rest.split(":", 1)[0]
+            target_script_ix = int(ix_str)
+        except Exception:
+            target_script_ix = None
+
+    # If we have a note beacon id but no AST_QUALNAME, we don't know which section;
+    # we fall back to searching the whole file for the id.
+
+    def _write_lines(new_lines: list[str]) -> bool:
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(new_lines) + "\n")
+            return True
+        except Exception as e:  # noqa: BLE001
+            result["error"] = f"failed_to_write_file: {e}"
+            return False
+
+    # ------------------------------
+    # Helper: update an existing beacon block by id within a window.
+    # ------------------------------
+    def _update_block_in_window(
+        *,
+        window_lo: int,
+        window_hi: int,
+        comment_style: str,
+        bid: str,
+        role: str,
+        slice_labels: str,
+        kind: str,
+        show_span: Optional[bool],
+        comment_text: Optional[str],
+    ) -> bool:
+        """Update first matching @beacon[ id=...] block in [window_lo,window_hi] (1-based inclusive)."""
+
+        # Find start line containing '@beacon['
+        start_idx: int | None = None
+        end_idx: int | None = None
+        for i in range(max(1, window_lo), min(len(lines), window_hi) + 1):
+            if "@beacon[" not in lines[i - 1]:
+                continue
+            # scan forward to the ']' terminator line
+            j = i
+            while j <= min(len(lines), window_hi):
+                if "]" in lines[j - 1]:
+                    break
+                j += 1
+            if j > min(len(lines), window_hi):
+                continue
+
+            block_text = "\n".join(lines[i - 1 : j])
+            if f"id={bid}" not in block_text and f"id: {bid}" not in block_text:
+                continue
+            start_idx = i - 1
+            end_idx = j - 1
+            break
+
+        if start_idx is None or end_idx is None:
+            return False
+
+        if comment_style == "js_line":
+            new_block = [
+                "// @beacon[",
+                f"//   id={bid},",
+            ]
+            if role:
+                new_block.append(f"//   role={role},")
+            if slice_labels:
+                new_block.append(f"//   slice_labels={slice_labels},")
+            if kind:
+                new_block.append(f"//   kind={kind},")
+            if show_span is not None:
+                new_block.append(f"//   show_span={'true' if show_span else 'false'},")
+            if comment_text:
+                new_block.append(f"//   comment={comment_text},")
+            new_block.append("// ]")
+        elif comment_style == "html":
+            new_block = [
+                "<!--",
+                "@beacon[",
+                f"  id={bid},",
+            ]
+            if role:
+                new_block.append(f"  role={role},")
+            if slice_labels:
+                new_block.append(f"  slice_labels={slice_labels},")
+            if kind:
+                new_block.append(f"  kind={kind},")
+            if show_span is not None:
+                new_block.append(f"  show_span={'true' if show_span else 'false'},")
+            if comment_text:
+                new_block.append(f"  comment={comment_text},")
+            new_block.append("]")
+            new_block.append("-->")
+        else:  # css_block
+            new_block = [
+                "/* @beacon[",
+                f"   id={bid},",
+            ]
+            if role:
+                new_block.append(f"   role={role},")
+            if slice_labels:
+                new_block.append(f"   slice_labels={slice_labels},")
+            if kind:
+                new_block.append(f"   kind={kind},")
+            if show_span is not None:
+                new_block.append(f"   show_span={'true' if show_span else 'false'},")
+            if comment_text:
+                new_block.append(f"   comment={comment_text},")
+            new_block.append("] */")
+
+        new_block = _indent_beacon_block(new_block, lines, start_idx)
+        new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
+        return _write_lines(new_lines)
+
+    # ------------------------------
+    # Case 1: Update/create based on explicit beacon_id in note
+    # ------------------------------
+    if beacon_id:
+        role_val: str | None = None
+        comment_val: str | None = None
+        kind_val: str = "ast"
+        for ln in (note or "").splitlines():
+            s = ln.strip()
+            if s.startswith("role:"):
+                role_val = s.split(":", 1)[1].strip()
+            elif s.startswith("comment:"):
+                comment_val = s.split(":", 1)[1].strip()
+            elif s.startswith("kind:"):
+                kv = s.split(":", 1)[1].strip().lower()
+                if kv in {"ast", "span"}:
+                    kind_val = kv
+
+        show_span_note = _extract_show_span_from_note(note)
+
+        extra_label_tokens = [t.lstrip("#") for t in tags]
+        slice_labels_canon = (
+            _canonicalize_slice_labels(",".join(extra_label_tokens), None)
+            if extra_label_tokens
+            else ""
+        )
+
+        role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+
+        # Try script blocks first (JS line comment). If target_script_ix is known,
+        # restrict to that script block; else try all scripts.
+        script_blocks = [b for b in blocks if b.get("type") == "script_element"]
+        if target_script_ix is not None and 0 <= target_script_ix < len(script_blocks):
+            script_blocks = [script_blocks[target_script_ix]]
+
+        for sb in script_blocks:
+            lo = int(sb.get("block_row0") or 0) + 1
+            hi = int(sb.get("block_row1") or 0) + 1
+            if _update_block_in_window(
+                window_lo=lo,
+                window_hi=hi,
+                comment_style="js_line",
+                bid=beacon_id,
+                role=role_display,
+                slice_labels=slice_labels_canon,
+                kind=kind_val,
+                show_span=show_span_note,
+                comment_text=comment_val,
+            ):
+                # For script blocks, reuse JS/TS cache note semantics.
+                result["language"] = "js_ts"
+                result.update({
+                    "operation": "updated_beacon",
+                    "role": role_display,
+                    "slice_labels": slice_labels_canon,
+                    "comment": comment_val,
+                })
+                return result
+
+        # Template blocks (HTML comments)
+        for tb in [b for b in blocks if b.get("type") == "template_element"]:
+            lo = int(tb.get("block_row0") or 0) + 1
+            hi = int(tb.get("block_row1") or 0) + 1
+            if _update_block_in_window(
+                window_lo=lo,
+                window_hi=hi,
+                comment_style="html",
+                bid=beacon_id,
+                role=role_display,
+                slice_labels=slice_labels_canon,
+                kind="span",
+                show_span=show_span_note,
+                comment_text=comment_val,
+            ):
+                result.update({
+                    "operation": "updated_beacon",
+                    "role": role_display,
+                    "slice_labels": slice_labels_canon,
+                    "comment": comment_val,
+                })
+                return result
+
+        # Style blocks (CSS block comments)
+        for sb in [b for b in blocks if b.get("type") == "style_element"]:
+            lo = int(sb.get("block_row0") or 0) + 1
+            hi = int(sb.get("block_row1") or 0) + 1
+            if _update_block_in_window(
+                window_lo=lo,
+                window_hi=hi,
+                comment_style="css_block",
+                bid=beacon_id,
+                role=role_display,
+                slice_labels=slice_labels_canon,
+                kind="span",
+                show_span=show_span_note,
+                comment_text=comment_val,
+            ):
+                result.update({
+                    "operation": "updated_beacon",
+                    "role": role_display,
+                    "slice_labels": slice_labels_canon,
+                    "comment": comment_val,
+                })
+                return result
+
+        # If not found, fall back to "create" for scripts when AST_QUALNAME is present.
+        if ast_qualname and target_script_ix is not None and target_script_ix < len([b for b in blocks if b.get("type") == "script_element"]):
+            # handled by create-from-ast path below
+            pass
+        else:
+            result.update({"operation": "noop", "error": "beacon_id_not_found_on_disk"})
+            return result
+
+    # ------------------------------
+    # Case 2: Create from AST_QUALNAME + tags (script AST only)
+    # ------------------------------
+    if ast_qualname and tags:
+        if target_script_ix is None:
+            # best-effort: default to first script
+            target_script_ix = 0
+
+        script_blocks_all = [b for b in blocks if b.get("type") == "script_element"]
+        if not script_blocks_all or target_script_ix < 0 or target_script_ix >= len(script_blocks_all):
+            result["error"] = "no_script_block_found"
+            return result
+
+        sb = script_blocks_all[target_script_ix]
+        start_tag_compact = str(sb.get("start_tag") or "").strip().lower()
+        lang = "javascript"
+        if "lang=\"ts\"" in start_tag_compact or "lang='ts'" in start_tag_compact or "lang=ts" in start_tag_compact:
+            lang = "typescript"
+        if "lang=\"tsx\"" in start_tag_compact or "lang='tsx'" in start_tag_compact or "lang=tsx" in start_tag_compact:
+            lang = "tsx"
+
+        content_row0 = int(sb.get("content_row0") or 0)
+        raw_text_str = str(sb.get("raw_text") or "")
+
+        # Ensure our vue prefix exists for matching.
+        vue_prefix = f"vue:script{target_script_ix}"
+
+        outline_nodes = _parse_js_ts_outline_from_source(
+            source_text=raw_text_str,
+            file_path=file_path,
+            language_name=lang,
+            line_offset0=content_row0,
+            vue_qual_prefix=vue_prefix,
+        )
+
+        # Find target AST node line
+        target_line: Optional[int] = None
+        for n in _iter_ast_outline_nodes(outline_nodes):
+            if n.get("ast_qualname") == ast_qualname:
+                ln = n.get("orig_lineno_start_unused")
+                if isinstance(ln, int) and ln > 0:
+                    target_line = ln
+                    break
+
+        if not isinstance(target_line, int):
+            result["error"] = "ast_qualname_not_found_in_script"
+            return result
+
+        # Build synthetic id
+        hash_suffix = _generate_auto_beacon_hash()
+        simple_id = f"auto-beacon@{ast_qualname}-{hash_suffix}"
+        role_display = ast_qualname
+
+        extra_label_tokens = [t.lstrip("#") for t in tags]
+        slice_labels_canon = (
+            _canonicalize_slice_labels(",".join(extra_label_tokens), None)
+            if extra_label_tokens
+            else ""
+        )
+
+        insert_idx = target_line - 1
+        new_block = [
+            "// @beacon[",
+            f"//   id={simple_id},",
+        ]
+        if role_display:
+            new_block.append(f"//   role={role_display},")
+        if slice_labels_canon:
+            new_block.append(f"//   slice_labels={slice_labels_canon},")
+        new_block.append("//   kind=ast,")
+        new_block.append("// ]")
+        new_block = _indent_beacon_block(new_block, lines, insert_idx)
+        new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
+
+        if not _write_lines(new_lines):
+            return result
+
+        # For script blocks, reuse JS/TS cache note semantics.
+        result["language"] = "js_ts"
+        result.update({
+            "operation": "created_beacon",
+            "beacon_id": simple_id,
+            "role": role_display,
+            "slice_labels": slice_labels_canon,
+        })
+        return result
+
+    # ------------------------------
+    # Case 3: Delete existing beacon when AST_QUALNAME present but note has no BEACON metadata and no tags.
+    # ------------------------------
+    if ast_qualname and not tags and not beacon_id:
+        # Use the current Cartographer mapping to find the beacon id, then delete it.
+        try:
+            outline = parse_vue_outline(file_path)
+        except Exception:
+            outline = []
+
+        # Find matching script node
+        found_id: str | None = None
+        def _iter(nodes):
+            for n in nodes or []:
+                if isinstance(n, dict):
+                    yield n
+                    for ch in n.get("children") or []:
+                        yield from _iter([ch])
+
+        for n in _iter(outline):
+            if n.get("ast_qualname") != ast_qualname:
+                continue
+            nn = str(n.get("note") or "")
+            if "BEACON (JS/TS AST)" not in nn:
+                continue
+            for line in nn.splitlines():
+                s = line.strip()
+                if s.startswith("id:"):
+                    found_id = s.split(":", 1)[1].strip()
+                    break
+            if found_id:
+                break
+
+        if not found_id:
+            return result
+
+        # Delete by removing the first matching block containing id=found_id.
+        # Best-effort: scan entire file.
+        for i in range(1, len(lines) + 1):
+            if "@beacon[" not in lines[i - 1]:
+                continue
+            j = i
+            while j <= len(lines):
+                if "]" in lines[j - 1]:
+                    break
+                j += 1
+            if j > len(lines):
+                continue
+            block_text = "\n".join(lines[i - 1 : j])
+            if f"id={found_id}" not in block_text:
+                continue
+            new_lines = lines[: i - 1] + lines[j:]
+            if not _write_lines(new_lines):
+                return result
+            result.update({
+                "operation": "deleted_beacon",
+                "beacon_id": found_id,
+                "role": ast_qualname,
+                "slice_labels": "",
+            })
+            return result
 
     return result
 
