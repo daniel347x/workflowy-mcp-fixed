@@ -778,6 +778,9 @@ def apply_markdown_beacons(
         # Only auto-promote when the user did not explicitly specify kind.
         if beacon.get("kind_explicit"):
             continue
+        # Never auto-promote an explicit span region (paired opener/closer).
+        if isinstance(beacon.get("span_lineno_end"), int):
+            continue
         comment_line = beacon.get("comment_line") or 0
         if not isinstance(comment_line, int) or comment_line <= 0:
             continue
@@ -2410,9 +2413,14 @@ def apply_python_beacons(
 
     # Pre-pass: for snippet-less span beacons, compute anchor lineno and
     # auto-upgrade to AST when the anchor is a clean class/function/async start.
+    #
+    # IMPORTANT RULE (mirrors JS/TS): do NOT auto-upgrade an explicit span
+    # region (paired opener/closer), indicated by span_lineno_end.
     for beacon in beacons:
         kind = beacon.get("kind")
         start_snippet = beacon.get("start_snippet")
+        if kind != "span":
+            continue
         if not start_snippet:
             comment_line = beacon.get("comment_line") or 0
             if isinstance(comment_line, int) and comment_line > 0:
@@ -2422,6 +2430,10 @@ def apply_python_beacons(
             if anchor is None:
                 continue
             beacon["_anchor_lineno"] = anchor
+
+            # Never auto-upgrade a paired span region.
+            if isinstance(beacon.get("span_lineno_end"), int):
+                continue
 
             # See if this line is exactly the start of a class/function/async
             # AST node. If so, we treat this beacon as an AST beacon by default.
