@@ -3237,6 +3237,57 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                     results.append(method_node)
                     continue
 
+                # Top-level const/let/var declarations (common in real-world "flat" modules).
+                #
+                # Why top-level only?
+                # - Prevent outline noise explosion.
+                # - Primary goal is to make modules like router/index.ts navigable.
+                #
+                # We emit a node for each simple identifier declarator:
+                #   const router = createRouter(...)
+                #   const foo = () => { ... }
+                #   let bar = 1
+                if t in {"lexical_declaration", "variable_declaration"} and not qual_prefix:
+                    decl_text = node_text(child).lstrip()
+                    decl_kind = (decl_text.split(None, 1)[0] if decl_text else "const").strip()
+                    if decl_kind not in {"const", "let", "var"}:
+                        decl_kind = "const"
+
+                    for decl_child in child.children:
+                        if decl_child.type != "variable_declarator":
+                            continue
+                        name_node = decl_child.child_by_field_name("name")
+                        if name_node is None:
+                            continue
+                        # Skip destructuring patterns (object_pattern/array_pattern)
+                        if getattr(name_node, "type", None) != "identifier":
+                            continue
+                        var_name = node_text(name_node).strip()
+                        if not var_name:
+                            continue
+
+                        qual = var_name
+                        start_line = decl_child.start_point[0] + 1
+                        end_line = decl_child.end_point[0] + 1
+                        note_text = make_note(qual, start_line)
+
+                        node_dict: Dict[str, Any] = {
+                            "name": f"{EMOJI_FUNC} {decl_kind} {var_name}",
+                            "priority": priority_counter[0],
+                            "note": note_text,
+                            "children": [],
+                            "ast_type": f"{decl_kind}_decl",
+                            "ast_name": var_name,
+                            "ast_qualname": qual,
+                            "file_path": file_path,
+                            "orig_lineno_start_unused": start_line,
+                            "orig_lineno_end_unused": end_line,
+                        }
+                        priority_counter[0] += 100
+                        results.append(node_dict)
+
+                    continue
+
                 # Recurse into other nodes to discover nested declarations
                 if child.children:
                     results.extend(walk(child, qual_prefix=qual_prefix))
