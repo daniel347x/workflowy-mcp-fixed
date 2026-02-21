@@ -2369,6 +2369,24 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 core = core[:paren].strip()
             return core
 
+        # Build symbol variants for robust matching.
+        #
+        # Example:
+        #   symbol="class WorkFlowyNode" should match AST_QUALNAME="WorkFlowyNode".
+        symbol_norm = _normalize_node_name(symbol)
+        symbol_tail = symbol.split()[-1].strip() if symbol.split() else ""
+        if symbol_tail:
+            # Strip parameters and common trailing punctuation.
+            if "(" in symbol_tail:
+                symbol_tail = symbol_tail.split("(", 1)[0].strip()
+            symbol_tail = symbol_tail.strip(":,;{}[]")
+
+        symbol_variants: list[str] = []
+        for v in (symbol, symbol_norm, symbol_tail):
+            vv = (v or "").strip()
+            if vv and vv not in symbol_variants:
+                symbol_variants.append(vv)
+
         # Buckets for matches by strategy.
         node_to_file_path: dict[str, str] = {}
         beacon_hits: set[str] = set()
@@ -2410,20 +2428,17 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
                 if use_beacon:
                     beacon_id_val, role_val = _extract_beacon_fields(note_str)
-                    if beacon_id_val == symbol or role_val == symbol:
+                    if (beacon_id_val and beacon_id_val in symbol_variants) or (
+                        role_val and role_val in symbol_variants
+                    ):
                         _record_hit(node, owner_path_for_record, "beacon")
 
                 if use_ast:
                     ast_q = _extract_ast_qualname(note_str)
                     if ast_q:
-                        # If symbol includes a dot, treat it as a full AST_QUALNAME
-                        # and require exact equality. If it has no dot, treat it
-                        # as a short name and match against the final segment of
-                        # the qualname. This lets callers use either
-                        # "WorkFlowyClientNexus.read_text_snippet_by_symbol" or
-                        # just "read_text_snippet_by_symbol" (with
-                        # symbol_kind="ast") while still surfacing ambiguities
-                        # when multiple matches exist.
+                        # If the caller provided a qualified name (contains '.' or ':'),
+                        # require exact equality. Otherwise match against the final
+                        # segment of the qualname.
                         def _short_ast_name(q: str) -> str:
                             # Python: WorkFlowyClientNexus.read_text_snippet_by_symbol
                             # Vue:    vue:script0:updateScrollState
@@ -2435,30 +2450,34 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 s = s.rsplit(".", 1)[-1]
                             return s
 
-                        # If the caller provided a qualified name (contains '.' or ':'),
-                        # require exact equality.
-                        if "." in symbol or ":" in symbol:
-                            if ast_q == symbol:
-                                _record_hit(node, owner_path, "ast")
-                        else:
-                            # Unqualified: match against the final segment.
-                            if _short_ast_name(ast_q) == symbol:
-                                _record_hit(node, owner_path, "ast")
+                        short = _short_ast_name(ast_q)
+                        matched = False
+                        for v in symbol_variants:
+                            if not v:
+                                continue
+                            if "." in v or ":" in v:
+                                if ast_q == v:
+                                    matched = True
+                                    break
+                            else:
+                                if short == v:
+                                    matched = True
+                                    break
+                        if matched:
+                            _record_hit(node, owner_path_for_record, "ast")
 
                 if use_name:
                     norm_name = _normalize_node_name(node.get("name"))
                     if norm_name:
-                        if norm_name == symbol:
-                            _record_hit(node, owner_path, "name")
+                        if norm_name in symbol_variants:
+                            _record_hit(node, owner_path_for_record, "name")
                         else:
-                            # Convenience: allow resolving FILE nodes by an extensionless
-                            # filename (e.g. "SampleTile" resolves "SampleTile.vue"),
-                            # as long as the match is unambiguous.
+                            # Convenience: allow resolving FILE nodes by filename/stem.
                             hdr = _extract_path_header_from_note(note_str)
                             if hdr and hdr[0] == "Path":
                                 hdr_base = os.path.basename(_normalize_note_path(hdr[1]))
-                                if Path(hdr_base).stem == symbol:
-                                    _record_hit(node, owner_path, "name")
+                                if hdr_base in symbol_variants or Path(hdr_base).stem in symbol_variants:
+                                    _record_hit(node, owner_path_for_record, "name")
 
         # 6) Compute union of hits across enabled strategies and enforce uniqueness.
         active_sets: list[set[str]] = []
