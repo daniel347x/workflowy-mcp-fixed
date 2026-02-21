@@ -924,7 +924,12 @@ class WorkFlowyClientCore:
             }
 
     async def create_node(
-        self, request: NodeCreateRequest, _internal_call: bool = False, max_retries: int = 10
+        self,
+        request: NodeCreateRequest,
+        _internal_call: bool = False,
+        max_retries: int = 10,
+        *,
+        fetch_created_node: bool = True,
     ) -> WorkFlowyNode:
         """Create a new node in WorkFlowy with exponential backoff retry.
         
@@ -941,6 +946,7 @@ class WorkFlowyClientCore:
             cache.
         """
         import asyncio
+        import time
 
         logger = _ClientLogger()
 
@@ -1011,17 +1017,84 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
             await asyncio.sleep(API_RATE_LIMIT_DELAY)
 
             try:
-                response = await self.client.post("/nodes/", json=request.model_dump(exclude_none=True))
+                name_for_log = getattr(request, "name", None)
+                parent_for_log = getattr(request, "parent_id", None)
+
+                # POST /nodes/
+                #
+                # We run this in an asyncio Task so we can emit periodic "still waiting"
+                # logs. This prevents apparent "hangs" when Workflowy stalls a single call.
+                t0_post = time.monotonic()
+                post_task = asyncio.create_task(
+                    self.client.post(
+                        "/nodes/", json=request.model_dump(exclude_none=True)
+                    )
+                )
+                while True:
+                    try:
+                        response = await asyncio.wait_for(post_task, timeout=10.0)
+                        break
+                    except asyncio.TimeoutError:
+                        elapsed = time.monotonic() - t0_post
+                        logger.warning(
+                            "create_node[POST]: still waiting "
+                            f"elapsed={elapsed:.1f}s name={name_for_log!r} parent={parent_for_log!r}"
+                        )
+
+                post_dt = time.monotonic() - t0_post
+                if post_dt >= 1.0:
+                    logger.warning(
+                        "create_node[POST]: completed "
+                        f"elapsed={post_dt:.2f}s status={getattr(response, 'status_code', None)} "
+                        f"name={name_for_log!r} parent={parent_for_log!r}"
+                    )
+
                 data = await self._handle_response(response)
                 # Create endpoint returns just {"item_id": "..."}
                 item_id = data.get("item_id")
                 if not item_id:
                     raise NetworkError(f"Invalid response from create endpoint: {data}")
 
-                # Fetch the created node to get actual saved state (including note field)
-                get_response = await self.client.get(f"/nodes/{item_id}")
-                node_data = await self._handle_response(get_response)
-                node = WorkFlowyNode(**node_data["node"])
+                # Optional GET /nodes/{id}
+                #
+                # For many bulk create paths (F12/WEAVE) we don't *need* a round-trip
+                # to fetch the canonical node, and doing so doubles API calls and can
+                # create the appearance of a hang if Workflowy stalls a single request.
+                if fetch_created_node:
+                    t0_get = time.monotonic()
+                    get_task = asyncio.create_task(self.client.get(f"/nodes/{item_id}"))
+                    while True:
+                        try:
+                            get_response = await asyncio.wait_for(get_task, timeout=10.0)
+                            break
+                        except asyncio.TimeoutError:
+                            elapsed = time.monotonic() - t0_get
+                            logger.warning(
+                                "create_node[GET]: still waiting "
+                                f"elapsed={elapsed:.1f}s id={item_id!r} name={name_for_log!r}"
+                            )
+
+                    get_dt = time.monotonic() - t0_get
+                    if get_dt >= 1.0:
+                        logger.warning(
+                            "create_node[GET]: completed "
+                            f"elapsed={get_dt:.2f}s status={getattr(get_response, 'status_code', None)} "
+                            f"id={item_id!r} name={name_for_log!r}"
+                        )
+
+                    node_data = await self._handle_response(get_response)
+                    node = WorkFlowyNode(**node_data["node"])
+                else:
+                    # Best-effort local node reconstruction (sufficient for cache patching).
+                    node = WorkFlowyNode(
+                        id=str(item_id),
+                        name=getattr(request, "name", None),
+                        note=getattr(request, "note", None),
+                        parent_id=getattr(request, "parent_id", None),
+                        data={"layoutMode": getattr(request, "layoutMode", None)}
+                        if getattr(request, "layoutMode", None)
+                        else None,
+                    )
 
                 # Best-effort: eagerly maintain the /nodes-export cache when present.
                 try:

@@ -3623,7 +3623,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 position='bottom'
             )
             _log_to_file_helper(f"WEAVE CREATE: {data.get('name')}", "reconcile")
-            node = await self.create_node(request, _internal_call=True)
+            node = await self.create_node(
+                request,
+                _internal_call=True,
+                fetch_created_node=False,
+            )
             stats["api_calls"] += 1
             stats["nodes_created"] += 1
             return node.id
@@ -4142,7 +4146,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     layoutMode=layout_mode,
                     position="bottom",
                 )
-                wf_node = await self.create_node(req, _internal_call=True)
+                wf_node = await self.create_node(
+                    req,
+                    _internal_call=True,
+                    fetch_created_node=False,
+                )
                 structural_created += 1
 
                 for child in node.get("children") or []:
@@ -4841,7 +4849,16 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     position=position,
                 )
                 _log_to_file_helper(f"F12 CREATE: {data.get('name')}", "reconcile")
-                node = await self.create_node(req, _internal_call=True)
+                if not dry_run:
+                    try:
+                        _carto_flush_progress(force=True, phase=f"create:{data.get('name')}")
+                    except Exception:
+                        pass
+                node = await self.create_node(
+                    req,
+                    _internal_call=True,
+                    fetch_created_node=False,
+                )
                 stats["api_calls"] += 1
                 stats["nodes_created"] += 1
                 if not dry_run:
