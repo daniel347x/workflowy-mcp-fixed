@@ -2393,6 +2393,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         ast_hits: set[str] = set()
         name_hits: set[str] = set()
 
+        # Contains-based fallback buckets (only consulted if no exact matches).
+        # These help when the caller passes a descriptive symbol like:
+        #   "class WorkFlowyNode"
+        # or includes emoji/tag noise.
+        contains_beacon_hits: set[str] = set()
+        contains_ast_hits: set[str] = set()
+        contains_name_hits: set[str] = set()
+
+        # Needles for substring search. We keep this conservative:
+        # - Use symbol_variants (original + normalized + tail)
+        # - Ignore very short tokens (<3 chars)
+        contains_needles = [v for v in symbol_variants if len(v) >= 3]
+        contains_needles_lc = [v.lower() for v in contains_needles]
+
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol._record_hit-oous,
         #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol._record_hit,
@@ -2411,6 +2425,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 ast_hits.add(s_nid)
             elif bucket == "name":
                 name_hits.add(s_nid)
+
+        def _record_contains_hit(node: dict[str, Any], owner_path: str, bucket: str) -> None:
+            nid = node.get("id")
+            if not nid:
+                return
+            s_nid = str(nid)
+            node_to_file_path.setdefault(s_nid, owner_path)
+            if bucket == "beacon":
+                contains_beacon_hits.add(s_nid)
+            elif bucket == "ast":
+                contains_ast_hits.add(s_nid)
+            elif bucket == "name":
+                contains_name_hits.add(s_nid)
 
         # Determine which strategies are enabled.
         use_beacon = symbol_kind in {"auto", "beacon"}
@@ -2479,6 +2506,52 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 if hdr_base in symbol_variants or Path(hdr_base).stem in symbol_variants:
                                     _record_hit(node, owner_path_for_record, "name")
 
+                # Contains-based fallbacks (only used if no exact matches found).
+                # We record likely buckets so the usual uniqueness/ambiguity logic applies.
+                if contains_needles_lc:
+                    raw_name_lc = str(node.get("name") or "").lower()
+                    note_lc = note_str.lower()
+
+                    # beacon id/role "contains"
+                    if use_beacon:
+                        beacon_id_val, role_val = _extract_beacon_fields(note_str)
+                        if beacon_id_val or role_val:
+                            bid_lc = (beacon_id_val or "").lower()
+                            role_lc = (role_val or "").lower()
+                            if any(n in bid_lc for n in contains_needles_lc) or any(
+                                n in role_lc for n in contains_needles_lc
+                            ):
+                                _record_contains_hit(node, owner_path_for_record, "beacon")
+
+                    # AST_QUALNAME "contains"
+                    if use_ast:
+                        ast_q = _extract_ast_qualname(note_str)
+                        if ast_q:
+                            ast_lc = ast_q.lower()
+                            if any(n in ast_lc for n in contains_needles_lc):
+                                _record_contains_hit(node, owner_path_for_record, "ast")
+
+                    # Name "contains"
+                    if use_name:
+                        if any(n in raw_name_lc for n in contains_needles_lc):
+                            _record_contains_hit(node, owner_path_for_record, "name")
+
+                        # Path header "contains" (lets filename-like symbols resolve FILE nodes)
+                        hdr = _extract_path_header_from_note(note_str)
+                        if hdr and hdr[0] in {"Path", "Root"}:
+                            hdr_lc = str(hdr[1] or "").lower()
+                            if any(n in hdr_lc for n in contains_needles_lc):
+                                _record_contains_hit(node, owner_path_for_record, "name")
+
+                    # Note text "contains" – if it contains the needle and the node also
+                    # has AST_QUALNAME metadata, bucket as AST.
+                    if any(n in note_lc for n in contains_needles_lc):
+                        ast_q = _extract_ast_qualname(note_str)
+                        if use_ast and ast_q:
+                            _record_contains_hit(node, owner_path_for_record, "ast")
+                        elif use_name:
+                            _record_contains_hit(node, owner_path_for_record, "name")
+
         # 6) Compute union of hits across enabled strategies and enforce uniqueness.
         active_sets: list[set[str]] = []
         if use_beacon:
@@ -2505,46 +2578,69 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if "." in symbol:
                 tail = symbol.rsplit(".", 1)[-1].strip()
                 if tail and tail != symbol:
-                    # Retry name matching against the tail (keeping the same
-                    # symbol_kind semantics).
-                    for file_node, owner_path in search_roots:
+                    for file_node, owner_path, owner_abs_path in search_roots:
                         root_id = str(file_node.get("id")) if file_node.get("id") else None
                         if not root_id:
                             continue
+                        owner_path_for_record = owner_abs_path or owner_path
                         for node in _iter_subtree(root_id):
                             note_str = str(node.get("note") or node.get("no") or "")
 
                             if use_beacon:
                                 beacon_id_val, role_val = _extract_beacon_fields(note_str)
                                 if beacon_id_val == tail or role_val == tail:
-                                    _record_hit(node, owner_path, "beacon")
+                                    _record_hit(node, owner_path_for_record, "beacon")
 
                             if use_ast:
                                 ast_q = _extract_ast_qualname(note_str)
                                 if ast_q:
-                                    if "." in tail:
+                                    if "." in tail or ":" in tail:
                                         if ast_q == tail:
-                                            _record_hit(node, owner_path, "ast")
+                                            _record_hit(node, owner_path_for_record, "ast")
                                     else:
-                                        short = ast_q.rsplit(".", 1)[-1]
+                                        short = ast_q
+                                        if ":" in short:
+                                            short = short.rsplit(":", 1)[-1]
+                                        if "." in short:
+                                            short = short.rsplit(".", 1)[-1]
                                         if short == tail:
-                                            _record_hit(node, owner_path, "ast")
+                                            _record_hit(node, owner_path_for_record, "ast")
 
                             if use_name:
                                 norm_name = _normalize_node_name(node.get("name"))
                                 if norm_name and norm_name == tail:
-                                    _record_hit(node, owner_path, "name")
+                                    _record_hit(node, owner_path_for_record, "name")
 
                     # Recompute union with the updated hit sets.
                     union_ids = set()
                     for s in active_sets:
                         union_ids.update(s)
 
-            if not union_ids:
-                raise NetworkError(
-                    "read_text_snippet_by_symbol: no matching node found for symbol "
-                    f"{symbol!r} (symbol_kind={symbol_kind!r})",
-                )
+        if not union_ids:
+            # Last resort: contains-based fallback.
+            # This is only used when exact matching fails. It searches for the
+            # symbol (or its normalized/tail variants) as a substring in:
+            # - node name
+            # - AST_QUALNAME line
+            # - beacon id/role
+            # - Path/Root header
+            # - note text (bucketed as AST when AST_QUALNAME exists)
+            active_contains: list[set[str]] = []
+            if use_beacon:
+                active_contains.append(contains_beacon_hits)
+            if use_ast:
+                active_contains.append(contains_ast_hits)
+            if use_name:
+                active_contains.append(contains_name_hits)
+
+            for s in active_contains:
+                union_ids.update(s)
+
+        if not union_ids:
+            raise NetworkError(
+                "read_text_snippet_by_symbol: no matching node found for symbol "
+                f"{symbol!r} (symbol_kind={symbol_kind!r})",
+            )
 
         if len(union_ids) > 1:
             # Build a concise ambiguity report.
@@ -2560,6 +2656,12 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     buckets.append("ast")
                 if nid in name_hits:
                     buckets.append("name")
+                if nid in contains_beacon_hits:
+                    buckets.append("beacon~contains")
+                if nid in contains_ast_hits:
+                    buckets.append("ast~contains")
+                if nid in contains_name_hits:
+                    buckets.append("name~contains")
                 details.append(
                     f"id={nid} name={nname!r} file={fpath!r} via={'+'.join(buckets)}"
                 )
