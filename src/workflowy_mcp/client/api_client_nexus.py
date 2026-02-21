@@ -2222,10 +2222,16 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             or (ap and _normalize_note_path(ap).endswith(fp_norm))
                         ]
                     else:
-                        # Basename filter
+                        # Basename filter.
+                        #
+                        # Accept either an exact basename ("SampleTile.vue") or an
+                        # extensionless stem ("SampleTile") when unambiguous.
                         matches = [
-                            (n, p, ap) for (n, p, ap) in file_nodes
+                            (n, p, ap)
+                            for (n, p, ap) in file_nodes
                             if os.path.basename(p) == fp
+                            or Path(os.path.basename(p)).stem == fp
+                            or (ap and Path(os.path.basename(ap)).stem == fp)
                         ]
 
                 if not matches:
@@ -2441,8 +2447,18 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
                 if use_name:
                     norm_name = _normalize_node_name(node.get("name"))
-                    if norm_name and norm_name == symbol:
-                        _record_hit(node, owner_path, "name")
+                    if norm_name:
+                        if norm_name == symbol:
+                            _record_hit(node, owner_path, "name")
+                        else:
+                            # Convenience: allow resolving FILE nodes by an extensionless
+                            # filename (e.g. "SampleTile" resolves "SampleTile.vue"),
+                            # as long as the match is unambiguous.
+                            hdr = _extract_path_header_from_note(note_str)
+                            if hdr and hdr[0] == "Path":
+                                hdr_base = os.path.basename(_normalize_note_path(hdr[1]))
+                                if Path(hdr_base).stem == symbol:
+                                    _record_hit(node, owner_path, "name")
 
         # 6) Compute union of hits across enabled strategies and enforce uniqueness.
         active_sets: list[set[str]] = []
