@@ -2426,6 +2426,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             elif bucket == "name":
                 name_hits.add(s_nid)
 
+        # @beacon[
+        #   id=snippet-symbol@read_text_snippet_by_symbol._record_contains_hit,
+        #   role=read_text_snippet_by_symbol._record_contains_hit,
+        #   slice_labels=f9-f12-handlers,ra-reconcile,ra-read-text-snippet,ra-snippet-range,
+        #   kind=ast,
+        #   comment=Helper: record a candidate match based on contains-substring fallback,
+        # ]
         def _record_contains_hit(node: dict[str, Any], owner_path: str, bucket: str) -> None:
             nid = node.get("id")
             if not nid:
