@@ -2205,10 +2205,21 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     ]
                 else:
                     if "/" in fp_norm or "\\" in fp:
-                        # Relative path filter
+                        # Relative path filter.
+                        #
+                        # Cartographer FILE nodes often store only a basename in their
+                        # note header ("Path: InterviewComparisonGrid.vue") even when
+                        # the caller provides a repo-relative path
+                        # ("frontend/src/components/InterviewComparisonGrid.vue").
+                        #
+                        # Therefore we match against either:
+                        #   1) the literal Path:/Root: header, OR
+                        #   2) the resolved on-disk absolute path (suffix match).
                         matches = [
-                            (n, p, ap) for (n, p, ap) in file_nodes
+                            (n, p, ap)
+                            for (n, p, ap) in file_nodes
                             if _normalize_note_path(p) == fp_norm
+                            or (ap and _normalize_note_path(ap).endswith(fp_norm))
                         ]
                     else:
                         # Basename filter
@@ -2329,7 +2340,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if not tokens:
                 return ""
             # Drop structural prefixes like "ƒ", "class", "function", "method".
-            if tokens[0] in {"ƒ", "class", "function", "method"}:
+            #
+            # NOTE: Vue-mapped nodes commonly appear as: "ƒ function updateScrollState()"
+            # so we need to drop *multiple* consecutive structural tokens.
+            while tokens and tokens[0] in {
+                "ƒ",
+                "class",
+                "function",
+                "method",
+                "def",
+                "async",
+                "export",
+                "default",
+            }:
                 tokens = tokens[1:]
             if not tokens:
                 return ""
@@ -2395,12 +2418,25 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         # just "read_text_snippet_by_symbol" (with
                         # symbol_kind="ast") while still surfacing ambiguities
                         # when multiple matches exist.
-                        if "." in symbol:
+                        def _short_ast_name(q: str) -> str:
+                            # Python: WorkFlowyClientNexus.read_text_snippet_by_symbol
+                            # Vue:    vue:script0:updateScrollState
+                            # JS/TS:  may include either '.' or ':' depending on the mapper
+                            s = (q or "").strip()
+                            if ":" in s:
+                                s = s.rsplit(":", 1)[-1]
+                            if "." in s:
+                                s = s.rsplit(".", 1)[-1]
+                            return s
+
+                        # If the caller provided a qualified name (contains '.' or ':'),
+                        # require exact equality.
+                        if "." in symbol or ":" in symbol:
                             if ast_q == symbol:
                                 _record_hit(node, owner_path, "ast")
                         else:
-                            short = ast_q.rsplit(".", 1)[-1]
-                            if short == symbol:
+                            # Unqualified: match against the final segment.
+                            if _short_ast_name(ast_q) == symbol:
                                 _record_hit(node, owner_path, "ast")
 
                 if use_name:
