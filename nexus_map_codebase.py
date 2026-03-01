@@ -3668,6 +3668,37 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                     results.append(class_node)
                     continue
 
+                # TypeScript surface types (top-level or nested in namespaces/modules).
+                # These are important for navigation but should not explode into deep trees.
+                if t in {"interface_declaration", "type_alias_declaration", "enum_declaration"}:
+                    name_node = child.child_by_field_name("name")
+                    type_name = node_text(name_node).strip() or "anonymous"
+                    qual = type_name if not qual_prefix else f"{qual_prefix}.{type_name}"
+                    start_line = child.start_point[0] + 1
+                    end_line = child.end_point[0] + 1
+                    note_text = make_note(qual, start_line)
+
+                    kind_label = (
+                        "interface" if t == "interface_declaration" else
+                        "type" if t == "type_alias_declaration" else
+                        "enum"
+                    )
+                    type_node: Dict[str, Any] = {
+                        "name": f"{EMOJI_CLASS} {kind_label} {type_name}",
+                        "priority": priority_counter[0],
+                        "note": note_text,
+                        "children": [],
+                        "ast_type": kind_label,
+                        "ast_name": type_name,
+                        "ast_qualname": qual,
+                        "file_path": file_path,
+                        "orig_lineno_start_unused": start_line,
+                        "orig_lineno_end_unused": end_line,
+                    }
+                    priority_counter[0] += 100
+                    results.append(type_node)
+                    continue
+
                 if t == "function_declaration":
                     name_node = child.child_by_field_name("name")
                     func_name = node_text(name_node).strip() or "anonymous"
@@ -3787,6 +3818,122 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                                     return body
                         return None
 
+                    def _find_define_store_options_object(v):
+                        # Options store form: defineStore('id', { actions: {...}, getters: {...} })
+                        if not v or getattr(v, "type", None) != "call_expression":
+                            return None
+                        fn = v.child_by_field_name("function")
+                        if fn is None:
+                            return None
+                        fn_text = node_text(fn).strip()
+                        if not fn_text.endswith("defineStore"):
+                            return None
+                        args = v.child_by_field_name("arguments")
+                        if args is None:
+                            return None
+                        for a in getattr(args, "named_children", []) or []:
+                            if getattr(a, "type", None) == "object":
+                                return a
+                        return None
+
+                    def _extract_define_store_options_children(*, options_obj, store_qual: str) -> list[dict[str, Any]]:
+                        # Parse defineStore options object and emit actions/getters functions.
+                        out: list[dict[str, Any]] = []
+
+                        def _key_text(n) -> str:
+                            if n is None:
+                                return ""
+                            txt = node_text(n).strip()
+                            return txt.strip("\"'")
+
+                        def _params_text(fn_node) -> str:
+                            if fn_node is None:
+                                return "()"
+                            p = fn_node.child_by_field_name("parameters")
+                            if p is None:
+                                p = fn_node.child_by_field_name("parameter")
+                            if p is None:
+                                return "()"
+                            t = node_text(p).strip()
+                            return t if t.startswith("(") else f"({t})"
+
+                        def _body_node(fn_node):
+                            if fn_node is None:
+                                return None
+                            return fn_node.child_by_field_name("body")
+
+                        def _emit_obj_functions(*, section: str, obj_node) -> None:
+                            if obj_node is None:
+                                return
+                            for prop in getattr(obj_node, "children", []) or []:
+                                pt = getattr(prop, "type", None)
+                                if pt == "method_definition":
+                                    name_n = prop.child_by_field_name("name")
+                                    fname = _key_text(name_n) or "anonymous"
+                                    qual = f"{store_qual}.{section}.{fname}"
+                                    start_line = prop.start_point[0] + 1
+                                    end_line = prop.end_point[0] + 1
+                                    sig = f"{fname}{_params_text(prop)}"
+                                    note_text = make_note(qual, start_line)
+                                    body = _body_node(prop)
+                                    children_local = walk(body, qual_prefix=qual) if body is not None else []
+                                    out.append({
+                                        "name": f"{EMOJI_FUNC} {section} {sig}",
+                                        "priority": priority_counter[0],
+                                        "note": note_text,
+                                        "children": children_local,
+                                        "ast_type": "method",
+                                        "ast_name": fname,
+                                        "ast_qualname": qual,
+                                        "file_path": file_path,
+                                        "orig_lineno_start_unused": start_line,
+                                        "orig_lineno_end_unused": end_line,
+                                    })
+                                    priority_counter[0] += 100
+                                    continue
+                                if pt == "pair":
+                                    k = prop.child_by_field_name("key")
+                                    v = prop.child_by_field_name("value")
+                                    fname = _key_text(k) or "anonymous"
+                                    if v is None or getattr(v, "type", None) not in {"arrow_function", "function"}:
+                                        continue
+                                    qual = f"{store_qual}.{section}.{fname}"
+                                    start_line = prop.start_point[0] + 1
+                                    end_line = prop.end_point[0] + 1
+                                    sig = f"{fname}{_params_text(v)}"
+                                    note_text = make_note(qual, start_line)
+                                    body = _body_node(v)
+                                    children_local = walk(body, qual_prefix=qual) if body is not None else []
+                                    out.append({
+                                        "name": f"{EMOJI_FUNC} {section} {sig}",
+                                        "priority": priority_counter[0],
+                                        "note": note_text,
+                                        "children": children_local,
+                                        "ast_type": "function",
+                                        "ast_name": fname,
+                                        "ast_qualname": qual,
+                                        "file_path": file_path,
+                                        "orig_lineno_start_unused": start_line,
+                                        "orig_lineno_end_unused": end_line,
+                                    })
+                                    priority_counter[0] += 100
+                                    continue
+
+                        # locate actions/getters objects
+                        for prop in getattr(options_obj, "children", []) or []:
+                            if getattr(prop, "type", None) != "pair":
+                                continue
+                            k = prop.child_by_field_name("key")
+                            v = prop.child_by_field_name("value")
+                            key = _key_text(k)
+                            if key not in {"actions", "getters"}:
+                                continue
+                            if v is None or getattr(v, "type", None) != "object":
+                                continue
+                            _emit_obj_functions(section=key[:-1] if key.endswith("s") else key, obj_node=v)
+
+                        return out
+
                     for decl_child in child.children:
                         if decl_child.type != "variable_declarator":
                             continue
@@ -3802,13 +3949,16 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
 
                         value_node = decl_child.child_by_field_name("value")
                         setup_body = None
+                        options_obj = None
                         if value_node is not None:
                             if _is_function_like(value_node):
                                 setup_body = value_node.child_by_field_name("body")
                             else:
                                 setup_body = _find_define_store_setup_body(value_node)
+                                if setup_body is None:
+                                    options_obj = _find_define_store_options_object(value_node)
 
-                        emit_here = (not qual_prefix) or (setup_body is not None)
+                        emit_here = (not qual_prefix) or (setup_body is not None) or (options_obj is not None)
                         if not emit_here:
                             continue
 
@@ -3820,6 +3970,11 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                         children_local: list[dict[str, Any]] = []
                         if setup_body is not None:
                             children_local = walk(setup_body, qual_prefix=qual)
+                        elif options_obj is not None:
+                            children_local = _extract_define_store_options_children(
+                                options_obj=options_obj,
+                                store_qual=qual,
+                            )
 
                         node_dict: Dict[str, Any] = {
                             "name": f"{EMOJI_FUNC} {decl_kind} {var_name}",
@@ -4071,6 +4226,39 @@ def _parse_js_ts_outline_from_source(
                     results.append(class_node)
                     continue
 
+                # TypeScript surface types (interfaces/types/enums) inside Vue <script>.
+                if t in {"interface_declaration", "type_alias_declaration", "enum_declaration"}:
+                    name_node = child.child_by_field_name("name")
+                    type_name = node_text(name_node).strip() or "anonymous"
+                    inner = type_name if not qual_prefix else f"{qual_prefix}.{type_name}"
+                    qual = _qual(inner)
+                    start_line_local = child.start_point[0] + 1
+                    end_line_local = child.end_point[0] + 1
+                    start_line_abs = start_line_local + line_offset0
+                    end_line_abs = end_line_local + line_offset0
+                    note_text = make_note(qual, start_line_local)
+
+                    kind_label = (
+                        "interface" if t == "interface_declaration" else
+                        "type" if t == "type_alias_declaration" else
+                        "enum"
+                    )
+                    type_node: Dict[str, Any] = {
+                        "name": f"{EMOJI_CLASS} {kind_label} {type_name}",
+                        "priority": priority_counter[0],
+                        "note": note_text,
+                        "children": [],
+                        "ast_type": kind_label,
+                        "ast_name": type_name,
+                        "ast_qualname": qual,
+                        "file_path": file_path,
+                        "orig_lineno_start_unused": start_line_abs,
+                        "orig_lineno_end_unused": end_line_abs,
+                    }
+                    priority_counter[0] += 100
+                    results.append(type_node)
+                    continue
+
                 if t == "function_declaration":
                     name_node = child.child_by_field_name("name")
                     func_name = node_text(name_node).strip() or "anonymous"
@@ -4182,6 +4370,125 @@ def _parse_js_ts_outline_from_source(
                                     return body
                         return None
 
+                    def _find_define_store_options_object(v):
+                        if not v or getattr(v, "type", None) != "call_expression":
+                            return None
+                        fn = v.child_by_field_name("function")
+                        if fn is None:
+                            return None
+                        fn_text = node_text(fn).strip()
+                        if not fn_text.endswith("defineStore"):
+                            return None
+                        args = v.child_by_field_name("arguments")
+                        if args is None:
+                            return None
+                        for a in getattr(args, "named_children", []) or []:
+                            if getattr(a, "type", None) == "object":
+                                return a
+                        return None
+
+                    def _extract_define_store_options_children(*, options_obj, store_inner: str, store_qual: str) -> list[dict[str, Any]]:
+                        out: list[dict[str, Any]] = []
+
+                        def _key_text(n) -> str:
+                            if n is None:
+                                return ""
+                            txt = node_text(n).strip()
+                            return txt.strip("\"'")
+
+                        def _params_text(fn_node) -> str:
+                            if fn_node is None:
+                                return "()"
+                            p = fn_node.child_by_field_name("parameters")
+                            if p is None:
+                                p = fn_node.child_by_field_name("parameter")
+                            if p is None:
+                                return "()"
+                            t = node_text(p).strip()
+                            return t if t.startswith("(") else f"({t})"
+
+                        def _body_node(fn_node):
+                            if fn_node is None:
+                                return None
+                            return fn_node.child_by_field_name("body")
+
+                        def _emit_obj_functions(*, section: str, obj_node) -> None:
+                            if obj_node is None:
+                                return
+                            for prop in getattr(obj_node, "children", []) or []:
+                                pt = getattr(prop, "type", None)
+                                if pt == "method_definition":
+                                    name_n = prop.child_by_field_name("name")
+                                    fname = _key_text(name_n) or "anonymous"
+                                    inner = f"{store_inner}.{section}.{fname}"
+                                    qual = _qual(inner)
+                                    start_line_local = prop.start_point[0] + 1
+                                    end_line_local = prop.end_point[0] + 1
+                                    start_line_abs = start_line_local + line_offset0
+                                    end_line_abs = end_line_local + line_offset0
+                                    sig = f"{fname}{_params_text(prop)}"
+                                    note_text = make_note(qual, start_line_local)
+                                    body = _body_node(prop)
+                                    children_local = walk(body, qual_prefix=inner) if body is not None else []
+                                    out.append({
+                                        "name": f"{EMOJI_FUNC} {section} {sig}",
+                                        "priority": priority_counter[0],
+                                        "note": note_text,
+                                        "children": children_local,
+                                        "ast_type": "method",
+                                        "ast_name": fname,
+                                        "ast_qualname": qual,
+                                        "file_path": file_path,
+                                        "orig_lineno_start_unused": start_line_abs,
+                                        "orig_lineno_end_unused": end_line_abs,
+                                    })
+                                    priority_counter[0] += 100
+                                    continue
+                                if pt == "pair":
+                                    k = prop.child_by_field_name("key")
+                                    v = prop.child_by_field_name("value")
+                                    fname = _key_text(k) or "anonymous"
+                                    if v is None or getattr(v, "type", None) not in {"arrow_function", "function"}:
+                                        continue
+                                    inner = f"{store_inner}.{section}.{fname}"
+                                    qual = _qual(inner)
+                                    start_line_local = prop.start_point[0] + 1
+                                    end_line_local = prop.end_point[0] + 1
+                                    start_line_abs = start_line_local + line_offset0
+                                    end_line_abs = end_line_local + line_offset0
+                                    sig = f"{fname}{_params_text(v)}"
+                                    note_text = make_note(qual, start_line_local)
+                                    body = _body_node(v)
+                                    children_local = walk(body, qual_prefix=inner) if body is not None else []
+                                    out.append({
+                                        "name": f"{EMOJI_FUNC} {section} {sig}",
+                                        "priority": priority_counter[0],
+                                        "note": note_text,
+                                        "children": children_local,
+                                        "ast_type": "function",
+                                        "ast_name": fname,
+                                        "ast_qualname": qual,
+                                        "file_path": file_path,
+                                        "orig_lineno_start_unused": start_line_abs,
+                                        "orig_lineno_end_unused": end_line_abs,
+                                    })
+                                    priority_counter[0] += 100
+                                    continue
+
+                        for prop in getattr(options_obj, "children", []) or []:
+                            if getattr(prop, "type", None) != "pair":
+                                continue
+                            k = prop.child_by_field_name("key")
+                            v = prop.child_by_field_name("value")
+                            key = _key_text(k)
+                            if key not in {"actions", "getters"}:
+                                continue
+                            if v is None or getattr(v, "type", None) != "object":
+                                continue
+                            _emit_obj_functions(section=key[:-1] if key.endswith("s") else key, obj_node=v)
+
+                        return out
+
                     for decl_child in child.children:
                         if decl_child.type != "variable_declarator":
                             continue
@@ -4197,13 +4504,16 @@ def _parse_js_ts_outline_from_source(
 
                         value_node = decl_child.child_by_field_name("value")
                         setup_body = None
+                        options_obj = None
                         if value_node is not None:
                             if _is_function_like(value_node):
                                 setup_body = value_node.child_by_field_name("body")
                             else:
                                 setup_body = _find_define_store_setup_body(value_node)
+                                if setup_body is None:
+                                    options_obj = _find_define_store_options_object(value_node)
 
-                        emit_here = (not qual_prefix) or (setup_body is not None)
+                        emit_here = (not qual_prefix) or (setup_body is not None) or (options_obj is not None)
                         if not emit_here:
                             continue
 
@@ -4220,6 +4530,12 @@ def _parse_js_ts_outline_from_source(
                         children_local: list[dict[str, Any]] = []
                         if setup_body is not None:
                             children_local = walk(setup_body, qual_prefix=inner)
+                        elif options_obj is not None:
+                            children_local = _extract_define_store_options_children(
+                                options_obj=options_obj,
+                                store_inner=inner,
+                                store_qual=qual,
+                            )
 
                         node_dict: Dict[str, Any] = {
                             "name": f"{EMOJI_FUNC} {decl_kind} {var_name}",
