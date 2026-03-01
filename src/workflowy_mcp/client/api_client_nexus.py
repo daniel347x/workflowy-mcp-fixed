@@ -4673,6 +4673,27 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     f"Failed to import nexus_map_codebase in incremental scaffold: {e}",
                 ) from e
 
+            # Optional hygiene pass: normalize duplicate AST beacons that may
+            # have been introduced by manual/agent edits (edit_file) so the
+            # Cartographer map is deterministic and does not accumulate duplicate
+            # metadata blocks over time.
+            try:
+                if hasattr(cartographer, "normalize_duplicate_ast_beacons_in_file"):
+                    norm_res = cartographer.normalize_duplicate_ast_beacons_in_file(source_path)  # type: ignore[attr-defined]
+                    if isinstance(norm_res, dict) and norm_res.get("changed"):
+                        log_event(
+                            "refresh_file_node_beacons: normalized duplicate AST beacons "
+                            f"in {source_path}: {norm_res}",
+                            "BEACON",
+                        )
+            except Exception as e:  # noqa: BLE001
+                # Fail-open: never let normalization issues block refresh.
+                log_event(
+                    "refresh_file_node_beacons: duplicate AST beacon normalization failed "
+                    f"for {source_path}: {e}",
+                    "BEACON",
+                )
+
             try:
                 # Pass repo_root when available so Cartographer emits relative Path: notes.
                 file_map = cartographer.map_codebase(  # type: ignore[attr-defined]

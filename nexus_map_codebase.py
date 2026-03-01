@@ -2117,6 +2117,465 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     return beacons
 
 
+# ---------------------------------------------------------------------------
+# Duplicate AST beacon normalization (hygiene)
+# ---------------------------------------------------------------------------
+
+def _is_numeric_suffix_beacon_id(beacon_id: str | None) -> bool:
+    """Return True when beacon_id looks like 'prefix@000123' (digits after @)."""
+    if not isinstance(beacon_id, str):
+        return False
+    s = beacon_id.strip()
+    if "@" not in s:
+        return False
+    suffix = s.split("@", 1)[1].strip()
+    return bool(suffix) and suffix.isdigit()
+
+
+def _split_csvish_tokens(raw: str | None) -> list[str]:
+    if not isinstance(raw, str):
+        return []
+    parts = re.split(r"[\s,]+", raw.strip())
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def _merge_unique_strings(values: list[str], *, sep: str = " | ") -> str:
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in values:
+        s = (v or "").strip()
+        if not s:
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return sep.join(out)
+
+
+def _canonicalize_slice_labels_union(labels: list[str]) -> str:
+    # Use the same per-token sanitization as _canonicalize_slice_labels, but
+    # do NOT derive from role (we're unioning explicit tokens).
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for raw in labels:
+        for part in _split_csvish_tokens(raw):
+            sanitized = part.replace(":", "-").replace(".", "-")
+            sanitized = re.sub(r"[^A-Za-z0-9_-]+", "-", sanitized)
+            sanitized = sanitized.strip("-")
+            if not sanitized:
+                continue
+            if sanitized in seen:
+                continue
+            seen.add(sanitized)
+            tokens.append(sanitized)
+    return ",".join(tokens)
+
+
+def normalize_duplicate_ast_beacons_in_file(file_path: str) -> dict[str, Any]:
+    """Normalize duplicate AST beacons that target the same AST header.
+
+    Motivation:
+      Agents may add @beacon blocks via edit_file and accidentally create
+      multiple AST beacons for the same function/class header. This hygiene
+      pass merges duplicates so Cartographer/F12 refresh remains stable.
+
+    Policy:
+      - Only AST beacons are considered (span beacons are ignored).
+      - Duplicates are detected by computing an 'anchor line' (the next
+        significant non-comment/non-whitespace line after the beacon block,
+        skipping decorators).
+      - When duplicates exist for an anchor:
+          * Keep one block (prefer numeric ids like prefix@000083 when trivial,
+            else keep the first encountered position).
+          * Union slice_labels.
+          * Merge role/comment as a de-duplicated join.
+
+    Returns: dict with changed flag and counts.
+    """
+    try:
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext == ".py":
+            return _normalize_duplicate_ast_beacons_python(file_path)
+        if ext in {".js", ".jsx", ".ts", ".tsx", ".vue"}:
+            return _normalize_duplicate_ast_beacons_js_ts(file_path)
+        return {"success": True, "changed": False, "file_path": file_path, "reason": "unsupported_ext"}
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "changed": False, "file_path": file_path, "error": str(e)}
+
+
+def _normalize_duplicate_ast_beacons_python(file_path: str) -> dict[str, Any]:
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    n = len(lines)
+
+    def _parse_blocks() -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        i = 0
+        while i < n:
+            raw = lines[i]
+            stripped = raw.lstrip()
+            if stripped.startswith("#"):
+                body = stripped.lstrip("#").lstrip()
+                if body.startswith("@beacon["):
+                    start_i = i
+                    comment_line = i + 1
+                    block_bodies: list[str] = [body]
+                    i += 1
+                    end_i = start_i
+                    while i < n:
+                        nxt = lines[i].lstrip()
+                        if nxt.startswith("#"):
+                            nxt_body = nxt.lstrip("#").lstrip()
+                        else:
+                            nxt_body = nxt
+                        block_bodies.append(nxt_body)
+                        if nxt_body.strip().startswith("]"):
+                            end_i = i
+                            i += 1
+                            break
+                        i += 1
+
+                    # Parse fields
+                    fields: dict[str, str] = {}
+                    inner = block_bodies[1:-1] if len(block_bodies) >= 2 else []
+                    for row in inner:
+                        text = (row or "").strip()
+                        if not text or text.startswith("@beacon"):
+                            continue
+                        while text and text[-1] in ",]":
+                            text = text[:-1].rstrip()
+                        if not text or "=" not in text:
+                            continue
+                        k, v = text.split("=", 1)
+                        k = k.strip()
+                        v = v.strip()
+                        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                            v = v[1:-1]
+                        fields[k] = v
+
+                    kind = (fields.get("kind") or "span").strip().lower() or "span"
+                    blocks.append(
+                        {
+                            "start_i": start_i,
+                            "end_i": end_i,
+                            "comment_line": comment_line,
+                            "fields": fields,
+                            "kind": kind,
+                        }
+                    )
+                    continue
+            i += 1
+        return blocks
+
+    blocks = _parse_blocks()
+
+    def _next_anchor_after(end_i: int) -> int | None:
+        for j in range(end_i + 1, n):
+            s = lines[j].lstrip()
+            if not s.strip():
+                continue
+            if s.startswith("#"):
+                continue
+            if s.startswith("@"):
+                # decorator
+                continue
+            return j + 1  # 1-based
+        return None
+
+    ast_blocks = []
+    for b in blocks:
+        if b.get("kind") != "ast":
+            continue
+        anchor = _next_anchor_after(int(b["end_i"]))
+        if anchor is None:
+            continue
+        b2 = dict(b)
+        b2["anchor_lineno"] = anchor
+        ast_blocks.append(b2)
+
+    by_anchor: dict[int, list[dict[str, Any]]] = {}
+    for b in ast_blocks:
+        by_anchor.setdefault(int(b["anchor_lineno"]), []).append(b)
+
+    # Build edit plan
+    changed = False
+    merged_groups = 0
+    removed_blocks = 0
+
+    # We'll apply edits from bottom→top to preserve indices.
+    deletions: list[tuple[int, int]] = []
+    replacements: dict[int, list[str]] = {}  # start_i -> new block lines
+
+    for anchor, group in by_anchor.items():
+        if len(group) <= 1:
+            continue
+
+        group_sorted = sorted(group, key=lambda x: int(x["start_i"]))
+        position_block = group_sorted[0]
+
+        # Choose canonical id (prefer numeric suffix when trivial)
+        ids = [str(g.get("fields", {}).get("id") or "").strip() for g in group_sorted]
+        canonical_id = ""
+        for cand in ids:
+            if _is_numeric_suffix_beacon_id(cand):
+                canonical_id = cand
+                break
+        if not canonical_id:
+            canonical_id = ids[0] if ids else ""
+
+        roles = [str(g.get("fields", {}).get("role") or "").strip() for g in group_sorted]
+        comments = [str(g.get("fields", {}).get("comment") or "").strip() for g in group_sorted]
+        slices = [str(g.get("fields", {}).get("slice_labels") or "").strip() for g in group_sorted]
+
+        merged_role = _merge_unique_strings([r for r in roles if r])
+        merged_comment = _merge_unique_strings([c for c in comments if c])
+        merged_slice = _canonicalize_slice_labels_union(slices)
+
+        indent = re.match(r"^\s*", lines[int(position_block["start_i"])])
+        indent_str = indent.group(0) if indent else ""
+
+        new_block: list[str] = [
+            f"{indent_str}# @beacon[\n",
+            f"{indent_str}#   id={canonical_id},\n",
+        ]
+        if merged_role:
+            new_block.append(f"{indent_str}#   role={merged_role},\n")
+        if merged_slice:
+            new_block.append(f"{indent_str}#   slice_labels={merged_slice},\n")
+        new_block.append(f"{indent_str}#   kind=ast,\n")
+        if merged_comment:
+            new_block.append(f"{indent_str}#   comment={merged_comment},\n")
+        new_block.append(f"{indent_str}# ]\n")
+
+        # Replace the first-position block with merged block; delete the rest.
+        replacements[int(position_block["start_i"])] = new_block
+        deletions.append((int(position_block["start_i"]), int(position_block["end_i"])))
+        for other in group_sorted[1:]:
+            deletions.append((int(other["start_i"]), int(other["end_i"])))
+            removed_blocks += 1
+
+        merged_groups += 1
+        changed = True
+
+    if not changed:
+        return {"success": True, "changed": False, "file_path": file_path, "kind": "python"}
+
+    # Apply deletions/replacements bottom-up.
+    deletions_sorted = sorted(deletions, key=lambda t: t[0], reverse=True)
+
+    for start_i, end_i in deletions_sorted:
+        if start_i in replacements:
+            # Replace this range with new block
+            lines[start_i : end_i + 1] = replacements[start_i]
+        else:
+            # Delete
+            del lines[start_i : end_i + 1]
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    return {
+        "success": True,
+        "changed": True,
+        "file_path": file_path,
+        "kind": "python",
+        "merged_groups": merged_groups,
+        "removed_blocks": removed_blocks,
+    }
+
+
+def _normalize_duplicate_ast_beacons_js_ts(file_path: str) -> dict[str, Any]:
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    n = len(lines)
+
+    def _strip_js_comment_sugar(text: str) -> str:
+        t = (text or "").lstrip()
+        if t.startswith("//"):
+            t = t[2:].lstrip()
+        if t.startswith("/*"):
+            t = t[2:].lstrip()
+        if t.startswith("*/"):
+            t = t[2:].lstrip()
+        if t.startswith("*"):
+            t = t[1:].lstrip()
+        if t.endswith("*/"):
+            t = t[:-2].rstrip()
+        return t
+
+    def _looks_like_js_beacon_opener(raw: str) -> bool:
+        s = (raw or "").lstrip()
+        if "@beacon[" not in s:
+            return False
+        return s.startswith("//") or s.startswith("/*") or s.startswith("*")
+
+    def _parse_blocks() -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        i = 0
+        while i < n:
+            raw = lines[i]
+            if not _looks_like_js_beacon_opener(raw):
+                i += 1
+                continue
+
+            start_i = i
+            comment_line = i + 1
+            block_lines = [lines[i]]
+            i += 1
+            end_i = start_i
+            while i < n:
+                block_lines.append(lines[i])
+                body = _strip_js_comment_sugar(lines[i])
+                if body.strip().startswith("]"):
+                    end_i = i
+                    i += 1
+                    break
+                i += 1
+
+            # Parse fields from inner lines (strip sugar)
+            fields: dict[str, str] = {}
+            inner = block_lines[1:-1] if len(block_lines) >= 2 else []
+            for raw2 in inner:
+                text = _strip_js_comment_sugar(raw2).strip()
+                if not text or text.startswith("@beacon"):
+                    continue
+                while text and text[-1] in ",]":
+                    text = text[:-1].rstrip()
+                if not text or "=" not in text:
+                    continue
+                k, v = text.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                    v = v[1:-1]
+                fields[k] = v
+
+            kind = (fields.get("kind") or "span").strip().lower() or "span"
+            blocks.append(
+                {
+                    "start_i": start_i,
+                    "end_i": end_i,
+                    "comment_line": comment_line,
+                    "fields": fields,
+                    "kind": kind,
+                }
+            )
+
+        return blocks
+
+    blocks = _parse_blocks()
+
+    def _next_anchor_after(end_i: int) -> int | None:
+        for j in range(end_i + 1, n):
+            s = (lines[j] or "").lstrip()
+            if not s.strip():
+                continue
+            if s.startswith("//"):
+                continue
+            if s.startswith("/*") or s.startswith("*") or s.startswith("*/"):
+                continue
+            if s.startswith("@"):
+                # decorator
+                continue
+            return j + 1
+        return None
+
+    ast_blocks = []
+    for b in blocks:
+        if b.get("kind") != "ast":
+            continue
+        anchor = _next_anchor_after(int(b["end_i"]))
+        if anchor is None:
+            continue
+        b2 = dict(b)
+        b2["anchor_lineno"] = anchor
+        ast_blocks.append(b2)
+
+    by_anchor: dict[int, list[dict[str, Any]]] = {}
+    for b in ast_blocks:
+        by_anchor.setdefault(int(b["anchor_lineno"]), []).append(b)
+
+    changed = False
+    merged_groups = 0
+    removed_blocks = 0
+    deletions: list[tuple[int, int]] = []
+    replacements: dict[int, list[str]] = {}
+
+    for anchor, group in by_anchor.items():
+        if len(group) <= 1:
+            continue
+
+        group_sorted = sorted(group, key=lambda x: int(x["start_i"]))
+        position_block = group_sorted[0]
+
+        ids = [str(g.get("fields", {}).get("id") or "").strip() for g in group_sorted]
+        canonical_id = ""
+        for cand in ids:
+            if _is_numeric_suffix_beacon_id(cand):
+                canonical_id = cand
+                break
+        if not canonical_id:
+            canonical_id = ids[0] if ids else ""
+
+        roles = [str(g.get("fields", {}).get("role") or "").strip() for g in group_sorted]
+        comments = [str(g.get("fields", {}).get("comment") or "").strip() for g in group_sorted]
+        slices = [str(g.get("fields", {}).get("slice_labels") or "").strip() for g in group_sorted]
+
+        merged_role = _merge_unique_strings([r for r in roles if r])
+        merged_comment = _merge_unique_strings([c for c in comments if c])
+        merged_slice = _canonicalize_slice_labels_union(slices)
+
+        indent = re.match(r"^\s*", lines[int(position_block["start_i"])])
+        indent_str = indent.group(0) if indent else ""
+
+        new_block: list[str] = [
+            f"{indent_str}// @beacon[\n",
+            f"{indent_str}//   id={canonical_id},\n",
+        ]
+        if merged_role:
+            new_block.append(f"{indent_str}//   role={merged_role},\n")
+        if merged_slice:
+            new_block.append(f"{indent_str}//   slice_labels={merged_slice},\n")
+        new_block.append(f"{indent_str}//   kind=ast,\n")
+        if merged_comment:
+            new_block.append(f"{indent_str}//   comment={merged_comment},\n")
+        new_block.append(f"{indent_str}// ]\n")
+
+        replacements[int(position_block["start_i"])] = new_block
+        deletions.append((int(position_block["start_i"]), int(position_block["end_i"])))
+        for other in group_sorted[1:]:
+            deletions.append((int(other["start_i"]), int(other["end_i"])))
+            removed_blocks += 1
+
+        merged_groups += 1
+        changed = True
+
+    if not changed:
+        return {"success": True, "changed": False, "file_path": file_path, "kind": "js_ts"}
+
+    deletions_sorted = sorted(deletions, key=lambda t: t[0], reverse=True)
+    for start_i, end_i in deletions_sorted:
+        if start_i in replacements:
+            lines[start_i : end_i + 1] = replacements[start_i]
+        else:
+            del lines[start_i : end_i + 1]
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    return {
+        "success": True,
+        "changed": True,
+        "file_path": file_path,
+        "kind": "js_ts",
+        "merged_groups": merged_groups,
+        "removed_blocks": removed_blocks,
+    }
+
+
 # @beacon[
 #   id=carto-js-ts@_iter_ast_outline_nodes-nf4x,
 #   role=carto-js-ts,
