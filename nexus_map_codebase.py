@@ -2121,6 +2121,13 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
 # Duplicate AST beacon normalization (hygiene)
 # ---------------------------------------------------------------------------
 
+# @beacon[
+#   id=carto-hygiene@_is_numeric_suffix_beacon_id,
+#   role=carto-hygiene: prefer numeric beacon ids when deduping,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+#   comment=Helper: True iff id looks like prefix@000123 (digits after @). Used by F12 beacon normalization.
+# ]
 def _is_numeric_suffix_beacon_id(beacon_id: str | None) -> bool:
     """Return True when beacon_id looks like 'prefix@000123' (digits after @)."""
     if not isinstance(beacon_id, str):
@@ -2172,6 +2179,13 @@ def _canonicalize_slice_labels_union(labels: list[str]) -> str:
     return ",".join(tokens)
 
 
+# @beacon[
+#   id=carto-hygiene@normalize_duplicate_ast_beacons_in_file,
+#   role=carto-hygiene: normalize duplicate AST beacons in file,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+#   comment=F12 hygiene: merge duplicate AST beacon blocks targeting the same AST header (Python/JS/TS/Vue).,
+# ]
 def normalize_duplicate_ast_beacons_in_file(file_path: str) -> dict[str, Any]:
     """Normalize duplicate AST beacons that target the same AST header.
 
@@ -2204,6 +2218,13 @@ def normalize_duplicate_ast_beacons_in_file(file_path: str) -> dict[str, Any]:
         return {"success": False, "changed": False, "file_path": file_path, "error": str(e)}
 
 
+# @beacon[
+#   id=carto-hygiene@_normalize_duplicate_ast_beacons_python,
+#   role=carto-hygiene: dedupe Python AST beacons,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+#   comment=Python implementation for normalize_duplicate_ast_beacons_in_file (anchor skips blank/#comments/@decorators).
+# ]
 def _normalize_duplicate_ast_beacons_python(file_path: str) -> dict[str, Any]:
     with open(file_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -2386,6 +2407,13 @@ def _normalize_duplicate_ast_beacons_python(file_path: str) -> dict[str, Any]:
     }
 
 
+# @beacon[
+#   id=carto-hygiene@_normalize_duplicate_ast_beacons_js_ts,
+#   role=carto-hygiene: dedupe JS/TS/Vue AST beacons,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+#   comment=JS/TS/Vue implementation for normalize_duplicate_ast_beacons_in_file (anchor skips blank/comments/@decorators).
+# ]
 def _normalize_duplicate_ast_beacons_js_ts(file_path: str) -> dict[str, Any]:
     with open(file_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -2877,43 +2905,52 @@ def apply_python_beacons(
 
         return _strip_beacon_meta_blocks_from_context(context)
 
-    # Pre-pass: for snippet-less span beacons, compute anchor lineno and
-    # auto-upgrade to AST when the anchor is a clean class/function/async start.
+    # Pre-pass: for snippet-less beacons (AST or SPAN), compute an anchor
+    # lineno (the next significant line after the metadata block).
+    #
+    # For SPAN beacons only, we may auto-upgrade to AST when the anchor is a
+    # clean class/function/async start.
     #
     # IMPORTANT RULE (mirrors JS/TS): do NOT auto-upgrade an explicit span
     # region (paired opener/closer), indicated by span_lineno_end.
     for beacon in beacons:
         kind = beacon.get("kind")
         start_snippet = beacon.get("start_snippet")
+        if kind not in {"span", "ast"}:
+            continue
+        if start_snippet:
+            continue
+
+        comment_line = beacon.get("comment_line") or 0
+        if isinstance(comment_line, int) and comment_line > 0:
+            anchor = _next_anchor_line_after(comment_line)
+        else:
+            anchor = None
+        if anchor is None:
+            continue
+        beacon["_anchor_lineno"] = anchor
+
+        # Auto-upgrade logic is SPAN-only.
         if kind != "span":
             continue
-        if not start_snippet:
-            comment_line = beacon.get("comment_line") or 0
-            if isinstance(comment_line, int) and comment_line > 0:
-                anchor = _next_anchor_line_after(comment_line)
-            else:
-                anchor = None
-            if anchor is None:
+
+        # Never auto-upgrade a paired span region.
+        if isinstance(beacon.get("span_lineno_end"), int):
+            continue
+
+        # See if this line is exactly the start of a class/function/async
+        # AST node. If so, we treat this beacon as an AST beacon by default.
+        ast_candidates: list[dict[str, Any]] = []
+        for node in ast_nodes:
+            ast_type = node.get("ast_type")
+            if ast_type not in {"class", "function", "async_function"}:
                 continue
-            beacon["_anchor_lineno"] = anchor
+            ln = node.get("orig_lineno_start_unused")
+            if isinstance(ln, int) and ln == anchor:
+                ast_candidates.append(node)
 
-            # Never auto-upgrade a paired span region.
-            if isinstance(beacon.get("span_lineno_end"), int):
-                continue
-
-            # See if this line is exactly the start of a class/function/async
-            # AST node. If so, we treat this beacon as an AST beacon by default.
-            ast_candidates: list[dict[str, Any]] = []
-            for node in ast_nodes:
-                ast_type = node.get("ast_type")
-                if ast_type not in {"class", "function", "async_function"}:
-                    continue
-                ln = node.get("orig_lineno_start_unused")
-                if isinstance(ln, int) and ln == anchor:
-                    ast_candidates.append(node)
-
-            if len(ast_candidates) == 1:
-                beacon["kind"] = "ast"
+        if len(ast_candidates) == 1:
+            beacon["kind"] = "ast"
 
     # Pass 1: AST beacons
     for beacon in beacons:
