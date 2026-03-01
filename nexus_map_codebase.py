@@ -3740,21 +3740,52 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                     results.append(method_node)
                     continue
 
-                # Top-level const/let/var declarations (common in real-world "flat" modules).
+                # const/let/var declarations.
                 #
-                # Why top-level only?
-                # - Prevent outline noise explosion.
-                # - Primary goal is to make modules like router/index.ts navigable.
+                # We ALWAYS parse variable declarations so we can represent common
+                # JS/TS patterns like Pinia/Vue stores:
                 #
-                # We emit a node for each simple identifier declarator:
-                #   const router = createRouter(...)
-                #   const foo = () => { ... }
-                #   let bar = 1
-                if t in {"lexical_declaration", "variable_declaration"} and not qual_prefix:
+                #   export const useXStore = defineStore('x', () => {
+                #       const doThing = () => { ... }
+                #       function helper() { ... }
+                #       return { doThing }
+                #   })
+                #
+                # Policy to avoid outline explosion:
+                # - At module scope (qual_prefix is None): emit nodes for simple
+                #   identifier declarators (existing behavior).
+                # - Inside an existing qual_prefix (nested scope): emit ONLY
+                #   declarators whose RHS is function-like (arrow/function) or a
+                #   known "container" call like defineStore(...) that contains a
+                #   function body.
+                if t in {"lexical_declaration", "variable_declaration"}:
                     decl_text = node_text(child).lstrip()
                     decl_kind = (decl_text.split(None, 1)[0] if decl_text else "const").strip()
                     if decl_kind not in {"const", "let", "var"}:
                         decl_kind = "const"
+
+                    def _is_function_like(v) -> bool:
+                        return bool(v) and getattr(v, "type", None) in {"arrow_function", "function"}
+
+                    def _find_define_store_setup_body(v):
+                        # Return the BODY node of the setup function passed to defineStore, else None.
+                        if not v or getattr(v, "type", None) != "call_expression":
+                            return None
+                        fn = v.child_by_field_name("function")
+                        if fn is None:
+                            return None
+                        fn_text = node_text(fn).strip()
+                        if not fn_text.endswith("defineStore"):
+                            return None
+                        args = v.child_by_field_name("arguments")
+                        if args is None:
+                            return None
+                        for a in getattr(args, "named_children", []) or []:
+                            if getattr(a, "type", None) in {"arrow_function", "function"}:
+                                body = a.child_by_field_name("body")
+                                if body is not None:
+                                    return body
+                        return None
 
                     for decl_child in child.children:
                         if decl_child.type != "variable_declarator":
@@ -3769,16 +3800,32 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                         if not var_name:
                             continue
 
-                        qual = var_name
+                        value_node = decl_child.child_by_field_name("value")
+                        setup_body = None
+                        if value_node is not None:
+                            if _is_function_like(value_node):
+                                setup_body = value_node.child_by_field_name("body")
+                            else:
+                                setup_body = _find_define_store_setup_body(value_node)
+
+                        emit_here = (not qual_prefix) or (setup_body is not None)
+                        if not emit_here:
+                            continue
+
+                        qual = var_name if not qual_prefix else f"{qual_prefix}.{var_name}"
                         start_line = decl_child.start_point[0] + 1
                         end_line = decl_child.end_point[0] + 1
                         note_text = make_note(qual, start_line)
+
+                        children_local: list[dict[str, Any]] = []
+                        if setup_body is not None:
+                            children_local = walk(setup_body, qual_prefix=qual)
 
                         node_dict: Dict[str, Any] = {
                             "name": f"{EMOJI_FUNC} {decl_kind} {var_name}",
                             "priority": priority_counter[0],
                             "note": note_text,
-                            "children": [],
+                            "children": children_local,
                             "ast_type": f"{decl_kind}_decl",
                             "ast_name": var_name,
                             "ast_qualname": qual,
@@ -4102,14 +4149,38 @@ def _parse_js_ts_outline_from_source(
                     results.append(method_node)
                     continue
 
-                # Top-level const/let/var declarations in Vue <script> sections.
-                # We intentionally only emit these at module scope (qual_prefix is None)
-                # to keep outlines compact.
-                if t in {"lexical_declaration", "variable_declaration"} and not qual_prefix:
+                # const/let/var declarations in Vue <script> sections.
+                #
+                # We emit module-scope identifiers as navigational entry points,
+                # but we ALSO emit nested function-like declarations so patterns
+                # like defineStore(...) show their inner helpers/actions.
+                if t in {"lexical_declaration", "variable_declaration"}:
                     decl_text = node_text(child).lstrip()
                     decl_kind = (decl_text.split(None, 1)[0] if decl_text else "const").strip()
                     if decl_kind not in {"const", "let", "var"}:
                         decl_kind = "const"
+
+                    def _is_function_like(v) -> bool:
+                        return bool(v) and getattr(v, "type", None) in {"arrow_function", "function"}
+
+                    def _find_define_store_setup_body(v):
+                        if not v or getattr(v, "type", None) != "call_expression":
+                            return None
+                        fn = v.child_by_field_name("function")
+                        if fn is None:
+                            return None
+                        fn_text = node_text(fn).strip()
+                        if not fn_text.endswith("defineStore"):
+                            return None
+                        args = v.child_by_field_name("arguments")
+                        if args is None:
+                            return None
+                        for a in getattr(args, "named_children", []) or []:
+                            if getattr(a, "type", None) in {"arrow_function", "function"}:
+                                body = a.child_by_field_name("body")
+                                if body is not None:
+                                    return body
+                        return None
 
                     for decl_child in child.children:
                         if decl_child.type != "variable_declarator":
@@ -4124,7 +4195,19 @@ def _parse_js_ts_outline_from_source(
                         if not var_name:
                             continue
 
-                        inner = var_name
+                        value_node = decl_child.child_by_field_name("value")
+                        setup_body = None
+                        if value_node is not None:
+                            if _is_function_like(value_node):
+                                setup_body = value_node.child_by_field_name("body")
+                            else:
+                                setup_body = _find_define_store_setup_body(value_node)
+
+                        emit_here = (not qual_prefix) or (setup_body is not None)
+                        if not emit_here:
+                            continue
+
+                        inner = var_name if not qual_prefix else f"{qual_prefix}.{var_name}"
                         qual = _qual(inner)
 
                         start_line_local = decl_child.start_point[0] + 1
@@ -4134,11 +4217,15 @@ def _parse_js_ts_outline_from_source(
 
                         note_text = make_note(qual, start_line_local)
 
+                        children_local: list[dict[str, Any]] = []
+                        if setup_body is not None:
+                            children_local = walk(setup_body, qual_prefix=inner)
+
                         node_dict: Dict[str, Any] = {
                             "name": f"{EMOJI_FUNC} {decl_kind} {var_name}",
                             "priority": priority_counter[0],
                             "note": note_text,
-                            "children": [],
+                            "children": children_local,
                             "ast_type": f"{decl_kind}_decl",
                             "ast_name": var_name,
                             "ast_qualname": qual,
