@@ -6,6 +6,7 @@ import argparse
 import tempfile
 import random
 import string
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
 import re
@@ -27,6 +28,18 @@ except Exception:
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+
+# @beacon[
+#   id=auto-beacon@_warn_name-ts8n,
+#   role=_warn_name,
+#   slice_labels=f9-f12-handlers,ra-reconcile,carto-js-ts,
+#   kind=ast,
+# ]
+def _warn_name(base: str) -> str:
+    """Append generation timestamp so stale warning nodes are visibly old."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"{base} [{ts}]"
 
 # --- Configuration (Synced) ---
 
@@ -1295,7 +1308,7 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
         return root_children
         
     except Exception as e:
-        return [{"name": "⚠️ MD Parse Error", "note": str(e), "children": []}]
+        return [{"name": _warn_name("⚠️ MD Parse Error"), "note": str(e), "children": []}]
 
 def normalize_for_match(s: str) -> str:
     """Normalize a snippet or line for matching.
@@ -3444,7 +3457,7 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
 
     except Exception as e:
         return [{
-            "name": f"⚠️ Parse Error",
+            "name": _warn_name("⚠️ Parse Error"),
             "note": str(e),
             "children": []
         }]
@@ -3471,14 +3484,14 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
     ext = os.path.splitext(file_path)[1].lower()
     if ext not in {".js", ".jsx", ".ts", ".tsx"}:
         return [{
-            "name": "⚠️ Unsupported JS/TS extension",
+            "name": _warn_name("⚠️ Unsupported JS/TS extension"),
             "note": f"File {file_path!r} does not look like a JS/TS source file.",
             "children": [],
         }]
 
     if not _HAVE_TREE_SITTER:
         return [{
-            "name": "⚠️ JS/TS parsing not available",
+            "name": _warn_name("⚠️ JS/TS parsing not available"),
             "note": (
                 "Tree-sitter / tree_sitter_language_pack could not be imported. "
                 "Install 'tree_sitter' and 'tree_sitter-language-pack' "
@@ -4009,7 +4022,7 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
 
     except Exception as e:  # pragma: no cover - safety net
         return [{
-            "name": "⚠️ Parse Error (JS/TS)",
+            "name": _warn_name("⚠️ Parse Error (JS/TS)"),
             "note": str(e),
             "children": [],
         }]
@@ -4056,7 +4069,7 @@ def _parse_js_ts_outline_from_source(
     """
     if not _HAVE_TREE_SITTER:
         return [{
-            "name": "⚠️ JS/TS parsing not available",
+            "name": _warn_name("⚠️ JS/TS parsing not available"),
             "note": (
                 "Tree-sitter / tree_sitter_language_pack could not be imported. "
                 "Install 'tree_sitter' and 'tree_sitter-language-pack' "
@@ -4563,7 +4576,7 @@ def _parse_js_ts_outline_from_source(
 
     except Exception as e:  # pragma: no cover
         return [{
-            "name": "⚠️ Parse Error (VUE script JS/TS)",
+            "name": _warn_name("⚠️ Parse Error (VUE script JS/TS)"),
             "note": str(e),
             "children": [],
         }]
@@ -4583,7 +4596,7 @@ def parse_vue_outline(file_path: str) -> List[Dict[str, Any]]:
     """
     if not _HAVE_TREE_SITTER:
         return [{
-            "name": "⚠️ Vue parsing not available",
+            "name": _warn_name("⚠️ Vue parsing not available"),
             "note": (
                 "Tree-sitter / tree_sitter_language_pack could not be imported. "
                 "Install 'tree_sitter' and 'tree_sitter-language-pack' "
@@ -4597,7 +4610,7 @@ def parse_vue_outline(file_path: str) -> List[Dict[str, Any]]:
             source_text = f.read()
     except Exception as e:  # noqa: BLE001
         return [{
-            "name": "⚠️ Parse Error (VUE)",
+            "name": _warn_name("⚠️ Parse Error (VUE)"),
             "note": f"failed_to_read_file: {e}",
             "children": [],
         }]
@@ -4612,7 +4625,7 @@ def parse_vue_outline(file_path: str) -> List[Dict[str, Any]]:
         root = tree.root_node
     except Exception as e:  # pragma: no cover
         return [{
-            "name": "⚠️ Parse Error (VUE)",
+            "name": _warn_name("⚠️ Parse Error (VUE)"),
             "note": str(e),
             "children": [],
         }]

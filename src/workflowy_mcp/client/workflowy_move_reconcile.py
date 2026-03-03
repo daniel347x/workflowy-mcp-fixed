@@ -373,6 +373,9 @@ async def reconcile_tree(
     original_ids_seen = set()
     option_b_enabled = False
     explicitly_preserved_ids = set()
+    # Optional F12/CARTO-only hard guard: never DELETE salvageable Notes-style
+    # roots/subtrees (emoji+note heuristic). Default off for generic WEAVE.
+    protect_notes_emoji_delete_guard = False
 
     if isinstance(source_json, dict):
         file_root = source_json.get('export_root_id') or source_json.get('root_id') or source_json.get('parent_id')
@@ -394,6 +397,7 @@ async def reconcile_tree(
         # their descendants). These IDs – and their ancestors – must never be
         # deleted even though they are missing from the GEM nodes list.
         explicitly_preserved_ids = set(source_json.get('explicitly_preserved_ids', []) or [])
+        protect_notes_emoji_delete_guard = bool(source_json.get('protect_notes_emoji_delete_guard', False))
 
         log(f"Detected source document with export_root_id={file_root} jewel_file={jewel_file}")
         log(f"   Root children_status: {root_children_status!r}")
@@ -405,6 +409,8 @@ async def reconcile_tree(
             log(f"   explicitly_preserved_ids present: {len(explicitly_preserved_ids)} IDs marked as preserved-in-ETHER (exploration)")
         else:
             log("   No explicitly_preserved_ids present; DELETE phase will treat all missing nodes via Option A/B only")
+        if protect_notes_emoji_delete_guard:
+            log("   protect_notes_emoji_delete_guard enabled: salvageable Notes-style roots are DELETE-protected")
     else:
         source_nodes = source_json
         root_children_status = 'complete'
@@ -1384,6 +1390,43 @@ async def reconcile_tree(
         log(f"   ABORTING: planned_delete_count {planned_delete_count} exceeds max_delete_threshold {max_delete_threshold} and force=False.")
         return log_summary_and_close(note="Aborted by delete threshold")
 
+    # DELETE fail-safe (F12/CARTO scoped): refuse to delete salvageable Notes-like
+    # roots even if they slip through planning. This is intentionally optional
+    # via source_json['protect_notes_emoji_delete_guard'] so generic WEAVE stays unchanged.
+    #
+    # IMPORTANT: use the single canonical emoji marker set from api_client_nexus
+    # (NOTES_MARKER_FIRST_CODEPOINTS) so behavior stays in sync across modules.
+    # Fail-fast by design: if this import breaks, raise immediately so the issue
+    # is visible and fixed instead of silently degrading safety behavior.
+    from .api_client_nexus import NOTES_MARKER_FIRST_CODEPOINTS as _notes_marker_first_codepoints
+
+    def _is_salvageable_notes_delete_guard(node_name: str, node_note: str) -> bool:
+        name = (node_name or "").strip()
+        if not name:
+            return False
+        if name[0] not in _notes_marker_first_codepoints:
+            return False
+
+        # Mirror _is_notes_name safeguard against structural Cartographer nodes.
+        first_line = None
+        for line in str(node_note or "").splitlines():
+            s = line.strip()
+            if s:
+                first_line = s.casefold()
+                break
+
+        if first_line and (
+            first_line.startswith("path:")
+            or first_line.startswith("root:")
+            or first_line.startswith("ast_qualname:")
+            or first_line.startswith("md_path:")
+            or first_line.startswith("beacon (")
+            or first_line.startswith("@beacon[")
+        ):
+            return False
+
+        return True
+
     for d in planned_delete_roots:
         # @beacon[
         #   id=carto-cancel@reconcile_tree.delete_loop_cancel_check,
@@ -1397,7 +1440,26 @@ async def reconcile_tree(
         #   id=carto-cancel@reconcile_tree.delete_loop_cancel_check,
         # ]
         try:
-            node_name = Map_T2.get(d, {}).get('name', 'unknown')
+            node_obj = Map_T2.get(d, {}) or {}
+            node_name = node_obj.get('name', 'unknown')
+            node_note = node_obj.get('note') or node_obj.get('no') or ''
+
+            if protect_notes_emoji_delete_guard and _is_salvageable_notes_delete_guard(str(node_name), str(node_note)):
+                log(f"   >>> DELETE SKIPPED by protect_notes_emoji_delete_guard: {d} (name: {node_name})")
+                journal(
+                    {
+                        "op": "delete",
+                        "status": "skipped",
+                        "node_id": d,
+                        "resumability_safe": True,
+                        "message": (
+                            f"node DELETE skipped by protect_notes_emoji_delete_guard for node {d} "
+                            f"(name: {node_name})"
+                        ),
+                    }
+                )
+                continue
+
             log(f"   >>> DELETING root: {d} (name: {node_name})")
             journal(
                 {

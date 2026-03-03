@@ -1336,13 +1336,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus.beacon_get_code_snippet._derive_search_text_from_node_name-qsxf,
         #   role=WorkFlowyClientNexus.beacon_get_code_snippet._derive_search_text_from_node_name,
-        #   slice_labels=WorkFlowyClientNexus-beacon_get_code_snippet-_derive_search_text_from_node_name,nexus-test,
-        #   kind=ast,
-        # ]
-        # @beacon[
-        #   id=auto-beacon@WorkFlowyClientNexus.beacon_get_code_snippet._derive_search_text_from_node_name-beqx,
-        #   role=WorkFlowyClientNexus.beacon_get_code_snippet._derive_search_text_from_node_name,
-        #   slice_labels=WorkFlowyClientNexus-beacon_get_code_snippet-_derive_search_text_from_node_name,nexus-foo,
+        #   slice_labels=WorkFlowyClientNexus-beacon_get_code_snippet-_derive_search_text_from_node_name,nexus-test,nexus-foo,
         #   kind=ast,
         # ]
         def _derive_search_text_from_node_name(raw_name: str) -> str:
@@ -4865,6 +4859,11 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "nodes": source_root.get("children") or [],
                 "original_ids_seen": sorted(original_ids_seen),
                 "explicitly_preserved_ids": sorted(explicitly_preserved_ids),
+                # F12/CARTO safety: even after planning filters, refuse DELETE
+                # for salvageable Notes-style roots/subtrees by emoji+note heuristic.
+                # This guard is intentionally scoped to F12-generated source_json
+                # so generic WEAVE behavior is unchanged.
+                "protect_notes_emoji_delete_guard": True,
             }
             # @beacon-close[
             #   id=auto-beacon@refresh_file_node_beacons-s801-inner2,
