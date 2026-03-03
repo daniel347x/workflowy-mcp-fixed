@@ -621,7 +621,7 @@ def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 "kind": kind,
                 "start_snippet": start_snippet,
                 "end_snippet": end_snippet,
-                "comment": fields.get("comment"),
+                "comment": (fields.get("comment") if fields.get("comment") not in (None, "") else fields.get("comments")),
                 "comment_line": comment_line,
                 "span_lineno_start": span_start,
                 "span_lineno_end": span_end,
@@ -2042,7 +2042,7 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     "kind": kind,
                     "start_snippet": fields.get("start_snippet"),
                     "end_snippet": fields.get("end_snippet"),
-                    "comment": fields.get("comment"),
+                    "comment": (fields.get("comment") if fields.get("comment") not in (None, "") else fields.get("comments")),
                     "comment_line": comment_line,
                     "show_span": show_span,
                     "show_span_explicit": show_span_explicit,
@@ -5275,7 +5275,7 @@ def parse_sql_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     "kind": kind,
                     "start_snippet": fields.get("start_snippet"),
                     "end_snippet": fields.get("end_snippet"),
-                    "comment": fields.get("comment"),
+                    "comment": (fields.get("comment") if fields.get("comment") not in (None, "") else fields.get("comments")),
                     "comment_line": comment_line,
                     "show_span": show_span,
                     "show_span_explicit": show_span_explicit,
@@ -5469,7 +5469,7 @@ def parse_js_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 "kind": kind,
                 "start_snippet": fields.get("start_snippet"),
                 "end_snippet": fields.get("end_snippet"),
-                "comment": fields.get("comment"),
+                "comment": (fields.get("comment") if fields.get("comment") not in (None, "") else fields.get("comments")),
                 "comment_line": comment_line,
                 "kind_explicit": bool(kind_raw),
                 "show_span": show_span,
@@ -5630,7 +5630,7 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     "kind": kind,
                     "start_snippet": fields.get("start_snippet"),
                     "end_snippet": fields.get("end_snippet"),
-                    "comment": fields.get("comment"),
+                    "comment": (fields.get("comment") if fields.get("comment") not in (None, "") else fields.get("comments")),
                     "comment_line": comment_line,
                 }
                 beacons.append(beacon)
@@ -5784,7 +5784,7 @@ def parse_yaml_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     "kind": kind,
                     "start_snippet": fields.get("start_snippet"),
                     "end_snippet": fields.get("end_snippet"),
-                    "comment": fields.get("comment"),
+                    "comment": (fields.get("comment") if fields.get("comment") not in (None, "") else fields.get("comments")),
                     "comment_line": comment_line,
                 }
                 beacons.append(beacon)
@@ -7063,6 +7063,43 @@ def split_name_and_tags(raw_name: str) -> tuple[str, list[str]]:
     return base, tags
 
 
+def normalize_beacon_comment_field_aliases_in_file(file_path: str) -> Dict[str, Any]:
+    """Normalize legacy beacon key alias `comments=` -> `comment=` in source files.
+
+    This is a best-effort hygiene pass used by F12 refresh/update flows so
+    users can type either field name and the source is silently canonicalized.
+
+    We intentionally keep this simple and fail-open:
+    - replace line-level metadata keys that look like beacon entries
+    - ignore rare edge cases (duplicate keys, mixed singular/plural)
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            original = f.read()
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "changed": False, "file_path": file_path, "error": str(e)}
+
+    # Match metadata-like lines such as:
+    #   #   comments=...
+    #   //  comments=...
+    #   --  comments=...
+    #   *   comments=...
+    #       comments=...
+    pattern = re.compile(r"(^\s*(?:(?:#|//|--|\*)\s*)?)comments(\s*=)", re.MULTILINE)
+    normalized = pattern.sub(r"\1comment\2", original)
+
+    if normalized == original:
+        return {"success": True, "changed": False, "file_path": file_path}
+
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(normalized)
+    except Exception as e:  # noqa: BLE001
+        return {"success": False, "changed": False, "file_path": file_path, "error": str(e)}
+
+    return {"success": True, "changed": True, "file_path": file_path}
+
+
 def _indent_beacon_block(block_lines: list[str], source_lines: list[str], insert_idx: int) -> list[str]:
     """Indent beacon block to match the following non-blank line's indentation.
     
@@ -7232,7 +7269,7 @@ def update_beacon_from_node_python(
             stripped = line.strip()
             if stripped.startswith("role:"):
                 role_val = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("comment:"):
+            elif stripped.startswith("comment:") or stripped.startswith("comments:"):
                 comment_val = stripped.split(":", 1)[1].strip()
 
         show_span_note = _extract_show_span_from_note(note)
@@ -7620,7 +7657,7 @@ def update_beacon_from_node_js_ts(
             stripped = line.strip()
             if stripped.startswith("role:"):
                 role_val = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("comment:"):
+            elif stripped.startswith("comment:") or stripped.startswith("comments:"):
                 comment_val = stripped.split(":", 1)[1].strip()
 
         show_span_note = _extract_show_span_from_note(note)
@@ -8111,7 +8148,7 @@ def update_beacon_from_node_vue(
             s = ln.strip()
             if s.startswith("role:"):
                 role_val = s.split(":", 1)[1].strip()
-            elif s.startswith("comment:"):
+            elif s.startswith("comment:") or s.startswith("comments:"):
                 comment_val = s.split(":", 1)[1].strip()
             elif s.startswith("kind:"):
                 kv = s.split(":", 1)[1].strip().lower()
@@ -8478,7 +8515,7 @@ def update_beacon_from_node_markdown(
             stripped = line.strip()
             if stripped.startswith("role:"):
                 role_val = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("comment:"):
+            elif stripped.startswith("comment:") or stripped.startswith("comments:"):
                 comment_val = stripped.split(":", 1)[1].strip()
 
         show_span_note = _extract_show_span_from_note(note)
@@ -8846,7 +8883,7 @@ def update_beacon_from_node_sql(
         stripped = line.strip()
         if stripped.startswith("role:"):
             role_val = stripped.split(":", 1)[1].strip()
-        elif stripped.startswith("comment:"):
+        elif stripped.startswith("comment:") or stripped.startswith("comments:"):
             comment_val = stripped.split(":", 1)[1].strip()
 
     show_span_note = _extract_show_span_from_note(note)
@@ -9054,7 +9091,7 @@ def update_beacon_from_node_shell(
         stripped = line.strip()
         if stripped.startswith("role:"):
             role_val = stripped.split(":", 1)[1].strip()
-        elif stripped.startswith("comment:"):
+        elif stripped.startswith("comment:") or stripped.startswith("comments:"):
             comment_val = stripped.split(":", 1)[1].strip()
 
     show_span_note = _extract_show_span_from_note(note)
@@ -9218,7 +9255,7 @@ def update_beacon_from_node_yaml(
         stripped = line.strip()
         if stripped.startswith("role:"):
             role_val = stripped.split(":", 1)[1].strip()
-        elif stripped.startswith("comment:"):
+        elif stripped.startswith("comment:") or stripped.startswith("comments:"):
             comment_val = stripped.split(":", 1)[1].strip()
 
     show_span_note = _extract_show_span_from_note(note)

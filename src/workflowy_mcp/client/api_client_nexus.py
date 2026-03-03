@@ -4243,6 +4243,24 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         except Exception as e:  # noqa: BLE001
             raise NetworkError(f"Failed to import nexus_map_codebase: {e}") from e
 
+        # Best-effort canonicalization: normalize legacy `comments=` key to `comment=`
+        # inside beacon metadata before mapping.
+        try:
+            if hasattr(cartographer, "normalize_beacon_comment_field_aliases_in_file"):
+                norm_comment_res = cartographer.normalize_beacon_comment_field_aliases_in_file(source_path)  # type: ignore[attr-defined]
+                if isinstance(norm_comment_res, dict) and norm_comment_res.get("changed"):
+                    log_event(
+                        "refresh_file_node_beacons (legacy): normalized beacon key alias "
+                        f"comments= -> comment= in {source_path}",
+                        "BEACON",
+                    )
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                "refresh_file_node_beacons (legacy): comment-field alias normalization failed "
+                f"for {source_path}: {e}",
+                "BEACON",
+            )
+
         try:
             file_map = cartographer.map_codebase(source_path)  # type: ignore[attr-defined]
         except Exception as e:  # noqa: BLE001
@@ -4666,6 +4684,25 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 raise NetworkError(
                     f"Failed to import nexus_map_codebase in incremental scaffold: {e}",
                 ) from e
+
+            # Optional hygiene pass: normalize legacy `comments=` key alias
+            # to canonical `comment=` inside beacon metadata.
+            try:
+                if hasattr(cartographer, "normalize_beacon_comment_field_aliases_in_file"):
+                    norm_comment_res = cartographer.normalize_beacon_comment_field_aliases_in_file(source_path)  # type: ignore[attr-defined]
+                    if isinstance(norm_comment_res, dict) and norm_comment_res.get("changed"):
+                        log_event(
+                            "refresh_file_node_beacons: normalized beacon key alias "
+                            f"comments= -> comment= in {source_path}",
+                            "BEACON",
+                        )
+            except Exception as e:  # noqa: BLE001
+                # Fail-open: never let normalization issues block refresh.
+                log_event(
+                    "refresh_file_node_beacons: comment-field alias normalization failed "
+                    f"for {source_path}: {e}",
+                    "BEACON",
+                )
 
             # Optional hygiene pass: normalize duplicate AST beacons that may
             # have been introduced by manual/agent edits (edit_file) so the
