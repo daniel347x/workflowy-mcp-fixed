@@ -7063,6 +7063,13 @@ def split_name_and_tags(raw_name: str) -> tuple[str, list[str]]:
     return base, tags
 
 
+# @beacon[
+#   id=auto-beacon@normalize_beacon_comment_field_aliases_in_file-9q2m,
+#   role=normalize_beacon_comment_field_aliases_in_file,
+#   slice_labels=f9-f12-handlers,ra-reconcile,carto-js-ts-beacons,
+#   kind=ast,
+#   comment=Canonicalize legacy beacon metadata alias comments= to comment= during F12 flows.
+# ]
 def normalize_beacon_comment_field_aliases_in_file(file_path: str) -> Dict[str, Any]:
     """Normalize legacy beacon key alias `comments=` -> `comment=` in source files.
 
