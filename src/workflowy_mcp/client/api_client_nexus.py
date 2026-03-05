@@ -2650,6 +2650,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 node = nodes_by_id.get(nid) or {}
                 nname = node.get("name") or "(no name)"
                 fpath = node_to_file_path.get(nid) or "(unknown Path)"
+                note_str = str(node.get("note") or node.get("no") or "")
+                ast_q = _extract_ast_qualname(note_str) or "(none)"
+                line_no = node.get("orig_lineno_start_unused")
+                if not isinstance(line_no, int):
+                    line_no = node.get("line") if isinstance(node.get("line"), int) else None
+                line_repr = str(line_no) if isinstance(line_no, int) else "?"
+
                 buckets: list[str] = []
                 if nid in beacon_hits:
                     buckets.append("beacon")
@@ -2663,8 +2670,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     buckets.append("ast~contains")
                 if nid in contains_name_hits:
                     buckets.append("name~contains")
+
                 details.append(
-                    f"id={nid} name={nname!r} file={fpath!r} via={'+'.join(buckets)}"
+                    f"id={nid} line={line_repr} ast={ast_q!r} name={nname!r} file={fpath!r} via={'+'.join(buckets)}"
                 )
             raise NetworkError(
                 "read_text_snippet_by_symbol: symbol is ambiguous; candidates:\n"
