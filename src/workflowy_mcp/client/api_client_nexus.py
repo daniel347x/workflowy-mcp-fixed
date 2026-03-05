@@ -2442,9 +2442,43 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 contains_name_hits.add(s_nid)
 
         # Determine which strategies are enabled.
-        use_beacon = symbol_kind in {"auto", "beacon"}
-        use_ast = symbol_kind in {"auto", "ast"}
-        use_name = symbol_kind in {"auto", "name"}
+        #
+        # Accept a few human-friendly aliases so callers can use values like
+        # "function" (common mental model) instead of our internal "name".
+        requested_symbol_kind_raw = (symbol_kind or "auto").strip().lower()
+        symbol_kind_aliases: dict[str, str] = {
+            "auto": "auto",
+            "beacon": "beacon",
+            "ast": "ast",
+            "name": "name",
+            # Friendly aliases
+            "function": "name",
+            "method": "name",
+            "class": "name",
+            "identifier": "name",
+            "qualname": "ast",
+        }
+        requested_symbol_kind = symbol_kind_aliases.get(
+            requested_symbol_kind_raw,
+            requested_symbol_kind_raw,
+        )
+        if requested_symbol_kind not in {"auto", "beacon", "ast", "name"}:
+            raise NetworkError(
+                "read_text_snippet_by_symbol: symbol_kind must be one of "
+                "'auto', 'beacon', 'ast', 'name' (aliases: function, method, class, "
+                f"identifier, qualname); got {symbol_kind!r}",
+            )
+
+        use_beacon = requested_symbol_kind in {"auto", "beacon"}
+        use_ast = requested_symbol_kind in {"auto", "ast"}
+        use_name = requested_symbol_kind in {"auto", "name"}
+
+        # Always collect all strategy buckets during the scan so we can
+        # transparently fallback to cross-kind resolution if the requested
+        # kind yields no match.
+        collect_beacon = True
+        collect_ast = True
+        collect_name = True
 
         # 5) Scan selected FILE subtrees and collect matches.
         for file_node, owner_path, owner_abs_path in search_roots:
@@ -2455,14 +2489,14 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             for node in _iter_subtree(root_id):
                 note_str = str(node.get("note") or node.get("no") or "")
 
-                if use_beacon:
+                if collect_beacon:
                     beacon_id_val, role_val = _extract_beacon_fields(note_str)
                     if (beacon_id_val and beacon_id_val in symbol_variants) or (
                         role_val and role_val in symbol_variants
                     ):
                         _record_hit(node, owner_path_for_record, "beacon")
 
-                if use_ast:
+                if collect_ast:
                     ast_q = _extract_ast_qualname(note_str)
                     if ast_q:
                         # If the caller provided a qualified name (contains '.' or ':'),
@@ -2495,7 +2529,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         if matched:
                             _record_hit(node, owner_path_for_record, "ast")
 
-                if use_name:
+                if collect_name:
                     norm_name = _normalize_node_name(node.get("name"))
                     if norm_name:
                         if norm_name in symbol_variants:
@@ -2515,7 +2549,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     note_lc = note_str.lower()
 
                     # beacon id/role "contains"
-                    if use_beacon:
+                    if collect_beacon:
                         beacon_id_val, role_val = _extract_beacon_fields(note_str)
                         if beacon_id_val or role_val:
                             bid_lc = (beacon_id_val or "").lower()
@@ -2526,7 +2560,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 _record_contains_hit(node, owner_path_for_record, "beacon")
 
                     # AST_QUALNAME "contains"
-                    if use_ast:
+                    if collect_ast:
                         ast_q = _extract_ast_qualname(note_str)
                         if ast_q:
                             ast_lc = ast_q.lower()
@@ -2534,7 +2568,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 _record_contains_hit(node, owner_path_for_record, "ast")
 
                     # Name "contains"
-                    if use_name:
+                    if collect_name:
                         if any(n in raw_name_lc for n in contains_needles_lc):
                             _record_contains_hit(node, owner_path_for_record, "name")
 
@@ -2549,9 +2583,9 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     # has AST_QUALNAME metadata, bucket as AST.
                     if any(n in note_lc for n in contains_needles_lc):
                         ast_q = _extract_ast_qualname(note_str)
-                        if use_ast and ast_q:
+                        if collect_ast and ast_q:
                             _record_contains_hit(node, owner_path_for_record, "ast")
-                        elif use_name:
+                        elif collect_name:
                             _record_contains_hit(node, owner_path_for_record, "name")
 
         # 6) Compute union of hits across enabled strategies and enforce uniqueness.
@@ -2638,6 +2672,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             for s in active_contains:
                 union_ids.update(s)
 
+        if not union_ids and requested_symbol_kind != "auto":
+            # Fallback requested by UX: if the requested kind produced no
+            # match, try cross-kind resolution before failing.
+            fallback_exact = beacon_hits | ast_hits | name_hits
+            if fallback_exact:
+                union_ids.update(fallback_exact)
+            else:
+                union_ids.update(
+                    contains_beacon_hits
+                    | contains_ast_hits
+                    | contains_name_hits,
+                )
+
         if not union_ids:
             raise NetworkError(
                 "read_text_snippet_by_symbol: no matching node found for symbol "
@@ -2694,7 +2741,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         logger.info(
             "read_text_snippet_by_symbol: resolved symbol %r (kind=%r) to node %s",
             symbol,
-            symbol_kind,
+            requested_symbol_kind,
             target_id,
         )
 
@@ -2712,7 +2759,8 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         # Attach resolution metadata for debugging/inspection.
         result.setdefault("resolved_symbol", symbol)
-        result.setdefault("resolved_symbol_kind", symbol_kind)
+        result.setdefault("resolved_symbol_kind", requested_symbol_kind)
+        result.setdefault("resolved_symbol_kind_input", symbol_kind)
         result.setdefault("resolved_node_id", target_id)
         result.setdefault("resolved_file_path", node_to_file_path.get(target_id))
 
