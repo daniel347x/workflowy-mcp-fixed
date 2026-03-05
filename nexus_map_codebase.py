@@ -4008,7 +4008,8 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                                     if setup_body is None:
                                         options_obj = _find_define_store_options_object(value_node)
 
-                        emit_here = (not qual_prefix) or (setup_body is not None) or (options_obj is not None)
+                        in_lambda_scope = isinstance(qual_prefix, str) and ("__lambda_" in qual_prefix)
+                        emit_here = (not qual_prefix) or in_lambda_scope or (setup_body is not None) or (options_obj is not None)
                         if not emit_here:
                             continue
 
@@ -4615,7 +4616,8 @@ def _parse_js_ts_outline_from_source(
                                     if setup_body is None:
                                         options_obj = _find_define_store_options_object(value_node)
 
-                        emit_here = (not qual_prefix) or (setup_body is not None) or (options_obj is not None)
+                        in_lambda_scope = isinstance(qual_prefix, str) and ("__lambda_" in qual_prefix)
+                        emit_here = (not qual_prefix) or in_lambda_scope or (setup_body is not None) or (options_obj is not None)
                         if not emit_here:
                             continue
 
