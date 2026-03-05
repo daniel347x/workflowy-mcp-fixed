@@ -2360,7 +2360,7 @@ def _normalize_duplicate_ast_beacons_python(file_path: str) -> dict[str, Any]:
             canonical_id = ids[0] if ids else ""
 
         roles = [str(g.get("fields", {}).get("role") or "").strip() for g in group_sorted]
-        comments = [str(g.get("fields", {}).get("comment") or "").strip() for g in group_sorted]
+        comment = [str(g.get("fields", {}).get("comment") or "").strip() for g in group_sorted]
         slices = [str(g.get("fields", {}).get("slice_labels") or "").strip() for g in group_sorted]
 
         merged_role = _merge_unique_strings([r for r in roles if r])
@@ -2562,7 +2562,7 @@ def _normalize_duplicate_ast_beacons_js_ts(file_path: str) -> dict[str, Any]:
             canonical_id = ids[0] if ids else ""
 
         roles = [str(g.get("fields", {}).get("role") or "").strip() for g in group_sorted]
-        comments = [str(g.get("fields", {}).get("comment") or "").strip() for g in group_sorted]
+        comment = [str(g.get("fields", {}).get("comment") or "").strip() for g in group_sorted]
         slices = [str(g.get("fields", {}).get("slice_labels") or "").strip() for g in group_sorted]
 
         merged_role = _merge_unique_strings([r for r in roles if r])
@@ -3811,6 +3811,41 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                     def _is_function_like(v) -> bool:
                         return bool(v) and getattr(v, "type", None) in {"arrow_function", "function"}
 
+                    def _callee_simple_name(v) -> str:
+                        if not v or getattr(v, "type", None) != "call_expression":
+                            return ""
+                        fn = v.child_by_field_name("function")
+                        if fn is None:
+                            return ""
+                        fn_text = node_text(fn).strip()
+                        m = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", fn_text)
+                        return m.group(1) if m else ""
+
+                    # @beacon[
+                    #   id=carto-js-ts@parse_js_ts_outline._find_function_wrapper_body-c6f1,
+                    #   role=carto-js-ts,
+                    #   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+                    #   kind=ast,
+                    #   comment=Detect wrapper calls like computed(() => ...) so nested computed declarations appear in Workflowy AST maps.
+                    # ]
+                    def _find_function_wrapper_body(v):
+                        # Recognize wrapper calls that carry a function body in their args,
+                        # e.g. computed(() => { ... }).
+                        if not v or getattr(v, "type", None) != "call_expression":
+                            return None
+                        callee = _callee_simple_name(v)
+                        if callee not in {"computed"}:
+                            return None
+                        args = v.child_by_field_name("arguments")
+                        if args is None:
+                            return None
+                        for a in getattr(args, "named_children", []) or []:
+                            if _is_function_like(a):
+                                body = a.child_by_field_name("body")
+                                if body is not None:
+                                    return body
+                        return None
+
                     def _find_define_store_setup_body(v):
                         # Return the BODY node of the setup function passed to defineStore, else None.
                         if not v or getattr(v, "type", None) != "call_expression":
@@ -3967,9 +4002,11 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                             if _is_function_like(value_node):
                                 setup_body = value_node.child_by_field_name("body")
                             else:
-                                setup_body = _find_define_store_setup_body(value_node)
+                                setup_body = _find_function_wrapper_body(value_node)
                                 if setup_body is None:
-                                    options_obj = _find_define_store_options_object(value_node)
+                                    setup_body = _find_define_store_setup_body(value_node)
+                                    if setup_body is None:
+                                        options_obj = _find_define_store_options_object(value_node)
 
                         emit_here = (not qual_prefix) or (setup_body is not None) or (options_obj is not None)
                         if not emit_here:
@@ -4364,6 +4401,41 @@ def _parse_js_ts_outline_from_source(
                     def _is_function_like(v) -> bool:
                         return bool(v) and getattr(v, "type", None) in {"arrow_function", "function"}
 
+                    def _callee_simple_name(v) -> str:
+                        if not v or getattr(v, "type", None) != "call_expression":
+                            return ""
+                        fn = v.child_by_field_name("function")
+                        if fn is None:
+                            return ""
+                        fn_text = node_text(fn).strip()
+                        m = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", fn_text)
+                        return m.group(1) if m else ""
+
+                    # @beacon[
+                    #   id=carto-js-ts@_parse_js_ts_outline_from_source._find_function_wrapper_body-u2a4,
+                    #   role=carto-js-ts,
+                    #   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+                    #   kind=ast,
+                    #   comment=Detect wrapper calls like computed(() => ...) inside extracted Vue script sources so computed declarations map as AST nodes.
+                    # ]
+                    def _find_function_wrapper_body(v):
+                        # Recognize wrapper calls that carry a function body in their args,
+                        # e.g. computed(() => { ... }).
+                        if not v or getattr(v, "type", None) != "call_expression":
+                            return None
+                        callee = _callee_simple_name(v)
+                        if callee not in {"computed"}:
+                            return None
+                        args = v.child_by_field_name("arguments")
+                        if args is None:
+                            return None
+                        for a in getattr(args, "named_children", []) or []:
+                            if _is_function_like(a):
+                                body = a.child_by_field_name("body")
+                                if body is not None:
+                                    return body
+                        return None
+
                     def _find_define_store_setup_body(v):
                         if not v or getattr(v, "type", None) != "call_expression":
                             return None
@@ -4522,9 +4594,11 @@ def _parse_js_ts_outline_from_source(
                             if _is_function_like(value_node):
                                 setup_body = value_node.child_by_field_name("body")
                             else:
-                                setup_body = _find_define_store_setup_body(value_node)
+                                setup_body = _find_function_wrapper_body(value_node)
                                 if setup_body is None:
-                                    options_obj = _find_define_store_options_object(value_node)
+                                    setup_body = _find_define_store_setup_body(value_node)
+                                    if setup_body is None:
+                                        options_obj = _find_define_store_options_object(value_node)
 
                         emit_here = (not qual_prefix) or (setup_body is not None) or (options_obj is not None)
                         if not emit_here:
@@ -7091,7 +7165,7 @@ def normalize_beacon_comment_field_aliases_in_file(file_path: str) -> Dict[str, 
     #   //  comments=...
     #   --  comments=...
     #   *   comments=...
-    #       comments=...
+    #       comment=...
     pattern = re.compile(r"(^\s*(?:(?:#|//|--|\*)\s*)?)comments(\s*=)", re.MULTILINE)
     normalized = pattern.sub(r"\1comment\2", original)
 
