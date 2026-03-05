@@ -2655,6 +2655,16 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 line_no = node.get("orig_lineno_start_unused")
                 if not isinstance(line_no, int):
                     line_no = node.get("line") if isinstance(node.get("line"), int) else None
+                if not isinstance(line_no, int) and ast_q:
+                    # Fallback for Vue/JS synthetic lambda scopes where line metadata
+                    # may be absent in cached nodes, e.g.:
+                    #   vue:script0:__lambda_320_3.tintOpts
+                    m_lambda = re.search(r"__lambda_(\d+)_(\d+)", ast_q)
+                    if m_lambda:
+                        try:
+                            line_no = int(m_lambda.group(1))
+                        except Exception:  # noqa: BLE001
+                            line_no = None
                 line_repr = str(line_no) if isinstance(line_no, int) else "?"
 
                 buckets: list[str] = []
