@@ -2463,11 +2463,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             requested_symbol_kind_raw,
         )
         if requested_symbol_kind not in {"auto", "beacon", "ast", "name"}:
-            raise NetworkError(
-                "read_text_snippet_by_symbol: symbol_kind must be one of "
-                "'auto', 'beacon', 'ast', 'name' (aliases: function, method, class, "
-                f"identifier, qualname); got {symbol_kind!r}",
-            )
+            # Soft fallback for unknown kinds: treat as 'auto' rather than
+            # failing hard. This keeps callers resilient to arbitrary labels
+            # while preserving explicit behavior for known kinds.
+            requested_symbol_kind = "auto"
 
         use_beacon = requested_symbol_kind in {"auto", "beacon"}
         use_ast = requested_symbol_kind in {"auto", "ast"}
