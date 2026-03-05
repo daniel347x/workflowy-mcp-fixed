@@ -4043,9 +4043,24 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
 
                     continue
 
-                # Recurse into other nodes to discover nested declarations
+                # Recurse into other nodes to discover nested declarations.
+                #
+                # IMPORTANT: anonymous function scopes (arrow/function expressions)
+                # can contain local declarations with repeated names (e.g. two
+                # separate callbacks each declaring `const tintOpts`). If we recurse
+                # with the same qual_prefix, those locals collide on AST_QUALNAME.
+                #
+                # We therefore derive a deterministic pseudo-scope suffix from source
+                # coordinates for function-like anonymous scopes.
+                next_prefix = qual_prefix
+                if t in {"arrow_function", "function", "function_expression"}:
+                    line1 = child.start_point[0] + 1
+                    col1 = child.start_point[1] + 1
+                    anon_scope = f"__lambda_{line1}_{col1}"
+                    next_prefix = f"{qual_prefix}.{anon_scope}" if qual_prefix else anon_scope
+
                 if child.children:
-                    results.extend(walk(child, qual_prefix=qual_prefix))
+                    results.extend(walk(child, qual_prefix=next_prefix))
 
             return results
 
@@ -4641,8 +4656,24 @@ def _parse_js_ts_outline_from_source(
 
                     continue
 
+                # Recurse into other nodes to discover nested declarations.
+                #
+                # IMPORTANT: anonymous function scopes (arrow/function expressions)
+                # can contain local declarations with repeated names (e.g. two
+                # separate callbacks each declaring `const tintOpts`). If we recurse
+                # with the same qual_prefix, those locals collide on AST_QUALNAME.
+                #
+                # We therefore derive a deterministic pseudo-scope suffix from source
+                # coordinates for function-like anonymous scopes.
+                next_prefix = qual_prefix
+                if t in {"arrow_function", "function", "function_expression"}:
+                    line1 = child.start_point[0] + 1
+                    col1 = child.start_point[1] + 1
+                    anon_scope = f"__lambda_{line1}_{col1}"
+                    next_prefix = f"{qual_prefix}.{anon_scope}" if qual_prefix else anon_scope
+
                 if child.children:
-                    results.extend(walk(child, qual_prefix=qual_prefix))
+                    results.extend(walk(child, qual_prefix=next_prefix))
 
             return results
 
