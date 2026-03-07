@@ -2360,7 +2360,7 @@ def _normalize_duplicate_ast_beacons_python(file_path: str) -> dict[str, Any]:
             canonical_id = ids[0] if ids else ""
 
         roles = [str(g.get("fields", {}).get("role") or "").strip() for g in group_sorted]
-        comment = [str(g.get("fields", {}).get("comment") or "").strip() for g in group_sorted]
+        comments = [str(g.get("fields", {}).get("comment") or "").strip() for g in group_sorted]
         slices = [str(g.get("fields", {}).get("slice_labels") or "").strip() for g in group_sorted]
 
         merged_role = _merge_unique_strings([r for r in roles if r])
@@ -2562,7 +2562,7 @@ def _normalize_duplicate_ast_beacons_js_ts(file_path: str) -> dict[str, Any]:
             canonical_id = ids[0] if ids else ""
 
         roles = [str(g.get("fields", {}).get("role") or "").strip() for g in group_sorted]
-        comment = [str(g.get("fields", {}).get("comment") or "").strip() for g in group_sorted]
+        comments = [str(g.get("fields", {}).get("comment") or "").strip() for g in group_sorted]
         slices = [str(g.get("fields", {}).get("slice_labels") or "").strip() for g in group_sorted]
 
         merged_role = _merge_unique_strings([r for r in roles if r])
@@ -7178,14 +7178,20 @@ def split_name_and_tags(raw_name: str) -> tuple[str, list[str]]:
 #   comment=Canonicalize legacy beacon metadata alias comments= to comment= during F12 flows.
 # ]
 def normalize_beacon_comment_field_aliases_in_file(file_path: str) -> Dict[str, Any]:
-    """Normalize legacy beacon key alias `comments=` -> `comment=` in source files.
+    """Normalize legacy beacon key alias `comments=` -> `comment=` inside real beacon metadata blocks only.
 
-    This is a best-effort hygiene pass used by F12 refresh/update flows so
-    users can type either field name and the source is silently canonicalized.
+    This hygiene pass is used by F12 refresh/update flows so users can type
+    either field name and the source is silently canonicalized.
 
-    We intentionally keep this simple and fail-open:
-    - replace line-level metadata keys that look like beacon entries
-    - ignore rare edge cases (duplicate keys, mixed singular/plural)
+    SAFETY PRINCIPLE
+    ----------------
+    We must never perform a whole-file `comments=` replacement, because real
+    source code can legitimately contain assignments such as:
+
+        comments = EXCLUDED.comments
+
+    Therefore we only rewrite lines that are inside a syntactically recognized
+    ``@beacon[...]`` metadata block for the file's language/comment style.
     """
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -7193,18 +7199,165 @@ def normalize_beacon_comment_field_aliases_in_file(file_path: str) -> Dict[str, 
     except Exception as e:  # noqa: BLE001
         return {"success": False, "changed": False, "file_path": file_path, "error": str(e)}
 
-    # Match metadata-like lines such as:
-    #   #   comments=...
-    #   //  comments=...
-    #   --  comments=...
-    #   *   comments=...
-    #       comment=...
-    pattern = re.compile(r"(^\s*(?:(?:#|//|--|\*)\s*)?)comments(\s*=)", re.MULTILINE)
-    normalized = pattern.sub(r"\1comment\2", original)
-
-    if normalized == original:
+    ext = os.path.splitext(file_path)[1].lower()
+    lines = original.splitlines(keepends=True)
+    if not lines:
         return {"success": True, "changed": False, "file_path": file_path}
 
+    def _extract_prefixed_body(raw: str, markers: tuple[str, ...]) -> tuple[str, str] | None:
+        stripped = raw.lstrip()
+        indent_len = len(raw) - len(stripped)
+        for marker in markers:
+            if stripped.startswith(marker):
+                remainder = stripped[len(marker):]
+                ws_len = len(remainder) - len(remainder.lstrip())
+                prefix_len = indent_len + len(marker) + ws_len
+                return raw[:prefix_len], raw[prefix_len:]
+        return None
+
+    def _extract_hash_body(raw: str) -> tuple[str, str] | None:
+        return _extract_prefixed_body(raw, ("#",))
+
+    def _extract_dashdash_body(raw: str) -> tuple[str, str] | None:
+        return _extract_prefixed_body(raw, ("--",))
+
+    def _extract_slashslash_body(raw: str) -> tuple[str, str] | None:
+        return _extract_prefixed_body(raw, ("//",))
+
+    def _extract_cblock_body(raw: str) -> tuple[str, str]:
+        stripped = raw.lstrip()
+        indent_len = len(raw) - len(stripped)
+        if stripped.startswith("/*"):
+            remainder = stripped[2:]
+            ws_len = len(remainder) - len(remainder.lstrip())
+            prefix_len = indent_len + 2 + ws_len
+            return raw[:prefix_len], raw[prefix_len:]
+        if stripped.startswith("*/"):
+            remainder = stripped[2:]
+            ws_len = len(remainder) - len(remainder.lstrip())
+            prefix_len = indent_len + 2 + ws_len
+            return raw[:prefix_len], raw[prefix_len:]
+        if stripped.startswith("*"):
+            remainder = stripped[1:]
+            ws_len = len(remainder) - len(remainder.lstrip())
+            prefix_len = indent_len + 1 + ws_len
+            return raw[:prefix_len], raw[prefix_len:]
+        # For multiline /* ... */ beacon blocks, inner lines may be bare text.
+        return raw[:indent_len], raw[indent_len:]
+
+    def _extract_plain_body(raw: str) -> tuple[str, str]:
+        stripped = raw.lstrip()
+        indent_len = len(raw) - len(stripped)
+        return raw[:indent_len], raw[indent_len:]
+
+    def _replace_comments_key(raw: str, extractor) -> tuple[str, bool]:
+        parts = extractor(raw)
+        if parts is None:
+            return raw, False
+        prefix, body = parts
+        new_body, n = re.subn(r"^comments(\s*=)", r"comment\1", body, count=1)
+        if n == 0:
+            return raw, False
+        return prefix + new_body, True
+
+    py_like_exts = {".py", ".sh", ".bash", ".yml", ".yaml"}
+    js_like_exts = {".js", ".jsx", ".ts", ".tsx", ".vue"}
+    md_like_exts = {".md", ".markdown"}
+
+    mode: str | None = None
+    pending_md_comment = False
+    changed = False
+
+    for idx, raw in enumerate(lines):
+        if mode is None:
+            if ext in py_like_exts:
+                parts = _extract_hash_body(raw)
+                if parts and parts[1].startswith("@beacon["):
+                    mode = "hash"
+                continue
+
+            if ext == ".sql":
+                parts = _extract_dashdash_body(raw)
+                if parts and parts[1].startswith("@beacon["):
+                    mode = "dashdash"
+                continue
+
+            if ext in js_like_exts:
+                parts = _extract_slashslash_body(raw)
+                if parts and parts[1].startswith("@beacon["):
+                    mode = "slashslash"
+                    continue
+                cblock_parts = _extract_cblock_body(raw)
+                if cblock_parts[1].startswith("@beacon["):
+                    mode = "cblock"
+                continue
+
+            if ext in md_like_exts:
+                stripped = raw.strip()
+                if pending_md_comment:
+                    pending_md_comment = False
+                    if stripped.startswith("@beacon["):
+                        mode = "markdown"
+                    continue
+                if stripped.startswith("<!--"):
+                    after = stripped[len("<!--"):].lstrip()
+                    if after.startswith("@beacon["):
+                        mode = "markdown"
+                    else:
+                        pending_md_comment = True
+                continue
+
+            continue
+
+        if mode == "hash":
+            new_raw, did_change = _replace_comments_key(raw, _extract_hash_body)
+            lines[idx] = new_raw
+            changed = changed or did_change
+            parts = _extract_hash_body(new_raw)
+            if parts and parts[1].strip().startswith("]"):
+                mode = None
+            continue
+
+        if mode == "dashdash":
+            new_raw, did_change = _replace_comments_key(raw, _extract_dashdash_body)
+            lines[idx] = new_raw
+            changed = changed or did_change
+            parts = _extract_dashdash_body(new_raw)
+            if parts and parts[1].strip().startswith("]"):
+                mode = None
+            continue
+
+        if mode == "slashslash":
+            new_raw, did_change = _replace_comments_key(raw, _extract_slashslash_body)
+            lines[idx] = new_raw
+            changed = changed or did_change
+            parts = _extract_slashslash_body(new_raw)
+            if parts and parts[1].strip().startswith("]"):
+                mode = None
+            continue
+
+        if mode == "cblock":
+            new_raw, did_change = _replace_comments_key(raw, _extract_cblock_body)
+            lines[idx] = new_raw
+            changed = changed or did_change
+            _prefix, body = _extract_cblock_body(new_raw)
+            if body.strip().startswith("]"):
+                mode = None
+            continue
+
+        if mode == "markdown":
+            new_raw, did_change = _replace_comments_key(raw, _extract_plain_body)
+            lines[idx] = new_raw
+            changed = changed or did_change
+            _prefix, body = _extract_plain_body(new_raw)
+            if body.strip().startswith("]"):
+                mode = None
+            continue
+
+    if not changed:
+        return {"success": True, "changed": False, "file_path": file_path}
+
+    normalized = "".join(lines)
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(normalized)
