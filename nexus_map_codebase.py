@@ -7262,10 +7262,10 @@ def normalize_beacon_comment_field_aliases_in_file(file_path: str) -> Dict[str, 
 
     py_like_exts = {".py", ".sh", ".bash", ".yml", ".yaml"}
     js_like_exts = {".js", ".jsx", ".ts", ".tsx", ".vue"}
-    md_like_exts = {".md", ".markdown"}
+    html_comment_exts = {".md", ".markdown", ".vue"}
 
     mode: str | None = None
-    pending_md_comment = False
+    pending_html_comment = False
     changed = False
 
     for idx, raw in enumerate(lines):
@@ -7290,21 +7290,21 @@ def normalize_beacon_comment_field_aliases_in_file(file_path: str) -> Dict[str, 
                 cblock_parts = _extract_cblock_body(raw)
                 if cblock_parts[1].startswith("@beacon["):
                     mode = "cblock"
-                continue
+                    continue
 
-            if ext in md_like_exts:
+            if ext in html_comment_exts:
                 stripped = raw.strip()
-                if pending_md_comment:
-                    pending_md_comment = False
+                if pending_html_comment:
+                    pending_html_comment = False
                     if stripped.startswith("@beacon["):
-                        mode = "markdown"
+                        mode = "html_comment"
                     continue
                 if stripped.startswith("<!--"):
                     after = stripped[len("<!--"):].lstrip()
                     if after.startswith("@beacon["):
-                        mode = "markdown"
+                        mode = "html_comment"
                     else:
-                        pending_md_comment = True
+                        pending_html_comment = True
                 continue
 
             continue
@@ -7345,7 +7345,7 @@ def normalize_beacon_comment_field_aliases_in_file(file_path: str) -> Dict[str, 
                 mode = None
             continue
 
-        if mode == "markdown":
+        if mode == "html_comment":
             new_raw, did_change = _replace_comments_key(raw, _extract_plain_body)
             lines[idx] = new_raw
             changed = changed or did_change
