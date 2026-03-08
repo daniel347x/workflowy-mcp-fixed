@@ -30,6 +30,28 @@ if sys.platform == 'win32':
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 
+# CARTOGRAPHER CORE PLAN:
+# This file is the heart of Cartographer: portable file-note generation,
+# multi-language outline parsing, beacon parsing/application, and on-disk beacon
+# update helpers. Preserve it in Core v1 alongside the snippet engine.
+# @beacon[
+#   id=nmcv1@file-core,
+#   role=core keeper: cartographer mapping, beacon parsing, and beacon-update engine,
+#   slice_labels=nexus-portability,nexus-core-v1,
+#   kind=span,
+#   show_span=false,
+# ]
+# CORE V1 KEEPER:
+# Preserve the portable note/header model, MD_PATH identity machinery, semantic
+# whitening, and Cartographer-aware reconcile semantics. These are central to
+# transferable installs and stable F12 refresh behavior.
+# @beacon[
+#   id=nmcv1@portable-note-and-identity-core,
+#   role=core keeper: portable note format plus markdown and identity reconciliation semantics,
+#   slice_labels=nexus-portability,nexus-core-v1,
+#   kind=span,
+#   show_span=false,
+# ]
 # @beacon[
 #   id=auto-beacon@_warn_name-ts8n,
 #   role=_warn_name,
@@ -1949,6 +1971,20 @@ def _strip_beacon_meta_blocks_from_context(context_lines: list[str]) -> list[str
     return out
 
 
+# @beacon-close[
+#   id=nmcv1@portable-note-and-identity-core,
+# ]
+# CORE V1 KEEPER:
+# This cluster is the parser and beacon engine proper: Python/JS/TS/Vue outline
+# builders, beacon parsing, duplicate-beacon hygiene, comment slurping, and AST/
+# span attachment logic. It is core functionality, not optional decoration.
+# @beacon[
+#   id=nmcv1@parser-and-outline-core,
+#   role=core keeper: parser, outline, and beacon-attachment engine,
+#   slice_labels=nexus-portability,nexus-core-v1,
+#   kind=span,
+#   show_span=false,
+# ]
 # @beacon[
 #   id=carto-js-ts@parse_python_beacon_blocks,
 #   role=carto-js-ts,
@@ -4975,6 +5011,20 @@ def parse_vue_outline(file_path: str) -> List[Dict[str, Any]]:
     return out_nodes
 
 
+# @beacon-close[
+#   id=nmcv1@parser-and-outline-core,
+# ]
+# SPLIT BOUNDARY:
+# Full recursive codebase initialization is valuable and may still belong in Core,
+# but if the minimal public surface must shrink, the parsers and F12/update helpers
+# matter more than exposing this full directory-walk entrypoint directly.
+# @beacon[
+#   id=nmcv1@recursive-map-boundary,
+#   role=boundary split: full recursive codebase mapping and initialization entrypoint,
+#   slice_labels=nexus-portability,nexus-split-boundary,
+#   kind=span,
+#   show_span=false,
+# ]
 # @beacon[
 #   id=carto-js-ts@map_codebase,
 #   role=carto-js-ts,
@@ -5340,6 +5390,20 @@ def map_codebase(
         "children": scan_dir(root_path)
     }
 
+# @beacon-close[
+#   id=nmcv1@recursive-map-boundary,
+# ]
+# CORE V1 KEEPER:
+# Multi-language beacon parsers plus update_beacon_from_node_* helpers are a core
+# part of the F12 experience. Keep these with Cartographer so per-node beacon edits
+# remain language-aware and machine-portable.
+# @beacon[
+#   id=nmcv1@multilang-update-core,
+#   role=core keeper: multi-language beacon parsing and update-from-node helpers,
+#   slice_labels=nexus-portability,nexus-core-v1,
+#   kind=span,
+#   show_span=false,
+# ]
 # @beacon[
 #   id=auto-beacon@parse_sql_beacon_blocks-xpb1,
 #   role=parse_sql_beacon_blocks,
@@ -9723,6 +9787,12 @@ def validate_nonempty_names(node: Dict[str, Any], path: str = "root") -> Optiona
     return None
 
 
+# @beacon-close[
+#   id=nmcv1@multilang-update-core,
+# ]
+# @beacon-close[
+#   id=nmcv1@file-core,
+# ]
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Map source code to NEXUS JSON.")
     parser.add_argument("path", help="Root directory to map")
