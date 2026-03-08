@@ -3335,6 +3335,46 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
 
         priority_counter = [100]  # Mutable list to share across recursion
 
+        def _iter_nested_statement_bodies(stmt: ast.AST) -> List[List[ast.AST]]:
+            """Return nested statement lists for control-flow containers.
+
+            We intentionally do NOT create outline nodes for statements like
+            if/try/with/for/match, but we *do* need to descend into their
+            bodies so nested defs/classes become visible to Cartographer/F12.
+
+            The returned bodies are sorted by their first source line so nested
+            AST nodes appear in lexical order regardless of construct type.
+            """
+            candidates: List[tuple[int, int, List[ast.AST]]] = []
+            ordinal = 0
+
+            def _add(body: Any) -> None:
+                nonlocal ordinal
+                if not isinstance(body, list) or not body:
+                    return
+                first_stmt = body[0]
+                first_lineno = getattr(first_stmt, "lineno", None)
+                if not isinstance(first_lineno, int):
+                    first_lineno = 10**9
+                candidates.append((first_lineno, ordinal, body))
+                ordinal += 1
+
+            for attr in ("body", "orelse", "finalbody"):
+                _add(getattr(stmt, attr, None))
+
+            handlers = getattr(stmt, "handlers", None)
+            if isinstance(handlers, list):
+                for handler in handlers:
+                    _add(getattr(handler, "body", None))
+
+            cases = getattr(stmt, "cases", None)
+            if isinstance(cases, list):
+                for case in cases:
+                    _add(getattr(case, "body", None))
+
+            candidates.sort(key=lambda item: (item[0], item[1]))
+            return [body for _, _, body in candidates]
+
         def walk_body(
             body_items: List[ast.AST],
             qual_prefix: Optional[str] = None,
@@ -3428,7 +3468,7 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                     priority_counter[0] += 100
                     results.append(node)
                 elif isinstance(item, ast.Assign):
-                    # Optional: Capture top-level constants
+                    # Optional: Capture constants at this structural level.
                     for target in item.targets:
                         if isinstance(target, ast.Name) and target.id.isupper():
                             start = getattr(item, "lineno", None)
@@ -3449,6 +3489,9 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                             }
                             priority_counter[0] += 100
                             results.append(node)
+                else:
+                    for nested_body in _iter_nested_statement_bodies(item):
+                        results.extend(walk_body(nested_body, qual_prefix=qual_prefix))
             return results
 
         outline_nodes = walk_body(tree.body)
