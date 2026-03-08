@@ -5730,6 +5730,8 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 if kind not in {"ast", "span"}:
                     continue
 
+                show_span, show_span_explicit = _parse_show_span_fields(fields)
+
                 beacon = {
                     "id": fields.get("id"),
                     "role": fields.get("role"),
@@ -5739,6 +5741,8 @@ def parse_sh_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     "end_snippet": fields.get("end_snippet"),
                     "comment": (fields.get("comment") if fields.get("comment") not in (None, "") else fields.get("comments")),
                     "comment_line": comment_line,
+                    "show_span": show_span,
+                    "show_span_explicit": show_span_explicit,
                 }
                 beacons.append(beacon)
                 continue
@@ -5884,6 +5888,8 @@ def parse_yaml_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                 if kind not in {"ast", "span"}:
                     continue
 
+                show_span, show_span_explicit = _parse_show_span_fields(fields)
+
                 beacon = {
                     "id": fields.get("id"),
                     "role": fields.get("role"),
@@ -5893,6 +5899,8 @@ def parse_yaml_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     "end_snippet": fields.get("end_snippet"),
                     "comment": (fields.get("comment") if fields.get("comment") not in (None, "") else fields.get("comments")),
                     "comment_line": comment_line,
+                    "show_span": show_span,
+                    "show_span_explicit": show_span_explicit,
                 }
                 beacons.append(beacon)
                 continue
