@@ -30,6 +30,17 @@ from datetime import datetime
 from pathlib import Path
 
 
+# WORKER BOUNDARY PLAN:
+# This file currently serves two worlds: advanced detached WEAVE execution for
+# the gemstone pipeline, and detached CARTO_REFRESH execution for the installable
+# Cartographer/F12 experience. Preserve both behaviors, but split them cleanly.
+# @beacon[
+#   id=wkv1@file-boundary,
+#   role=boundary split: weave_worker mixed detached carto-refresh core vs advanced weave lab,
+#   slice_labels=nexus-portability,nexus-split-boundary,
+#   kind=span,
+#   show_span=false,
+# ]
 def log_worker(message: str, component: str = "WEAVE_WORKER") -> None:
     """Log to stderr with timestamp."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -38,6 +49,18 @@ def log_worker(message: str, component: str = "WEAVE_WORKER") -> None:
 
 async def main():
     """Main worker entry point."""
+
+    # SPLIT BOUNDARY:
+    # Argument parsing, environment bootstrap, client initialization, and worker
+    # startup/cache preparation are shared detached-worker infrastructure that can
+    # later be extracted to a neutral helper rather than living in both core and lab.
+    # @beacon[
+    #   id=wkv1@shared-bootstrap,
+    #   role=boundary split: shared detached worker bootstrap and environment setup,
+    #   slice_labels=nexus-portability,nexus-split-boundary,
+    #   kind=span,
+    #   show_span=false,
+    # ]
     
     parser = argparse.ArgumentParser(description='NEXUS WEAVE detached worker')
     parser.add_argument(
@@ -203,6 +226,20 @@ async def main():
             log_worker(f"Failed to write PID file: {e}")
             # Continue anyway - not critical
     
+    # @beacon-close[
+    #   id=wkv1@shared-bootstrap,
+    # ]
+    # CORE V1 KEEPER:
+    # This branch is the detached Cartographer/F12 worker path and belongs in the
+    # installable core surface. It should remain available even if advanced WEAVE
+    # capabilities are removed from a simplified public release.
+    # @beacon[
+    #   id=wkv1@carto-refresh-core,
+    #   role=core keeper: detached cartographer refresh job runner,
+    #   slice_labels=nexus-portability,nexus-core-v1,
+    #   kind=span,
+    #   show_span=false,
+    # ]
     # @beacon[
     #   id=weave-worker@carto-refresh-job,
     #   role=weave worker – CARTO_REFRESH job runner,
@@ -539,6 +576,20 @@ async def main():
     # @beacon-close[
     #   id=weave-worker@carto-refresh-job,
     # ]
+    # @beacon-close[
+    #   id=wkv1@carto-refresh-core,
+    # ]
+
+    # LAB ONLY:
+    # The remaining detached ENCHANTED/DIRECT WEAVE execution path is part of the
+    # advanced NEXUS studio stack and should stay out of minimal Core v1 packaging.
+    # @beacon[
+    #   id=wkv1@detached-weave-lab,
+    #   role=lab-only: detached enchanted-direct weave worker path,
+    #   slice_labels=nexus-portability,nexus-lab-only,
+    #   kind=span,
+    #   show_span=false,
+    # ]
 
     # Call the appropriate weave method
     try:
@@ -583,6 +634,12 @@ async def main():
         await client.close()
 
 
+    # @beacon-close[
+    #   id=wkv1@detached-weave-lab,
+    # ]
+# @beacon-close[
+#   id=wkv1@file-boundary,
+# ]
 if __name__ == "__main__":
     try:
         asyncio.run(main())
