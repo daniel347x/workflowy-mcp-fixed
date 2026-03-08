@@ -97,6 +97,28 @@ def get_client() -> WorkFlowyClient:
     return _client
 
 
+# SERVER BOUNDARY PLAN:
+# This file is the public MCP surface and server orchestration layer. It mixes
+# installable core tooling with advanced NEXUS/lab wrappers and some Dan-specific
+# compatibility behavior that should not survive unchanged in a clean Core v1.
+# @beacon[
+#   id=svcv1@file-boundary,
+#   role=boundary split: server.py public mcp surface mixed core-v1 vs lab-only wrappers,
+#   slice_labels=nexus-portability,nexus-split-boundary,
+#   kind=span,
+#   show_span=false,
+# ]
+# CORE V1 KEEPER:
+# WebSocket lifecycle, UUID navigation, F9/F10/F12 handler routing, detached
+# CARTO job orchestration, and MCP job status/cancel handling form a core
+# installable surface for shared human-agent interaction.
+# @beacon[
+#   id=svcv1@websocket-f12-infra,
+#   role=core keeper: websocket lifecycle plus f9-f12 and carto job orchestration,
+#   slice_labels=nexus-portability,nexus-core-v1,
+#   kind=span,
+#   show_span=false,
+# ]
 # @beacon[
 #   id=auto-beacon@get_ws_connection-bjsi,
 #   role=get_ws_connection,
@@ -2666,6 +2688,20 @@ async def mcp_cancel_job(job_id: str) -> dict:
     return {"success": False, "error": f"Unknown job_id: {job_id}"}
 
 
+# @beacon-close[
+#   id=svcv1@websocket-f12-infra,
+# ]
+# SPLIT BOUNDARY:
+# This zone mixes standard CRUD wrappers with Dan-specific secret-code enforcement,
+# deprecated aliases, and training-oriented warning wrappers. Public Core v1 should
+# keep the modern CRUD/tool wrappers while removing or isolating the warning layer.
+# @beacon[
+#   id=svcv1@compat-warning-layer,
+#   role=boundary split: dan-specific warning compatibility layer interleaved with basic workflowy wrappers,
+#   slice_labels=nexus-portability,nexus-split-boundary,
+#   kind=span,
+#   show_span=false,
+# ]
 # 🔐 SECRET CODE VALIDATION - Brute Force Agent Training Override
 def validate_secret_code(provided_code: str | None, function_name: str) -> tuple[bool, str | None]:
     """Validate secret code for WARNING functions.
@@ -3111,6 +3147,19 @@ async def move_node(
             _rate_limiter.on_rate_limit(getattr(e, "retry_after", None))
         raise
 
+# @beacon-close[
+#   id=svcv1@compat-warning-layer,
+# ]
+# LAB ONLY:
+# This wrapper is part of the advanced NEXUS gemstone pipeline, not the minimal
+# installable Core v1 tool surface.
+# @beacon[
+#   id=svcv1@nexus-glimpse-wrapper-lab,
+#   role=lab-only: nexus_glimpse wrapper for terrain-plus-phantom-gem initialization,
+#   slice_labels=nexus-portability,nexus-lab-only,
+#   kind=span,
+#   show_span=false,
+# ]
 @mcp.tool(
     name="nexus_glimpse",
     description=(
@@ -3145,6 +3194,19 @@ async def nexus_glimpse(
     )
 
 
+# @beacon-close[
+#   id=svcv1@nexus-glimpse-wrapper-lab,
+# ]
+# CORE V1 KEEPER:
+# Export-node and explicit nodes-export cache refresh are core utilities around
+# the public Workflowy surface and cached Ether semantics.
+# @beacon[
+#   id=svcv1@export-and-cache-core,
+#   role=core keeper: export-node and explicit nodes-export cache utilities,
+#   slice_labels=nexus-portability,nexus-core-v1,
+#   kind=span,
+#   show_span=false,
+# ]
 # Tool: Export Nodes
 @mcp.tool(name="workflowy_export_node", description="Export a WorkFlowy node with all its children")
 async def export_node(
@@ -3210,6 +3272,19 @@ async def workflowy_refresh_nodes_export_cache() -> dict:
         return {"success": False, "error": str(e)}
 
 
+# @beacon-close[
+#   id=svcv1@export-and-cache-core,
+# ]
+# LAB ONLY:
+# These wrappers expose the advanced NEXUS and exploration surface. Preserve in
+# the studio/lab stack, but keep them out of the simplified public Core v1 surface.
+# @beacon[
+#   id=svcv1@nexus-and-exploration-tool-surface,
+#   role=lab-only: advanced nexus and exploration mcp tool surface,
+#   slice_labels=nexus-portability,nexus-lab-only,
+#   kind=span,
+#   show_span=false,
+# ]
 # PHANTOM GEMSTONE NEXUS – High-level MCP tools
 @mcp.tool(
     name="nexus_scry",
@@ -3782,6 +3857,20 @@ async def nexus_finalize_exploration(
         raise
 
 
+# @beacon-close[
+#   id=svcv1@nexus-and-exploration-tool-surface,
+# ]
+# CORE V1 KEEPER:
+# This late-file surface contains the shared human-agent context tools: markdown
+# export, GLIMPSE/SCRY, ETCH, snippet tools, beacon refresh, async cartographer
+# refresh, and the outline resource. Keep in Core v1 if packaging remains clean.
+# @beacon[
+#   id=svcv1@shared-context-surface,
+#   role=core keeper: shared context loading, snippet, etch, and cartographer wrapper surface,
+#   slice_labels=nexus-portability,nexus-core-v1,
+#   kind=span,
+#   show_span=false,
+# ]
 # Tool: Generate Markdown from JSON
 @mcp.tool(
     name="generate_markdown_from_json",
@@ -4681,6 +4770,12 @@ async def get_outline() -> str:
         raise
 
 
+# @beacon-close[
+#   id=svcv1@shared-context-surface,
+# ]
+# @beacon-close[
+#   id=svcv1@file-boundary,
+# ]
 if __name__ == "__main__":
     # ☢️ NUCLEAR LOGGING OPTION ☢️
     # Redirect EVERYTHING to sys.stderr so it appears in MCP console
