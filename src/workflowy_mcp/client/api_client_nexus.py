@@ -33,6 +33,17 @@ from .nexus_helper import (
 )
 
 
+# CORE/LAB BOUNDARY PLAN:
+# This file is the principal mixed boundary in the repo.
+# Keep compatibility during migration, but split core Cartographer/F12/snippet/
+# path-portability logic away from the advanced gemstone pipeline.
+# @beacon[
+#   id=ncv1@file-boundary,
+#   role=boundary split: api_client_nexus mixed core-v1 cartographer vs lab-only nexus pipeline,
+#   slice_labels=nexus-portability,nexus-split-boundary,
+#   kind=span,
+#   show_span=false,
+# ]
 # @beacon[
 #   id=auto-beacon@_log_glimpse_to_file-97lr,
 #   role=_log_glimpse_to_file,
@@ -75,6 +86,17 @@ def _log_glimpse_to_file(operation_type: str, node_id: str, result: dict[str, An
         pass
 
 
+# CORE V1 KEEPER:
+# Preserve the portability model built around a top-level absolute Root and
+# descendant relative Path values. This cluster is central to transferable
+# installation and must fail closed when a real on-disk path cannot be found.
+# @beacon[
+#   id=ncv1@path-root-portability,
+#   role=core keeper: cartographer path-root portability and note-header resolution,
+#   slice_labels=nexus-portability,nexus-core-v1,
+#   kind=span,
+#   show_span=false,
+# ]
 # @beacon[
 #   id=auto-beacon@parse_path_or_root_from_note-cw31,
 #   role=parse_path_or_root_from_note,
@@ -615,6 +637,9 @@ def normalize_cartographer_path(file_path: str | None) -> str | None:
         return file_path
 
 
+# @beacon-close[
+#   id=ncv1@path-root-portability,
+# ]
 def is_pid_running(pid: int) -> bool:
     """Check if a process ID is currently running."""
     try:
@@ -895,6 +920,17 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         chosen = sorted(candidates, key=lambda p: p.name)[-1]
         return str(chosen)
 
+    # CORE V1 KEEPER:
+    # This is part of the most showable public surface: GLIMPSE, SCRY, and
+    # token-efficient Cartographer snippet targeting. Preserve both UUID-based
+    # and symbol-based flows, including heuristic fallbacks.
+    # @beacon[
+    #   id=ncv1@glimpse-snippet-surface,
+    #   role=core keeper: glimpse-scry plus cartographer snippet resolution surface,
+    #   slice_labels=nexus-portability,nexus-core-v1,
+    #   kind=span,
+    #   show_span=false,
+    # ]
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.workflowy_glimpse-yqpd,
     #   role=WorkFlowyClientNexus.workflowy_glimpse,
@@ -2765,6 +2801,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         return result
 
+    # @beacon-close[
+    #   id=ncv1@glimpse-snippet-surface,
+    # ]
+    # LAB ONLY:
+    # The terrain/gem/jewel pipeline is powerful and worth preserving, but it
+    # should remain outside the minimal public Core v1 tool surface.
+    # @beacon[
+    #   id=ncv1@nexus-pipeline-lab,
+    #   role=lab-only: full terrain-gem-jewel pipeline and advanced weave entrypoints,
+    #   slice_labels=nexus-portability,nexus-lab-only,
+    #   kind=span,
+    #   show_span=false,
+    # ]
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.nexus_scry-cfy9,
     #   role=WorkFlowyClientNexus.nexus_scry,
@@ -3583,6 +3632,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             import_policy='strict',
         )
 
+    # @beacon-close[
+    #   id=ncv1@nexus-pipeline-lab,
+    # ]
+    # SPLIT BOUNDARY:
+    # This reconcile/weave bridge serves both advanced WEAVE flows and the
+    # journaling/logging substrate reused by core Cartographer refresh paths.
+    # Separate reusable reconcile infrastructure from advanced public WEAVE tools.
+    # @beacon[
+    #   id=ncv1@bulk-import-bridge,
+    #   role=boundary split: bulk-import reconcile-weave bridge shared by advanced weave and core f12 refresh,
+    #   slice_labels=nexus-portability,nexus-split-boundary,
+    #   kind=span,
+    #   show_span=false,
+    # ]
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.bulk_import_from_file-7d6e,
     #   role=WorkFlowyClientNexus.bulk_import_from_file,
@@ -3993,6 +4056,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 "errors": [error_msg]
             }
 
+    # @beacon-close[
+    #   id=ncv1@bulk-import-bridge,
+    # ]
+    # LAB ONLY:
+    # Keystone backup/restore/purge belongs to advanced NEXUS workflow support,
+    # not the minimal Core v1 public surface.
+    # @beacon[
+    #   id=ncv1@keystones-lab,
+    #   role=lab-only: keystone backup and restore support,
+    #   slice_labels=nexus-portability,nexus-lab-only,
+    #   kind=span,
+    #   show_span=false,
+    # ]
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.nexus_list_keystones-mzxs,
     #   role=WorkFlowyClientNexus.nexus_list_keystones,
@@ -4079,6 +4155,20 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "errors": errors
         }
 
+    # @beacon-close[
+    #   id=ncv1@keystones-lab,
+    # ]
+    # CORE V1 KEEPER:
+    # Preserve incremental per-file and per-folder Cartographer refresh, plus
+    # robust Notes and diagnostic salvage. This is part of the product story,
+    # not incidental implementation detail.
+    # @beacon[
+    #   id=ncv1@f12-refresh-and-notes,
+    #   role=core keeper: f12 cartographer refresh and persistent notes-salvage system,
+    #   slice_labels=nexus-portability,nexus-core-v1,
+    #   kind=span,
+    #   show_span=false,
+    # ]
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus._refresh_file_node_beacons_legacy-zjoy,
     #   role=WorkFlowyClientNexus._refresh_file_node_beacons_legacy,
@@ -8220,3 +8310,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             "generic_notes_reattached": generic_reattached,
             "generic_notes_salvaged": generic_salvaged,
         }
+
+# @beacon-close[
+#   id=ncv1@f12-refresh-and-notes,
+# ]
+# @beacon-close[
+#   id=ncv1@file-boundary,
+# ]
