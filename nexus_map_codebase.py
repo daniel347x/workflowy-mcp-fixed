@@ -2801,6 +2801,12 @@ def apply_python_beacons(
 
     span_sort_lines: dict[int, int] = {}
 
+    # @beacon[
+    #   id=carto-beacon-order@py-node-source-order-line,
+    #   role=apply_python_beacons._node_source_order_line,
+    #   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+    #   kind=ast,
+    # ]
     def _node_source_order_line(node: dict[str, Any]) -> int:
         cached = span_sort_lines.get(id(node))
         if isinstance(cached, int):
@@ -2810,6 +2816,12 @@ def apply_python_beacons(
             return ln
         return 10**9
 
+    # @beacon[
+    #   id=carto-beacon-order@py-insert-child-in-source-order,
+    #   role=apply_python_beacons._insert_child_in_source_order,
+    #   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+    #   kind=ast,
+    # ]
     def _insert_child_in_source_order(
         siblings: List[Dict[str, Any]],
         child_node: Dict[str, Any],
@@ -3407,6 +3419,12 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
 
         priority_counter = [100]  # Mutable list to share across recursion
 
+        # @beacon[
+        #   id=carto-parser@iter-nested-statement-bodies-py,
+        #   role=parse_file_outline._iter_nested_statement_bodies,
+        #   slice_labels=carto-js-ts,f9-f12-handlers,ra-reconcile,
+        #   kind=ast,
+        # ]
         def _iter_nested_statement_bodies(stmt: ast.AST) -> List[List[ast.AST]]:
             """Return nested statement lists for control-flow containers.
 
@@ -6926,6 +6944,12 @@ def apply_js_beacons(
 
     span_sort_lines: dict[int, int] = {}
 
+    # @beacon[
+    #   id=carto-beacon-order@js-node-source-order-line,
+    #   role=apply_js_beacons._node_source_order_line,
+    #   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+    #   kind=ast,
+    # ]
     def _node_source_order_line(node: dict[str, Any]) -> int:
         cached = span_sort_lines.get(id(node))
         if isinstance(cached, int):
@@ -6935,6 +6959,12 @@ def apply_js_beacons(
             return ln
         return 10**9
 
+    # @beacon[
+    #   id=carto-beacon-order@js-insert-child-in-source-order,
+    #   role=apply_js_beacons._insert_child_in_source_order,
+    #   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+    #   kind=ast,
+    # ]
     def _insert_child_in_source_order(
         siblings: List[Dict[str, Any]],
         child_node: Dict[str, Any],
