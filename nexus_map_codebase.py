@@ -2010,7 +2010,8 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
         # ]
 
     Returns a list of dicts with keys:
-        id, role, slice_labels, kind, start_snippet, end_snippet, comment_line.
+        id, role, slice_labels, kind, start_snippet, end_snippet,
+        comment_line, kind_explicit.
     """
     beacons: list[dict[str, Any]] = []
 
@@ -2064,7 +2065,8 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                         val = val[1:-1]
                     fields[key] = val
 
-                kind = (fields.get("kind") or "span").strip().lower() or "span"
+                kind_raw = fields.get("kind")
+                kind = (kind_raw or "span").strip().lower() or "span"
                 if kind not in {"ast", "span"}:
                     # Unknown/unsupported kind – skip silently for now
                     continue
@@ -2080,6 +2082,7 @@ def parse_python_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                     "end_snippet": fields.get("end_snippet"),
                     "comment": (fields.get("comment") if fields.get("comment") not in (None, "") else fields.get("comments")),
                     "comment_line": comment_line,
+                    "kind_explicit": bool(kind_raw),
                     "show_span": show_span,
                     "show_span_explicit": show_span_explicit,
                 }
@@ -2796,6 +2799,30 @@ def apply_python_beacons(
             return None
         return lines[ln - 1]
 
+    span_sort_lines: dict[int, int] = {}
+
+    def _node_source_order_line(node: dict[str, Any]) -> int:
+        cached = span_sort_lines.get(id(node))
+        if isinstance(cached, int):
+            return cached
+        ln = node.get("orig_lineno_start_unused") if isinstance(node, dict) else None
+        if isinstance(ln, int):
+            return ln
+        return 10**9
+
+    def _insert_child_in_source_order(
+        siblings: List[Dict[str, Any]],
+        child_node: Dict[str, Any],
+        sort_line: int,
+    ) -> None:
+        span_sort_lines[id(child_node)] = sort_line
+        insert_at = len(siblings)
+        for idx, existing in enumerate(siblings):
+            if _node_source_order_line(existing) > sort_line:
+                insert_at = idx
+                break
+        siblings.insert(insert_at, child_node)
+
     def _next_anchor_line_after(line_no: int) -> Optional[int]:
         """Return next non-blank, non-comment, non-decorator line after line_no.
 
@@ -2960,8 +2987,11 @@ def apply_python_beacons(
     # For SPAN beacons only, we may auto-upgrade to AST when the anchor is a
     # clean class/function/async start.
     #
-    # IMPORTANT RULE (mirrors JS/TS): do NOT auto-upgrade an explicit span
-    # region (paired opener/closer), indicated by span_lineno_end.
+    # IMPORTANT RULES:
+    # - Do NOT auto-upgrade an explicit span region (paired opener/closer),
+    #   indicated by span_lineno_end.
+    # - Do NOT auto-upgrade when the author explicitly wrote kind=span.
+    #   Explicit span means “create a span node”, not “decorate the next AST”.
     for beacon in beacons:
         kind = beacon.get("kind")
         start_snippet = beacon.get("start_snippet")
@@ -2983,8 +3013,12 @@ def apply_python_beacons(
         if kind != "span":
             continue
 
-        # Never auto-upgrade a paired span region.
+        # Never auto-upgrade an explicit span region.
         if isinstance(beacon.get("span_lineno_end"), int):
+            continue
+
+        # Never auto-upgrade an explicitly-declared kind=span beacon.
+        if bool(beacon.get("kind_explicit")):
             continue
 
         # See if this line is exactly the start of a class/function/async
@@ -3126,7 +3160,7 @@ def apply_python_beacons(
         start_snippet = beacon.get("start_snippet")
         comment_line = beacon.get("comment_line") or 0
 
-        start_line: Optional[int] = None
+        attachment_line: Optional[int] = None
 
         if start_snippet:
             norm_snip = normalize_for_match(start_snippet)
@@ -3149,30 +3183,32 @@ def apply_python_beacons(
                 continue
 
             if len(start_candidates) == 1:
-                start_line = start_candidates[0]
+                attachment_line = start_candidates[0]
             else:
                 after = [ln for ln in start_candidates if ln > comment_line]
                 if len(after) == 1:
-                    start_line = after[0]
+                    attachment_line = after[0]
                 else:
                     # Ambiguous span; require beacon refinement
                     continue
         else:
-            # Snippet-less span: use precomputed anchor or compute it now
-            anchor = beacon.get("_anchor_lineno")
-            if isinstance(anchor, int):
-                start_line = anchor
+            # Snippet-less spans attach based on the beacon's own location,
+            # not the next code line. This keeps file-level/documentation spans
+            # at file scope even when the next AST node is a function/class.
+            span_start = beacon.get("span_lineno_start")
+            if isinstance(span_start, int):
+                attachment_line = span_start
+            elif isinstance(comment_line, int) and comment_line > 0:
+                attachment_line = comment_line
             else:
-                if isinstance(comment_line, int) and comment_line > 0:
-                    start_line = _next_anchor_line_after(comment_line)
-                else:
-                    start_line = None
+                anchor = beacon.get("_anchor_lineno")
+                attachment_line = anchor if isinstance(anchor, int) else None
 
-        if start_line is None:
+        if attachment_line is None:
             continue
 
         # Decide enclosing AST node (if any)
-        enclosing = _find_enclosing_ast_node_for_line(outline_nodes, start_line)
+        enclosing = _find_enclosing_ast_node_for_line(outline_nodes, attachment_line)
 
         b_id = (beacon.get("id") or "").strip()
         role = (beacon.get("role") or "").strip()
@@ -3248,11 +3284,11 @@ def apply_python_beacons(
 
         if enclosing is not None:
             children = enclosing.get("children") or []
-            children.append(span_node)
+            _insert_child_in_source_order(children, span_node, attachment_line)
             enclosing["children"] = children
         else:
             # File-level span: attach directly under top-level outline
-            outline_nodes.append(span_node)
+            _insert_child_in_source_order(outline_nodes, span_node, attachment_line)
 
 
 # @beacon[
@@ -6888,6 +6924,30 @@ def apply_js_beacons(
             return None
         return lines[ln - 1]
 
+    span_sort_lines: dict[int, int] = {}
+
+    def _node_source_order_line(node: dict[str, Any]) -> int:
+        cached = span_sort_lines.get(id(node))
+        if isinstance(cached, int):
+            return cached
+        ln = node.get("orig_lineno_start_unused") if isinstance(node, dict) else None
+        if isinstance(ln, int):
+            return ln
+        return 10**9
+
+    def _insert_child_in_source_order(
+        siblings: List[Dict[str, Any]],
+        child_node: Dict[str, Any],
+        sort_line: int,
+    ) -> None:
+        span_sort_lines[id(child_node)] = sort_line
+        insert_at = len(siblings)
+        for idx, existing in enumerate(siblings):
+            if _node_source_order_line(existing) > sort_line:
+                insert_at = idx
+                break
+        siblings.insert(insert_at, child_node)
+
     def _extract_js_beacon_context(comment_line: int) -> List[str]:
         """Extract nearby JS/TS comments (non-beacon) around a JS/TS beacon.
 
@@ -7001,10 +7061,11 @@ def apply_js_beacons(
     # For span beacons, we *sometimes* auto-upgrade to AST when anchor is a
     # class/function/method.
     #
-    # IMPORTANT VUE/JS/TS RULE:
+    # IMPORTANT VUE/JS/TS RULES:
     # - If a span beacon has an explicit closing delimiter (span_lineno_end is set),
     #   it is a TRUE SPAN region and must NOT be auto-upgraded to AST.
-    #   (Auto-upgrade is only for single-beacon, snippet-less "inline" anchors.)
+    # - If the author explicitly wrote kind=span, preserve that intent.
+    #   Auto-upgrade is only for implicit single-beacon inline anchors.
     for beacon in beacons:
         kind = beacon.get("kind")
         start_snippet = beacon.get("start_snippet")
@@ -7021,6 +7082,9 @@ def apply_js_beacons(
 
             # Never auto-upgrade an explicit span region (paired opener/closer).
             if kind == "span" and isinstance(beacon.get("span_lineno_end"), int):
+                continue
+
+            if kind == "span" and bool(beacon.get("kind_explicit")):
                 continue
 
             ast_candidates: list[dict[str, Any]] = []
@@ -7155,7 +7219,7 @@ def apply_js_beacons(
         start_snippet = beacon.get("start_snippet")
         comment_line = beacon.get("comment_line") or 0
 
-        start_line: Optional[int] = None
+        attachment_line: Optional[int] = None
 
         if start_snippet:
             norm_snip = normalize_for_match(start_snippet)
@@ -7171,27 +7235,30 @@ def apply_js_beacons(
             if not start_candidates:
                 continue
             if len(start_candidates) == 1:
-                start_line = start_candidates[0]
+                attachment_line = start_candidates[0]
             else:
                 after = [ln for ln in start_candidates if ln > comment_line]
                 if len(after) == 1:
-                    start_line = after[0]
+                    attachment_line = after[0]
                 else:
                     continue
         else:
-            anchor = beacon.get("_anchor_lineno")
-            if isinstance(anchor, int):
-                start_line = anchor
+            # Snippet-less spans attach based on beacon location so root-level
+            # documentation spans stay at file scope instead of slipping under
+            # the next AST node.
+            span_start = beacon.get("span_lineno_start")
+            if isinstance(span_start, int):
+                attachment_line = span_start
+            elif isinstance(comment_line, int) and comment_line > 0:
+                attachment_line = comment_line
             else:
-                if isinstance(comment_line, int) and comment_line > 0:
-                    start_line = _js_next_anchor_line_after(comment_line)
-                else:
-                    start_line = None
+                anchor = beacon.get("_anchor_lineno")
+                attachment_line = anchor if isinstance(anchor, int) else None
 
-        if start_line is None:
+        if attachment_line is None:
             continue
 
-        enclosing = _find_enclosing_ast_node_for_line(outline_nodes, start_line)
+        enclosing = _find_enclosing_ast_node_for_line(outline_nodes, attachment_line)
 
         b_id = (beacon.get("id") or "").strip()
         role = (beacon.get("role") or "").strip()
@@ -7257,10 +7324,10 @@ def apply_js_beacons(
 
         if enclosing is not None:
             children = enclosing.get("children") or []
-            children.append(span_node)
+            _insert_child_in_source_order(children, span_node, attachment_line)
             enclosing["children"] = children
         else:
-            outline_nodes.append(span_node)
+            _insert_child_in_source_order(outline_nodes, span_node, attachment_line)
 
 
 # @beacon[
