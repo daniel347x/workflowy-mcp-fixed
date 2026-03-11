@@ -75,6 +75,28 @@ except Exception as e:  # noqa: BLE001
     nexus_map_codebase = None  # type: ignore[assignment]
 
 
+# SNIPPET ENGINE CORE PLAN:
+# This file is the portable snippet-resolution engine for Cartographer-mapped
+# files. Preserve multi-language beacon, AST, and MD_PATH snippet extraction
+# as a Core v1 capability.
+# @beacon[
+#   id=bocsv1@file-core,
+#   role=core keeper: beacon-aware snippet extraction engine across mapped source files,
+#   slice_labels=nexus-portability,nexus-core-v1,
+#   kind=span,
+#   show_span=false,
+# ]
+# SPLIT BOUNDARY:
+# NotesMapping and the SHA1/hash-guard scaffold point toward per-file refresh
+# and Notes salvage. Keep them if convenient, but they can move alongside the
+# F12 refresh subsystem without changing the core snippet engine contract.
+# @beacon[
+#   id=bocsv1@refresh-scaffold-boundary,
+#   role=boundary split: future per-file refresh scaffold and hash guard beside snippet engine,
+#   slice_labels=nexus-portability,nexus-split-boundary,
+#   kind=span,
+#   show_span=false,
+# ]
 @dataclass
 # @beacon[
 #   id=auto-beacon@NotesMapping-kcvi,
@@ -111,13 +133,27 @@ def compute_sha1(path: str) -> str:
     return h.hexdigest()
 
 
+# @beacon-close[
+#   id=bocsv1@refresh-scaffold-boundary,
+# ]
 def _read_lines(path: str) -> List[str]:
     with open(path, "r", encoding="utf-8") as f:
         return f.read().splitlines()
 
 
+# CORE V1 KEEPER:
+# Preserve the multi-language snippet engine: AST heuristics plus beacon/span
+# extraction for Python, JS/TS, Vue, Markdown, YAML, SQL, and shell.
+# @beacon[
+#   id=bocsv1@multilang-resolution-core,
+#   role=core keeper: multi-language ast and beacon span resolution helpers,
+#   slice_labels=nexus-portability,nexus-core-v1,
+#   kind=span,
+#   show_span=false,
+# ]
 # @beacon[
 #   id=carto-js-ts@_python_resolve_ast_node_heuristic,
+
 #   role=carto-js-ts,
 #   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,f9-f12-handlers,ra-reconcile,
 #   kind=span,
@@ -2753,6 +2789,20 @@ def _vue_snippet_for_beacon(
     return start_line, end_line, lines, core_start, core_end, beacon_line
 
 
+# @beacon-close[
+#   id=bocsv1@multilang-resolution-core,
+# ]
+# CORE V1 KEEPER:
+# Keep the public snippet surface centered on get_snippet_data, AST_QUALNAME
+# resolution, and MD_PATH heading resolution. These are the installable API
+# contract that other tools and agents build on.
+# @beacon[
+#   id=bocsv1@public-snippet-api-core,
+#   role=core keeper: public snippet api plus ast-qualname and md-path resolution,
+#   slice_labels=nexus-portability,nexus-core-v1,
+#   kind=span,
+#   show_span=false,
+# ]
 # ---------------------------------------------------------------------------
 # Public library API: beacon snippet extraction
 # ---------------------------------------------------------------------------
@@ -2860,6 +2910,16 @@ def get_snippet_data(
     return start, end, lines, core_start, core_end, beacon_line, metadata
 
 
+# SPLIT BOUNDARY:
+# The thin human CLI is convenient, but it can move to a wrapper script if
+# Core v1 wants the library API packaged separately from a standalone command.
+# @beacon[
+#   id=bocsv1@cli-wrapper-boundary,
+#   role=boundary split: thin standalone cli wrapper around core snippet library,
+#   slice_labels=nexus-portability,nexus-split-boundary,
+#   kind=span,
+#   show_span=false,
+# ]
 def extract_snippet(file_path: str, beacon_id: str, context: int) -> None:
     """CLI wrapper: resolve snippet and print with line numbers for humans."""
     start, end, lines, _core_start, _core_end, _beacon_line, _meta = get_snippet_data(
@@ -2909,6 +2969,9 @@ if __name__ == "__main__":  # pragma: no cover
     main()
 
 
+# @beacon-close[
+#   id=bocsv1@cli-wrapper-boundary,
+# ]
 # @beacon[
 #   id=auto-beacon@get_snippet_for_md_path-8iyg,
 #   role=get_snippet_for_md_path,
@@ -3086,3 +3149,11 @@ def get_snippet_for_md_path(
         "candidates": None,
     }
     return start_line, end_line, lines, core_start, core_end, core_start, metadata
+
+
+# @beacon-close[
+#   id=bocsv1@public-snippet-api-core,
+# ]
+# @beacon-close[
+#   id=bocsv1@file-core,
+# ]
