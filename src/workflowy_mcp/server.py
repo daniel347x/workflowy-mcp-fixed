@@ -85,6 +85,15 @@ _jobs: dict[str, dict[str, Any]] = {}
 _job_counter: int = 0
 _job_lock: asyncio.Lock = asyncio.Lock()
 
+# Async /nodes-export cache refresh coordinator
+_nodes_export_refresh_task: asyncio.Task | None = None
+_nodes_export_refresh_lock: asyncio.Lock = asyncio.Lock()
+_nodes_export_refresh_idle_event: asyncio.Event = asyncio.Event()
+_nodes_export_refresh_state: str = "idle"
+_nodes_export_refresh_rerun_requested: bool = False
+_nodes_export_refresh_pending_reasons: list[str] = []
+_nodes_export_refresh_idle_event.set()
+
 # AI Dagger root (top-level for MCP workflows)
 DAGGER_ROOT_ID = "b49affa1-3930-95e3-b2fe-ad9b881285e2"
 
@@ -131,6 +140,234 @@ def get_ws_connection():
     return _ws_connection, _ws_message_queue
 
 
+# @beacon[
+#   id=cache-refresh@async-coordinator,
+#   role=async nodes-export cache refresh coordinator,
+#   slice_labels=ra-workflowy-cache,f9-f12-handlers,ra-websocket,
+#   kind=span,
+#   show_span=false,
+# ]
+async def _send_ws_json_best_effort(payload: dict[str, Any]) -> bool:
+    """Best-effort WebSocket send for server-originated status updates."""
+    ws_conn, _ = get_ws_connection()
+    if ws_conn is None:
+        return False
+    try:
+        await ws_conn.send(json.dumps(payload))
+        return True
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            f"Failed to send WebSocket payload action={payload.get('action')}: {e}",
+            "CACHE_SYNC",
+        )
+        return False
+
+
+async def _emit_nodes_export_cache_status(
+    status: str,
+    *,
+    reason: str | None = None,
+    source: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Emit cache-refresh lifecycle status to the Workflowy widget."""
+    payload: dict[str, Any] = {
+        "action": "refresh_nodes_export_cache_status",
+        "status": status,
+    }
+    if reason:
+        payload["reason"] = reason
+    if source:
+        payload["source"] = source
+    if details:
+        payload.update(details)
+    await _send_ws_json_best_effort(payload)
+
+
+async def _nodes_export_cache_refresh_worker() -> None:
+    """Run coalesced /nodes-export cache refreshes in the server process."""
+    global _nodes_export_refresh_task
+    global _nodes_export_refresh_state
+    global _nodes_export_refresh_rerun_requested
+    global _nodes_export_refresh_pending_reasons
+
+    try:
+        while True:
+            async with _nodes_export_refresh_lock:
+                reasons = list(_nodes_export_refresh_pending_reasons) or ["unspecified"]
+                _nodes_export_refresh_pending_reasons.clear()
+                _nodes_export_refresh_rerun_requested = False
+                _nodes_export_refresh_state = "running"
+
+            joined_reason = "; ".join(reasons)
+            log_event(
+                f"Starting /nodes-export cache refresh (reasons={joined_reason})",
+                "CACHE_SYNC",
+            )
+            await _emit_nodes_export_cache_status(
+                "running",
+                reason=joined_reason,
+                source="server",
+                details={"coalesced_reasons": reasons, "async_triggered": True},
+            )
+
+            try:
+                client = get_client()
+                result = await client.refresh_nodes_export_cache()
+            except Exception as e:  # noqa: BLE001
+                log_event(
+                    f"/nodes-export cache refresh failed: {e}",
+                    "CACHE_SYNC",
+                )
+                result = {"success": False, "error": str(e)}
+
+            payload: dict[str, Any] = {
+                "action": "refresh_nodes_export_cache_result",
+                **result,
+                "async_triggered": True,
+                "coalesced_reasons": reasons,
+            }
+            await _send_ws_json_best_effort(payload)
+
+            async with _nodes_export_refresh_lock:
+                rerun = (
+                    _nodes_export_refresh_rerun_requested
+                    or bool(_nodes_export_refresh_pending_reasons)
+                )
+                if rerun:
+                    _nodes_export_refresh_state = "queued"
+                    _nodes_export_refresh_rerun_requested = False
+                else:
+                    _nodes_export_refresh_state = "idle"
+                    _nodes_export_refresh_task = None
+                    _nodes_export_refresh_idle_event.set()
+
+            if rerun:
+                log_event(
+                    "Re-queueing /nodes-export cache refresh due to coalesced request(s)",
+                    "CACHE_SYNC",
+                )
+                await _emit_nodes_export_cache_status(
+                    "queued",
+                    reason="coalesced-rerun",
+                    source="server",
+                    details={"async_triggered": True},
+                )
+                continue
+
+            break
+    except Exception as e:  # noqa: BLE001
+        async with _nodes_export_refresh_lock:
+            _nodes_export_refresh_state = "idle"
+            _nodes_export_refresh_task = None
+            _nodes_export_refresh_idle_event.set()
+        log_event(
+            f"Unhandled cache refresh coordinator failure: {e}",
+            "CACHE_SYNC",
+        )
+        await _send_ws_json_best_effort(
+            {
+                "action": "refresh_nodes_export_cache_result",
+                "success": False,
+                "error": str(e),
+                "async_triggered": True,
+            }
+        )
+
+
+async def _request_nodes_export_cache_refresh_async(
+    reason: str,
+    *,
+    source: str,
+) -> dict[str, Any]:
+    """Queue a coalesced async /nodes-export cache refresh."""
+    global _nodes_export_refresh_task
+    global _nodes_export_refresh_state
+    global _nodes_export_refresh_rerun_requested
+    global _nodes_export_refresh_pending_reasons
+
+    clean_reason = (reason or source or "unspecified").strip()
+
+    async with _nodes_export_refresh_lock:
+        if clean_reason and clean_reason not in _nodes_export_refresh_pending_reasons:
+            _nodes_export_refresh_pending_reasons.append(clean_reason)
+
+        active = (
+            _nodes_export_refresh_task is not None
+            and not _nodes_export_refresh_task.done()
+        )
+        if active:
+            _nodes_export_refresh_rerun_requested = True
+            log_event(
+                f"Queued coalesced /nodes-export cache refresh (reason={clean_reason}, source={source})",
+                "CACHE_SYNC",
+            )
+            return {
+                "success": True,
+                "scheduled": False,
+                "coalesced": True,
+                "state": _nodes_export_refresh_state,
+                "reason": clean_reason,
+                "source": source,
+            }
+
+        _nodes_export_refresh_state = "queued"
+        _nodes_export_refresh_idle_event.clear()
+        _nodes_export_refresh_task = asyncio.create_task(_nodes_export_cache_refresh_worker())
+
+    log_event(
+        f"Scheduled /nodes-export cache refresh (reason={clean_reason}, source={source})",
+        "CACHE_SYNC",
+    )
+    await _emit_nodes_export_cache_status(
+        "queued",
+        reason=clean_reason,
+        source=source,
+        details={"async_triggered": True},
+    )
+    return {
+        "success": True,
+        "scheduled": True,
+        "coalesced": False,
+        "state": "queued",
+        "reason": clean_reason,
+        "source": source,
+    }
+
+
+async def _await_nodes_export_cache_quiescent(reason: str) -> None:
+    """Wait until any queued/running cache refresh has fully settled."""
+    waited = False
+    while True:
+        async with _nodes_export_refresh_lock:
+            active = (
+                (_nodes_export_refresh_task is not None and not _nodes_export_refresh_task.done())
+                or _nodes_export_refresh_state in {"queued", "running"}
+                or _nodes_export_refresh_rerun_requested
+                or bool(_nodes_export_refresh_pending_reasons)
+            )
+            idle_event = _nodes_export_refresh_idle_event
+
+        if not active:
+            if waited:
+                log_event(
+                    f"/nodes-export cache refresh quiescent; continuing ({reason})",
+                    "CACHE_SYNC",
+                )
+            return
+
+        if not waited:
+            log_event(
+                f"Waiting for /nodes-export cache refresh quiescence before continuing ({reason})",
+                "CACHE_SYNC",
+            )
+            waited = True
+        await idle_event.wait()
+
+
+# @beacon-close[
+#   id=cache-refresh@async-coordinator,
+# ]
 def log_event(message: str, component: str = "SERVER") -> None:
     """Log an event to stderr with timestamp and consistent formatting."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1053,6 +1290,9 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
     # nodes we must run the synchronous update-beacon pipeline so that source
     # code and Workflowy metadata stay in lockstep.
     if is_file_node and data.get("carto_async"):
+        await _await_nodes_export_cache_quiescent(
+            f"refresh_file_node async launch for {node_id}",
+        )
         async_result = await _start_carto_refresh_job(root_uuid=str(node_id), mode="file")
         payload: dict[str, Any] = {
             "action": "refresh_file_node_result",
@@ -1067,6 +1307,9 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
         # FILE node (no async requested): skip beacon update entirely; perform a
         # single per-file Cartographer refresh only once.
         try:
+            await _await_nodes_export_cache_quiescent(
+                f"refresh_file_node FILE sync path for {node_id}",
+            )
             result = await client.refresh_file_node_beacons(
                 file_node_id=node_id,
                 dry_run=False,
@@ -1091,8 +1334,25 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
         if not isinstance(result, dict):
             result = {"success": False, "error": "refresh_file_node_beacons returned non-dict"}
 
+        cache_refresh_request: dict[str, Any] | None = None
+        try:
+            cache_refresh_request = await _request_nodes_export_cache_refresh_async(
+                reason=f"FILE-node F12 completed for {node_id}",
+                source="refresh_file_node:file",
+            )
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                f"_handle_refresh_file_node: failed to schedule async cache refresh for {node_id}: {e}",
+                "WS_HANDLER",
+            )
+            cache_refresh_request = {"success": False, "error": str(e)}
+
         result["action"] = "refresh_file_node_result"
         result["node_id"] = node_id
+        result["cache_refresh_request"] = cache_refresh_request
+        result["cache_refresh_requested"] = bool(
+            isinstance(cache_refresh_request, dict) and cache_refresh_request.get("success")
+        )
         await websocket.send(json.dumps(result))
         return
 
@@ -1221,6 +1481,9 @@ async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
 
     # Async CARTO_REFRESH path when requested by the client.
     if data.get("carto_async"):
+        await _await_nodes_export_cache_quiescent(
+            f"refresh_folder_node async launch for {node_id}",
+        )
         async_result = await _start_carto_refresh_job(root_uuid=str(node_id), mode="folder")
         payload: dict[str, Any] = {
             "action": "refresh_folder_node_result",
@@ -1234,6 +1497,9 @@ async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
     client = get_client()
 
     try:
+        await _await_nodes_export_cache_quiescent(
+            f"refresh_folder_node sync path for {node_id}",
+        )
         result = await client.refresh_folder_cartographer_sync(
             folder_node_id=node_id,
             dry_run=False,
@@ -1241,8 +1507,25 @@ async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
         if not isinstance(result, dict):
             result = {"success": False, "error": "refresh_folder_cartographer_sync returned non-dict"}
 
+        cache_refresh_request: dict[str, Any] | None = None
+        try:
+            cache_refresh_request = await _request_nodes_export_cache_refresh_async(
+                reason=f"FOLDER-node F12 completed for {node_id}",
+                source="refresh_folder_node:folder",
+            )
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                f"_handle_refresh_folder_node: failed to schedule async cache refresh for {node_id}: {e}",
+                "WS_HANDLER",
+            )
+            cache_refresh_request = {"success": False, "error": str(e)}
+
         result["action"] = "refresh_folder_node_result"
         result["node_id"] = node_id
+        result["cache_refresh_request"] = cache_refresh_request
+        result["cache_refresh_requested"] = bool(
+            isinstance(cache_refresh_request, dict) and cache_refresh_request.get("success")
+        )
         await websocket.send(json.dumps(result))
 
     except Exception as e:  # noqa: BLE001
@@ -1489,19 +1772,13 @@ async def websocket_handler(websocket):
                 # Explicit cache refresh request from GLIMPSE client.
                 if action == 'refresh_nodes_export_cache':
                     try:
-                        client = get_client()
-                        result = await client.refresh_nodes_export_cache()
-                        await websocket.send(json.dumps({
-                            "action": "refresh_nodes_export_cache_result",
-                            **result,
-                        }))
-                        log_event(
-                            f"Refreshed /nodes-export cache via WebSocket request: {result.get('node_count')} nodes",
-                            "WS_HANDLER",
+                        await _request_nodes_export_cache_refresh_async(
+                            reason="manual websocket cache refresh",
+                            source="websocket:refresh_button",
                         )
                     except Exception as e:
                         log_event(
-                            f"Failed to refresh /nodes-export cache from WebSocket request: {e}",
+                            f"Failed to schedule /nodes-export cache refresh from WebSocket request: {e}",
                             "WS_HANDLER",
                         )
                         try:
@@ -1511,6 +1788,7 @@ async def websocket_handler(websocket):
                                         "action": "refresh_nodes_export_cache_result",
                                         "success": False,
                                         "error": str(e),
+                                        "async_triggered": True,
                                     }
                                 )
                             )
@@ -4629,12 +4907,31 @@ async def beacon_refresh_code_node(
         await _rate_limiter.acquire()
 
     try:
+        await _await_nodes_export_cache_quiescent(
+            f"beacon_refresh_code_node for {file_node_id}",
+        )
         result = await client.refresh_file_node_beacons(
             file_node_id=file_node_id,
             dry_run=dry_run,
         )
         if _rate_limiter:
             _rate_limiter.on_success()
+        if not dry_run and isinstance(result, dict) and result.get("success", False):
+            try:
+                cache_refresh_request = await _request_nodes_export_cache_refresh_async(
+                    reason=f"beacon_refresh_code_node completed for {file_node_id}",
+                    source="mcp:beacon_refresh_code_node",
+                )
+            except Exception as cache_exc:  # noqa: BLE001
+                log_event(
+                    f"beacon_refresh_code_node: failed to schedule async cache refresh for {file_node_id}: {cache_exc}",
+                    "CACHE_SYNC",
+                )
+                cache_refresh_request = {"success": False, "error": str(cache_exc)}
+            result["cache_refresh_request"] = cache_refresh_request
+            result["cache_refresh_requested"] = bool(
+                isinstance(cache_refresh_request, dict) and cache_refresh_request.get("success")
+            )
         return result
     except Exception as e:  # noqa: BLE001
         if _rate_limiter and hasattr(e, "__class__") and e.__class__.__name__ == "RateLimitError":
