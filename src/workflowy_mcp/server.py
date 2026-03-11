@@ -412,12 +412,24 @@ async def _await_nodes_export_cache_quiescent(reason: str) -> None:
 # @beacon-close[
 #   id=cache-refresh@async-coordinator,
 # ]
+# @beacon[
+#   id=cache-refresh@_get_carto_jobs_base_dir,
+#   role=_get_carto_jobs_base_dir,
+#   slice_labels=ra-workflowy-cache,ra-carto-jobs,f9-f12-handlers,
+#   kind=ast,
+# ]
 def _get_carto_jobs_base_dir() -> str:
     """Return the detached CARTO job directory under workflowy_mcp/temp/."""
     server_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(server_dir, "temp", "cartographer_jobs")
 
 
+# @beacon[
+#   id=cache-refresh@_scan_carto_job_files,
+#   role=_scan_carto_job_files,
+#   slice_labels=ra-workflowy-cache,ra-carto-jobs,f9-f12-handlers,
+#   kind=ast,
+# ]
 def _scan_carto_job_files(base_dir_str: str | None = None) -> list[dict[str, Any]]:
     """Scan detached CARTO job JSON files for status/progress snapshots.
 
@@ -468,6 +480,12 @@ def _scan_carto_job_files(base_dir_str: str | None = None) -> list[dict[str, Any
     return results
 
 
+# @beacon[
+#   id=cache-refresh@_carto_job_requires_cache_refresh,
+#   role=_carto_job_requires_cache_refresh,
+#   slice_labels=ra-workflowy-cache,ra-carto-jobs,f9-f12-handlers,
+#   kind=ast,
+# ]
 def _carto_job_requires_cache_refresh(job: dict[str, Any]) -> bool:
     """Return True when a detached CARTO job should trigger final cache sync."""
     if "cache_refresh_required" in job:
@@ -475,6 +493,12 @@ def _carto_job_requires_cache_refresh(job: dict[str, Any]) -> bool:
     return str(job.get("kind") or job.get("type") or "").upper() == "CARTO_REFRESH"
 
 
+# @beacon[
+#   id=cache-refresh@_await_carto_jobs_quiescent,
+#   role=_await_carto_jobs_quiescent,
+#   slice_labels=ra-workflowy-cache,ra-carto-jobs,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def _await_carto_jobs_quiescent(reason: str) -> None:
     """Wait until detached CARTO jobs relevant to cache sync have drained."""
     waited = False
@@ -500,6 +524,12 @@ async def _await_carto_jobs_quiescent(reason: str) -> None:
         await idle_event.wait()
 
 
+# @beacon[
+#   id=cache-refresh@_refresh_carto_job_tracker_once,
+#   role=_refresh_carto_job_tracker_once,
+#   slice_labels=ra-workflowy-cache,ra-carto-jobs,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def _refresh_carto_job_tracker_once() -> None:
     """Refresh detached CARTO job state and request one final cache sync.
 
@@ -590,6 +620,12 @@ async def _refresh_carto_job_tracker_once() -> None:
             _carto_pending_terminal_cache_jobs.discard(jid)
 
 
+# @beacon[
+#   id=cache-refresh@_carto_jobs_watcher_loop,
+#   role=_carto_jobs_watcher_loop,
+#   slice_labels=ra-workflowy-cache,ra-carto-jobs,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def _carto_jobs_watcher_loop() -> None:
     """Poll detached CARTO job JSON state and aggregate completion events."""
     while True:
