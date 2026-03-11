@@ -456,23 +456,41 @@ def _scan_carto_job_files(base_dir_str: str | None = None) -> list[dict[str, Any
         if not job_type.startswith("CARTO_"):
             continue
 
+        status = job.get("status", "unknown")
+        error = job.get("error")
+        pid = job.get("pid")
+        detached_flag = bool(job.get("detached", True))
+
+        # Server-local CARTO_BULK_APPLY jobs run inside the MCP process rather than
+        # as detached workers. If the MCP server restarts mid-job, the JSON may be
+        # left behind in queued/running state. Treat such jobs as failed so they do
+        # not block quiescence forever.
+        if job_type == "CARTO_BULK_APPLY" and str(status).lower() in {"queued", "running", "waiting"}:
+            try:
+                job_pid = int(pid) if pid is not None else None
+            except Exception:
+                job_pid = None
+            if job_pid is not None and job_pid != os.getpid():
+                status = "failed"
+                error = error or "Server-local CARTO_BULK_APPLY job orphaned after MCP restart."
+
         jid = job.get("id") or job_path.stem
         results.append(
             {
                 "job_id": jid,
                 "kind": job_type,
-                "status": job.get("status", "unknown"),
+                "status": status,
                 "mode": job.get("mode"),
                 "root_uuid": job.get("root_uuid"),
-                "detached": True,
+                "detached": detached_flag,
                 "carto_job_file": str(job_path),
                 "log_file": job.get("logs_path"),
                 "created_at": job.get("created_at"),
                 "updated_at": job.get("updated_at"),
                 "progress": job.get("progress"),
                 "result_summary": job.get("result_summary"),
-                "error": job.get("error"),
-                "pid": job.get("pid"),
+                "error": error,
+                "pid": pid,
                 "cache_refresh_required": job.get("cache_refresh_required"),
             }
         )
@@ -2238,6 +2256,53 @@ async def websocket_handler(websocket):
                             pass
                     continue
 
+                # F12 popup: batch-apply visible Workflowy metadata (tags/comment/role)
+                # to eligible AST / beacon nodes under a FILE or FOLDER root, then
+                # refresh each touched file once.
+                if action == 'bulk_apply_visible_nodes':
+                    try:
+                        root_uuid = str(data.get('root_uuid') or data.get('node_id') or '').strip()
+                        root_mode = str(data.get('root_mode') or '').strip().lower()
+                        visible_tree = data.get('visible_tree')
+                        if not root_uuid:
+                            raise ValueError('Missing root_uuid in bulk_apply_visible_nodes payload.')
+                        if root_mode not in {'file', 'folder'}:
+                            raise ValueError(f'Unsupported root_mode for bulk apply: {root_mode!r}')
+                        if not isinstance(visible_tree, dict):
+                            raise ValueError('Missing visible_tree payload for bulk apply.')
+
+                        result = await _start_carto_bulk_visible_apply_job(
+                            root_uuid=root_uuid,
+                            mode=root_mode,
+                            visible_tree_payload=visible_tree,
+                        )
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    'action': 'bulk_apply_visible_nodes_result',
+                                    **result,
+                                }
+                            )
+                        )
+                    except Exception as e:
+                        log_event(
+                            f"bulk_apply_visible_nodes handler error: {e}",
+                            "WS_HANDLER",
+                        )
+                        try:
+                            await websocket.send(
+                                json.dumps(
+                                    {
+                                        'action': 'bulk_apply_visible_nodes_result',
+                                        'success': False,
+                                        'error': str(e),
+                                    }
+                                )
+                            )
+                        except Exception:
+                            pass
+                    continue
+
                 # List CARTO_REFRESH jobs (for async F12 status in the GLIMPSE widget)
                 if action == 'carto_list_jobs':
                     try:
@@ -2305,8 +2370,8 @@ async def websocket_handler(websocket):
                                 except Exception:  # noqa: BLE001
                                     continue
 
-                                # Only consider CARTO_REFRESH jobs; ignore any other JSON artifacts.
-                                if str(carto_job.get("type")) != "CARTO_REFRESH":
+                                # Only consider CARTO_* jobs; ignore any other JSON artifacts.
+                                if not str(carto_job.get("type") or "").startswith("CARTO_"):
                                     continue
 
                                 jid = carto_job.get("id") or job_path.stem
@@ -2624,8 +2689,8 @@ def _gc_carto_jobs(carto_jobs_base: str, max_age_seconds: int = 3600) -> None:
                     # Leave unreadable/corrupt jobs for manual inspection.
                     continue
 
-                # Only consider CARTO_REFRESH jobs; ignore any other JSON artifacts.
-                if str(job.get("type")) != "CARTO_REFRESH":
+                # Only consider CARTO_* jobs; ignore any other JSON artifacts.
+                if not str(job.get("type") or "").startswith("CARTO_"):
                     continue
 
                 status = str(job.get("status", "")).lower()
@@ -2903,6 +2968,426 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
         }
 
 
+def _read_carto_job_payload(job_file: str) -> dict[str, Any] | None:
+    try:
+        with open(job_file, "r", encoding="utf-8") as jf:
+            return json.load(jf)
+    except Exception:
+        return None
+
+
+def _write_carto_job_payload(job_file: str, payload: dict[str, Any]) -> bool:
+    try:
+        with open(job_file, "w", encoding="utf-8") as jf:
+            json.dump(payload, jf, indent=2)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log_event(f"Failed to write CARTO job file {job_file}: {e}", "CARTO")
+        return False
+
+
+def _append_carto_job_log(log_file: str | None, message: str) -> None:
+    if not log_file:
+        return
+    try:
+        ts = datetime.utcnow().isoformat()
+        with open(log_file, "a", encoding="utf-8") as lf:
+            lf.write(f"[{ts}] {message}\n")
+    except Exception as e:  # noqa: BLE001
+        log_event(f"Failed to append CARTO log {log_file}: {e}", "CARTO")
+
+
+def _carto_job_cancel_requested(job_file: str) -> bool:
+    payload = _read_carto_job_payload(job_file)
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("status") or "") == "cancelled"
+
+
+def _note_has_path_or_root_header(note_str: str | None) -> bool:
+    for line in str(note_str or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Path:") or stripped.startswith("Root:"):
+            return True
+    return False
+
+
+def _is_folder_like_node_name(name: str | None) -> bool:
+    return str(name or "").strip().startswith("📂")
+
+
+def _is_file_like_payload_node(node: dict[str, Any]) -> bool:
+    return _note_has_path_or_root_header(node.get("note")) and not _is_folder_like_node_name(node.get("name"))
+
+
+def _is_bulk_visible_apply_candidate(node: dict[str, Any]) -> bool:
+    if _is_file_like_payload_node(node):
+        return False
+    if _is_folder_like_node_name(node.get("name")):
+        return False
+    note = str(node.get("note") or "")
+    return (
+        "AST_QUALNAME:" in note
+        or "BEACON (" in note
+        or "MD_PATH:" in note
+    )
+
+
+def _build_bulk_visible_root_from_payload(data: dict[str, Any]) -> dict[str, Any] | None:
+    visible_tree = data.get("visible_tree")
+    if not isinstance(visible_tree, dict):
+        return None
+    root = visible_tree.get("root")
+    if not isinstance(root, dict):
+        return None
+    merged = dict(root)
+    children = visible_tree.get("children")
+    merged["children"] = children if isinstance(children, list) else []
+    return merged
+
+
+def _collect_bulk_visible_apply_groups(root_node: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    groups: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
+
+    def walk(node: dict[str, Any], current_file: dict[str, Any] | None) -> None:
+        if not isinstance(node, dict):
+            return
+
+        node_id = str(node.get("id") or "").strip()
+        name = str(node.get("name") or "")
+        note = str(node.get("note") or "")
+        next_file = current_file
+
+        if _is_file_like_payload_node(node) and node_id:
+            next_file = {
+                "id": node_id,
+                "name": name,
+                "note": note,
+            }
+            groups.setdefault(node_id, {"file_node": next_file, "nodes": []})
+
+        if _is_bulk_visible_apply_candidate(node):
+            if not next_file or not next_file.get("id"):
+                warnings.append(
+                    f"Skipping candidate without enclosing FILE ancestor: node_id={node_id or '<missing>'} name={name!r}",
+                )
+            else:
+                file_id = str(next_file.get("id"))
+                groups.setdefault(file_id, {"file_node": next_file, "nodes": []})
+                groups[file_id]["nodes"].append(
+                    {
+                        "id": node_id,
+                        "name": name,
+                        "note": note,
+                    }
+                )
+
+        for child in node.get("children") or []:
+            if isinstance(child, dict):
+                walk(child, next_file)
+
+    walk(root_node, None)
+    return (
+        {fid: data for fid, data in groups.items() if data.get("nodes")},
+        warnings,
+    )
+
+
+async def _run_carto_bulk_visible_apply_job(job_file: str, root_node: dict[str, Any], mode: str) -> None:
+    client = get_client()
+    job = _read_carto_job_payload(job_file) or {}
+    log_file = job.get("logs_path")
+
+    result_summary = job.setdefault("result_summary", {})
+    errors = result_summary.setdefault("errors", [])
+    warnings = result_summary.setdefault("warnings", [])
+    result_summary.setdefault("files_refreshed", 0)
+    result_summary.setdefault("files_skipped", 0)
+    result_summary.setdefault("node_updates", 0)
+    result_summary.setdefault("nodes_skipped", 0)
+    result_summary.setdefault("workflowy_nodes_updated", 0)
+
+    progress = job.setdefault("progress", {})
+    progress.setdefault("total_files", 0)
+    progress.setdefault("completed_files", 0)
+    progress.setdefault("current_file", None)
+    progress.setdefault("current_phase", "waiting")
+    progress.setdefault("nodes_created", 0)
+    progress.setdefault("nodes_updated", 0)
+    progress.setdefault("nodes_moved", 0)
+    progress.setdefault("nodes_deleted", 0)
+
+    successful_file_refreshes = 0
+
+    try:
+        progress["current_phase"] = "waiting"
+        job["status"] = "waiting"
+        job["updated_at"] = datetime.utcnow().isoformat()
+        _write_carto_job_payload(job_file, job)
+        _append_carto_job_log(log_file, f"Waiting to start bulk visible apply (mode={mode})")
+
+        await _await_nodes_export_cache_quiescent(
+            f"bulk visible apply preflight for {job.get('root_uuid')}",
+        )
+        await _await_carto_jobs_quiescent(
+            f"bulk visible apply preflight for {job.get('root_uuid')}",
+        )
+        await _await_nodes_export_cache_quiescent(
+            f"bulk visible apply post-carto preflight for {job.get('root_uuid')}",
+        )
+
+        if _carto_job_cancel_requested(job_file):
+            job["status"] = "cancelled"
+            progress["current_phase"] = "cancelled"
+            job["cache_refresh_required"] = False
+            job["updated_at"] = datetime.utcnow().isoformat()
+            _write_carto_job_payload(job_file, job)
+            _append_carto_job_log(log_file, "Cancelled before batch execution started.")
+            return
+
+        grouped_files, grouping_warnings = _collect_bulk_visible_apply_groups(root_node)
+        if grouping_warnings:
+            warnings.extend(grouping_warnings)
+            for msg in grouping_warnings:
+                _append_carto_job_log(log_file, f"WARNING: {msg}")
+
+        file_items = sorted(
+            grouped_files.items(),
+            key=lambda kv: str(kv[1].get("file_node", {}).get("name") or kv[0]).lower(),
+        )
+
+        progress["total_files"] = len(file_items)
+        progress["completed_files"] = 0
+        progress["current_phase"] = "running"
+        job["status"] = "running"
+        job["updated_at"] = datetime.utcnow().isoformat()
+        _write_carto_job_payload(job_file, job)
+        _append_carto_job_log(log_file, f"Starting bulk visible apply across {len(file_items)} file(s).")
+        await _refresh_carto_job_tracker_once()
+
+        if not file_items:
+            job["status"] = "completed"
+            job["cache_refresh_required"] = False
+            progress["current_phase"] = "done"
+            result_summary["message"] = "No eligible visible AST/beacon nodes found."
+            job["updated_at"] = datetime.utcnow().isoformat()
+            _write_carto_job_payload(job_file, job)
+            _append_carto_job_log(log_file, "No eligible visible AST/beacon nodes found; nothing to do.")
+            return
+
+        processed_files = 0
+        for file_id, file_group in file_items:
+            if _carto_job_cancel_requested(job_file):
+                job["status"] = "cancelled"
+                progress["current_phase"] = "cancelled"
+                _append_carto_job_log(log_file, "Cancellation requested; stopping before next file refresh.")
+                break
+
+            file_node = file_group.get("file_node") or {}
+            file_name = str(file_node.get("name") or file_id)
+            candidate_nodes = file_group.get("nodes") or []
+
+            progress["current_file"] = file_id
+            progress["current_phase"] = "update-beacons"
+            job["updated_at"] = datetime.utcnow().isoformat()
+            _write_carto_job_payload(job_file, job)
+            _append_carto_job_log(log_file, f"Updating {len(candidate_nodes)} visible node(s) for file {file_name} ({file_id}).")
+
+            file_successful_node_updates = 0
+            for candidate in candidate_nodes:
+                if _carto_job_cancel_requested(job_file):
+                    job["status"] = "cancelled"
+                    progress["current_phase"] = "cancelled"
+                    _append_carto_job_log(log_file, "Cancellation requested during node update pass.")
+                    break
+
+                node_id = str(candidate.get("id") or "").strip()
+                node_name = str(candidate.get("name") or "")
+                node_note = str(candidate.get("note") or "")
+                if not node_id:
+                    result_summary["nodes_skipped"] += 1
+                    errors.append(f"Skipped visible node with missing id under file {file_name}.")
+                    continue
+
+                if node_name:
+                    try:
+                        await client.update_cached_node_name(
+                            node_id=node_id,
+                            new_name=node_name,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        _append_carto_job_log(log_file, f"WARNING: update_cached_node_name failed for {node_id}: {e}")
+
+                try:
+                    node_result = await client.update_beacon_from_node(
+                        node_id=node_id,
+                        name=node_name,
+                        note=node_note,
+                    )
+                    if isinstance(node_result, dict) and not node_result.get("success", True):
+                        raise RuntimeError(node_result.get("error") or "update_beacon_from_node returned failure")
+                    file_successful_node_updates += 1
+                    result_summary["node_updates"] += 1
+                    progress["nodes_updated"] = result_summary["node_updates"]
+                    job["updated_at"] = datetime.utcnow().isoformat()
+                    _write_carto_job_payload(job_file, job)
+                except Exception as e:  # noqa: BLE001
+                    msg = f"Node update failed for {node_id} ({node_name!r}): {e}"
+                    errors.append(msg)
+                    result_summary["nodes_skipped"] += 1
+                    _append_carto_job_log(log_file, f"ERROR: {msg}")
+
+            if str(job.get("status")) == "cancelled":
+                break
+
+            if file_successful_node_updates > 0:
+                progress["current_phase"] = "refresh-file"
+                job["updated_at"] = datetime.utcnow().isoformat()
+                _write_carto_job_payload(job_file, job)
+                _append_carto_job_log(log_file, f"Refreshing Workflowy FILE node once for {file_name} ({file_id}).")
+
+                try:
+                    refresh_result = await client.refresh_file_node_beacons(
+                        file_node_id=file_id,
+                        dry_run=False,
+                    )
+                    if isinstance(refresh_result, dict) and not refresh_result.get("success", True):
+                        raise RuntimeError(refresh_result.get("error") or "refresh_file_node_beacons returned failure")
+                    successful_file_refreshes += 1
+                    result_summary["files_refreshed"] = successful_file_refreshes
+                    result_summary["workflowy_nodes_updated"] += int((refresh_result or {}).get("nodes_updated", 0) or 0)
+                    progress["nodes_created"] += int((refresh_result or {}).get("nodes_created", 0) or 0)
+                    progress["nodes_moved"] += int((refresh_result or {}).get("nodes_moved", 0) or 0)
+                    progress["nodes_deleted"] += int((refresh_result or {}).get("nodes_deleted", 0) or 0)
+                    _append_carto_job_log(
+                        log_file,
+                        f"Refreshed FILE node {file_name}: +{int((refresh_result or {}).get('nodes_created', 0) or 0)} ~{int((refresh_result or {}).get('nodes_updated', 0) or 0)} ↻{int((refresh_result or {}).get('nodes_moved', 0) or 0)} -{int((refresh_result or {}).get('nodes_deleted', 0) or 0)}",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    msg = f"FILE refresh failed for {file_name} ({file_id}): {e}"
+                    errors.append(msg)
+                    _append_carto_job_log(log_file, f"ERROR: {msg}")
+            else:
+                result_summary["files_skipped"] += 1
+                _append_carto_job_log(log_file, f"No successful node updates for {file_name}; skipping FILE refresh.")
+
+            processed_files += 1
+            progress["completed_files"] = processed_files
+            progress["current_file"] = None
+            job["updated_at"] = datetime.utcnow().isoformat()
+            _write_carto_job_payload(job_file, job)
+
+        if str(job.get("status")) != "cancelled":
+            progress["current_phase"] = "done"
+            progress["current_file"] = None
+            job["cache_refresh_required"] = successful_file_refreshes > 0
+            if errors:
+                job["status"] = "failed"
+                job["error"] = errors[-1]
+            else:
+                job["status"] = "completed"
+                job["error"] = None
+
+        job["updated_at"] = datetime.utcnow().isoformat()
+        _write_carto_job_payload(job_file, job)
+    except Exception as e:  # noqa: BLE001
+        msg = f"Unhandled bulk visible apply failure: {e}"
+        errors.append(msg)
+        job["status"] = "failed"
+        job["error"] = str(e)
+        progress["current_phase"] = "failed"
+        job["updated_at"] = datetime.utcnow().isoformat()
+        _write_carto_job_payload(job_file, job)
+        _append_carto_job_log(log_file, f"ERROR: {msg}")
+    finally:
+        await _refresh_carto_job_tracker_once()
+
+
+async def _start_carto_bulk_visible_apply_job(
+    *,
+    root_uuid: str,
+    mode: str,
+    visible_tree_payload: dict[str, Any],
+) -> dict[str, Any]:
+    if mode not in {"file", "folder"}:
+        return {"success": False, "error": f"Invalid bulk-apply mode: {mode!r}"}
+
+    root_node = _build_bulk_visible_root_from_payload({"visible_tree": visible_tree_payload})
+    if not isinstance(root_node, dict):
+        return {"success": False, "error": "Missing or malformed visible_tree payload."}
+
+    carto_jobs_base = _get_carto_jobs_base_dir()
+    os.makedirs(carto_jobs_base, exist_ok=True)
+    _gc_carto_jobs(carto_jobs_base)
+
+    now_dt = datetime.utcnow()
+    now = now_dt.isoformat()
+    from uuid import uuid4 as _uuid4
+
+    job_id = f"carto-bulk-apply-{mode}-{_uuid4().hex[:8]}"
+    ts_prefix = now_dt.strftime("%Y%m%d-%H%M%S")
+    filename_prefix = f"{ts_prefix}_{job_id}"
+    job_file = os.path.join(carto_jobs_base, f"{filename_prefix}.json")
+    log_file = os.path.join(carto_jobs_base, f"{filename_prefix}.log")
+
+    job_payload: dict[str, Any] = {
+        "id": job_id,
+        "type": "CARTO_BULK_APPLY",
+        "mode": mode,
+        "root_uuid": root_uuid,
+        "status": "waiting",
+        "detached": False,
+        "pid": os.getpid(),
+        "cache_refresh_required": True,
+        "created_at": now,
+        "updated_at": now,
+        "progress": {
+            "total_files": 0,
+            "completed_files": 0,
+            "current_file": None,
+            "current_phase": "waiting",
+            "nodes_created": 0,
+            "nodes_updated": 0,
+            "nodes_moved": 0,
+            "nodes_deleted": 0,
+        },
+        "result_summary": {
+            "files_refreshed": 0,
+            "files_skipped": 0,
+            "node_updates": 0,
+            "nodes_skipped": 0,
+            "workflowy_nodes_updated": 0,
+            "warnings": [],
+            "errors": [],
+        },
+        "error": None,
+        "logs_path": log_file,
+    }
+
+    if not _write_carto_job_payload(job_file, job_payload):
+        return {"success": False, "error": f"Failed to initialize bulk-apply job file: {job_file}"}
+
+    _append_carto_job_log(log_file, f"Queued CARTO_BULK_APPLY job for {mode} root {root_uuid}.")
+
+    async def runner() -> None:
+        await _run_carto_bulk_visible_apply_job(job_file, root_node, mode)
+
+    asyncio.create_task(runner())
+    await _refresh_carto_job_tracker_once()
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "kind": "CARTO_BULK_APPLY",
+        "mode": mode,
+        "root_uuid": root_uuid,
+        "carto_job_file": job_file,
+        "log_file": log_file,
+        "message": "Bulk visible beacon/tag apply queued.",
+    }
+
+
 @mcp.tool(
     name="mcp_job_status",
     description="Get status/result for long-running MCP jobs (ETCH, NEXUS, etc.).",
@@ -3153,8 +3638,8 @@ async def mcp_cancel_job(job_id: str) -> dict:
             except Exception:  # noqa: BLE001
                 continue
 
-            # Only consider CARTO_REFRESH jobs; ignore any other JSON artifacts.
-            if str(carto_job.get("type")) != "CARTO_REFRESH":
+            # Only consider CARTO_* jobs; ignore any other JSON artifacts.
+            if not str(carto_job.get("type") or "").startswith("CARTO_"):
                 continue
 
             jid = carto_job.get("id") or job_path.stem
