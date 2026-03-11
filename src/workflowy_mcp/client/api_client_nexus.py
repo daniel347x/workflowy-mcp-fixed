@@ -249,7 +249,7 @@ def resolve_cartographer_path_from_node(
     # @beacon[
     #   id=auto-beacon@resolve_cartographer_path_from_node._segment_from_node_name-r8w7,
     #   role=resolve_cartographer_path_from_node._segment_from_node_name,
-    #   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
+    #   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,foo-foo-foo,
     #   kind=ast,
     # ]
     def _segment_from_node_name(raw_name: str) -> str:
@@ -518,6 +518,12 @@ def normalize_cartographer_path(file_path: str | None) -> str | None:
     if not file_path or not isinstance(file_path, str):
         return file_path
 
+    # @beacon[
+    #   id=auto-beacon@normalize_cartographer_path._cleanse-ipc8,
+    #   role=normalize_cartographer_path._cleanse,
+    #   slice_labels=foo-foo-foo,
+    #   kind=ast,
+    # ]
     def _cleanse(p: str) -> str:
         # Common invisible whitespace that can appear from copy/paste / WF rendering
         p = p.replace("\u00a0", " ")  # NBSP
@@ -4286,6 +4292,23 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         # Normalize path for cross-machine portability (E: → C:, remove __Dan_Root)
         source_path = normalize_cartographer_path(source_path) or source_path
+
+        # Relative Path:/Root: notes in portable Cartographer trees require
+        # ancestor-chain resolution, not just drive/prefix normalization.
+        if not os.path.isfile(source_path) and nodes_by_id_cache:
+            try:
+                resolved_path = resolve_cartographer_path_from_node(
+                    node_id=str(file_node_id),
+                    nodes_by_id=nodes_by_id_cache,
+                )
+                source_path = str(resolved_path.get("abs_path") or source_path)
+                source_path = normalize_cartographer_path(source_path) or source_path
+            except Exception as e:  # noqa: BLE001
+                log_event(
+                    "refresh_file_node_beacons (legacy): failed relative-path resolution "
+                    f"for file_node_id={file_node_id}: {e}",
+                    "BEACON",
+                )
 
         if not os.path.isfile(source_path):
             raise NetworkError(f"Source file not found at Path: {source_path}")

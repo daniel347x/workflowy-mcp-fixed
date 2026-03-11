@@ -3016,14 +3016,69 @@ def _is_folder_like_node_name(name: str | None) -> bool:
     return str(name or "").strip().startswith("📂")
 
 
+def _cartographer_header_info(note_str: str | None) -> tuple[str, bool]:
+    first_header = ""
+    has_line_count = False
+    for line in str(note_str or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not first_header and (stripped.startswith("Path:") or stripped.startswith("Root:")):
+            first_header = stripped
+        if stripped.startswith("LINE COUNT:"):
+            has_line_count = True
+    return first_header, has_line_count
+
+
 def _is_file_like_payload_node(node: dict[str, Any]) -> bool:
-    return _note_has_path_or_root_header(node.get("note")) and not _is_folder_like_node_name(node.get("name"))
+    first_header, has_line_count = _cartographer_header_info(node.get("note"))
+    return first_header.startswith("Path:") and has_line_count
+
+
+def _is_folder_like_payload_node(node: dict[str, Any]) -> bool:
+    first_header, has_line_count = _cartographer_header_info(node.get("note"))
+    if first_header.startswith("Root:"):
+        return True
+    if first_header.startswith("Path:") and not has_line_count:
+        return True
+    return False
+
+
+def _normalize_bulk_visible_compare_text(text: str | None) -> str:
+    s = str(text or "")
+    try:
+        import importlib
+        cartographer = importlib.import_module("nexus_map_codebase")
+        normalizer = getattr(cartographer, "whiten_text_for_header_compare", None)
+        if callable(normalizer):
+            s = normalizer(s)
+    except Exception:
+        s = "".join(ch for ch in s if not ch.isspace())
+    # For dirty detection, ignore beacon decoration that may lag visual refresh.
+    s = s.replace("🔱", "")
+    return s
+
+
+def _visible_node_differs_from_cache(node: dict[str, Any], nodes_by_id_cache: dict[str, dict[str, Any]]) -> bool:
+    node_id = str(node.get("id") or "").strip()
+    if not node_id:
+        return True
+    cached = nodes_by_id_cache.get(node_id)
+    if not isinstance(cached, dict):
+        return True
+
+    visible_name = _normalize_bulk_visible_compare_text(node.get("name"))
+    visible_note = _normalize_bulk_visible_compare_text(node.get("note"))
+    cached_name = _normalize_bulk_visible_compare_text(cached.get("name") or cached.get("nm"))
+    cached_note = _normalize_bulk_visible_compare_text(cached.get("note") or cached.get("no"))
+
+    return visible_name != cached_name or visible_note != cached_note
 
 
 def _is_bulk_visible_apply_candidate(node: dict[str, Any]) -> bool:
     if _is_file_like_payload_node(node):
         return False
-    if _is_folder_like_node_name(node.get("name")):
+    if _is_folder_like_payload_node(node):
         return False
     note = str(node.get("note") or "")
     return (
@@ -3046,11 +3101,17 @@ def _build_bulk_visible_root_from_payload(data: dict[str, Any]) -> dict[str, Any
     return merged
 
 
-def _collect_bulk_visible_apply_groups(root_node: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], list[str]]:
+def _collect_bulk_visible_apply_groups(
+    root_node: dict[str, Any],
+    nodes_by_id_cache: dict[str, dict[str, Any]] | None = None,
+) -> tuple[dict[str, dict[str, Any]], list[str], int]:
     groups: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
+    skipped_unchanged = 0
+    cache_lookup = nodes_by_id_cache or {}
 
     def walk(node: dict[str, Any], current_file: dict[str, Any] | None) -> None:
+        nonlocal skipped_unchanged
         if not isinstance(node, dict):
             return
 
@@ -3072,6 +3133,8 @@ def _collect_bulk_visible_apply_groups(root_node: dict[str, Any]) -> tuple[dict[
                 warnings.append(
                     f"Skipping candidate without enclosing FILE ancestor: node_id={node_id or '<missing>'} name={name!r}",
                 )
+            elif not _visible_node_differs_from_cache(node, cache_lookup):
+                skipped_unchanged += 1
             else:
                 file_id = str(next_file.get("id"))
                 groups.setdefault(file_id, {"file_node": next_file, "nodes": []})
@@ -3091,6 +3154,7 @@ def _collect_bulk_visible_apply_groups(root_node: dict[str, Any]) -> tuple[dict[
     return (
         {fid: data for fid, data in groups.items() if data.get("nodes")},
         warnings,
+        skipped_unchanged,
     )
 
 
@@ -3146,11 +3210,26 @@ async def _run_carto_bulk_visible_apply_job(job_file: str, root_node: dict[str, 
             _append_carto_job_log(log_file, "Cancelled before batch execution started.")
             return
 
-        grouped_files, grouping_warnings = _collect_bulk_visible_apply_groups(root_node)
+        try:
+            all_nodes_cache = client._get_nodes_export_cache_nodes() or []
+            nodes_by_id_cache = {
+                str(n.get("id")): n for n in all_nodes_cache if isinstance(n, dict) and n.get("id")
+            }
+        except Exception:
+            nodes_by_id_cache = {}
+
+        grouped_files, grouping_warnings, skipped_unchanged = _collect_bulk_visible_apply_groups(
+            root_node,
+            nodes_by_id_cache=nodes_by_id_cache,
+        )
         if grouping_warnings:
             warnings.extend(grouping_warnings)
             for msg in grouping_warnings:
                 _append_carto_job_log(log_file, f"WARNING: {msg}")
+        if skipped_unchanged:
+            result_summary["nodes_skipped"] += int(skipped_unchanged)
+            result_summary["nodes_unchanged"] = int(skipped_unchanged)
+            _append_carto_job_log(log_file, f"Skipping {skipped_unchanged} unchanged visible node(s) after semantic compare.")
 
         file_items = sorted(
             grouped_files.items(),
