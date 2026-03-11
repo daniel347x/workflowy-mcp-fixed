@@ -94,6 +94,20 @@ _nodes_export_refresh_rerun_requested: bool = False
 _nodes_export_refresh_pending_reasons: list[str] = []
 _nodes_export_refresh_idle_event.set()
 
+# Detached CARTO job watcher / quiescence tracking.
+# IMPORTANT: this does NOT serialize detached CARTO jobs. Multiple async F12
+# folder/file jobs may run in parallel. The watcher only aggregates their
+# terminal completion so the server can request exactly one final async
+# /nodes-export cache refresh after the active detached set drains.
+_carto_jobs_watch_task: asyncio.Task | None = None
+_carto_jobs_lock: asyncio.Lock = asyncio.Lock()
+_carto_jobs_tracker_initialized: bool = False
+_carto_job_states: dict[str, str] = {}
+_carto_active_cache_jobs: set[str] = set()
+_carto_pending_terminal_cache_jobs: set[str] = set()
+_carto_jobs_quiescent_event: asyncio.Event = asyncio.Event()
+_carto_jobs_quiescent_event.set()
+
 # AI Dagger root (top-level for MCP workflows)
 DAGGER_ROOT_ID = "b49affa1-3930-95e3-b2fe-ad9b881285e2"
 
@@ -147,6 +161,12 @@ def get_ws_connection():
 #   kind=span,
 #   show_span=false,
 # ]
+# @beacon[
+#   id=cache-refresh@_send_ws_json_best_effort,
+#   role=_send_ws_json_best_effort,
+#   slice_labels=ra-workflowy-cache,f9-f12-handlers,ra-websocket,
+#   kind=ast,
+# ]
 async def _send_ws_json_best_effort(payload: dict[str, Any]) -> bool:
     """Best-effort WebSocket send for server-originated status updates."""
     ws_conn, _ = get_ws_connection()
@@ -163,6 +183,12 @@ async def _send_ws_json_best_effort(payload: dict[str, Any]) -> bool:
         return False
 
 
+# @beacon[
+#   id=cache-refresh@_emit_nodes_export_cache_status,
+#   role=_emit_nodes_export_cache_status,
+#   slice_labels=ra-workflowy-cache,f9-f12-handlers,ra-websocket,
+#   kind=ast,
+# ]
 async def _emit_nodes_export_cache_status(
     status: str,
     *,
@@ -184,6 +210,12 @@ async def _emit_nodes_export_cache_status(
     await _send_ws_json_best_effort(payload)
 
 
+# @beacon[
+#   id=cache-refresh@_nodes_export_cache_refresh_worker,
+#   role=_nodes_export_cache_refresh_worker,
+#   slice_labels=ra-workflowy-cache,f9-f12-handlers,ra-websocket,
+#   kind=ast,
+# ]
 async def _nodes_export_cache_refresh_worker() -> None:
     """Run coalesced /nodes-export cache refreshes in the server process."""
     global _nodes_export_refresh_task
@@ -275,6 +307,12 @@ async def _nodes_export_cache_refresh_worker() -> None:
         )
 
 
+# @beacon[
+#   id=cache-refresh@_request_nodes_export_cache_refresh_async,
+#   role=_request_nodes_export_cache_refresh_async,
+#   slice_labels=ra-workflowy-cache,f9-f12-handlers,ra-websocket,
+#   kind=ast,
+# ]
 async def _request_nodes_export_cache_refresh_async(
     reason: str,
     *,
@@ -335,6 +373,12 @@ async def _request_nodes_export_cache_refresh_async(
     }
 
 
+# @beacon[
+#   id=cache-refresh@_await_nodes_export_cache_quiescent,
+#   role=_await_nodes_export_cache_quiescent,
+#   slice_labels=ra-workflowy-cache,f9-f12-handlers,
+#   kind=ast,
+# ]
 async def _await_nodes_export_cache_quiescent(reason: str) -> None:
     """Wait until any queued/running cache refresh has fully settled."""
     waited = False
@@ -368,6 +412,199 @@ async def _await_nodes_export_cache_quiescent(reason: str) -> None:
 # @beacon-close[
 #   id=cache-refresh@async-coordinator,
 # ]
+def _get_carto_jobs_base_dir() -> str:
+    """Return the detached CARTO job directory under workflowy_mcp/temp/."""
+    server_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(server_dir, "temp", "cartographer_jobs")
+
+
+def _scan_carto_job_files(base_dir_str: str | None = None) -> list[dict[str, Any]]:
+    """Scan detached CARTO job JSON files for status/progress snapshots.
+
+    The JSON files are the machine-readable contract for detached CARTO jobs.
+    Human-readable .log files remain for debugging only and are intentionally
+    not parsed by the coordinator.
+    """
+    from pathlib import Path
+    import json as json_module  # type: ignore[redefined-builtin]
+
+    base_dir = Path(base_dir_str or _get_carto_jobs_base_dir())
+    results: list[dict[str, Any]] = []
+    if not base_dir.exists():
+        return results
+
+    for job_path in base_dir.glob("*.json"):
+        try:
+            with job_path.open("r", encoding="utf-8") as jf:
+                job = json_module.load(jf)
+        except Exception:
+            continue
+
+        job_type = str(job.get("type") or "")
+        if not job_type.startswith("CARTO_"):
+            continue
+
+        jid = job.get("id") or job_path.stem
+        results.append(
+            {
+                "job_id": jid,
+                "kind": job_type,
+                "status": job.get("status", "unknown"),
+                "mode": job.get("mode"),
+                "root_uuid": job.get("root_uuid"),
+                "detached": True,
+                "carto_job_file": str(job_path),
+                "log_file": job.get("logs_path"),
+                "created_at": job.get("created_at"),
+                "updated_at": job.get("updated_at"),
+                "progress": job.get("progress"),
+                "result_summary": job.get("result_summary"),
+                "error": job.get("error"),
+                "pid": job.get("pid"),
+                "cache_refresh_required": job.get("cache_refresh_required"),
+            }
+        )
+
+    return results
+
+
+def _carto_job_requires_cache_refresh(job: dict[str, Any]) -> bool:
+    """Return True when a detached CARTO job should trigger final cache sync."""
+    if "cache_refresh_required" in job:
+        return bool(job.get("cache_refresh_required"))
+    return str(job.get("kind") or job.get("type") or "").upper() == "CARTO_REFRESH"
+
+
+async def _await_carto_jobs_quiescent(reason: str) -> None:
+    """Wait until detached CARTO jobs relevant to cache sync have drained."""
+    waited = False
+    while True:
+        async with _carto_jobs_lock:
+            active = bool(_carto_active_cache_jobs)
+            idle_event = _carto_jobs_quiescent_event
+
+        if not active:
+            if waited:
+                log_event(
+                    f"Detached CARTO jobs quiescent; continuing ({reason})",
+                    "CARTO",
+                )
+            return
+
+        if not waited:
+            log_event(
+                f"Waiting for detached CARTO jobs to quiesce before continuing ({reason})",
+                "CARTO",
+            )
+            waited = True
+        await idle_event.wait()
+
+
+async def _refresh_carto_job_tracker_once() -> None:
+    """Refresh detached CARTO job state and request one final cache sync.
+
+    Parallel detached CARTO jobs are allowed. We only trigger the final async
+    /nodes-export cache refresh after the set of cache-relevant detached jobs
+    has drained to zero.
+    """
+    global _carto_jobs_tracker_initialized
+    global _carto_job_states
+    global _carto_active_cache_jobs
+    global _carto_pending_terminal_cache_jobs
+
+    active_statuses = {"queued", "running"}
+    terminal_statuses = {"completed", "failed", "cancelled"}
+
+    jobs = _scan_carto_job_files()
+    current_states: dict[str, str] = {}
+    current_active: set[str] = set()
+
+    for job in jobs:
+        if not _carto_job_requires_cache_refresh(job):
+            continue
+        jid = str(job.get("job_id") or "").strip()
+        if not jid:
+            continue
+        status = str(job.get("status") or "unknown").lower()
+        current_states[jid] = status
+        if status in active_statuses:
+            current_active.add(jid)
+
+    batch_to_refresh: list[str] = []
+
+    async with _carto_jobs_lock:
+        previous_states = dict(_carto_job_states)
+        _carto_job_states = current_states
+        _carto_active_cache_jobs = current_active
+
+        if current_active:
+            _carto_jobs_quiescent_event.clear()
+        else:
+            _carto_jobs_quiescent_event.set()
+
+        if not _carto_jobs_tracker_initialized:
+            _carto_jobs_tracker_initialized = True
+            return
+
+        pending = set(_carto_pending_terminal_cache_jobs)
+
+        for jid, status in current_states.items():
+            prev = previous_states.get(jid)
+            if status in terminal_statuses and (prev is None or prev in active_statuses):
+                pending.add(jid)
+
+        for jid, prev in previous_states.items():
+            if prev in active_statuses and jid not in current_states:
+                pending.add(jid)
+
+        _carto_pending_terminal_cache_jobs = pending
+
+        if not current_active and pending:
+            batch_to_refresh = sorted(pending)
+
+    if not batch_to_refresh:
+        return
+
+    log_event(
+        "Detached CARTO jobs drained; requesting final async /nodes-export cache refresh for "
+        + ", ".join(batch_to_refresh),
+        "CARTO",
+    )
+
+    try:
+        request_result = await _request_nodes_export_cache_refresh_async(
+            reason="Detached CARTO jobs completed: " + ", ".join(batch_to_refresh),
+            source="carto:detached-drain",
+        )
+        if not isinstance(request_result, dict) or not request_result.get("success"):
+            raise RuntimeError(str(request_result))
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            f"Failed to request completion-triggered cache refresh for detached CARTO jobs: {e}",
+            "CARTO",
+        )
+        return
+
+    async with _carto_jobs_lock:
+        for jid in batch_to_refresh:
+            _carto_pending_terminal_cache_jobs.discard(jid)
+
+
+async def _carto_jobs_watcher_loop() -> None:
+    """Poll detached CARTO job JSON state and aggregate completion events."""
+    while True:
+        try:
+            await _refresh_carto_job_tracker_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                f"Detached CARTO job watcher loop error: {e}",
+                "CARTO",
+            )
+        await asyncio.sleep(1.0)
+
+
 def log_event(message: str, component: str = "SERVER") -> None:
     """Log an event to stderr with timestamp and consistent formatting."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1968,45 +2205,7 @@ async def websocket_handler(websocket):
                 # List CARTO_REFRESH jobs (for async F12 status in the GLIMPSE widget)
                 if action == 'carto_list_jobs':
                     try:
-                        # Directly scan CARTO_REFRESH job JSON files under cartographer_jobs/.
-                        from pathlib import Path
-                        import json as json_module  # type: ignore[redefined-builtin]
-
-                        server_dir = os.path.dirname(os.path.abspath(__file__))
-                        carto_jobs_base = os.path.join(server_dir, "temp", "cartographer_jobs")
-                        base_dir = Path(carto_jobs_base)
-                        jobs: list[dict[str, Any]] = []
-                        if base_dir.exists():
-                            for job_path in base_dir.glob("*.json"):
-                                try:
-                                    with job_path.open("r", encoding="utf-8") as jf:
-                                        job = json_module.load(jf)
-                                except Exception:  # noqa: BLE001
-                                    continue
-
-                                # Only consider CARTO_REFRESH jobs; ignore any other JSON artifacts.
-                                if str(job.get("type")) != "CARTO_REFRESH":
-                                    continue
-
-                                jid = job.get("id") or job_path.stem
-                                jobs.append(
-                                    {
-                                        "job_id": jid,
-                                        "kind": "CARTO_REFRESH",
-                                        "status": job.get("status", "unknown"),
-                                        "mode": job.get("mode"),
-                                        "root_uuid": job.get("root_uuid"),
-                                        "detached": True,
-                                        "carto_job_file": str(job_path),
-                                        "log_file": job.get("logs_path"),
-                                        "created_at": job.get("created_at"),
-                                        "updated_at": job.get("updated_at"),
-                                        "progress": job.get("progress"),
-                                        "result_summary": job.get("result_summary"),
-                                        "error": job.get("error"),
-                                        "pid": job.get("pid"),
-                                    }
-                                )
+                        jobs = _scan_carto_job_files()
 
                         await websocket.send(
                             json.dumps(
@@ -2206,10 +2405,21 @@ async def start_websocket_server():
 # ]
 async def lifespan(_app: FastMCP):  # type: ignore[no-untyped-def]
     """Manage server lifecycle."""
-    global _client, _rate_limiter, _ws_server_task
+    global _client, _rate_limiter, _ws_server_task, _carto_jobs_watch_task
+    global _carto_jobs_tracker_initialized, _carto_job_states
+    global _carto_active_cache_jobs, _carto_pending_terminal_cache_jobs
 
     # Setup
     log_event("Starting WorkFlowy MCP server", "LIFESPAN")
+
+    # Reset detached CARTO watcher state on startup so repeated connector
+    # restarts within the same process do not inherit stale in-memory state.
+    async with _carto_jobs_lock:
+        _carto_jobs_tracker_initialized = False
+        _carto_job_states = {}
+        _carto_active_cache_jobs = set()
+        _carto_pending_terminal_cache_jobs = set()
+        _carto_jobs_quiescent_event.set()
 
     # Load configuration
     config = ServerConfig()  # type: ignore[call-arg]
@@ -2231,10 +2441,23 @@ async def lifespan(_app: FastMCP):  # type: ignore[no-untyped-def]
     _ws_server_task = asyncio.create_task(start_websocket_server())
     log_event("WebSocket server task created", "LIFESPAN")
 
+    # Start detached CARTO job watcher (aggregates completion -> final cache refresh)
+    _carto_jobs_watch_task = asyncio.create_task(_carto_jobs_watcher_loop())
+    log_event("Detached CARTO job watcher task created", "LIFESPAN")
+
     yield
 
     # Cleanup
     log_event("Shutting down WorkFlowy MCP server", "LIFESPAN")
+
+    # Cancel detached CARTO job watcher
+    if _carto_jobs_watch_task:
+        _carto_jobs_watch_task.cancel()
+        try:
+            await _carto_jobs_watch_task
+        except asyncio.CancelledError:
+            pass
+        log_event("Detached CARTO job watcher stopped", "LIFESPAN")
     
     # Cancel WebSocket server
     if _ws_server_task:
@@ -2511,6 +2734,7 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
         "mode": mode,
         "root_uuid": root_uuid,
         "status": "queued",
+        "cache_refresh_required": True,
         "created_at": now,
         "updated_at": now,
         "progress": {
@@ -2755,44 +2979,8 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
         return results
 
     def _scan_carto_jobs(base_dir_str: str) -> list[dict[str, Any]]:
-        """Scan cartographer_jobs/ for CARTO_REFRESH job JSON files."""
-        base_dir = Path(base_dir_str)
-        results: list[dict[str, Any]] = []
-        if not base_dir.exists():
-            return results
-
-        for job_path in base_dir.glob("*.json"):
-            try:
-                with open(job_path, "r", encoding="utf-8") as jf:
-                    job = json_module.load(jf)
-            except Exception:
-                continue
-
-            # Only consider CARTO_REFRESH jobs; ignore any other JSON artifacts.
-            if str(job.get("type")) != "CARTO_REFRESH":
-                continue
-
-            jid = job.get("id") or job_path.stem
-            results.append(
-                {
-                    "job_id": jid,
-                    "kind": "CARTO_REFRESH",
-                    "status": job.get("status", "unknown"),
-                    "mode": job.get("mode"),
-                    "root_uuid": job.get("root_uuid"),
-                    "detached": True,
-                    "carto_job_file": str(job_path),
-                    "log_file": job.get("logs_path"),
-                    "created_at": job.get("created_at"),
-                    "updated_at": job.get("updated_at"),
-                    "progress": job.get("progress"),
-                    "result_summary": job.get("result_summary"),
-                    "error": job.get("error"),
-                    "pid": job.get("pid"),
-                }
-            )
-
-        return results
+        """Scan detached CARTO job JSON files via the shared contract helper."""
+        return _scan_carto_job_files(base_dir_str)
 
     # Return status for one job (if job_id given) or all jobs
     if job_id is None:
