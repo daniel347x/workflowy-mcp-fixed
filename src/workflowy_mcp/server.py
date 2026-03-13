@@ -2107,14 +2107,21 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         # 4. Write back to disk
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(final_markdown)
-            
-        msg = f"Successfully generated markdown roundtrip for {node_id} at {file_path}"
+
+        beacon_results = markdown_roundtrip.reapply_markdown_ast_beacons(file_path, root_for_render)
+        ast_beacon_count = len(beacon_results)
+
+        msg = (
+            f"Successfully generated markdown roundtrip for {node_id} at {file_path} "
+            f"(ast_beacons_reapplied={ast_beacon_count})"
+        )
         log_event(msg, "WS_HANDLER")
         await websocket.send(json.dumps({
             "action": "generate_markdown_file_result",
             "success": True,
             "node_id": node_id,
-            "file_path": file_path
+            "file_path": file_path,
+            "ast_beacons_reapplied": ast_beacon_count
         }))
         
     except Exception as e:

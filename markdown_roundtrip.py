@@ -2,7 +2,7 @@ import json
 import sys
 import os
 import argparse
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from markdown_it import MarkdownIt
 
 # Force UTF-8 output for Windows console
@@ -125,56 +125,248 @@ def detach_yaml_frontmatter_child(node: Dict[str, Any]) -> tuple[str | None, Dic
 
 
 # @beacon[
+#   id=auto-beacon@_extract_md_path_lines_from_note-z2m4,
+#   role=_extract_md_path_lines_from_note,
+#   slice_labels=nexus-md-header-path,
+#   kind=ast,
+# ]
+def _extract_md_path_lines_from_note(note: str | None) -> list[str]:
+    """Extract raw MD_PATH heading lines from a Workflowy note."""
+    if not isinstance(note, str):
+        return []
+    lines = note.splitlines()
+    in_block = False
+    path_lines: list[str] = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not in_block:
+            if stripped == "MD_PATH:":
+                in_block = True
+            continue
+        if stripped == "---":
+            break
+        if stripped:
+            path_lines.append(stripped)
+    return path_lines
+
+
+# @beacon[
+#   id=auto-beacon@_heading_name_from_note_or_name-g7v1,
+#   role=_heading_name_from_note_or_name,
+#   slice_labels=nexus-md-header-path,
+#   kind=ast,
+# ]
+def _heading_name_from_note_or_name(note: str | None, fallback_name: str) -> str:
+    """Prefer the canonical heading text from MD_PATH over the decorated node name."""
+    import re
+
+    md_path_lines = _extract_md_path_lines_from_note(note)
+    if md_path_lines:
+        last = md_path_lines[-1].strip()
+        m = re.match(r"^#{1,32}\s*(.*)$", last)
+        if m:
+            text = (m.group(1) or "").strip()
+            if text:
+                return text
+        if last:
+            return last
+    return (fallback_name or "").strip()
+
+
+# @beacon[
+#   id=auto-beacon@_strip_md_path_block-7s8k,
+#   role=_strip_md_path_block,
+#   slice_labels=nexus-md-header-path,
+#   kind=ast,
+# ]
+def _strip_md_path_block(note: str | None) -> str:
+    """Remove the leading MD_PATH block from a Workflowy Markdown note."""
+    if not isinstance(note, str):
+        return ""
+    note_lines = note.splitlines()
+    if note_lines and note_lines[0].strip() == "MD_PATH:":
+        cut = 1
+        while cut < len(note_lines):
+            if note_lines[cut].strip() == "---":
+                cut += 1
+                break
+            cut += 1
+        while cut < len(note_lines) and not note_lines[cut].strip():
+            cut += 1
+        return "\n".join(note_lines[cut:])
+    return note
+
+
+# @beacon[
+#   id=auto-beacon@_strip_md_ast_beacon_block-1c9p,
+#   role=_strip_md_ast_beacon_block,
+#   slice_labels=nexus-md-header-path,
+#   kind=ast,
+# ]
+def _strip_md_ast_beacon_block(note_text: str | None) -> str:
+    """Remove the BEACON (MD AST) metadata block from note text before emission."""
+    if not isinstance(note_text, str):
+        return ""
+
+    lines = note_text.splitlines()
+    start_idx: Optional[int] = None
+    for idx, raw in enumerate(lines):
+        if raw.strip().startswith("BEACON (MD AST)"):
+            start_idx = idx
+            break
+
+    if start_idx is None:
+        cleaned = lines
+    else:
+        end_idx = start_idx + 1
+        while end_idx < len(lines):
+            if lines[end_idx].strip() == "---":
+                end_idx += 1
+                break
+            end_idx += 1
+        while end_idx < len(lines) and not lines[end_idx].strip():
+            end_idx += 1
+        cleaned = lines[:start_idx] + lines[end_idx:]
+
+    while cleaned and not cleaned[0].strip():
+        cleaned.pop(0)
+    while cleaned and not cleaned[-1].strip():
+        cleaned.pop()
+    return "\n".join(cleaned)
+
+
+# @beacon[
+#   id=auto-beacon@_is_markdown_span_beacon_node-s4q6,
+#   role=_is_markdown_span_beacon_node,
+#   slice_labels=nexus-md-header-path,
+#   kind=ast,
+# ]
+def _is_markdown_span_beacon_node(node: Dict[str, Any]) -> bool:
+    """Return True for Workflowy child nodes that represent Markdown SPAN beacons.
+
+    Executive decision (Dan): reverse Markdown round-trip currently ignores
+    Markdown SPAN beacons entirely. Markdown structure should be modeled using
+    headings/content blocks, not exported as synthetic SPAN beacon headings.
+    """
+    note = str(node.get("note") or "")
+    return "BEACON (MD SPAN)" in note
+
+
+# @beacon[
+#   id=auto-beacon@_collect_markdown_ast_beacon_nodes-w8d3,
+#   role=_collect_markdown_ast_beacon_nodes,
+#   slice_labels=nexus-md-header-path,
+#   kind=ast,
+# ]
+def _collect_markdown_ast_beacon_nodes(root_node: Dict[str, Any]) -> list[tuple[str, str, list[str]]]:
+    """Collect Markdown AST beacon-bearing nodes from a Workflowy subtree."""
+    collected: list[tuple[str, str, list[str]]] = []
+
+    def walk(node: Dict[str, Any]) -> None:
+        if not isinstance(node, dict):
+            return
+        if _is_markdown_span_beacon_node(node):
+            return
+
+        note = str(node.get("note") or "")
+        md_path_lines = _extract_md_path_lines_from_note(note)
+        if "BEACON (MD AST)" in note and md_path_lines:
+            collected.append((str(node.get("name") or ""), note, md_path_lines))
+
+        for child in node.get("children") or []:
+            if isinstance(child, dict):
+                walk(child)
+
+    walk(root_node)
+    collected.sort(key=lambda item: (len(item[2]), item[2]))
+    return collected
+
+
+# @beacon[
+#   id=auto-beacon@reapply_markdown_ast_beacons-4n6x,
+#   role=reapply_markdown_ast_beacons,
+#   slice_labels=nexus-md-header-path,f9-f12-handlers,
+#   kind=ast,
+# ]
+def reapply_markdown_ast_beacons(file_path: str, root_node: Dict[str, Any]) -> list[Dict[str, Any]]:
+    """Rehydrate Markdown AST beacons onto a regenerated Markdown file.
+
+    Strategy:
+      1. Export beacon-free Markdown content from Workflowy.
+      2. Walk the Workflowy subtree for nodes carrying BEACON (MD AST) metadata.
+      3. Recreate/update the corresponding HTML comment beacon blocks on disk
+         via Cartographer's existing update_beacon_from_node_markdown helper.
+
+    Markdown SPAN beacons are intentionally ignored.
+    """
+    import importlib
+
+    try:
+        cartographer = importlib.import_module("nexus_map_codebase")
+    except Exception:
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidate = os.path.join(here, "MCP_Servers", "workflowy_mcp")
+        if os.path.isdir(candidate) and candidate not in sys.path:
+            sys.path.insert(0, candidate)
+        cartographer = importlib.import_module("nexus_map_codebase")
+
+    helper = getattr(cartographer, "update_beacon_from_node_markdown", None)
+    if helper is None:
+        raise RuntimeError("update_beacon_from_node_markdown helper not available")
+
+    results: list[Dict[str, Any]] = []
+    for name, note, _md_path in _collect_markdown_ast_beacon_nodes(root_node):
+        result = helper(file_path, name, note)
+        if not isinstance(result, dict):
+            raise RuntimeError(f"Unexpected markdown beacon helper result for {name!r}: {result!r}")
+        if result.get("error"):
+            raise RuntimeError(
+                f"Failed to reapply Markdown AST beacon for {name!r}: {result.get('error')}"
+            )
+        op = str(result.get("operation") or "")
+        if op not in {"created_beacon", "updated_beacon", "noop"}:
+            raise RuntimeError(
+                f"Unexpected markdown beacon operation for {name!r}: {op!r}"
+            )
+        results.append(result)
+
+    return results
+
+
+# @beacon[
 #   id=auto-beacon@nexus_to_tokens-chbp,
 #   role=nexus_to_tokens,
 #   slice_labels=nexus-md-header-path,
 #   kind=ast,
 # ]
 def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
-    """Convert NEXUS node tree to markdown-it-py compatible Markdown text.
-    
-    We'll generate Markdown text, then let markdown-it-py parse it to tokens.
-    This ensures proper handling of code blocks, escaping, etc.
-    
-    CRITICAL: Sorts children by priority field before emitting.
-    This preserves original document order when round-tripping.
-    
-    Returns a list of Markdown lines.
-    """
-    lines = []
-    name = (node.get("name") or "").strip()
-    note = node.get("note") or ""
-    children = node.get("children") or []
+    """Convert NEXUS node tree to Markdown text while preserving MD semantics.
 
-    if isinstance(note, str):
-        note_lines = note.splitlines()
-        if note_lines and note_lines[0].strip() == "MD_PATH:":
-            cut = 1
-            while cut < len(note_lines):
-                if note_lines[cut].strip() == "---":
-                    cut += 1
-                    break
-                cut += 1
-            while cut < len(note_lines) and not note_lines[cut].strip():
-                cut += 1
-            note = "\n".join(note_lines[cut:])
-    
-    # Sort children by priority (ascending) - lower values appear first
-    # This is Workflowy's native sort order and preserves document structure
+    CRITICAL:
+    - Sort children by priority (lower first) to preserve document order.
+    - Use MD_PATH as the canonical source of heading text, so Workflowy-only
+      AST-beacon decorations (🔱 and trailing #tags) do not leak into headings.
+    - Omit Markdown SPAN beacon child nodes entirely from reverse export.
+    - Strip BEACON (MD AST) metadata blocks from note bodies; these are
+      rehydrated separately as HTML comment beacon blocks after file write.
+    """
+    lines: List[str] = []
+    raw_name = (node.get("name") or "").strip()
+    note = node.get("note") or ""
+    children = [child for child in (node.get("children") or []) if isinstance(child, dict)]
+
+    # Sort children by priority (ascending) - lower values appear first.
     children_sorted = sorted(children, key=lambda c: c.get("priority", 999999))
-    
-    if depth >= 1 and name == "⚙️ YAML Frontmatter":
+
+    if depth >= 1 and raw_name == "⚙️ YAML Frontmatter":
         lines.append("---")
         if note:
-            lines.append(note)
+            lines.append(str(note))
         lines.append("---")
         lines.append("")
         return lines
 
     if depth == 0:
-        # Root: do not emit note; only emit children at depth 1.
-        # Special case: YAML frontmatter must always render FIRST in the file,
-        # regardless of Workflowy priority/order drift.
         frontmatter_children = [
             child for child in children_sorted
             if (child.get("name") or "").strip() == "⚙️ YAML Frontmatter"
@@ -182,6 +374,7 @@ def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
         normal_children = [
             child for child in children_sorted
             if (child.get("name") or "").strip() != "⚙️ YAML Frontmatter"
+            and not _is_markdown_span_beacon_node(child)
         ]
 
         for child in frontmatter_children:
@@ -189,22 +382,24 @@ def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
         for child in normal_children:
             lines.extend(nexus_to_tokens(child, depth + 1))
         return lines
-    
+
     # depth >= 1: emit heading
-    level = min(depth, 6)  # Clamp to max 6 heading levels
-    heading = f"{'#' * level} {name}" if name else f"{'#' * level}"
+    level = min(depth, 6)
+    heading_name = _heading_name_from_note_or_name(note, raw_name)
+    heading = f"{'#' * level} {heading_name}" if heading_name else f"{'#' * level}"
     lines.append(heading)
-    lines.append("")  # Blank line after heading
-    
-    # Emit note content
-    if note:
-        lines.append(note)
-        lines.append("")  # Blank line after note
-    
-    # Recurse into children (SORTED by priority)
+    lines.append("")
+
+    note_body = _strip_md_ast_beacon_block(_strip_md_path_block(note))
+    if note_body:
+        lines.append(note_body)
+        lines.append("")
+
     for child in children_sorted:
+        if _is_markdown_span_beacon_node(child):
+            continue
         lines.extend(nexus_to_tokens(child, depth + 1))
-    
+
     return lines
 
 
@@ -299,10 +494,13 @@ def main() -> None:
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(final_markdown)
 
+    beacon_results = reapply_markdown_ast_beacons(output_path, root_for_render)
+
     print(f"\n{'='*60}")
     print(f"ROUND-TRIP COMPLETE")
     print(f"Output file: {output_path}")
     print(f"Output size: {len(final_markdown)} chars")
+    print(f"Markdown AST beacons reapplied: {len(beacon_results)}")
     print(f"{'='*60}\n")
 
 

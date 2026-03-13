@@ -1442,6 +1442,79 @@ def _extract_md_path_from_note(note: str | None) -> list[str] | None:
     return path_lines or None
 
 
+# @beacon[
+#   id=auto-beacon@_find_markdown_heading_insert_idx-6t3r,
+#   role=_find_markdown_heading_insert_idx,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
+def _find_markdown_heading_insert_idx(lines: list[str], md_path_lines: list[str]) -> Optional[int]:
+    """Return the 0-based insertion index immediately above the heading for MD_PATH.
+
+    This is the reverse/export twin of Markdown heading identity resolution:
+    given raw file lines and an MD_PATH sequence, locate the unique heading line
+    whose ancestor chain matches exactly. Returns None on zero/multiple matches.
+    """
+    if not lines or not md_path_lines:
+        return None
+
+    desired: list[tuple[int, str]] = []
+    for raw in md_path_lines:
+        s = (raw or "").strip()
+        if not s:
+            continue
+        m = re.match(r"^(#{1,32})\s*(.*)$", s)
+        if not m:
+            return None
+        level = len(m.group(1))
+        text = whiten_text_for_header_compare((m.group(2) or "").strip()).casefold()
+        desired.append((level, text))
+
+    if not desired:
+        return None
+
+    md_text = "\n".join(lines)
+    md = MarkdownIt("commonmark")
+    tokens = md.parse(md_text)
+
+    stack: list[tuple[int, str]] = []
+    matches: list[int] = []
+    for idx, token in enumerate(tokens):
+        if token.type != "heading_open":
+            continue
+
+        try:
+            level = int(token.tag[1]) if token.tag and len(token.tag) > 1 else 1
+        except Exception:
+            level = 1
+
+        text = ""
+        if idx + 1 < len(tokens) and tokens[idx + 1].type == "inline":
+            text = tokens[idx + 1].content or ""
+        norm = whiten_text_for_header_compare(text).casefold()
+
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, norm))
+
+        start0 = None
+        if getattr(token, "map", None):
+            start0 = token.map[0]
+        elif idx + 1 < len(tokens) and getattr(tokens[idx + 1], "map", None):
+            start0 = tokens[idx + 1].map[0]
+        if start0 is None:
+            start0 = 0
+
+        if len(stack) != len(desired):
+            continue
+        if all(stack[j][0] == desired[j][0] and stack[j][1] == desired[j][1] for j in range(len(desired))):
+            matches.append(start0)
+
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
 def _extract_vue_section_key_from_note(note: str | None) -> str | None:
     """Extract a stable identity key for Vue section nodes.
 
@@ -8865,7 +8938,7 @@ def update_beacon_from_node_vue(
 # @beacon[
 #   id=carto-js-ts@update_beacon_from_node_markdown,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,nexus-md-header-path,
 #   kind=span,
 # ]
 # Markdown: update/create/delete a beacon for a single heading/beacon node
@@ -9040,17 +9113,14 @@ def update_beacon_from_node_markdown(
             return result
         else:
             # Case 1b: CREATE beacon from note metadata (beacon_id in note, not on disk).
-            # For Markdown, use MD_PATH to find insertion point (or top-of-file).
-            target_line: Optional[int] = None
+            # For Markdown, locate the exact heading by MD_PATH and insert the
+            # HTML beacon block immediately above it. Fall back to top-of-file
+            # only when the heading cannot be resolved unambiguously.
+            insert_idx = 0
             if md_path:
-                # Best-effort: insert at top-of-file for now.
-                # A later refinement can locate the heading via md_path.
-                insert_idx = 0
-            elif ast_qualname:
-                # Fallback: treat as generic file insert.
-                insert_idx = 0
-            else:
-                insert_idx = 0
+                resolved_idx = _find_markdown_heading_insert_idx(lines, md_path)
+                if isinstance(resolved_idx, int) and resolved_idx >= 0:
+                    insert_idx = resolved_idx
 
             new_block = _build_beacon_block(
                 bid=beacon_id,
@@ -9060,6 +9130,7 @@ def update_beacon_from_node_markdown(
                 show_span=show_span_note,
                 comment_text=comment_val,
             )
+            new_block = _indent_beacon_block(new_block, lines, insert_idx)
             new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
@@ -9248,15 +9319,12 @@ def update_beacon_from_node_markdown(
         )
 
         # Insert the beacon block directly above the target heading when
-        # possible; fall back to top-of-file if the heading line cannot be
-        # found. We match against the last MD_PATH entry, which corresponds to
-        # the innermost heading.
-        target_heading = heading.strip()
+        # possible; fall back to top-of-file only when MD_PATH cannot be
+        # resolved unambiguously in the current Markdown file.
         insert_idx = 0
-        for idx, line in enumerate(lines):
-            if line.strip() == target_heading:
-                insert_idx = idx
-                break
+        resolved_idx = _find_markdown_heading_insert_idx(lines, md_path)
+        if isinstance(resolved_idx, int) and resolved_idx >= 0:
+            insert_idx = resolved_idx
         new_block = _build_beacon_block(
             bid=simple_id,
             role=role_display,
