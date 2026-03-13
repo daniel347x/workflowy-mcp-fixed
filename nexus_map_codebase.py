@@ -304,14 +304,15 @@ def format_file_note(
 #   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,
 #   kind=ast,
 # ]
-def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
+def tokens_to_nexus_tree(
+    tokens,
+    source_lines: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     """Convert markdown-it-py token stream to NEXUS hierarchical tree.
-    
+
     Assigns priority values based on document order (100, 200, 300, ...).
     Lower priority = appears first in document.
-    
-    v2.1: Now handles horizontal rules (hr) and lists (bullet_list, ordered_list).
-    
+
     v2.2: For each Markdown heading node, writes an explicit MD_PATH block into
     the note:
 
@@ -322,6 +323,13 @@ def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
         ---
         <existing heading content>
 
+    v2.3: When ``source_lines`` are provided, each heading node's note body is
+    taken from the exact raw Markdown lines that belong *directly* to that
+    heading (after the heading line and before the next heading of any level).
+    This preserves nested ordered/bullet lists, indentation, fenced code
+    blocks, and numbering verbatim instead of reconstructing them token by
+    token.
+
     This mirrors Python's AST_QUALNAME header and is consumed by
     get_snippet_for_md_path in beacon_obtain_code_snippet.py.
     """
@@ -329,179 +337,120 @@ def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
     # Stack of (heading_level, nexus_node)
     stack: List[tuple[int, Dict[str, Any]]] = []
     priority_counter = 100
-    # Accumulates paragraphs, lists, hrs, code blocks as Markdown text
-    current_content: List[str] = []
-
-    def flush_content() -> None:
-        """Flush accumulated content to current node's note field."""
-        if current_content and stack:
-            note_text = "\n\n".join(current_content)
-            current_node = stack[-1][1]
-            if "note" in current_node and current_node["note"]:
-                current_node["note"] += "\n\n" + note_text
-            else:
-                current_node["note"] = note_text
-            current_content.clear()
+    heading_entries: List[Dict[str, Any]] = []
+    excluded_body_lines: set[int] = set()
 
     i = 0
     while i < len(tokens):
         token = tokens[i]
 
-        if token.type == "heading_open":
-            # Flush any pending content before starting new heading
-            flush_content()
+        if token.type == "html_block" and (
+            "@beacon[" in (token.content or "") or "@beacon-close[" in (token.content or "")
+        ):
+            token_map = getattr(token, "map", None)
+            if token_map:
+                start0, end0 = token_map
+                for line_no in range(start0 + 1, end0 + 1):
+                    excluded_body_lines.add(line_no)
+            i += 1
+            continue
 
-            # Start of a heading
-            heading_level = int(token.tag[1])  # h1 -> 1, h2 -> 2, etc.
+        if token.type != "heading_open":
+            i += 1
+            continue
 
-            # Get the heading text from next token (should be inline)
-            heading_text = ""
-            if i + 1 < len(tokens) and tokens[i + 1].type == "inline":
-                heading_text = tokens[i + 1].content
+        # Start of a heading
+        heading_level = int(token.tag[1])  # h1 -> 1, h2 -> 2, etc.
 
-            # Pop stack until we find the correct parent level for this heading
-            while stack and stack[-1][0] >= heading_level:
-                stack.pop()
+        # Get the heading text from next token (should be inline)
+        heading_text = ""
+        if i + 1 < len(tokens) and tokens[i + 1].type == "inline":
+            heading_text = tokens[i + 1].content
 
-            # Build MD_PATH lines from current ancestor stack + this heading
-            md_path_lines: List[str] = []
-            for lvl, ancestor_node in stack:
-                ancestor_name = (ancestor_node.get("name") or "").strip() or "..."
-                md_path_lines.append(f"{('#' * lvl)} {ancestor_name}".rstrip())
-            this_heading_name = heading_text or "..."
-            md_path_lines.append(f"{('#' * heading_level)} {this_heading_name}".rstrip())
+        # Pop stack until we find the correct parent level for this heading
+        while stack and stack[-1][0] >= heading_level:
+            stack.pop()
 
-            note_lines: List[str] = ["MD_PATH:"]
-            note_lines.extend(md_path_lines)
-            note_lines.append("---")
-            note_text = "\n".join(note_lines)
+        # Build MD_PATH lines from current ancestor stack + this heading
+        md_path_lines: List[str] = []
+        for lvl, ancestor_node in stack:
+            ancestor_name = (ancestor_node.get("name") or "").strip() or "..."
+            md_path_lines.append(f"{('#' * lvl)} {ancestor_name}".rstrip())
+        this_heading_name = heading_text or "..."
+        md_path_lines.append(f"{('#' * heading_level)} {this_heading_name}".rstrip())
 
-            # Create NEXUS node
-            nexus_node: Dict[str, Any] = {
-                "name": this_heading_name,
-                "priority": priority_counter,
-                "note": note_text,
-                "children": [],
+        note_lines: List[str] = ["MD_PATH:"]
+        note_lines.extend(md_path_lines)
+        note_lines.append("---")
+        note_text = "\n".join(note_lines)
+
+        # Create NEXUS node
+        nexus_node: Dict[str, Any] = {
+            "name": this_heading_name,
+            "priority": priority_counter,
+            "note": note_text,
+            "children": [],
+        }
+        priority_counter += 100
+
+        # Add to parent (or root if stack empty)
+        if stack:
+            stack[-1][1]["children"].append(nexus_node)
+        else:
+            root_children.append(nexus_node)
+
+        # Determine source line span for the heading itself so we can attach the
+        # raw body that follows it verbatim.
+        token_map = getattr(token, "map", None)
+        if token_map:
+            heading_start0, heading_end0 = token_map
+        elif i + 1 < len(tokens) and getattr(tokens[i + 1], "map", None):
+            heading_start0, heading_end0 = tokens[i + 1].map
+        else:
+            heading_start0 = 0
+            heading_end0 = 0
+
+        heading_entries.append(
+            {
+                "node": nexus_node,
+                "heading_start_line": heading_start0 + 1,
+                "body_start_line": heading_end0 + 1,
             }
-            priority_counter += 100
+        )
 
-            # Add to parent (or root if stack empty)
-            if stack:
-                stack[-1][1]["children"].append(nexus_node)
-            else:
-                root_children.append(nexus_node)
+        # Push this heading onto stack
+        stack.append((heading_level, nexus_node))
 
-            # Push this heading onto stack
-            stack.append((heading_level, nexus_node))
+        # Skip the inline and heading_close tokens
+        i += 3  # heading_open, inline, heading_close
 
-            # Skip the inline and heading_close tokens
-            i += 3  # heading_open, inline, heading_close
-            continue
+    if source_lines is not None and heading_entries:
+        total_lines = len(source_lines)
+        for idx, entry in enumerate(heading_entries):
+            body_start_line = int(entry["body_start_line"])
+            next_heading_start = (
+                int(heading_entries[idx + 1]["heading_start_line"])
+                if idx + 1 < len(heading_entries)
+                else total_lines + 1
+            )
+            body_end_line = next_heading_start - 1
 
-        elif token.type == "hr":
-            # Horizontal rule - preserve as underscores (mdformat style)
-            current_content.append("______________________________________________________________________")
-            i += 1
-            continue
+            body_lines: List[str] = []
+            if body_end_line >= body_start_line:
+                for line_no in range(body_start_line, body_end_line + 1):
+                    if line_no in excluded_body_lines:
+                        continue
+                    body_lines.append(source_lines[line_no - 1])
 
-        elif token.type == "paragraph_open":
-            # Paragraph content
-            if i + 1 < len(tokens) and tokens[i + 1].type == "inline":
-                current_content.append(tokens[i + 1].content)
-            i += 3  # paragraph_open, inline, paragraph_close
-            continue
+                while body_lines and not body_lines[0].strip():
+                    body_lines.pop(0)
+                while body_lines and not body_lines[-1].strip():
+                    body_lines.pop()
 
-        elif token.type == "fence" or token.type == "code_block":
-            # Code block
-            fence_char = "`"
-            fence_count = 3
-            if token.type == "fence" and token.markup:
-                fence_char = token.markup[0]
-                fence_count = len(token.markup)
-
-            fence = fence_char * fence_count
-            current_content.append(f"{fence}{token.info}")
-            current_content.append(token.content.rstrip())
-            current_content.append(fence)
-            i += 1
-            continue
-
-        elif token.type == "bullet_list_open" or token.type == "ordered_list_open":
-            # Start of a list - collect all list items
-            list_lines: List[str] = []
-            list_depth = 0
-            is_ordered = token.type == "ordered_list_open"
-
-            # Advance past the list_open
-            i += 1
-
-            # Process list items until we hit the matching list_close
-            while i < len(tokens):
-                tok = tokens[i]
-
-                if tok.type == "list_item_open":
-                    list_depth += 1
-                    i += 1
-                    continue
-
-                elif tok.type == "list_item_close":
-                    list_depth -= 1
-                    i += 1
-                    continue
-
-                elif tok.type == "paragraph_open":
-                    # List item content (paragraph inside list item)
-                    if i + 1 < len(tokens) and tokens[i + 1].type == "inline":
-                        content = tokens[i + 1].content
-                        # Add bullet/number marker
-                        marker = "1." if is_ordered else "-"
-                        indent = "  " * max(list_depth - 1, 0)
-                        list_lines.append(f"{indent}{marker} {content}")
-                    i += 3  # paragraph_open, inline, paragraph_close
-                    continue
-
-                elif tok.type == "fence" or tok.type == "code_block":
-                    # Code block attached to a list item; render it directly after the bullet.
-                    fence_char = "`"
-                    fence_count = 3
-                    if tok.type == "fence" and tok.markup:
-                        fence_char = tok.markup[0]
-                        fence_count = len(tok.markup)
-                    fence = fence_char * fence_count
-                    # Blank line before code block for readability
-                    list_lines.append("")
-                    list_lines.append(f"{fence}{tok.info}")
-                    list_lines.append(tok.content.rstrip())
-                    list_lines.append(fence)
-                    i += 1
-                    continue
-
-                elif tok.type == "bullet_list_close" or tok.type == "ordered_list_close":
-                    # End of list
-                    i += 1
-                    break
-
-                elif tok.type == "bullet_list_open" or tok.type == "ordered_list_open":
-                    # Nested list - for now, skip (complex case)
-                    # TODO: Handle nested lists properly
-                    i += 1
-                    continue
-
-                else:
-                    i += 1
-                    continue
-
-            # Add collected list to content
-            if list_lines:
-                current_content.append("\n".join(list_lines))
-
-            continue
-
-        # Skip other token types we don't handle yet
-        i += 1
-
-    # Flush any remaining content
-    flush_content()
+            if body_lines:
+                entry["node"]["note"] = (
+                    f"{entry['node']['note']}\n\n" + "\n".join(body_lines)
+                )
 
     return root_children
 
@@ -509,7 +458,7 @@ def tokens_to_nexus_tree(tokens) -> List[Dict[str, Any]]:
 # @beacon[
 #   id=carto-js-ts@parse_markdown_beacon_blocks,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,nexus-md-header-path,
 #   kind=span,
 # ]
 # Phase 2 JS/TS: Markdown beacon parser template.
@@ -774,7 +723,7 @@ def _extract_markdown_beacon_context(lines: list[str], comment_line: int) -> Lis
 # @beacon[
 #   id=carto-js-ts@apply_markdown_beacons,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-md,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,ra-snippet-range-ast-beacon-md,nexus-md-header-path,
 #   kind=span,
 # ]
 # Phase 2 JS/TS: Markdown beacon application template.
@@ -1325,8 +1274,10 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
                 print(f"  type={t.type!r} tag={t.tag!r} map={span_str} content={t.content!r}")
             print("[MD-TOKENS-END]")
         
-        # STEP 3: Convert token stream to NEXUS hierarchical tree with priorities
-        root_children = tokens_to_nexus_tree(tokens)
+        # STEP 3: Convert token stream to NEXUS hierarchical tree with priorities.
+        # Use the exact body lines from the parsed Markdown so list/code-block
+        # structure is preserved verbatim inside heading notes.
+        root_children = tokens_to_nexus_tree(tokens, source_lines=body_for_parse.splitlines())
         
         if frontmatter is not None:
             # Preserve frontmatter at the top of the tree so it survives round-trips
@@ -1827,7 +1778,7 @@ def _canonicalize_slice_labels(slice_labels: str | None, role: str | None) -> st
 # @beacon[
 #   id=carto-js-ts@_coerce_boolish-jb5p,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,nexus-md-header-path,
 #   kind=ast,
 # ]
 def _coerce_boolish(val: Any | None) -> Optional[bool]:
@@ -1857,7 +1808,7 @@ def _coerce_boolish(val: Any | None) -> Optional[bool]:
 # @beacon[
 #   id=carto-js-ts@_parse_show_span_fields-5i6q,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,nexus-md-header-path,
 #   kind=ast,
 # ]
 def _parse_show_span_fields(fields: dict[str, str]) -> tuple[bool, bool]:
@@ -1917,7 +1868,7 @@ def _extract_show_span_from_note(note: str | None) -> Optional[bool]:
 # @beacon[
 #   id=carto-js-ts@_strip_beacon_meta_blocks_from_context-m8k3,
 #   role=carto-js-ts,
-#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,nexus-md-header-path,
 #   kind=ast,
 # ]
 def _strip_beacon_meta_blocks_from_context(context_lines: list[str]) -> list[str]:
