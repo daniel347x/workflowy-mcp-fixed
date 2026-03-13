@@ -1595,9 +1595,24 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
     # Build Ether maps by identity anchor.
     ether_by_beacon: dict[str, dict[str, Any]] = {}
     ether_by_ast: dict[str, dict[str, Any]] = {}
-    ether_by_mdpath: dict[tuple[str, ...], dict[str, Any]] = {}
+    ether_by_mdpath: dict[tuple[str, ...], list[dict[str, Any]]] = {}
     ether_by_vuekey: dict[str, dict[str, Any]] = {}
-    ether_by_name: dict[str, dict[str, Any]] = {}
+    ether_by_name: dict[str, list[dict[str, Any]]] = {}
+    matched_ether_obj_ids: set[int] = set()
+
+    def _candidate_if_unmatched(candidate: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(candidate, dict):
+            return None
+        if id(candidate) in matched_ether_obj_ids:
+            return None
+        return candidate
+
+    def _first_unmatched(candidates: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+        for candidate in candidates or []:
+            if id(candidate) in matched_ether_obj_ids:
+                continue
+            return candidate
+        return None
 
     # CARTO-DEBUG targeting is disabled by default; set this to a real
     # function name when focused instrumentation is needed.
@@ -1619,15 +1634,15 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
         md_path = _extract_md_path_from_note(note_e)
         if md_path:
             key = tuple(whiten_text_for_header_compare(line) for line in md_path if line.strip())
-            if key and key not in ether_by_mdpath:
-                ether_by_mdpath[key] = e
+            if key:
+                ether_by_mdpath.setdefault(key, []).append(e)
         # 3.5) Vue section key
         vue_key = _extract_vue_section_key_from_note(note_e)
         if vue_key and vue_key not in ether_by_vuekey:
             ether_by_vuekey[vue_key] = e
         # 4) Raw name fallback
-        if isinstance(name_e, str) and name_e not in ether_by_name:
-            ether_by_name[name_e] = e
+        if isinstance(name_e, str):
+            ether_by_name.setdefault(name_e, []).append(e)
 
         # Debug: log any ETHER child that looks like our target function
         if (
@@ -1680,8 +1695,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
 
         # 1) Beacon id
         if b_id_s and b_id_s in ether_by_beacon:
-            match = ether_by_beacon[b_id_s]
-            if debug_hit:
+            match = _candidate_if_unmatched(ether_by_beacon[b_id_s])
+            if debug_hit and match is not None:
                 print(
                     "[CARTO-DEBUG]   MATCH via BEACON id:",
                     {"b_id_s": b_id_s, "match_id": match.get("id")},
@@ -1691,8 +1706,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
         else:
             # 2) AST_QUALNAME
             if qual_s and qual_s in ether_by_ast:
-                match = ether_by_ast[qual_s]
-                if debug_hit:
+                match = _candidate_if_unmatched(ether_by_ast[qual_s])
+                if debug_hit and match is not None:
                     print(
                         "[CARTO-DEBUG]   MATCH via AST_QUALNAME:",
                         {"qual_s": qual_s, "match_id": match.get("id")},
@@ -1706,9 +1721,9 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                     key_s = tuple(
                         whiten_text_for_header_compare(line) for line in md_path_s if line.strip()
                     )
-                    if key_s and key_s in ether_by_mdpath:
-                        match = ether_by_mdpath[key_s]
-                        if debug_hit:
+                    if key_s:
+                        match = _first_unmatched(ether_by_mdpath.get(key_s))
+                        if debug_hit and match is not None:
                             print(
                                 "[CARTO-DEBUG]   MATCH via MD_PATH:",
                                 {"key_s": key_s, "match_id": match.get("id")},
@@ -1719,8 +1734,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                 if match is None:
                     vue_key_s = _extract_vue_section_key_from_note(note_s)
                     if vue_key_s and vue_key_s in ether_by_vuekey:
-                        match = ether_by_vuekey[vue_key_s]
-                        if debug_hit:
+                        match = _candidate_if_unmatched(ether_by_vuekey[vue_key_s])
+                        if debug_hit and match is not None:
                             print(
                                 "[CARTO-DEBUG]   MATCH via VUE_SECTION key:",
                                 {"vue_key_s": vue_key_s, "match_id": match.get("id")},
@@ -1730,8 +1745,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
 
                 # 4) Raw name fallback
                 if match is None and isinstance(name_s, str) and name_s in ether_by_name:
-                    match = ether_by_name[name_s]
-                    if debug_hit:
+                    match = _first_unmatched(ether_by_name.get(name_s))
+                    if debug_hit and match is not None:
                         print(
                             "[CARTO-DEBUG]   MATCH via raw name:",
                             {"name_s": name_s, "match_id": match.get("id")},
@@ -1744,6 +1759,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                 print("[CARTO-DEBUG]   NO MATCH for source child", file=_carto_debug_sys.stderr, flush=True)
             # No identity match at this level; we do not attempt to force ids.
             continue
+
+        matched_ether_obj_ids.add(id(match))
 
         # Seed id from the matched Ether node.
         if "id" in match:
