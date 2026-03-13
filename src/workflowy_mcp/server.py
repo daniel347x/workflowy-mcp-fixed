@@ -2079,12 +2079,14 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         markdown_roundtrip = importlib.import_module("markdown_roundtrip")
         from markdown_it import MarkdownIt
         from mdformat.renderer import MDRenderer
+
+        frontmatter_text, root_for_render = markdown_roundtrip.detach_yaml_frontmatter_child(root_node)
         
-        # Convert NEXUS tree -> Markdown text
-        markdown_lines = markdown_roundtrip.nexus_to_tokens(root_node, depth=0)
+        # Convert NEXUS tree -> Markdown text (excluding YAML frontmatter child)
+        markdown_lines = markdown_roundtrip.nexus_to_tokens(root_for_render, depth=0)
         raw_markdown = "\n".join(markdown_lines)
         
-        # Parse and format
+        # Parse and format ONLY the body; prepend YAML frontmatter verbatim afterwards
         md = MarkdownIt("commonmark")
         tokens = md.parse(raw_markdown)
         
@@ -2093,6 +2095,10 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         env = {}
         clean_markdown = renderer.render(tokens, options, env)
         final_markdown = markdown_roundtrip.clean_html_entities(clean_markdown)
+        if frontmatter_text is not None:
+            frontmatter_clean = markdown_roundtrip.clean_html_entities(frontmatter_text).strip("\n")
+            body_clean = final_markdown.lstrip("\n")
+            final_markdown = f"---\n{frontmatter_clean}\n---\n\n{body_clean}"
         
         # 4. Write back to disk
         with open(file_path, "w", encoding="utf-8") as f:
