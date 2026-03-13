@@ -2066,10 +2066,13 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         import sys
         import os
         
-        client_dir = os.path.dirname(os.path.abspath(__file__))
-        wf_mcp_dir = os.path.dirname(client_dir)
-        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
-        project_root = os.path.dirname(mcp_servers_dir)
+        # When running from the installed package (editable install or regular),
+        # server.py is at C:\Temp\workflowy-mcp-vladzima\src\workflowy_mcp\server.py
+        # We need to reach C:\Temp\workflowy-mcp-vladzima
+        client_dir = os.path.dirname(os.path.abspath(__file__)) # .../src/workflowy_mcp
+        src_dir = os.path.dirname(client_dir)                   # .../src
+        project_root = os.path.dirname(src_dir)                 # C:\Temp\workflowy-mcp-vladzima
+        
         if project_root not in sys.path:
             sys.path.insert(0, project_root)
             
