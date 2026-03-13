@@ -121,8 +121,21 @@ def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
         return lines
 
     if depth == 0:
-        # Root: do not emit note; only emit children at depth 1 (SORTED by priority)
-        for child in children_sorted:
+        # Root: do not emit note; only emit children at depth 1.
+        # Special case: YAML frontmatter must always render FIRST in the file,
+        # regardless of Workflowy priority/order drift.
+        frontmatter_children = [
+            child for child in children_sorted
+            if (child.get("name") or "").strip() == "⚙️ YAML Frontmatter"
+        ]
+        normal_children = [
+            child for child in children_sorted
+            if (child.get("name") or "").strip() != "⚙️ YAML Frontmatter"
+        ]
+
+        for child in frontmatter_children:
+            lines.extend(nexus_to_tokens(child, depth + 1))
+        for child in normal_children:
             lines.extend(nexus_to_tokens(child, depth + 1))
         return lines
     
