@@ -253,6 +253,73 @@ def _is_markdown_span_beacon_node(node: Dict[str, Any]) -> bool:
 
 
 # @beacon[
+#   id=auto-beacon@_load_notes_name_predicate-r6s2,
+#   role=_load_notes_name_predicate,
+#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
+#   kind=ast,
+# ]
+def _load_notes_name_predicate():
+    """Load the canonical NOTES/subtree classifier from workflowy_mcp.
+
+    IMPORTANT: the salvageable/Notes emoji set must remain defined in exactly
+    one place. We therefore import the canonical `_is_notes_name` helper rather
+    than duplicating any emoji list in markdown_roundtrip.py.
+    """
+    import importlib
+
+    module_name = "workflowy_mcp.client.api_client_nexus"
+    try:
+        module = importlib.import_module(module_name)
+        predicate = getattr(module, "_is_notes_name", None)
+        if callable(predicate):
+            return predicate
+    except Exception:
+        pass
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidate_parents = [
+        os.path.join(here, "src"),
+        os.path.join(here, "MCP_Servers"),
+    ]
+    for candidate in candidate_parents:
+        if not os.path.isdir(os.path.join(candidate, "workflowy_mcp")):
+            continue
+        if candidate not in sys.path:
+            sys.path.insert(0, candidate)
+        try:
+            module = importlib.import_module(module_name)
+            predicate = getattr(module, "_is_notes_name", None)
+            if callable(predicate):
+                return predicate
+        except Exception:
+            continue
+
+    return None
+
+
+_NOTES_NAME_PREDICATE = _load_notes_name_predicate()
+
+
+# @beacon[
+#   id=auto-beacon@_is_persistent_notes_subtree-v9k4,
+#   role=_is_persistent_notes_subtree,
+#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
+#   kind=ast,
+# ]
+def _is_persistent_notes_subtree(node: Dict[str, Any]) -> bool:
+    """Return True for salvageable/persistent Notes-style Workflowy subtrees."""
+    predicate = _NOTES_NAME_PREDICATE
+    if not callable(predicate):
+        return False
+    raw_name = str(node.get("name") or "")
+    note = str(node.get("note") or "")
+    try:
+        return bool(predicate(raw_name, note))
+    except Exception:
+        return False
+
+
+# @beacon[
 #   id=auto-beacon@_collect_markdown_ast_beacon_nodes-w8d3,
 #   role=_collect_markdown_ast_beacon_nodes,
 #   slice_labels=nexus-md-header-path,
@@ -265,7 +332,7 @@ def _collect_markdown_ast_beacon_nodes(root_node: Dict[str, Any]) -> list[tuple[
     def walk(node: Dict[str, Any]) -> None:
         if not isinstance(node, dict):
             return
-        if _is_markdown_span_beacon_node(node):
+        if _is_markdown_span_beacon_node(node) or _is_persistent_notes_subtree(node):
             return
 
         note = str(node.get("note") or "")
@@ -375,6 +442,7 @@ def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
             child for child in children_sorted
             if (child.get("name") or "").strip() != "⚙️ YAML Frontmatter"
             and not _is_markdown_span_beacon_node(child)
+            and not _is_persistent_notes_subtree(child)
         ]
 
         for child in frontmatter_children:
@@ -396,7 +464,7 @@ def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
         lines.append("")
 
     for child in children_sorted:
-        if _is_markdown_span_beacon_node(child):
+        if _is_markdown_span_beacon_node(child) or _is_persistent_notes_subtree(child):
             continue
         lines.extend(nexus_to_tokens(child, depth + 1))
 
