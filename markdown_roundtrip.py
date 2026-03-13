@@ -79,6 +79,40 @@ def load_nexus_root(data: Dict[str, Any]) -> Dict[str, Any]:
     raise ValueError("Unrecognized JSON format - expected NEXUS export or direct node tree")
 
 
+def detach_yaml_frontmatter_child(node: Dict[str, Any]) -> tuple[str | None, Dict[str, Any]]:
+    """Return (frontmatter_text, node_without_frontmatter_child).
+
+    If the node has an immediate child named ``⚙️ YAML Frontmatter``, we remove
+    that child from the returned node copy and return its note text separately so
+    callers can prepend it verbatim outside the markdown-it/mdformat pipeline.
+    """
+    if not isinstance(node, dict):
+        return None, node
+
+    children = node.get("children") or []
+    if not isinstance(children, list):
+        return None, node
+
+    frontmatter_text: str | None = None
+    kept_children: list[Dict[str, Any]] = []
+    found = False
+
+    for child in children:
+        if isinstance(child, dict) and (child.get("name") or "").strip() == "⚙️ YAML Frontmatter":
+            if frontmatter_text is None:
+                frontmatter_text = str(child.get("note") or "")
+            found = True
+            continue
+        kept_children.append(child)
+
+    if not found:
+        return None, node
+
+    node_copy = dict(node)
+    node_copy["children"] = kept_children
+    return frontmatter_text, node_copy
+
+
 def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
     """Convert NEXUS node tree to markdown-it-py compatible Markdown text.
     
@@ -210,6 +244,7 @@ def main() -> None:
         data = json.load(f)
 
     root = load_nexus_root(data)
+    frontmatter_text, root_for_render = detach_yaml_frontmatter_child(root)
     
     print(f"\n{'='*60}")
     print(f"MARKDOWN ROUND-TRIP v2.0 (markdown-it-py + mdformat)")
@@ -217,8 +252,8 @@ def main() -> None:
     print(f"Root children: {len(root.get('children', []))}")
     print(f"{'='*60}\n")
 
-    # Convert NEXUS tree → Markdown text
-    markdown_lines = nexus_to_tokens(root, depth=0)
+    # Convert NEXUS tree → Markdown text (excluding YAML frontmatter child).
+    markdown_lines = nexus_to_tokens(root_for_render, depth=0)
     raw_markdown = "\n".join(markdown_lines)
     
     # Parse with markdown-it-py to get proper token stream
@@ -236,6 +271,10 @@ def main() -> None:
     
     # Clean HTML entities → Markdown syntax
     final_markdown = clean_html_entities(clean_markdown)
+    if frontmatter_text is not None:
+        frontmatter_clean = clean_html_entities(frontmatter_text).strip("\n")
+        body_clean = final_markdown.lstrip("\n")
+        final_markdown = f"---\n{frontmatter_clean}\n---\n\n{body_clean}"
     
     # Write output
     with open(output_path, "w", encoding="utf-8") as f:
