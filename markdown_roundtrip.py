@@ -4,7 +4,6 @@ import os
 import argparse
 from typing import Dict, Any, List
 from markdown_it import MarkdownIt
-from mdformat.renderer import MDRenderer
 
 # Force UTF-8 output for Windows console
 if sys.platform == 'win32':
@@ -45,6 +44,12 @@ This produces a clean Markdown file that can be re-imported via Cartographer.
 """
 
 
+# @beacon[
+#   id=auto-beacon@load_nexus_root-sycb,
+#   role=load_nexus_root,
+#   slice_labels=nexus-md-header-path,
+#   kind=ast,
+# ]
 def load_nexus_root(data: Dict[str, Any]) -> Dict[str, Any]:
     """Extract the root node from NEXUS JSON export format.
     
@@ -79,6 +84,12 @@ def load_nexus_root(data: Dict[str, Any]) -> Dict[str, Any]:
     raise ValueError("Unrecognized JSON format - expected NEXUS export or direct node tree")
 
 
+# @beacon[
+#   id=auto-beacon@detach_yaml_frontmatter_child-7x3q,
+#   role=detach_yaml_frontmatter_child,
+#   slice_labels=nexus-md-header-path,
+#   kind=ast,
+# ]
 def detach_yaml_frontmatter_child(node: Dict[str, Any]) -> tuple[str | None, Dict[str, Any]]:
     """Return (frontmatter_text, node_without_frontmatter_child).
 
@@ -113,6 +124,12 @@ def detach_yaml_frontmatter_child(node: Dict[str, Any]) -> tuple[str | None, Dic
     return frontmatter_text, node_copy
 
 
+# @beacon[
+#   id=auto-beacon@nexus_to_tokens-chbp,
+#   role=nexus_to_tokens,
+#   slice_labels=nexus-md-header-path,
+#   kind=ast,
+# ]
 def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
     """Convert NEXUS node tree to markdown-it-py compatible Markdown text.
     
@@ -191,6 +208,12 @@ def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
     return lines
 
 
+# @beacon[
+#   id=auto-beacon@clean_html_entities-rh2t,
+#   role=clean_html_entities,
+#   slice_labels=nexus-md-header-path,
+#   kind=ast,
+# ]
 def clean_html_entities(markdown_text: str) -> str:
     """Convert HTML entities back to Markdown syntax.
     
@@ -247,30 +270,26 @@ def main() -> None:
     frontmatter_text, root_for_render = detach_yaml_frontmatter_child(root)
     
     print(f"\n{'='*60}")
-    print(f"MARKDOWN ROUND-TRIP v2.0 (markdown-it-py + mdformat)")
+    print(f"MARKDOWN ROUND-TRIP v2.1 (preserve raw Workflowy Markdown)")
     print(f"Root node: {root.get('name', 'NO_NAME')}")
     print(f"Root children: {len(root.get('children', []))}")
     print(f"{'='*60}\n")
 
     # Convert NEXUS tree → Markdown text (excluding YAML frontmatter child).
-    markdown_lines = nexus_to_tokens(root_for_render, depth=0)
-    raw_markdown = "\n".join(markdown_lines)
-    
-    # Parse with markdown-it-py to get proper token stream
+    raw_markdown = "\n".join(nexus_to_tokens(root_for_render, depth=0))
+
+    # Parse once for validation/debug visibility, but DO NOT render back through
+    # mdformat's MDRenderer. MDRenderer normalizes ordered-list markers to "1."
+    # for every item, which destroys explicit numbering preserved in Workflowy
+    # notes (e.g. 1/2/3/4 collapses to 1/1/1/1).
     md = MarkdownIt("commonmark")
     tokens = md.parse(raw_markdown)
-    
+
     print(f"Parsed {len(tokens)} tokens from NEXUS tree")
-    
-    # Render tokens back to Markdown using MDRenderer
-    renderer = MDRenderer()
-    options = md.options
-    env = {}
-    
-    clean_markdown = renderer.render(tokens, options, env)
-    
-    # Clean HTML entities → Markdown syntax
-    final_markdown = clean_html_entities(clean_markdown)
+
+    # Preserve the raw Workflowy-authored Markdown structure verbatim, while
+    # still cleaning HTML entities/tags that may have come from Workflowy.
+    final_markdown = clean_html_entities(raw_markdown)
     if frontmatter_text is not None:
         frontmatter_clean = clean_html_entities(frontmatter_text).strip("\n")
         body_clean = final_markdown.lstrip("\n")

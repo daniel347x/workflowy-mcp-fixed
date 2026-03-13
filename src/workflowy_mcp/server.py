@@ -2028,6 +2028,12 @@ async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None
         )
 
 
+# @beacon[
+#   id=auto-beacon@_handle_generate_markdown_file-k4m2,
+#   role=_handle_generate_markdown_file,
+#   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-websocket,
+#   kind=ast,
+# ]
 async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> None:
     """Handle F12-driven request to generate/regenerate Markdown on disk from a subtree."""
     node_id = data.get("node_id")
@@ -2078,23 +2084,21 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
             
         markdown_roundtrip = importlib.import_module("markdown_roundtrip")
         from markdown_it import MarkdownIt
-        from mdformat.renderer import MDRenderer
 
         frontmatter_text, root_for_render = markdown_roundtrip.detach_yaml_frontmatter_child(root_node)
-        
-        # Convert NEXUS tree -> Markdown text (excluding YAML frontmatter child)
-        markdown_lines = markdown_roundtrip.nexus_to_tokens(root_for_render, depth=0)
-        raw_markdown = "\n".join(markdown_lines)
-        
-        # Parse and format ONLY the body; prepend YAML frontmatter verbatim afterwards
+
+        # Convert NEXUS tree -> Markdown text (excluding YAML frontmatter child).
+        # Preserve the raw Workflowy-authored Markdown structure verbatim.
+        raw_markdown = "\n".join(markdown_roundtrip.nexus_to_tokens(root_for_render, depth=0))
+
+        # Parse once for validation/debug symmetry with the standalone helper,
+        # but DO NOT render back through mdformat's MDRenderer. That renderer
+        # normalizes ordered-list markers to "1." for every item, collapsing
+        # explicit numbering like 1/2/3/4 to 1/1/1/1.
         md = MarkdownIt("commonmark")
-        tokens = md.parse(raw_markdown)
-        
-        renderer = MDRenderer()
-        options = md.options
-        env = {}
-        clean_markdown = renderer.render(tokens, options, env)
-        final_markdown = markdown_roundtrip.clean_html_entities(clean_markdown)
+        _ = md.parse(raw_markdown)
+
+        final_markdown = markdown_roundtrip.clean_html_entities(raw_markdown)
         if frontmatter_text is not None:
             frontmatter_clean = markdown_roundtrip.clean_html_entities(frontmatter_text).strip("\n")
             body_clean = final_markdown.lstrip("\n")
