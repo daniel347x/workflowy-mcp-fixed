@@ -1281,7 +1281,8 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
 
         if ignore_mdformat:
             # Skip mdformat entirely for this file; parse the raw content.
-            content_for_parse = original_content
+            body_for_parse = _body
+            full_content_for_parse = original_content
             if DEBUG_MD_BEACONS:
                 print(
                     f"[MD-FILE] path={file_path!r} (IGNORE_MDFORMAT=true; "
@@ -1290,26 +1291,27 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
         else:
             # STEP 1.2: Format the Markdown with mdformat FIRST (normalize before parsing).
             # This auto-repairs nested code blocks, whitespace, etc.
-            content_for_parse = mdformat.text(original_content)
+            body_for_parse = mdformat.text(_body)
+            full_content_for_parse = (f"---\n{frontmatter}\n---\n" if frontmatter else "") + body_for_parse
 
             # Optional debug: show formatted Markdown with line numbers
             if DEBUG_MD_BEACONS:
                 print(f"[MD-FILE] path={file_path!r}")
                 print("[MD-FORMATTED-BEGIN]")
-                for idx, line in enumerate(content_for_parse.splitlines(), start=1):
+                for idx, line in enumerate(full_content_for_parse.splitlines(), start=1):
                     print(f"{idx:4d}: {line!r}")
                 print("[MD-FORMATTED-END]")
 
             # STEP 1.3: Write formatted content BACK to source file (opinionated cleanup)
             with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content_for_parse)
+                f.write(full_content_for_parse)
 
-        lines = content_for_parse.splitlines()
+        lines = full_content_for_parse.splitlines()
         md_beacons = parse_markdown_beacon_blocks(lines)
 
-        # STEP 2: Parse (possibly formatted) Markdown with markdown-it-py
+        # STEP 2: Parse ONLY the body with markdown-it-py to avoid misinterpreting frontmatter
         md = MarkdownIt("commonmark")
-        tokens = md.parse(content_for_parse)
+        tokens = md.parse(body_for_parse)
 
         if DEBUG_MD_BEACONS:
             print("[MD-TOKENS-BEGIN]")
@@ -1325,6 +1327,16 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
         
         # STEP 3: Convert token stream to NEXUS hierarchical tree with priorities
         root_children = tokens_to_nexus_tree(tokens)
+        
+        if frontmatter is not None:
+            # Preserve frontmatter at the top of the tree so it survives round-trips
+            root_children.insert(0, {
+                "name": "⚙️ YAML Frontmatter",
+                "priority": 0,
+                "note": frontmatter,
+                "children": []
+            })
+            
         if md_beacons:
             apply_markdown_beacons(lines, root_children, md_beacons)
         return root_children
@@ -4240,6 +4252,12 @@ def _vue_rebase_beacons(beacons: list[dict[str, Any]], line_offset0: int) -> lis
     return out
 
 
+# @beacon[
+#   id=auto-beacon@_parse_js_ts_outline_from_source,
+#   role=_parse_js_ts_outline_from_source,
+#   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,
+#   kind=ast,
+# ]
 def _parse_js_ts_outline_from_source(
     *,
     source_text: str,
@@ -4822,6 +4840,12 @@ def _parse_js_ts_outline_from_source(
         }]
 
 
+# @beacon[
+#   id=auto-beacon@parse_vue_outline,
+#   role=parse_vue_outline,
+#   slice_labels=carto-js-ts,ra-snippet-range-ast-js-ts,
+#   kind=ast,
+# ]
 def parse_vue_outline(file_path: str) -> List[Dict[str, Any]]:
     """Parse a Vue SFC (.vue) file into deterministic section subnodes.
 
@@ -5080,10 +5104,10 @@ def parse_vue_outline(file_path: str) -> List[Dict[str, Any]]:
 #   show_span=false,
 # ]
 # @beacon[
-#   id=carto-js-ts@map_codebase,
-#   role=carto-js-ts,
+#   id=auto-beacon@map_codebase,
+#   role=map_codebase,
 #   slice_labels=carto-js-ts,f9-f12-handlers,
-#   kind=span,
+#   kind=ast,
 # ]
 # Phase 1 JS/TS: directory + single-file dispatcher. This will be extended
 # to call the JS/TS outline builder (parse_js_ts_outline) for .js/.ts/.tsx
@@ -8405,6 +8429,12 @@ def update_beacon_from_node_js_ts(
     return result
 
 
+# @beacon[
+#   id=auto-beacon@update_beacon_from_node_vue,
+#   role=update_beacon_from_node_vue,
+#   slice_labels=f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+# ]
 def update_beacon_from_node_vue(
     file_path: str,
     name: str,

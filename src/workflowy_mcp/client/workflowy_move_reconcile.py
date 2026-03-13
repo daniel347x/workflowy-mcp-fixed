@@ -1081,6 +1081,12 @@ async def reconcile_tree(
             # emitting no-op move operations that would just burn rate limit.
             current_children = Children_T.get(p, [])
 
+            # @beacon[
+            #   id=auto-beacon@reconcile_tree._priority_of-i27e,
+            #   role=reconcile_tree._priority_of,
+            #   slice_labels=ra-reconcile,f9-f12-handlers,
+            #   kind=ast,
+            # ]
             def _priority_of(nid: str) -> int:
                 node = Map_T.get(nid, {})
                 prio = node.get("priority")

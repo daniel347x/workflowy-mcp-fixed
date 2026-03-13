@@ -90,6 +90,12 @@ def _index_nodes_by_id(nodes: List[JsonDict]) -> Dict[str, JsonDict]:
     return by_id
 
 
+# @beacon[
+#   id=helper-merge@merge_glimpses_for_terrain,
+#   role=merge_glimpses_for_terrain,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 def merge_glimpses_for_terrain(
     workflowy_root_id: str,
     ws_glimpse: JsonDict,

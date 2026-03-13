@@ -480,6 +480,12 @@ class WorkFlowyClientEtch(WorkFlowyClientCore):
                 "error": f"Failed to generate markdown: {str(e)}"
             }
 
+    # @beacon[
+    #   id=core-crud@workflowy_etch,
+    #   role=WorkFlowyClientEtch.workflowy_etch,
+    #   slice_labels=nexus-core-v1,
+    #   kind=ast,
+    # ]
     async def workflowy_etch(
         self,
         parent_id: str,

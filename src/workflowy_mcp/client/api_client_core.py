@@ -27,6 +27,12 @@ from ..models import (
 API_RATE_LIMIT_DELAY = 0.25  # Reduced from 1.0s - EXPERIMENTAL
 
 
+# @beacon[
+#   id=core-log@log_event,
+#   role=log_event,
+#   slice_labels=ra-logging,
+#   kind=ast,
+# ]
 def log_event(message: str, component: str = "CLIENT") -> None:
     """Log an event to stderr with timestamp and consistent formatting."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -34,6 +40,12 @@ def log_event(message: str, component: str = "CLIENT") -> None:
     print(f"[{timestamp}] 🗡️ [{component}] {message}", file=sys.stderr, flush=True)
 
 
+# @beacon[
+#   id=core-log@_log,
+#   role=_log,
+#   slice_labels=ra-logging,
+#   kind=ast,
+# ]
 def _log(message: str, component: str = "CLIENT") -> None:
     """Unified log wrapper used throughout this client.
 
@@ -65,15 +77,7 @@ class _ClientLogger:
 
     def info(self, msg: object, *args: object, **kwargs: object) -> None:  # noqa: D401
         """Info-level log (no explicit level tag; message already descriptive)."""
-        # @beacon[
-        #   id=ra-tracking@9u9jey25632626234562,
-        #   slice_labels=ra-tracking,
-        #   kind=span,
-        # ]
         _log(self._msg(msg), self._component)
-        # @beacon-close[
-        #   id=ra-tracking@9u9jey25632626234562,
-        # ]
 
     def warning(self, msg: object, *args: object, **kwargs: object) -> None:
         _log(f"WARNING: {self._msg(msg)}", self._component)
@@ -583,12 +587,6 @@ class WorkFlowyClientCore:
             )
         return self._client
 
-    # @beacon[
-    #   id=auto-beacon@WorkFlowyClientCore.close-17ax,
-    #   role=WorkFlowyClientCore.close,
-    #   slice_labels=WorkFlowyClientCore-close,nexus-foo,
-    #   kind=ast,
-    # ]
     async def close(self) -> None:
         """Close the HTTP client."""
         if self._client:
@@ -664,7 +662,7 @@ class WorkFlowyClientCore:
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientCore._get_nodes_export_cache_nodes-5uaq,
     #   role=WorkFlowyClientCore._get_nodes_export_cache_nodes,
-    #   slice_labels=WorkFlowyClientCore-_get_nodes_export_cache_nodes,nexus-test,ra-workflowy-cache,
+    #   slice_labels=ra-workflowy-cache,
     #   kind=ast,
     # ]
     def _get_nodes_export_cache_nodes(self) -> list[dict[str, Any]]:
@@ -684,7 +682,7 @@ class WorkFlowyClientCore:
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientCore.update_cached_node_name-c84o,
     #   role=WorkFlowyClientCore.update_cached_node_name,
-    #   slice_labels=f9-f12-handlers,ra-reconcile,
+    #   slice_labels=f9-f12-handlers,ra-reconcile,ra-workflowy-cache,
     #   kind=ast,
     # ]
     async def update_cached_node_name(self, node_id: str, new_name: str) -> bool:
@@ -923,6 +921,12 @@ class WorkFlowyClientCore:
                 "error": str(exc),
             }
 
+    # @beacon[
+    #   id=core-crud@create_node,
+    #   role=WorkFlowyClientCore.create_node,
+    #   slice_labels=nexus-core-v1,ra-workflowy-cache,
+    #   kind=ast,
+    # ]
     async def create_node(
         self,
         request: NodeCreateRequest,
@@ -1189,6 +1193,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
         raise NetworkError("create_node failed after maximum retries")
 
+    # @beacon[
+    #   id=core-crud@update_node,
+    #   role=WorkFlowyClientCore.update_node,
+    #   slice_labels=nexus-core-v1,ra-workflowy-cache,
+    #   kind=ast,
+    # ]
     async def update_node(self, node_id: str, request: NodeUpdateRequest, max_retries: int = 10) -> WorkFlowyNode:
         """Update an existing node with exponential backoff retry.
         
@@ -1373,6 +1383,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         raise NetworkError("get_node failed after maximum retries")
 
+    # @beacon[
+    #   id=core-crud@list_nodes,
+    #   role=WorkFlowyClientCore.list_nodes,
+    #   slice_labels=nexus-core-v1,
+    #   kind=ast,
+    # ]
     async def list_nodes(self, request: NodeListRequest, max_retries: int = 10) -> tuple[list[WorkFlowyNode], int]:
         """List nodes with optional filtering and exponential backoff retry.
         
@@ -1450,6 +1466,12 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
         
         raise NetworkError("list_nodes failed after maximum retries")
 
+    # @beacon[
+    #   id=core-crud@delete_node,
+    #   role=WorkFlowyClientCore.delete_node,
+    #   slice_labels=nexus-core-v1,ra-workflowy-cache,
+    #   kind=ast,
+    # ]
     async def delete_node(self, node_id: str, max_retries: int = 10) -> bool:
         """Delete a node and all its children with exponential backoff retry.
         
@@ -1705,12 +1727,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                 else:
                     raise
 
-            # @beacon[
-            #   id=17ax-00001,
-            #   slice_labels=nexus-span-beacon,nexus-foo,nexus-doo,nexus-noo,nexus-888,nexus-999,nexus-one,nexus-nexus,
-            #   kind=span,
-            #   comment=This is a comment, and another comment, 999, nexus, rexus, pexus
-            # ]
             except NetworkError as e:
                 retry_count += 1
                 logger.warning(
@@ -1720,9 +1736,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     await asyncio.sleep(base_delay * (2 ** retry_count))
                 else:
                     raise
-                # @beacon-close[
-                #   id=17ax-00001,
-                # ]
 
             except httpx.TimeoutException as err:
                 retry_count += 1
@@ -1803,12 +1816,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
 
                 return success
                 
-            # @beacon[
-            #   id=17ax-00002,
-            #   slice_labels=nexus-span-beacon,nexus-new,
-            #   kind=span,
-            #   comment=This is a HELLO,
-            # ]
             except RateLimitError as e:
                 retry_count += 1
                 retry_after = getattr(e, 'retry_after', None) or (base_delay * (2 ** retry_count))
@@ -1821,9 +1828,6 @@ You called workflowy_create_single_node, but workflowy_etch has identical perfor
                     await asyncio.sleep(retry_after)
                 else:
                     raise
-                # @beacon-close[
-                #   id=17ax-00002,
-                # ]
                     
             except NetworkError as e:
                 retry_count += 1

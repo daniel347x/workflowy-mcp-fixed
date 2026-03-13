@@ -659,6 +659,12 @@ async def _carto_jobs_watcher_loop() -> None:
         await asyncio.sleep(1.0)
 
 
+# @beacon[
+#   id=server@log_event,
+#   role=log_event,
+#   slice_labels=ra-logging,
+#   kind=ast,
+# ]
 def log_event(message: str, component: str = "SERVER") -> None:
     """Log an event to stderr with timestamp and consistent formatting."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -666,6 +672,12 @@ def log_event(message: str, component: str = "SERVER") -> None:
     print(f"[{timestamp}] 🗡️ [{component}] {message}", file=sys.stderr, flush=True)
 
 
+# @beacon[
+#   id=server@_log,
+#   role=_log,
+#   slice_labels=ra-logging,
+#   kind=ast,
+# ]
 def _log(message: str, component: str = "SERVER") -> None:
     """Unified log wrapper used throughout this server.
 
@@ -2016,6 +2028,94 @@ async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None
         )
 
 
+async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> None:
+    """Handle F12-driven request to generate/regenerate Markdown on disk from a subtree."""
+    node_id = data.get("node_id")
+    if not node_id:
+        return
+
+    try:
+        client = get_client()
+        # 1. Resolve path using Cartographer logic
+        all_nodes = client._get_nodes_export_cache_nodes()
+        nodes_by_id = {str(n.get("id")): n for n in all_nodes if n.get("id")}
+        
+        from .client.api_client_nexus import resolve_cartographer_path_from_node
+        resolved = resolve_cartographer_path_from_node(
+            node_id=str(node_id),
+            nodes_by_id=nodes_by_id,
+        )
+        file_path = str(resolved.get("abs_path") or "")
+        if not file_path:
+            raise ValueError(f"Could not resolve absolute path for node {node_id}")
+            
+        # 2. Export subtree
+        export_result = await client.export_nodes(node_id=node_id)
+        flat_nodes = export_result.get("nodes", [])
+        if not flat_nodes:
+            raise ValueError(f"Export returned empty nodes for {node_id}")
+            
+        hierarchical_tree = client._build_hierarchy(flat_nodes, True)
+        if not hierarchical_tree:
+            raise ValueError("Failed to build hierarchical tree.")
+            
+        root_node = hierarchical_tree[0]
+        
+        # 3. Import markdown_roundtrip logic
+        import importlib
+        import sys
+        import os
+        
+        client_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(client_dir)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+            
+        markdown_roundtrip = importlib.import_module("markdown_roundtrip")
+        from markdown_it import MarkdownIt
+        from mdformat.renderer import MDRenderer
+        
+        # Convert NEXUS tree -> Markdown text
+        markdown_lines = markdown_roundtrip.nexus_to_tokens(root_node, depth=0)
+        raw_markdown = "\n".join(markdown_lines)
+        
+        # Parse and format
+        md = MarkdownIt("commonmark")
+        tokens = md.parse(raw_markdown)
+        
+        renderer = MDRenderer()
+        options = md.options
+        env = {}
+        clean_markdown = renderer.render(tokens, options, env)
+        final_markdown = markdown_roundtrip.clean_html_entities(clean_markdown)
+        
+        # 4. Write back to disk
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(final_markdown)
+            
+        msg = f"Successfully generated markdown roundtrip for {node_id} at {file_path}"
+        log_event(msg, "WS_HANDLER")
+        await websocket.send(json.dumps({
+            "action": "generate_markdown_file_result",
+            "success": True,
+            "node_id": node_id,
+            "file_path": file_path
+        }))
+        
+    except Exception as e:
+        err_msg = f"_handle_generate_markdown_file error for {node_id}: {e}"
+        log_event(err_msg, "WS_HANDLER")
+        try:
+            await websocket.send(json.dumps({
+                "action": "generate_markdown_file_result",
+                "success": False,
+                "node_id": node_id,
+                "error": err_msg
+            }))
+        except Exception:
+            pass
+
+
 # @beacon[
 #   id=auto-beacon@websocket_handler-kgmz,
 #   role=websocket_handler,
@@ -2301,6 +2401,13 @@ async def websocket_handler(websocket):
                             )
                         except Exception:
                             pass
+                    continue
+
+                if action == 'generate_markdown_file':
+                    try:
+                        await _handle_generate_markdown_file(data, websocket)
+                    except Exception as e:
+                        log_event(f"generate_markdown_file handler error: {e}", "WS_HANDLER")
                     continue
 
                 # List CARTO_REFRESH jobs (for async F12 status in the GLIMPSE widget)
@@ -2643,7 +2750,7 @@ async def _start_background_job(
 #   kind=ast,
 # ]
 def _gc_carto_jobs(carto_jobs_base: str, max_age_seconds: int = 3600) -> None:
-    """Garbage-collect old CARTO_REFRESH artifacts (jobs + per-file F12 logs).
+    r"""Garbage-collect old CARTO_REFRESH artifacts (jobs + per-file F12 logs).
 
     Job GC:
         Any job whose JSON lives under ``carto_jobs_base`` with ``status`` in
@@ -3838,6 +3945,12 @@ This is a WARNING function. You should be using GLIMPSE or ETCH instead.
 
 # Tool: Create Single Node (Base - Deprecated)
 @mcp.tool(name="workflowy_create_single_node", description="DEPRECATED: Use workflowy_etch (ETCH) instead")
+# @beacon[
+#   id=server@create_single_node_base,
+#   role=create_single_node_base,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def create_single_node_base(
     name: str,
     parent_id: str | None = None,
@@ -3866,6 +3979,12 @@ ETCH is better:
 
 # Tool: Create Single Node (With Warning)
 @mcp.tool(name="workflowy_create_single_node__WARNING__prefer_ETCH", description="⚠️ WARNING: Prefer workflowy_etch (ETCH) instead. This creates ONE node only.")
+# @beacon[
+#   id=server@create_node,
+#   role=create_node,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def create_node(
     name: str,
     parent_id: str | None = None,
@@ -3932,6 +4051,12 @@ async def create_node(
 
 # Tool: Update Node
 @mcp.tool(name="workflowy_update_node", description="Update an existing WorkFlowy node")
+# @beacon[
+#   id=server@update_node,
+#   role=update_node,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def update_node(
     node_id: str,
     name: str | None = None,
@@ -3975,6 +4100,12 @@ async def update_node(
 
 # Tool: Get Node (Base - Deprecated)
 @mcp.tool(name="workflowy_get_node", description="DEPRECATED: Use workflowy_glimpse (GLIMPSE) instead")
+# @beacon[
+#   id=server@get_node_base,
+#   role=get_node_base,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def get_node_base(node_id: str) -> dict:
     """Deprecated - use GLIMPSE instead."""
     raise ValueError("""⚠️ FUNCTION RENAMED
@@ -3998,6 +4129,12 @@ GLIMPSE is better:
 
 # Tool: Get Node (With Warning)
 @mcp.tool(name="workflowy_get_node__WARNING__prefer_glimpse", description="⚠️ WARNING: Prefer workflowy_glimpse (GLIMPSE) for reading trees. Retrieve a specific WorkFlowy node by ID")
+# @beacon[
+#   id=server@get_node,
+#   role=get_node,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def get_node(
     node_id: str,
     secret_code: str | None = None,
@@ -4034,6 +4171,12 @@ async def get_node(
 
 # Tool: List Nodes (Base - Deprecated)
 @mcp.tool(name="workflowy_list_nodes", description="DEPRECATED: Use workflowy_glimpse (GLIMPSE) instead")
+# @beacon[
+#   id=server@list_nodes_base,
+#   role=list_nodes_base,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def list_nodes_base(parent_id: str | None = None) -> dict:
     """Deprecated - use GLIMPSE instead."""
     raise ValueError("""⚠️ FUNCTION RENAMED
@@ -4057,6 +4200,12 @@ GLIMPSE is better:
 
 # Tool: List Nodes (With Warning)
 @mcp.tool(name="workflowy_list_nodes__WARNING__prefer_glimpse", description="⚠️ WARNING: Prefer workflowy_glimpse (GLIMPSE) for reading trees. List WorkFlowy nodes (omit parent_id for root)")
+# @beacon[
+#   id=server@list_nodes,
+#   role=list_nodes,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def list_nodes(
     parent_id: str | None = None,
     secret_code: str | None = None,
@@ -4102,6 +4251,12 @@ async def list_nodes(
 
 # Tool: Delete Node
 @mcp.tool(name="workflowy_delete_node", description="Delete a WorkFlowy node and all its children")
+# @beacon[
+#   id=server@delete_node,
+#   role=delete_node,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def delete_node(node_id: str) -> dict:
     """Delete a WorkFlowy node and all its children.
 
@@ -4129,6 +4284,12 @@ async def delete_node(node_id: str) -> dict:
 
 # Tool: Complete Node
 @mcp.tool(name="workflowy_complete_node", description="Mark a WorkFlowy node as completed")
+# @beacon[
+#   id=server@complete_node,
+#   role=complete_node,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def complete_node(node_id: str) -> WorkFlowyNode:
     """Mark a WorkFlowy node as completed.
 
@@ -4156,6 +4317,12 @@ async def complete_node(node_id: str) -> WorkFlowyNode:
 
 # Tool: Uncomplete Node
 @mcp.tool(name="workflowy_uncomplete_node", description="Mark a WorkFlowy node as not completed")
+# @beacon[
+#   id=server@uncomplete_node,
+#   role=uncomplete_node,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def uncomplete_node(node_id: str) -> WorkFlowyNode:
     """Mark a WorkFlowy node as not completed.
 
@@ -4183,6 +4350,12 @@ async def uncomplete_node(node_id: str) -> WorkFlowyNode:
 
 # Tool: Move Node
 @mcp.tool(name="workflowy_move_node", description="Move a WorkFlowy node to a new parent")
+# @beacon[
+#   id=server@move_node,
+#   role=move_node,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def move_node(
     node_id: str,
     parent_id: str | None = None,
@@ -4275,6 +4448,12 @@ async def nexus_glimpse(
 # ]
 # Tool: Export Nodes
 @mcp.tool(name="workflowy_export_node", description="Export a WorkFlowy node with all its children")
+# @beacon[
+#   id=server@export_node,
+#   role=export_node,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def export_node(
     node_id: str | None = None,
 ) -> dict:
@@ -4942,6 +5121,12 @@ async def nexus_finalize_exploration(
     name="generate_markdown_from_json",
     description="Convert exported/edited JSON to Markdown format (without metadata)."
 )
+# @beacon[
+#   id=server@generate_markdown,
+#   role=generate_markdown,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 def generate_markdown(
     json_file: str,
 ) -> dict:
@@ -5091,6 +5276,12 @@ async def glimpse_full(
     name="workflowy_etch",
     description="Create multiple nodes from JSON structure (no file intermediary). ETCH command for direct node creation."
 )
+# @beacon[
+#   id=server@etch,
+#   role=etch,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def etch(
     parent_id: str,
     nodes: list[dict] | str | None = None,
@@ -5197,6 +5388,12 @@ async def etch(
     name="workflowy_etch_async",
     description="Start an async ETCH job (Workflowy node creation) and return a job_id for status polling.",
 )
+# @beacon[
+#   id=server@etch_async,
+#   role=etch_async,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def etch_async(
     parent_id: str,
     nodes: list[dict] | str | None = None,

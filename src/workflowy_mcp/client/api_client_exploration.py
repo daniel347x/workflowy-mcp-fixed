@@ -1621,6 +1621,12 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         }
         return minimal
 
+    # @beacon[
+    #   id=explore-start@nexus_start_exploration,
+    #   role=WorkFlowyClientExploration.nexus_start_exploration,
+    #   slice_labels=nexus-core-v1,
+    #   kind=ast,
+    # ]
     async def nexus_start_exploration(
         self,
         nexus_tag: str,

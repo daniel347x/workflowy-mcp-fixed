@@ -41,12 +41,24 @@ from pathlib import Path
 #   kind=span,
 #   show_span=false,
 # ]
+# @beacon[
+#   id=worker@log_worker,
+#   role=log_worker,
+#   slice_labels=ra-logging,
+#   kind=ast,
+# ]
 def log_worker(message: str, component: str = "WEAVE_WORKER") -> None:
     """Log to stderr with timestamp."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     print(f"[{timestamp}] 🗡️ [{component}] {message}", file=sys.stderr, flush=True)
 
 
+# @beacon[
+#   id=worker@main,
+#   role=main,
+#   slice_labels=nexus-core-v1,
+#   kind=ast,
+# ]
 async def main():
     """Main worker entry point."""
 

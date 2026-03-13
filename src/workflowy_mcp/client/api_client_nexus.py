@@ -100,7 +100,7 @@ def _log_glimpse_to_file(operation_type: str, node_id: str, result: dict[str, An
 # @beacon[
 #   id=auto-beacon@parse_path_or_root_from_note-cw31,
 #   role=parse_path_or_root_from_note,
-#   slice_labels=parse_path_or_root_from_note,nexus-test,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def parse_path_or_root_from_note(note_str: str | None) -> str | None:
@@ -119,7 +119,7 @@ def parse_path_or_root_from_note(note_str: str | None) -> str | None:
 # @beacon[
 #   id=auto-beacon@_cleanse_cartographer_path_value-7m0d,
 #   role=_cleanse_cartographer_path_value,
-#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def _cleanse_cartographer_path_value(file_path: str | None) -> str | None:
@@ -143,7 +143,7 @@ def _cleanse_cartographer_path_value(file_path: str | None) -> str | None:
 # @beacon[
 #   id=auto-beacon@_extract_path_header_from_note-vp2c,
 #   role=_extract_path_header_from_note,
-#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def _extract_path_header_from_note(note_str: str | None) -> tuple[str, str] | None:
@@ -162,7 +162,7 @@ def _extract_path_header_from_note(note_str: str | None) -> tuple[str, str] | No
 # @beacon[
 #   id=auto-beacon@_looks_absolute_path-6aj1,
 #   role=_looks_absolute_path,
-#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def _looks_absolute_path(path_str: str) -> bool:
@@ -186,7 +186,7 @@ def _to_portable_relpath(rel_path: str) -> str:
 # @beacon[
 #   id=auto-beacon@_rewrite_note_path_or_root_header-7b4e,
 #   role=_rewrite_note_path_or_root_header,
-#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def _rewrite_note_path_or_root_header(note_text: str, new_value: str, *, prefer: str = "Path") -> str:
@@ -219,7 +219,7 @@ def _rewrite_note_path_or_root_header(note_text: str, new_value: str, *, prefer:
 # @beacon[
 #   id=auto-beacon@resolve_cartographer_path_from_node-0yq8,
 #   role=resolve_cartographer_path_from_node,
-#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def resolve_cartographer_path_from_node(
@@ -249,7 +249,7 @@ def resolve_cartographer_path_from_node(
     # @beacon[
     #   id=auto-beacon@resolve_cartographer_path_from_node._segment_from_node_name-r8w7,
     #   role=resolve_cartographer_path_from_node._segment_from_node_name,
-    #   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,foo-foo-foo,
+    #   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
     #   kind=ast,
     # ]
     def _segment_from_node_name(raw_name: str) -> str:
@@ -487,7 +487,7 @@ def resolve_cartographer_path_from_node(
 # @beacon[
 #   id=auto-beacon@normalize_cartographer_path-vw5a,
 #   role=normalize_cartographer_path,
-#   slice_labels=carto-paths,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
 #   kind=ast,
 # ]
 def normalize_cartographer_path(file_path: str | None) -> str | None:
@@ -521,7 +521,6 @@ def normalize_cartographer_path(file_path: str | None) -> str | None:
     # @beacon[
     #   id=auto-beacon@normalize_cartographer_path._cleanse-ipc8,
     #   role=normalize_cartographer_path._cleanse,
-    #   slice_labels=foo-foo-foo,
     #   kind=ast,
     # ]
     def _cleanse(p: str) -> str:
@@ -668,7 +667,7 @@ def is_pid_running(pid: int) -> bool:
 # @beacon[
 #   id=auto-beacon@scan_active_weaves-bf4y,
 #   role=scan_active_weaves,
-#   slice_labels=ra-logging,
+#   slice_labels=ra-logging,nexus-portability,nexus-lab-only,
 #   kind=ast,
 # ]
 def scan_active_weaves(nexus_runs_base: str) -> list[dict[str, Any]]:
@@ -1133,12 +1132,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # Therefore, we can safely mark children_status='complete' for all nodes we actually have.
         # NOTE: If a depth limit is applied below, those nodes will be truncated structurally
         # and must NOT remain marked complete (handled after depth limiting).
-        # @beacon[
-        #   id=auto-beacon@WorkFlowyClientNexus.workflowy_scry._stamp_children_status_complete-cl74,
-        #   role=WorkFlowyClientNexus.workflowy_scry._stamp_children_status_complete,
-        #   slice_labels=WorkFlowyClientNexus-workflowy_scry-_stamp_children_status_complete,nexus-foo,
-        #   kind=ast,
-        # ]
         def _stamp_children_status_complete(nodes: list[dict[str, Any]]) -> None:
             for n in nodes or []:
                 if not isinstance(n, dict):
@@ -1376,12 +1369,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         logger = _ClientLogger()
 
         # Helper: derive a quick-and-dirty search token from a Cartographer node name.
-        # @beacon[
-        #   id=auto-beacon@WorkFlowyClientNexus.beacon_get_code_snippet._derive_search_text_from_node_name-qsxf,
-        #   role=WorkFlowyClientNexus.beacon_get_code_snippet._derive_search_text_from_node_name,
-        #   slice_labels=WorkFlowyClientNexus-beacon_get_code_snippet-_derive_search_text_from_node_name,nexus-test,nexus-foo,
-        #   kind=ast,
-        # ]
         def _derive_search_text_from_node_name(raw_name: str) -> str:
             if not raw_name:
                 return ""
@@ -1757,7 +1744,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
 
         # @beacon[
         #   id=carto-js-ts@js_ts_ast_qualname_resolution,
-        #   slice_labels=carto-js-ts,carto-js-ts-snippets,
+        #   slice_labels=carto-js-ts,ra-snippet-range,ra-read-text-snippet,
         #   kind=span,
         #   comment=JS/TS AST_QUALNAME resolution - mirrors Python AST_QUALNAME handling for JS/TS files,
         # ]
@@ -3906,12 +3893,6 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             stats["api_calls"] += 1
             stats["nodes_deleted"] += 1
         
-        # @beacon[
-        #   id=auto-beacon@WorkFlowyClientNexus.bulk_import_from_file.move_wrapper-f1w3,
-        #   role=WorkFlowyClientNexus.bulk_import_from_file.move_wrapper,
-        #   slice_labels=WorkFlowyClientNexus-bulk_import_from_file-move_wrapper,nexus-text,
-        #   kind=ast,
-        # ]
         async def move_wrapper(node_uuid: str, new_parent: str, position: str = "top") -> None:
             _log_to_file_helper(f"WEAVE MOVE: {node_uuid}", "reconcile")
             await self.move_node(node_uuid, new_parent, position)
@@ -4078,7 +4059,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.nexus_list_keystones-mzxs,
     #   role=WorkFlowyClientNexus.nexus_list_keystones,
-    #   slice_labels=WorkFlowyClientNexus-nexus_list_keystones,nexus-test,
+    #   slice_labels=nexus-portability,nexus-lab-only,
     #   kind=ast,
     # ]
     def nexus_list_keystones(self) -> dict[str, Any]:
