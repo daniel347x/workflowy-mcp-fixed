@@ -94,6 +94,19 @@ def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
     name = (node.get("name") or "").strip()
     note = node.get("note") or ""
     children = node.get("children") or []
+
+    if isinstance(note, str):
+        note_lines = note.splitlines()
+        if note_lines and note_lines[0].strip() == "MD_PATH:":
+            cut = 1
+            while cut < len(note_lines):
+                if note_lines[cut].strip() == "---":
+                    cut += 1
+                    break
+                cut += 1
+            while cut < len(note_lines) and not note_lines[cut].strip():
+                cut += 1
+            note = "\n".join(note_lines[cut:])
     
     # Sort children by priority (ascending) - lower values appear first
     # This is Workflowy's native sort order and preserves document structure
