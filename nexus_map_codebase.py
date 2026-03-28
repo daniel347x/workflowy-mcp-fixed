@@ -1412,6 +1412,64 @@ def _extract_ast_qualname_from_note(note: str | None) -> str | None:
 
 
 # @beacon[
+#   id=carto-js-ts@_is_meaningful_js_local_name-p7m2,
+#   role=_is_meaningful_js_local_name,
+#   slice_labels=carto-js-ts,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+#   comment=Heuristic filter for noisy JS/TS local variables so F12 maps meaningful locals without single-letter spam.
+# ]
+def _is_meaningful_js_local_name(var_name: str | None) -> bool:
+    """Return True when a JS/TS local variable name is worth mapping.
+
+    Current heuristic is intentionally simple and conservative:
+    - Drop names with fewer than 3 substantive chars after removing
+      underscores/$.
+      Examples: i, j, _, _i, $x, me, el
+
+    We keep longer names for now because some locals are genuinely meaningful.
+    """
+    raw = (var_name or "").strip()
+    if not raw:
+        return False
+
+    compact = re.sub(r"[_$]", "", raw)
+    if len(compact) < 3:
+        return False
+    return True
+
+
+# @beacon[
+#   id=carto-js-ts@_js_lambda_local_coord_suffix-v4k8,
+#   role=_js_lambda_local_coord_suffix,
+#   slice_labels=carto-js-ts,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+#   comment=Compute a lambda-relative coordinate suffix so local-variable AST_QUALNAMEs stay stable across unrelated file edits.
+# ]
+def _js_lambda_local_coord_suffix(qual_prefix: str | None, line: int, col: int) -> str:
+    """Return a coordinate suffix local to the innermost lambda in qual_prefix.
+
+    qual_prefix still carries the existing ``__lambda_<fileline>_<filecol>``
+    scope identity, but the *local variable* suffix becomes lambda-relative so
+    unrelated edits elsewhere in the file do not perturb this portion of the
+    qualname.
+    """
+    if not isinstance(qual_prefix, str):
+        return f"{line}_{col}"
+
+    matches = re.findall(r"__lambda_(\d+)_(\d+)", qual_prefix)
+    if not matches:
+        return f"{line}_{col}"
+
+    base_line_s, base_col_s = matches[-1]
+    base_line = int(base_line_s)
+    base_col = int(base_col_s)
+
+    rel_line = max(0, line - base_line)
+    rel_col = col if rel_line > 0 else max(0, col - base_col)
+    return f"{rel_line}_{rel_col}"
+
+
+# @beacon[
 #   id=auto-beacon@_extract_md_path_from_note-eihl,
 #   role=_extract_md_path_from_note,
 #   slice_labels=ra-snippet-range-ast-md,ra-reconcile,
@@ -1594,7 +1652,7 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
 
     # Build Ether maps by identity anchor.
     ether_by_beacon: dict[str, dict[str, Any]] = {}
-    ether_by_ast: dict[str, dict[str, Any]] = {}
+    ether_by_ast: dict[str, list[dict[str, Any]]] = {}
     ether_by_mdpath: dict[tuple[str, ...], list[dict[str, Any]]] = {}
     ether_by_vuekey: dict[str, dict[str, Any]] = {}
     ether_by_name: dict[str, list[dict[str, Any]]] = {}
@@ -1628,8 +1686,8 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
             ether_by_beacon[b_id] = e
         # 2) AST_QUALNAME
         qual = _extract_ast_qualname_from_note(note_e)
-        if qual and qual not in ether_by_ast:
-            ether_by_ast[qual] = e
+        if qual:
+            ether_by_ast.setdefault(qual, []).append(e)
         # 3) MD_PATH
         md_path = _extract_md_path_from_note(note_e)
         if md_path:
@@ -1706,7 +1764,7 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
         else:
             # 2) AST_QUALNAME
             if qual_s and qual_s in ether_by_ast:
-                match = _candidate_if_unmatched(ether_by_ast[qual_s])
+                match = _first_unmatched(ether_by_ast.get(qual_s))
                 if debug_hit and match is not None:
                     print(
                         "[CARTO-DEBUG]   MATCH via AST_QUALNAME:",
@@ -4199,9 +4257,19 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                         if not emit_here:
                             continue
 
-                        qual = var_name if not qual_prefix else f"{qual_prefix}.{var_name}"
                         start_line = decl_child.start_point[0] + 1
+                        start_col = decl_child.start_point[1] + 1
                         end_line = decl_child.end_point[0] + 1
+
+                        if in_lambda_scope and setup_body is None and options_obj is None:
+                            if not _is_meaningful_js_local_name(var_name):
+                                continue
+
+                        if in_lambda_scope:
+                            local_suffix = _js_lambda_local_coord_suffix(qual_prefix, start_line, start_col)
+                            qual = f"{qual_prefix}.{var_name}@{local_suffix}"
+                        else:
+                            qual = var_name if not qual_prefix else f"{qual_prefix}.{var_name}"
                         note_text = make_note(qual, start_line)
 
                         children_local: list[dict[str, Any]] = []
@@ -4813,11 +4881,25 @@ def _parse_js_ts_outline_from_source(
                         if not emit_here:
                             continue
 
-                        inner = var_name if not qual_prefix else f"{qual_prefix}.{var_name}"
+                        start_line_local = decl_child.start_point[0] + 1
+                        start_col_local = decl_child.start_point[1] + 1
+                        end_line_local = decl_child.end_point[0] + 1
+
+                        if in_lambda_scope and setup_body is None and options_obj is None:
+                            if not _is_meaningful_js_local_name(var_name):
+                                continue
+
+                        if in_lambda_scope:
+                            local_suffix = _js_lambda_local_coord_suffix(
+                                qual_prefix,
+                                start_line_local,
+                                start_col_local,
+                            )
+                            inner = f"{qual_prefix}.{var_name}@{local_suffix}"
+                        else:
+                            inner = var_name if not qual_prefix else f"{qual_prefix}.{var_name}"
                         qual = _qual(inner)
 
-                        start_line_local = decl_child.start_point[0] + 1
-                        end_line_local = decl_child.end_point[0] + 1
                         start_line_abs = start_line_local + line_offset0
                         end_line_abs = end_line_local + line_offset0
 
