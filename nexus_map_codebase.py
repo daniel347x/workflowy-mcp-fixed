@@ -1439,34 +1439,58 @@ def _is_meaningful_js_local_name(var_name: str | None) -> bool:
 
 
 # @beacon[
-#   id=carto-js-ts@_js_lambda_local_coord_suffix-v4k8,
-#   role=_js_lambda_local_coord_suffix,
+#   id=carto-js-ts@_new_js_scope_state-w1f9,
+#   role=_new_js_scope_state,
 #   slice_labels=carto-js-ts,f9-f12-handlers,ra-reconcile,
 #   kind=ast,
-#   comment=Compute a lambda-relative coordinate suffix so local-variable AST_QUALNAMEs stay stable across unrelated file edits.
+#   comment=Create per-scope JS/TS parser state so anonymous lambda identities and local occurrence counters stay stable across formatting-only edits.
 # ]
-def _js_lambda_local_coord_suffix(qual_prefix: str | None, line: int, col: int) -> str:
-    """Return a coordinate suffix local to the innermost lambda in qual_prefix.
+def _new_js_scope_state(*, is_lambda: bool) -> dict[str, Any]:
+    """Return mutable parser state for one JS/TS scope."""
+    return {
+        "is_lambda": bool(is_lambda),
+        "anon_counter": 0,
+        "local_name_counts": {},
+    }
 
-    qual_prefix still carries the existing ``__lambda_<fileline>_<filecol>``
-    scope identity, but the *local variable* suffix becomes lambda-relative so
-    unrelated edits elsewhere in the file do not perturb this portion of the
-    qualname.
-    """
-    if not isinstance(qual_prefix, str):
-        return f"{line}_{col}"
 
-    matches = re.findall(r"__lambda_(\d+)_(\d+)", qual_prefix)
-    if not matches:
-        return f"{line}_{col}"
+# @beacon[
+#   id=carto-js-ts@_js_next_anonymous_scope_name-x6c2,
+#   role=_js_next_anonymous_scope_name,
+#   slice_labels=carto-js-ts,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+#   comment=Assign stable parent-local ordinal identities to anonymous JS/TS lambda scopes instead of using file line numbers.
+# ]
+def _js_next_anonymous_scope_name(scope_state: dict[str, Any] | None) -> str:
+    """Return the next anonymous-scope name for the current parent scope."""
+    if not isinstance(scope_state, dict):
+        return "__lambdao_1"
 
-    base_line_s, base_col_s = matches[-1]
-    base_line = int(base_line_s)
-    base_col = int(base_col_s)
+    next_n = int(scope_state.get("anon_counter") or 0) + 1
+    scope_state["anon_counter"] = next_n
+    return f"__lambdao_{next_n}"
 
-    rel_line = max(0, line - base_line)
-    rel_col = col if rel_line > 0 else max(0, col - base_col)
-    return f"{rel_line}_{rel_col}"
+
+# @beacon[
+#   id=carto-js-ts@_js_next_lambda_local_suffix-r3d7,
+#   role=_js_next_lambda_local_suffix,
+#   slice_labels=carto-js-ts,f9-f12-handlers,ra-reconcile,
+#   kind=ast,
+#   comment=Assign stable occurrence-index suffixes to meaningful lambda-local declarations so comments and whitespace do not churn AST_QUALNAMEs.
+# ]
+def _js_next_lambda_local_suffix(scope_state: dict[str, Any] | None, var_name: str) -> str:
+    """Return the next occurrence index for a lambda-local variable name."""
+    if not isinstance(scope_state, dict):
+        return "1"
+
+    counts = scope_state.get("local_name_counts")
+    if not isinstance(counts, dict):
+        counts = {}
+        scope_state["local_name_counts"] = counts
+
+    next_n = int(counts.get(var_name) or 0) + 1
+    counts[var_name] = next_n
+    return str(next_n)
 
 
 # @beacon[
@@ -3888,7 +3912,14 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                     note_lines.extend(ctx)
             return "\n".join(note_lines)
 
-        def walk(node, qual_prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+        def walk(
+            node,
+            qual_prefix: Optional[str] = None,
+            scope_state: Optional[dict[str, Any]] = None,
+        ) -> List[Dict[str, Any]]:
+            if scope_state is None:
+                scope_state = _new_js_scope_state(is_lambda=False)
+
             results: List[Dict[str, Any]] = []
 
             for child in node.children:
@@ -3920,7 +3951,11 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
 
                     body = child.child_by_field_name("body")
                     if body is not None:
-                        class_node["children"] = walk(body, qual_prefix=qual)
+                        class_node["children"] = walk(
+                            body,
+                            qual_prefix=qual,
+                            scope_state=_new_js_scope_state(is_lambda=False),
+                        )
 
                     results.append(class_node)
                     continue
@@ -3987,7 +4022,11 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
 
                     body = child.child_by_field_name("body")
                     if body is not None:
-                        func_node["children"] = walk(body, qual_prefix=qual)
+                        func_node["children"] = walk(
+                            body,
+                            qual_prefix=qual,
+                            scope_state=_new_js_scope_state(is_lambda=False),
+                        )
 
                     results.append(func_node)
                     continue
@@ -4023,7 +4062,11 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
 
                     body = child.child_by_field_name("body")
                     if body is not None:
-                        method_node["children"] = walk(body, qual_prefix=qual)
+                        method_node["children"] = walk(
+                            body,
+                            qual_prefix=qual,
+                            scope_state=_new_js_scope_state(is_lambda=False),
+                        )
 
                     results.append(method_node)
                     continue
@@ -4168,7 +4211,11 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                                     sig = f"{fname}{_params_text(prop)}"
                                     note_text = make_note(qual, start_line)
                                     body = _body_node(prop)
-                                    children_local = walk(body, qual_prefix=qual) if body is not None else []
+                                    children_local = walk(
+                                        body,
+                                        qual_prefix=qual,
+                                        scope_state=_new_js_scope_state(is_lambda=False),
+                                    ) if body is not None else []
                                     out.append({
                                         "name": f"{EMOJI_FUNC} {section} {sig}",
                                         "priority": priority_counter[0],
@@ -4195,7 +4242,11 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                                     sig = f"{fname}{_params_text(v)}"
                                     note_text = make_note(qual, start_line)
                                     body = _body_node(v)
-                                    children_local = walk(body, qual_prefix=qual) if body is not None else []
+                                    children_local = walk(
+                                        body,
+                                        qual_prefix=qual,
+                                        scope_state=_new_js_scope_state(is_lambda=False),
+                                    ) if body is not None else []
                                     out.append({
                                         "name": f"{EMOJI_FUNC} {section} {sig}",
                                         "priority": priority_counter[0],
@@ -4252,13 +4303,12 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                                     if setup_body is None:
                                         options_obj = _find_define_store_options_object(value_node)
 
-                        in_lambda_scope = isinstance(qual_prefix, str) and ("__lambda_" in qual_prefix)
+                        in_lambda_scope = bool(isinstance(scope_state, dict) and scope_state.get("is_lambda"))
                         emit_here = (not qual_prefix) or in_lambda_scope or (setup_body is not None) or (options_obj is not None)
                         if not emit_here:
                             continue
 
                         start_line = decl_child.start_point[0] + 1
-                        start_col = decl_child.start_point[1] + 1
                         end_line = decl_child.end_point[0] + 1
 
                         if in_lambda_scope and setup_body is None and options_obj is None:
@@ -4266,7 +4316,7 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                                 continue
 
                         if in_lambda_scope:
-                            local_suffix = _js_lambda_local_coord_suffix(qual_prefix, start_line, start_col)
+                            local_suffix = _js_next_lambda_local_suffix(scope_state, var_name)
                             qual = f"{qual_prefix}.{var_name}@{local_suffix}"
                         else:
                             qual = var_name if not qual_prefix else f"{qual_prefix}.{var_name}"
@@ -4274,7 +4324,11 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
 
                         children_local: list[dict[str, Any]] = []
                         if setup_body is not None:
-                            children_local = walk(setup_body, qual_prefix=qual)
+                            children_local = walk(
+                                setup_body,
+                                qual_prefix=qual,
+                                scope_state=_new_js_scope_state(is_lambda=False),
+                            )
                         elif options_obj is not None:
                             children_local = _extract_define_store_options_children(
                                 options_obj=options_obj,
@@ -4308,14 +4362,14 @@ def parse_js_ts_outline(file_path: str) -> List[Dict[str, Any]]:
                 # We therefore derive a deterministic pseudo-scope suffix from source
                 # coordinates for function-like anonymous scopes.
                 next_prefix = qual_prefix
+                next_scope_state = scope_state
                 if t in {"arrow_function", "function", "function_expression"}:
-                    line1 = child.start_point[0] + 1
-                    col1 = child.start_point[1] + 1
-                    anon_scope = f"__lambda_{line1}_{col1}"
+                    anon_scope = _js_next_anonymous_scope_name(scope_state)
                     next_prefix = f"{qual_prefix}.{anon_scope}" if qual_prefix else anon_scope
+                    next_scope_state = _new_js_scope_state(is_lambda=True)
 
                 if child.children:
-                    results.extend(walk(child, qual_prefix=next_prefix))
+                    results.extend(walk(child, qual_prefix=next_prefix, scope_state=next_scope_state))
 
             return results
 
@@ -4513,7 +4567,14 @@ def _parse_js_ts_outline_from_source(
                 pref = pref + ":"
             return f"{pref}{inner_qual}" if pref else inner_qual
 
-        def walk(node, qual_prefix: Optional[str] = None) -> List[Dict[str, Any]]:
+        def walk(
+            node,
+            qual_prefix: Optional[str] = None,
+            scope_state: Optional[dict[str, Any]] = None,
+        ) -> List[Dict[str, Any]]:
+            if scope_state is None:
+                scope_state = _new_js_scope_state(is_lambda=False)
+
             results: List[Dict[str, Any]] = []
 
             for child in node.children:
@@ -4547,7 +4608,11 @@ def _parse_js_ts_outline_from_source(
 
                     body = child.child_by_field_name("body")
                     if body is not None:
-                        class_node["children"] = walk(body, qual_prefix=inner)
+                        class_node["children"] = walk(
+                            body,
+                            qual_prefix=inner,
+                            scope_state=_new_js_scope_state(is_lambda=False),
+                        )
 
                     results.append(class_node)
                     continue
@@ -4619,7 +4684,11 @@ def _parse_js_ts_outline_from_source(
 
                     body = child.child_by_field_name("body")
                     if body is not None:
-                        func_node["children"] = walk(body, qual_prefix=inner)
+                        func_node["children"] = walk(
+                            body,
+                            qual_prefix=inner,
+                            scope_state=_new_js_scope_state(is_lambda=False),
+                        )
 
                     results.append(func_node)
                     continue
@@ -4658,7 +4727,11 @@ def _parse_js_ts_outline_from_source(
 
                     body = child.child_by_field_name("body")
                     if body is not None:
-                        method_node["children"] = walk(body, qual_prefix=inner)
+                        method_node["children"] = walk(
+                            body,
+                            qual_prefix=inner,
+                            scope_state=_new_js_scope_state(is_lambda=False),
+                        )
 
                     results.append(method_node)
                     continue
@@ -4790,7 +4863,11 @@ def _parse_js_ts_outline_from_source(
                                     sig = f"{fname}{_params_text(prop)}"
                                     note_text = make_note(qual, start_line_local)
                                     body = _body_node(prop)
-                                    children_local = walk(body, qual_prefix=inner) if body is not None else []
+                                    children_local = walk(
+                                        body,
+                                        qual_prefix=inner,
+                                        scope_state=_new_js_scope_state(is_lambda=False),
+                                    ) if body is not None else []
                                     out.append({
                                         "name": f"{EMOJI_FUNC} {section} {sig}",
                                         "priority": priority_counter[0],
@@ -4820,7 +4897,11 @@ def _parse_js_ts_outline_from_source(
                                     sig = f"{fname}{_params_text(v)}"
                                     note_text = make_note(qual, start_line_local)
                                     body = _body_node(v)
-                                    children_local = walk(body, qual_prefix=inner) if body is not None else []
+                                    children_local = walk(
+                                        body,
+                                        qual_prefix=inner,
+                                        scope_state=_new_js_scope_state(is_lambda=False),
+                                    ) if body is not None else []
                                     out.append({
                                         "name": f"{EMOJI_FUNC} {section} {sig}",
                                         "priority": priority_counter[0],
@@ -4876,13 +4957,12 @@ def _parse_js_ts_outline_from_source(
                                     if setup_body is None:
                                         options_obj = _find_define_store_options_object(value_node)
 
-                        in_lambda_scope = isinstance(qual_prefix, str) and ("__lambda_" in qual_prefix)
+                        in_lambda_scope = bool(isinstance(scope_state, dict) and scope_state.get("is_lambda"))
                         emit_here = (not qual_prefix) or in_lambda_scope or (setup_body is not None) or (options_obj is not None)
                         if not emit_here:
                             continue
 
                         start_line_local = decl_child.start_point[0] + 1
-                        start_col_local = decl_child.start_point[1] + 1
                         end_line_local = decl_child.end_point[0] + 1
 
                         if in_lambda_scope and setup_body is None and options_obj is None:
@@ -4890,11 +4970,7 @@ def _parse_js_ts_outline_from_source(
                                 continue
 
                         if in_lambda_scope:
-                            local_suffix = _js_lambda_local_coord_suffix(
-                                qual_prefix,
-                                start_line_local,
-                                start_col_local,
-                            )
+                            local_suffix = _js_next_lambda_local_suffix(scope_state, var_name)
                             inner = f"{qual_prefix}.{var_name}@{local_suffix}"
                         else:
                             inner = var_name if not qual_prefix else f"{qual_prefix}.{var_name}"
@@ -4907,7 +4983,11 @@ def _parse_js_ts_outline_from_source(
 
                         children_local: list[dict[str, Any]] = []
                         if setup_body is not None:
-                            children_local = walk(setup_body, qual_prefix=inner)
+                            children_local = walk(
+                                setup_body,
+                                qual_prefix=inner,
+                                scope_state=_new_js_scope_state(is_lambda=False),
+                            )
                         elif options_obj is not None:
                             children_local = _extract_define_store_options_children(
                                 options_obj=options_obj,
@@ -4942,14 +5022,14 @@ def _parse_js_ts_outline_from_source(
                 # We therefore derive a deterministic pseudo-scope suffix from source
                 # coordinates for function-like anonymous scopes.
                 next_prefix = qual_prefix
+                next_scope_state = scope_state
                 if t in {"arrow_function", "function", "function_expression"}:
-                    line1 = child.start_point[0] + 1
-                    col1 = child.start_point[1] + 1
-                    anon_scope = f"__lambda_{line1}_{col1}"
+                    anon_scope = _js_next_anonymous_scope_name(scope_state)
                     next_prefix = f"{qual_prefix}.{anon_scope}" if qual_prefix else anon_scope
+                    next_scope_state = _new_js_scope_state(is_lambda=True)
 
                 if child.children:
-                    results.extend(walk(child, qual_prefix=next_prefix))
+                    results.extend(walk(child, qual_prefix=next_prefix, scope_state=next_scope_state))
 
             return results
 
