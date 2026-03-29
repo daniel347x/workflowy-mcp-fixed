@@ -3554,6 +3554,23 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
 
         priority_counter = [100]  # Mutable list to share across recursion
 
+        def _should_map_python_assigned_name(name: str, *, qual_prefix: Optional[str]) -> bool:
+            """Return True when an assigned Name should appear in the Python outline."""
+            if not isinstance(name, str) or not name:
+                return False
+            if name.isupper():
+                return True
+            # Map module-level dunder globals like __version__ / __all__ so
+            # package __init__.py and similar files remain structurally visible.
+            if qual_prefix is None and len(name) > 4 and name.startswith("__") and name.endswith("__"):
+                return True
+            return False
+
+        def _assigned_name_note_label(name: str, *, qual_prefix: Optional[str]) -> str:
+            if qual_prefix is None and len(name) > 4 and name.startswith("__") and name.endswith("__"):
+                return "Module global"
+            return "Constant"
+
         # @beacon[
         #   id=carto-parser@iter-nested-statement-bodies-py,
         #   role=parse_file_outline._iter_nested_statement_bodies,
@@ -3693,13 +3710,17 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                     priority_counter[0] += 100
                     results.append(node)
                 elif isinstance(item, ast.Assign):
-                    # Optional: Capture constants at this structural level.
+                    # Optional: Capture constants and selected module globals at this structural level.
                     for target in item.targets:
-                        if isinstance(target, ast.Name) and target.id.isupper():
+                        if isinstance(target, ast.Name) and _should_map_python_assigned_name(
+                            target.id,
+                            qual_prefix=qual_prefix,
+                        ):
                             start = getattr(item, "lineno", None)
                             end = getattr(item, "end_lineno", start)
                             qual_const = target.id if not qual_prefix else f"{qual_prefix}.{target.id}"
-                            note_text = f"AST_QUALNAME: {qual_const}\n---\nConstant"
+                            note_label = _assigned_name_note_label(target.id, qual_prefix=qual_prefix)
+                            note_text = f"AST_QUALNAME: {qual_const}\n---\n{note_label}"
                             node = {
                                 "name": f"{EMOJI_CONST} {target.id}",
                                 "priority": priority_counter[0],
@@ -3714,6 +3735,31 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                             }
                             priority_counter[0] += 100
                             results.append(node)
+                elif isinstance(item, ast.AnnAssign):
+                    target = item.target
+                    if isinstance(target, ast.Name) and _should_map_python_assigned_name(
+                        target.id,
+                        qual_prefix=qual_prefix,
+                    ):
+                        start = getattr(item, "lineno", None)
+                        end = getattr(item, "end_lineno", start)
+                        qual_const = target.id if not qual_prefix else f"{qual_prefix}.{target.id}"
+                        note_label = _assigned_name_note_label(target.id, qual_prefix=qual_prefix)
+                        note_text = f"AST_QUALNAME: {qual_const}\n---\n{note_label}"
+                        node = {
+                            "name": f"{EMOJI_CONST} {target.id}",
+                            "priority": priority_counter[0],
+                            "note": note_text,
+                            "children": [],
+                            "ast_type": "const",
+                            "ast_name": target.id,
+                            "ast_qualname": qual_const,
+                            "file_path": file_path,
+                            "orig_lineno_start_unused": start,
+                            "orig_lineno_end_unused": end,
+                        }
+                        priority_counter[0] += 100
+                        results.append(node)
                 else:
                     for nested_body in _iter_nested_statement_bodies(item):
                         results.extend(walk_body(nested_body, qual_prefix=qual_prefix))
