@@ -3573,6 +3573,13 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
                 return True
             return False
 
+        # @beacon[
+        #   id=carto-parser@assigned-name-note-label,
+        #   role=parse_file_outline._assigned_name_note_label,
+        #   slice_labels=carto-js-ts,f9-f12-handlers,ra-reconcile,
+        #   kind=ast,
+        #   comment=Choose the note label for mapped Python assigned names, distinguishing module-level dunder globals from regular constants,
+        # ]
         def _assigned_name_note_label(name: str, *, qual_prefix: Optional[str]) -> str:
             if qual_prefix is None and len(name) > 4 and name.startswith("__") and name.endswith("__"):
                 return "Module global"
