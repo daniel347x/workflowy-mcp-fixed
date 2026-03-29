@@ -2499,8 +2499,7 @@ async def websocket_handler(websocket):
                             )
                             continue
 
-                        server_dir = os.path.dirname(os.path.abspath(__file__))
-                        carto_jobs_base = os.path.join(server_dir, "temp", "cartographer_jobs")
+                        carto_jobs_base = _get_carto_jobs_base_dir()
                         base_dir = Path(carto_jobs_base)
                         found = False
 
@@ -2962,9 +2961,8 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
             "error": f"Invalid mode {mode!r}; expected 'file' or 'folder'.",
         }
 
-    # Job directory under workflowy_mcp temp (derive dynamically)
-    server_dir_carto = os.path.dirname(os.path.abspath(__file__))
-    carto_jobs_base = os.path.join(server_dir_carto, "temp", "cartographer_jobs")
+    # Job directory from resolved config (fallbacks handled by helper).
+    carto_jobs_base = _get_carto_jobs_base_dir()
     os.makedirs(carto_jobs_base, exist_ok=True)
 
     # Opportunistic GC of old completed/cancelled CARTO_REFRESH jobs.
@@ -3649,8 +3647,8 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
     mcp_servers_dir = os.path.dirname(server_dir)
     project_root = os.path.dirname(mcp_servers_dir)
     nexus_runs_base = os.path.join(project_root, "temp", "nexus_runs")
-    # CARTO_REFRESH job directory (server-managed)
-    carto_jobs_base = os.path.join(server_dir, "temp", "cartographer_jobs")
+    # CARTO_REFRESH job directory (resolved from config when available)
+    carto_jobs_base = _get_carto_jobs_base_dir()
 
     def _scan_weave_journals(base_dir_str: str) -> list[dict[str, Any]]:
         """Scan nexus_runs/ for WEAVE journal files and summarize their status.
@@ -3854,9 +3852,8 @@ async def mcp_cancel_job(job_id: str) -> dict:
     from pathlib import Path
     import json as json_module
 
-    # Derive CARTO_REFRESH job directory dynamically from this file's location
-    server_dir = os.path.dirname(os.path.abspath(__file__))
-    carto_jobs_base = os.path.join(server_dir, "temp", "cartographer_jobs")
+    # Derive CARTO_REFRESH job directory from resolved config when available
+    carto_jobs_base = _get_carto_jobs_base_dir()
     base_dir = Path(carto_jobs_base)
     if base_dir.exists():
         for job_path in base_dir.glob("*.json"):
