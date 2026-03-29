@@ -2880,9 +2880,9 @@ def apply_python_beacons(
       triple-quoted blocks (treated as комментарий-like) above and below the
       beacon block and append them into the beacon note for Workflowy.
     """
-    if not outline_nodes:
-        return
-
+    # IMPORTANT: do not bail out just because the Python AST outline is empty.
+    # File-level SPAN beacons are still valid for AST-less modules such as
+    # package __init__.py files that only contain imports/re-exports/constants.
     beacons = parse_python_beacon_blocks(lines)
     if not beacons:
         return
