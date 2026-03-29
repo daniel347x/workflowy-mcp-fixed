@@ -3554,6 +3554,13 @@ def parse_file_outline(file_path: str) -> List[Dict[str, Any]]:
 
         priority_counter = [100]  # Mutable list to share across recursion
 
+        # @beacon[
+        #   id=carto-parser@should-map-python-assigned-name,
+        #   role=parse_file_outline._should_map_python_assigned_name,
+        #   slice_labels=carto-js-ts,f9-f12-handlers,ra-reconcile,
+        #   kind=ast,
+        #   comment=Select Python assigned names that should become Cartographer outline nodes, including module-level dunder globals like __version__ and __all__,
+        # ]
         def _should_map_python_assigned_name(name: str, *, qual_prefix: Optional[str]) -> bool:
             """Return True when an assigned Name should appear in the Python outline."""
             if not isinstance(name, str) or not name:
