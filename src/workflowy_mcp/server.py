@@ -415,11 +415,24 @@ async def _await_nodes_export_cache_quiescent(reason: str) -> None:
 # @beacon[
 #   id=cache-refresh@_get_carto_jobs_base_dir,
 #   role=_get_carto_jobs_base_dir,
-#   slice_labels=ra-workflowy-cache,ra-carto-jobs,f9-f12-handlers,
+#   slice_labels=ra-workflowy-cache,ra-carto-jobs,f9-f12-handlers,nexus--config,nexus-loading-flow,
 #   kind=ast,
 # ]
 def _get_carto_jobs_base_dir() -> str:
-    """Return the detached CARTO job directory under workflowy_mcp/temp/."""
+    """Return the detached CARTO job directory.
+
+    Resolution order:
+    1. workflowy_nexus JSON config (`paths.cartographerJobsDir`)
+    2. legacy code-derived default under workflowy_mcp/temp/
+    """
+    try:
+        config = get_server_config()
+        configured = str(config.paths.cartographer_jobs_dir or "").strip()
+        if configured:
+            return configured
+    except Exception:
+        pass
+
     server_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(server_dir, "temp", "cartographer_jobs")
 
