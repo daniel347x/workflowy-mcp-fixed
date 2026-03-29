@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "paths": {
+    "nexusRunsBase": "/absolute/path/to/temp/nexus_runs",
+    "cartographerJobsDir": "/absolute/path/to/workflowy_mcp/temp/cartographer_jobs",
+    "cartographerFileRefreshDir": "/absolute/path/to/temp/cartographer_file_refresh",
+    "windsurfExeCandidates": [
+      "/absolute/path/to/Windsurf.exe"
+    ]
+  },
+  "websocket": {
+    "host": "localhost",
+    "port": 8765
+  },
+  "timing": {
+    "websocketReconnectDelayMs": 3000,
+    "cartoJobsPollIntervalMs": 1000
+  },
+  "retention": {
+    "cartoJobMaxAgeSeconds": 3600
+  }
+}

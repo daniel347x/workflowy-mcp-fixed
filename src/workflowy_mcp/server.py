@@ -28,7 +28,7 @@ from typing import Literal, Any, Awaitable, Callable
 from fastmcp import FastMCP
 
 from .client import AdaptiveRateLimiter, WorkFlowyClient
-from .config import ServerConfig, setup_logging
+from .config import get_server_config, get_server_config_meta, setup_logging
 from .models import (
     NodeCreateRequest,
     NodeListRequest,
@@ -2652,7 +2652,14 @@ async def lifespan(_app: FastMCP):  # type: ignore[no-untyped-def]
         _carto_jobs_quiescent_event.set()
 
     # Load configuration
-    config = ServerConfig()  # type: ignore[call-arg]
+    config = get_server_config(reload=True)
+    setup_logging(config)
+    config_meta = get_server_config_meta()
+    log_event(
+        "Resolved server configuration "
+        f"(source={config_meta.get('source')}, path={config_meta.get('config_path')})",
+        "LIFESPAN",
+    )
     api_config = config.get_api_config()
 
     # Initialize rate limiter (default 10 req/s)

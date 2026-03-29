@@ -1,3 +1,11 @@
+# @beacon[
+#   id=package-loading@transport-alt-bootstrap,
+#   role=alternate stdio transport bootstrap/message loop (not current __main__ path),
+#   slice_labels=nexus-loading-flow,
+#   kind=span,
+#   show_span=false,
+#   comment=Legacy or alternate transport bootstrap surface; not currently referenced by the package __main__ entrypoint in this fork,
+# ]
 """STDIO transport handler for WorkFlowy MCP Server."""
 
 import asyncio

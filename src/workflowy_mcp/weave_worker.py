@@ -123,22 +123,27 @@ async def main():
         log_worker("Launcher must pass the nexus_runs directory path via environment")
         sys.exit(1)
     
-    # Initialize client (read config from environment or defaults)
-    api_key = os.environ.get('WORKFLOWY_API_KEY')
-    if not api_key:
-        log_worker("ERROR: WORKFLOWY_API_KEY not set in environment")
+    # Initialize client (loader precedence: explicit config path -> discovered file -> env/defaults)
+    try:
+        from workflowy_mcp.config import get_server_config, get_server_config_meta
+
+        server_config = get_server_config(reload=True)
+        config_meta = get_server_config_meta()
+        log_worker(
+            "Resolved worker configuration "
+            f"(source={config_meta.get('source')}, path={config_meta.get('config_path')})"
+        )
+    except Exception as e:
+        log_worker(f"ERROR: failed to load server configuration: {e}")
+        import traceback
+        log_worker(traceback.format_exc())
         sys.exit(1)
-    
-    # Create client config
-    from workflowy_mcp.models import APIConfiguration
-    from pydantic import SecretStr
-    
-    config = APIConfiguration(
-        api_key=SecretStr(api_key),
-        timeout=900  # 15 minutes for individual API calls
+
+    api_config = server_config.get_api_config().model_copy(
+        update={"timeout": 900}
     )
-    
-    client = WorkFlowyClient(config)
+
+    client = WorkFlowyClient(api_config)
 
 
     # @beacon[
