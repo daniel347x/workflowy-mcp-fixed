@@ -3033,14 +3033,24 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
         }
 
     env["WORKFLOWY_API_KEY"] = api_key
-    # NEXUS_RUNS_BASE is only used for WEAVE, but safe to pass through here as well
-    # Derive nexus_runs dynamically
-    mcp_servers_dir_env = os.path.dirname(server_dir_carto)
-    project_root_env = os.path.dirname(mcp_servers_dir_env)
-    env.setdefault(
-        "NEXUS_RUNS_BASE",
-        os.path.join(project_root_env, "temp", "nexus_runs"),
-    )
+    # NEXUS_RUNS_BASE is only used for WEAVE, but safe to pass through here as well.
+    # Prefer configured value; otherwise fall back to legacy code-derived default.
+    try:
+        config = get_server_config()
+        configured_nexus_runs_base = str(config.paths.nexus_runs_base or "").strip()
+    except Exception:
+        configured_nexus_runs_base = ""
+
+    if configured_nexus_runs_base:
+        env.setdefault("NEXUS_RUNS_BASE", configured_nexus_runs_base)
+    else:
+        server_dir_env = os.path.dirname(os.path.abspath(__file__))
+        mcp_servers_dir_env = os.path.dirname(server_dir_env)
+        project_root_env = os.path.dirname(mcp_servers_dir_env)
+        env.setdefault(
+            "NEXUS_RUNS_BASE",
+            os.path.join(project_root_env, "temp", "nexus_runs"),
+        )
 
     cmd = [
         _sys.executable,
