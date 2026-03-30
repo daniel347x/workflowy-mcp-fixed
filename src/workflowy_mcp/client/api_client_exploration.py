@@ -8,6 +8,7 @@ from typing import Any
 from datetime import datetime
 from pathlib import Path
 
+from ..config import get_nexus_runs_base_dir, get_runtime_subdir
 from ..models import NetworkError
 
 from .api_client_core import _ClientLogger, log_event
@@ -205,13 +206,13 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
 
     def _get_explore_sessions_dir(self) -> str:
         """Return exploration sessions directory."""
-        base_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_explore_sessions"
+        base_dir = str(get_runtime_subdir("nexus_explore_sessions"))
         os.makedirs(base_dir, exist_ok=True)
         return base_dir
 
     def _get_explore_scratchpad_dir(self) -> str:
         """Return permanent scratchpad snapshots directory."""
-        base_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_explore_scratchpads"
+        base_dir = str(get_runtime_subdir("nexus_explore_scratchpads"))
         os.makedirs(base_dir, exist_ok=True)
         return base_dir
 
@@ -1645,9 +1646,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         logger = _ClientLogger()
 
         # Validate no existing tag
-        base_dir = Path(
-            r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs"
-        )
+        base_dir = get_nexus_runs_base_dir()
         sessions_dir = Path(self._get_explore_sessions_dir())
         
         if base_dir.exists():
@@ -4625,9 +4624,7 @@ class WorkFlowyClientExploration(WorkFlowyClientNexus):
         coarse_nodes = gem_nodes_s0
 
         # Initialize NEXUS run dir
-        base_dir = Path(
-            r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs"
-        )
+        base_dir = get_nexus_runs_base_dir()
         base_dir.mkdir(parents=True, exist_ok=True)
 
         try:

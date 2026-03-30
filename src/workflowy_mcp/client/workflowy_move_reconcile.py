@@ -53,6 +53,8 @@ import os
 import sys
 import importlib
 
+from ..config import get_runtime_subdir
+
 Node = Dict
 
 
@@ -108,7 +110,7 @@ async def reconcile_tree(
             debug_log = open(debug_log_path, 'w', encoding='utf-8')
         else:
             # Fallback to global log (legacy behavior for direct calls)
-            debug_log = open(r'E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\reconcile_debug.log', 'w', encoding='utf-8')
+            debug_log = open(os.path.join(str(get_runtime_subdir("logs")), 'reconcile_debug.log'), 'w', encoding='utf-8')
 
     # Record start time of this WEAVE for rate-limit aware phases (e.g., DELETE)
     weave_start_time = datetime.now()

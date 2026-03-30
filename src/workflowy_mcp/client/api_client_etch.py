@@ -6,6 +6,7 @@ import os
 from typing import Any
 from datetime import datetime
 
+from ..config import get_runtime_subdir
 from ..models import (
     NetworkError,
     NodeCreateRequest,
@@ -67,7 +68,7 @@ def _log_to_file_helper(message: str, log_type: str = "reconcile") -> None:
                 log_path = os.path.join(base_dir, filename)
         else:
             # Global fallback
-            log_path = fr"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\{filename}"
+            log_path = os.path.join(str(get_runtime_subdir("logs")), filename)
         
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         
@@ -1255,7 +1256,7 @@ async def bulk_export_to_file_impl(
         import shutil
         import uuid
 
-        backup_dir = r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_backups"
+        backup_dir = str(get_runtime_subdir("nexus_backups"))
         os.makedirs(backup_dir, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")

@@ -8,6 +8,7 @@ from datetime import datetime
 
 import httpx
 
+from ..config import get_runtime_subdir
 from ..models import (
     APIConfiguration,
     AuthenticationError,
@@ -164,17 +165,7 @@ class WorkFlowyClientCore:
         writes snapshots under TODO\\temp\\nodes_export_cache. The directory is
         created on demand.
         """
-        # Derive project_root from this file's location:
-        #   client_dir      = ...\\MCP_Servers\\workflowy_mcp\\client
-        #   wf_mcp_dir      = ...\\MCP_Servers\\workflowy_mcp
-        #   mcp_servers_dir = ...\\MCP_Servers
-        #   project_root    = parent of MCP_Servers (TODO project root)
-        client_dir = os.path.dirname(os.path.abspath(__file__))
-        wf_mcp_dir = os.path.dirname(client_dir)
-        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
-        project_root = os.path.dirname(mcp_servers_dir)
-
-        snapshot_dir = os.path.join(project_root, "temp", "nodes_export_cache")
+        snapshot_dir = str(get_runtime_subdir("nodes_export_cache"))
         os.makedirs(snapshot_dir, exist_ok=True)
         return snapshot_dir
 

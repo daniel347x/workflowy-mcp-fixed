@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
 
+from ..config import get_cartographer_file_refresh_dir, get_nexus_runs_base_dir, get_runtime_subdir
 from ..models import NetworkError, NodeCreateRequest, NodeUpdateRequest
 
 from .api_client_core import (
@@ -55,12 +56,7 @@ def _log_glimpse_to_file(operation_type: str, node_id: str, result: dict[str, An
     try:
         import json as json_module
         
-        # Derive project_root dynamically from this file's location
-        client_dir = os.path.dirname(os.path.abspath(__file__))
-        wf_mcp_dir = os.path.dirname(client_dir)
-        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
-        project_root = os.path.dirname(mcp_servers_dir)
-        base_dir = os.path.join(project_root, "temp", "uuid_and_glimpse_explorer")
+        base_dir = str(get_runtime_subdir("uuid_and_glimpse_explorer"))
         filename = f"{operation_type}.md"
         log_path = os.path.join(base_dir, filename)
         
@@ -93,14 +89,14 @@ def _log_glimpse_to_file(operation_type: str, node_id: str, result: dict[str, An
 # @beacon[
 #   id=ncv1@path-root-portability,
 #   role=core keeper: cartographer path-root portability and note-header resolution,
-#   slice_labels=nexus-portability,nexus-core-v1,
+#   slice_labels=nexus-portability,nexus-core-v1,nexus--config,nexus-path-resolution-logic,
 #   kind=span,
 #   show_span=false,
 # ]
 # @beacon[
 #   id=auto-beacon@parse_path_or_root_from_note-cw31,
 #   role=parse_path_or_root_from_note,
-#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 def parse_path_or_root_from_note(note_str: str | None) -> str | None:
@@ -119,7 +115,7 @@ def parse_path_or_root_from_note(note_str: str | None) -> str | None:
 # @beacon[
 #   id=auto-beacon@_cleanse_cartographer_path_value-7m0d,
 #   role=_cleanse_cartographer_path_value,
-#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 def _cleanse_cartographer_path_value(file_path: str | None) -> str | None:
@@ -143,7 +139,7 @@ def _cleanse_cartographer_path_value(file_path: str | None) -> str | None:
 # @beacon[
 #   id=auto-beacon@_extract_path_header_from_note-vp2c,
 #   role=_extract_path_header_from_note,
-#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 def _extract_path_header_from_note(note_str: str | None) -> tuple[str, str] | None:
@@ -162,7 +158,7 @@ def _extract_path_header_from_note(note_str: str | None) -> tuple[str, str] | No
 # @beacon[
 #   id=auto-beacon@_looks_absolute_path-6aj1,
 #   role=_looks_absolute_path,
-#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 def _looks_absolute_path(path_str: str) -> bool:
@@ -186,7 +182,7 @@ def _to_portable_relpath(rel_path: str) -> str:
 # @beacon[
 #   id=auto-beacon@_rewrite_note_path_or_root_header-7b4e,
 #   role=_rewrite_note_path_or_root_header,
-#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 def _rewrite_note_path_or_root_header(note_text: str, new_value: str, *, prefer: str = "Path") -> str:
@@ -219,7 +215,7 @@ def _rewrite_note_path_or_root_header(note_text: str, new_value: str, *, prefer:
 # @beacon[
 #   id=auto-beacon@resolve_cartographer_path_from_node-0yq8,
 #   role=resolve_cartographer_path_from_node,
-#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,nexus--config,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 def resolve_cartographer_path_from_node(
@@ -249,7 +245,7 @@ def resolve_cartographer_path_from_node(
     # @beacon[
     #   id=auto-beacon@resolve_cartographer_path_from_node._segment_from_node_name-r8w7,
     #   role=resolve_cartographer_path_from_node._segment_from_node_name,
-    #   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,
+    #   slice_labels=nexus-md-header-path,ra-notes,ra-notes-salvage,nexus-path-resolution-logic,
     #   kind=ast,
     # ]
     def _segment_from_node_name(raw_name: str) -> str:
@@ -275,7 +271,7 @@ def resolve_cartographer_path_from_node(
         # @beacon[
         #   id=auto-beacon@resolve_cartographer_path_from_node._segment_from_node_name-r8w7-inner,
         #   role=LIST OF _notes_marker_cps EMOJIS,
-        #   slice_labels=ra-notes,ra-notes-salvage,
+        #   slice_labels=ra-notes,ra-notes-salvage,nexus--config,
         #   kind=span,
         # ]
         # STRICT suffix cutoff for cosmetic markers in names.
@@ -297,7 +293,7 @@ def resolve_cartographer_path_from_node(
             # @beacon[
             #   id=auto-beacon@resolve_cartographer_path_from_node._segment_from_node_name-r8w7-inner2,
             #   role=LIST OF notes_prefixes,
-            #   slice_labels=ra-notes,ra-notes-salvage,
+            #   slice_labels=ra-notes,ra-notes-salvage,nexus--config,
             #   kind=span,
             # ]
             notes_prefixes = NOTES_MARKER_FIRST_CODEPOINTS
@@ -487,155 +483,40 @@ def resolve_cartographer_path_from_node(
 # @beacon[
 #   id=auto-beacon@normalize_cartographer_path-vw5a,
 #   role=normalize_cartographer_path,
-#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,
+#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-reconcile,ra-notes,ra-notes-salvage,nexus--config,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 def normalize_cartographer_path(file_path: str | None) -> str | None:
-    """Normalize a Cartographer Path:/Root: value for cross-machine portability.
+    """Normalize a Cartographer Path:/Root: value without machine-specific rewrites.
 
-    IMPORTANT SAFETY PRINCIPLE
-    --------------------------
-    This helper should be *best-effort* at finding a real on-disk path for the
-    string stored in Workflowy ("Path:" / "Root:"). When it cannot find a real
-    path, it should *not* attempt to be clever beyond obvious mappings.
+    Current behavior:
+    - Cleanse invisible whitespace (NBSP/ZWSP/BOM) and surrounding quotes.
+    - Expand environment variables and `~`.
+    - If the resulting path exists on disk, return its absolute normalized path.
+    - Otherwise return the cleansed/expanded value and let callers fail closed.
 
-    Why: if we silently proceed with a non-existent path, Cartographer may
-    produce an empty tree and F12 reconcile can then (correctly) delete all
-    existing structural nodes under that FILE node. That is catastrophic when
-    the emptiness is caused by a path-mapping miss.
-
-    Current heuristics:
-    - Cleanse invisible whitespace (NBSP/ZWSP) and surrounding quotes.
-    - Drive swapping: E: ↔ C:
-    - __Dan_Root add/remove
-    - Prefix mapping for the business laptop (Daniel.Nissenbaum)
-
-    Returns:
-      - The first candidate path that exists on disk.
-      - If none exist: returns the *cleansed original* path (caller MUST
-        existence-check and fail closed for F12).
+    This helper intentionally does not apply drive swaps, username remaps,
+    or other workstation-specific fallback logic.
     """
     if not file_path or not isinstance(file_path, str):
         return file_path
 
-    # @beacon[
-    #   id=auto-beacon@normalize_cartographer_path._cleanse-ipc8,
-    #   role=normalize_cartographer_path._cleanse,
-    #   kind=ast,
-    # ]
-    def _cleanse(p: str) -> str:
-        # Common invisible whitespace that can appear from copy/paste / WF rendering
-        p = p.replace("\u00a0", " ")  # NBSP
-        p = p.replace("\u200b", "")   # zero-width space
-        p = p.replace("\ufeff", "")   # BOM
-        # Strip surrounding quotes
-        p = p.strip().strip('"').strip("'")
-        return p
-
-    file_path = _cleanse(file_path)
-
     try:
-        candidates: list[str] = []
+        cleaned = _cleanse_cartographer_path_value(file_path)
+        if cleaned is None:
+            return cleaned
 
-        def _add(p: str) -> None:
-            p2 = _cleanse(p)
-            if p2 and p2 not in candidates:
-                candidates.append(p2)
+        expanded = os.path.expandvars(os.path.expanduser(cleaned))
+        if os.path.exists(expanded):
+            normalized = os.path.abspath(expanded)
+            if normalized != file_path:
+                log_event(
+                    f"Cartographer path normalized: {file_path} → {normalized}",
+                    "CARTO_PATH",
+                )
+            return normalized
 
-        # 1) Original
-        _add(file_path)
-
-        drive, tail = os.path.splitdrive(file_path)
-
-        # 2) Drive swap (E: ↔ C:)
-        if drive:
-            if drive.upper() == "E:":
-                _add("C:" + tail)
-            elif drive.upper() == "C:":
-                _add("E:" + tail)
-
-        # 3) __Dan_Root add/remove (both directions)
-        for p in list(candidates):
-            if "\\__Dan_Root\\" in p:
-                _add(p.replace("\\__Dan_Root\\", "\\"))
-            else:
-                # Only attempt insertion for the standard repo-style path
-                d, t = os.path.splitdrive(p)
-                parts = t.split(os.sep)
-                if len(parts) >= 3 and parts[1] == "__daniel347x":
-                    new_parts = parts[:2] + ["__Dan_Root"] + parts[2:]
-                    _add((d or "") + os.sep.join(new_parts))
-
-        # 4) Cross-machine root mapping based on path markers.
-        #
-        # This is the *real* portability layer. We map by locating a known marker
-        # segment (e.g. "\\__repos\\" or "\\__Obsidian\\") inside the stored
-        # path, then re-rooting the suffix under candidate roots on this machine.
-        #
-        # This avoids hardcoding one absolute path that may not exist on the laptop
-        # (different username, different drive, you may even rename/obfuscate some
-        # directories during travel).
-        user_profile = os.environ.get("USERPROFILE") or ""
-
-        marker_root_candidates: dict[str, list[str]] = {
-            "__repos": [
-                os.path.join(user_profile, "__repos"),
-                os.path.join(user_profile, "Documents", "__repos"),
-                os.path.join(user_profile, "OneDrive", "__repos"),
-                r"C:\\__daniel347x\\__repos",
-                r"E:\\__daniel347x\\__repos",
-                r"E:\\__daniel347x\\__Dan_Root\\__repos",
-            ],
-            "__Obsidian": [
-                os.path.join(user_profile, "__Obsidian"),
-                os.path.join(user_profile, "Documents", "__Obsidian"),
-                os.path.join(user_profile, "OneDrive", "__Obsidian"),
-                r"C:\\__daniel347x\\__Obsidian",
-                r"E:\\__daniel347x\\__Obsidian",
-            ],
-        }
-
-        for marker_name, roots in marker_root_candidates.items():
-            marker = f"\\\\{marker_name}\\\\"
-            for p in list(candidates):
-                if marker.lower() not in p.lower():
-                    continue
-                idx = p.lower().find(marker.lower())
-                suffix = p[idx + len(marker):]
-                for root in roots:
-                    if root and os.path.isdir(root):
-                        _add(os.path.join(root, suffix))
-
-        # Backward-compatible explicit prefix mapping (kept as a last-resort).
-        prefix_maps = [
-            # Obsidian vault
-            (r"E:\\__daniel347x\\__Obsidian\\", os.path.join(user_profile, "__Obsidian") + "\\"),
-            (os.path.join(user_profile, "__Obsidian") + "\\", r"E:\\__daniel347x\\__Obsidian\\"),
-            # Repos root (with/without __Dan_Root)
-            (r"E:\\__daniel347x\\__Dan_Root\\__repos\\", os.path.join(user_profile, "__repos") + "\\"),
-            (r"E:\\__daniel347x\\__repos\\", os.path.join(user_profile, "__repos") + "\\"),
-            (os.path.join(user_profile, "__repos") + "\\", r"E:\\__daniel347x\\__Dan_Root\\__repos\\"),
-            # Work-trip laptop explicit repo root
-            (r"E:\\__daniel347x\\__Dan_Root\\__repos\\", r"C:\\__daniel347x\\__repos\\"),
-            (r"E:\\__daniel347x\\__repos\\", r"C:\\__daniel347x\\__repos\\"),
-            (r"C:\\__daniel347x\\__repos\\", r"E:\\__daniel347x\\__Dan_Root\\__repos\\"),
-        ]
-        for p in list(candidates):
-            for src, dst in prefix_maps:
-                if src and dst and p.lower().startswith(src.lower()):
-                    _add(dst + p[len(src):])
-
-        # 5) Return first existing candidate
-        for cand in candidates:
-            if os.path.exists(cand):
-                if cand != file_path:
-                    log_event(
-                        f"Cartographer path normalized: {file_path} → {cand}",
-                        "CARTO_PATH",
-                    )
-                return cand
-
-        return file_path
+        return expanded
 
     except Exception as e:  # noqa: BLE001
         log_event(f"normalize_cartographer_path failed for {file_path}: {e}", "CARTO_PATH")
@@ -897,12 +778,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # ]
     def _get_nexus_dir(self, nexus_tag: str) -> str:
         """Resolve base directory for a CORINTHIAN NEXUS run."""
-        # Derive project_root dynamically from this file's location
-        client_dir = os.path.dirname(os.path.abspath(__file__))
-        wf_mcp_dir = os.path.dirname(client_dir)
-        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
-        project_root = os.path.dirname(mcp_servers_dir)
-        base_dir = Path(os.path.join(project_root, "temp", "nexus_runs"))
+        base_dir = get_nexus_runs_base_dir()
         if not base_dir.exists():
             raise NetworkError(
                 "No NEXUS runs directory; run nexus_scry/nexus_glimpse first"
@@ -1337,7 +1213,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.beacon_get_code_snippet-c2ov,
     #   role=WorkFlowyClientNexus.beacon_get_code_snippet,
-    #   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,ra-read-text-snippet,
+    #   slice_labels=nexus-md-header-path,ra-snippet-range,f9-f12-handlers,ra-reconcile,ra-read-text-snippet,nexus-path-resolution-logic,
     #   kind=ast,
     # ]
     async def beacon_get_code_snippet(
@@ -2055,7 +1931,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.read_text_snippet_by_symbol-ozt9,
     #   role=WorkFlowyClientNexus.read_text_snippet_by_symbol,
-    #   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-snippet-range,ra-reconcile,ra-read-text-snippet,
+    #   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-snippet-range,ra-reconcile,ra-read-text-snippet,nexus-path-resolution-logic,
     #   kind=ast,
     # ]
     async def read_text_snippet_by_symbol(
@@ -2825,9 +2701,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         """Tag-scoped SCRY → coarse_terrain.json."""
         import shutil
 
-        base_dir = Path(
-            r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs"
-        )
+        base_dir = get_nexus_runs_base_dir()
         base_dir.mkdir(parents=True, exist_ok=True)
 
         if reset_if_exists:
@@ -3151,9 +3025,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         if mode not in ("full", "coarse_terrain_only"):
             raise NetworkError(f"Invalid mode '{mode}'")
 
-        base_dir = Path(
-            r"E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\nexus_runs"
-        )
+        base_dir = get_nexus_runs_base_dir()
         base_dir.mkdir(parents=True, exist_ok=True)
 
         # Determine run_dir
@@ -3554,12 +3426,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # Environment
         env = os.environ.copy()
         env['WORKFLOWY_API_KEY'] = self.config.api_key.get_secret_value()
-        # Derive nexus_runs dynamically
-        client_dir = os.path.dirname(os.path.abspath(__file__))
-        wf_mcp_dir = os.path.dirname(client_dir)
-        mcp_servers_dir = os.path.dirname(wf_mcp_dir)
-        project_root = os.path.dirname(mcp_servers_dir)
-        env['NEXUS_RUNS_BASE'] = os.path.join(project_root, "temp", "nexus_runs")
+        env['NEXUS_RUNS_BASE'] = str(get_nexus_runs_base_dir())
         
         log_handle = open(log_file, 'w', encoding='utf-8')
         
@@ -3642,7 +3509,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.bulk_import_from_file-7d6e,
     #   role=WorkFlowyClientNexus.bulk_import_from_file,
-    #   slice_labels=ra-reconcile,f9-f12-handlers,ra-logging,nexus--glimpse-extension,
+    #   slice_labels=ra-reconcile,f9-f12-handlers,ra-logging,nexus--glimpse-extension,nexus--config,
     #   kind=ast,
     # ]
     async def bulk_import_from_file(
@@ -4013,12 +3880,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if json_file_ctx and os.path.exists(json_file_ctx):
                     log_path = os.path.join(os.path.dirname(json_file_ctx), "reconcile_debug.log")
                 else:
-                    # Derive project_root dynamically
-                    client_dir = os.path.dirname(os.path.abspath(__file__))
-                    wf_mcp_dir = os.path.dirname(client_dir)
-                    mcp_servers_dir = os.path.dirname(wf_mcp_dir)
-                    project_root = os.path.dirname(mcp_servers_dir)
-                    log_path = os.path.join(project_root, "temp", "reconcile_debug.log")
+                    log_path = os.path.join(str(get_runtime_subdir("logs")), "reconcile_debug.log")
                 ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                 with open(log_path, "a", encoding="utf-8") as dbg:
                     dbg.write(f"[{ts}] ERROR: {error_msg}\n")
@@ -4069,7 +3931,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         wf_mcp_dir = os.path.dirname(client_dir)
         mcp_servers_dir = os.path.dirname(wf_mcp_dir)
         project_root = os.path.dirname(mcp_servers_dir)
-        backup_dir = os.path.join(project_root, "temp", "nexus_backups")
+        backup_dir = str(get_runtime_subdir("nexus_backups"))
         if not os.path.exists(backup_dir):
             return {"success": True, "keystones": [], "message": "No backup dir"}
         
@@ -4097,7 +3959,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         wf_mcp_dir = os.path.dirname(client_dir)
         mcp_servers_dir = os.path.dirname(wf_mcp_dir)
         project_root = os.path.dirname(mcp_servers_dir)
-        backup_dir = os.path.join(project_root, "temp", "nexus_backups")
+        backup_dir = str(get_runtime_subdir("nexus_backups"))
         
         target_file = None
         for filename in os.listdir(backup_dir):
@@ -4117,7 +3979,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         wf_mcp_dir = os.path.dirname(client_dir)
         mcp_servers_dir = os.path.dirname(wf_mcp_dir)
         project_root = os.path.dirname(mcp_servers_dir)
-        backup_dir = os.path.join(project_root, "temp", "nexus_backups")
+        backup_dir = str(get_runtime_subdir("nexus_backups"))
         purged = []
         errors = []
 
@@ -4159,7 +4021,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus._refresh_file_node_beacons_legacy-zjoy,
     #   role=WorkFlowyClientNexus._refresh_file_node_beacons_legacy,
-    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,ra-reconcile,f9-f12-handlers,
+    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,ra-reconcile,f9-f12-handlers,nexus-path-resolution-logic,
     #   kind=ast,
     # ]
     async def _refresh_file_node_beacons_legacy(
@@ -4271,7 +4133,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 f"File node {file_node_id} note is missing 'Path:'/'Root:' line; cannot refresh",
             )
 
-        # Normalize path for cross-machine portability (E: → C:, remove __Dan_Root)
+        # Normalize/cleanse the stored Path:/Root: value without machine-specific rewrites.
         source_path = normalize_cartographer_path(source_path) or source_path
 
         # Relative Path:/Root: notes in portable Cartographer trees require
@@ -4589,7 +4451,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.refresh_file_node_beacons-wgth,
     #   role=WorkFlowyClientNexus.refresh_file_node_beacons,
-    #   slice_labels=ra-notes,ra-notes-cartographer,ra-notes-salvage,ra-reconcile,f9-f12-handlers,ra-logging,ra-carto-jobs,
+    #   slice_labels=ra-notes,ra-notes-cartographer,ra-notes-salvage,ra-reconcile,f9-f12-handlers,ra-logging,ra-carto-jobs,nexus--config,nexus-path-resolution-logic,
     #   kind=ast,
     # ]
     async def refresh_file_node_beacons(
@@ -5078,7 +4940,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 if job_dir_env and os.path.isdir(job_dir_env):
                     file_refresh_dir = os.path.join(job_dir_env, "file_refresh")
                 else:
-                    file_refresh_dir = os.path.join(project_root, "temp", "cartographer_file_refresh")
+                    file_refresh_dir = str(get_cartographer_file_refresh_dir())
                 os.makedirs(file_refresh_dir, exist_ok=True)
 
                 short_id = str(file_node_id).replace("-", "")[:8]
@@ -5459,7 +5321,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.update_beacon_from_node-enct,
     #   role=WorkFlowyClientNexus.update_beacon_from_node,
-    #   slice_labels=f9-f12-handlers,ra-reconcile,
+    #   slice_labels=f9-f12-handlers,ra-reconcile,nexus-path-resolution-logic,
     #   kind=ast,
     # ]
     async def update_beacon_from_node(
@@ -5898,7 +5760,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     # @beacon[
     #   id=auto-beacon@WorkFlowyClientNexus.refresh_folder_cartographer_sync-62ih,
     #   role=WorkFlowyClientNexus.refresh_folder_cartographer_sync,
-    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,
+    #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,nexus--config,nexus-path-resolution-logic,
     #   kind=ast,
     # ]
     async def refresh_folder_cartographer_sync(
@@ -6443,7 +6305,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@refresh_folder_cartographer_sync._discover_nexusignore_sources-g9d4,
         #   role=refresh_folder_cartographer_sync._discover_nexusignore_sources,
-        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,
+        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,nexus--config,nexus-path-resolution-logic,
         #   kind=ast,
         #   comment=.nexusignore v2 helper: discover ignore sources via ancestor walk,
         # ]
@@ -6477,7 +6339,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@refresh_folder_cartographer_sync._load_nexusignore_patterns-7m1p,
         #   role=refresh_folder_cartographer_sync._load_nexusignore_patterns,
-        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,
+        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,nexus--config,nexus-path-resolution-logic,
         #   kind=ast,
         #   comment=.nexusignore v2 helper: parse patterns into segment vs path pattern lists,
         # ]
@@ -6493,7 +6355,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             # @beacon[
             #   id=auto-beacon@refresh_folder_cartographer_sync._read_ignore_lines_best_effort-w6p1,
             #   role=refresh_folder_cartographer_sync._read_ignore_lines_best_effort,
-            #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-reconcile,
+            #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-reconcile,nexus--config,
             #   kind=ast,
             #   comment=.nexusignore helper: read ignore file lines with BOM/UTF-16 tolerance,
             # ]
@@ -6698,7 +6560,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@refresh_folder_cartographer_sync._safe_relpath-v3c2,
         #   role=refresh_folder_cartographer_sync._safe_relpath,
-        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,
+        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,nexus--config,nexus-path-resolution-logic,
         #   kind=ast,
         #   comment=.nexusignore v2 helper: safe relpath + in-tree guard (commonpath),
         # ]
@@ -6749,7 +6611,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # @beacon[
         #   id=auto-beacon@refresh_folder_cartographer_sync.is_ignored_path-0r7k,
         #   role=refresh_folder_cartographer_sync.is_ignored_path,
-        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,
+        #   slice_labels=ra-notes,ra-notes-salvage,ra-notes-cartographer,f9-f12-handlers,ra-logging,ra-carto-jobs,ra-reconcile,nexus--config,nexus-path-resolution-logic,
         #   kind=ast,
         #   comment=.nexusignore v2 helper: unified ignore decision + reason string,
         # ]

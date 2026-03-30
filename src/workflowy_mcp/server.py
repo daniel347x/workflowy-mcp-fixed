@@ -5,13 +5,13 @@ import os
 from datetime import datetime
 # Also log to file to debug deployment/environment
 try:
-    # Derive project_root dynamically for startup log
-    server_dir_startup = os.path.dirname(os.path.abspath(__file__))
-    mcp_servers_dir_startup = os.path.dirname(server_dir_startup)
-    project_root_startup = os.path.dirname(mcp_servers_dir_startup)
-    startup_log_path = os.path.join(project_root_startup, "temp", "reconcile_debug.log")
-    with open(startup_log_path, "a", encoding="utf-8") as f:
-        f.write(f"[{datetime.now().isoformat()}] DEBUG: Workflowy MCP Server loaded from {__file__}\n")
+    startup_base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    if startup_base:
+        startup_log_dir = os.path.join(startup_base, "workflowy-mcp", "logs")
+        os.makedirs(startup_log_dir, exist_ok=True)
+        startup_log_path = os.path.join(startup_log_dir, "reconcile_debug.log")
+        with open(startup_log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now().isoformat()}] DEBUG: Workflowy MCP Server loaded from {__file__}\n")
 except Exception:
     pass
 print("DEBUG: Workflowy MCP Server loaded from " + __file__, file=sys.stderr)
@@ -28,7 +28,16 @@ from typing import Literal, Any, Awaitable, Callable
 from fastmcp import FastMCP
 
 from .client import AdaptiveRateLimiter, WorkFlowyClient
-from .config import get_server_config, get_server_config_meta, setup_logging
+from .config import (
+    get_cartographer_file_refresh_dir,
+    get_cartographer_jobs_dir,
+    get_nexus_runs_base_dir,
+    get_runtime_subdir,
+    get_server_config,
+    get_server_config_meta,
+    get_windsurf_exe_candidates,
+    setup_logging,
+)
 from .models import (
     NodeCreateRequest,
     NodeListRequest,
@@ -423,18 +432,14 @@ def _get_carto_jobs_base_dir() -> str:
 
     Resolution order:
     1. workflowy_nexus JSON config (`paths.cartographerJobsDir`)
-    2. legacy code-derived default under workflowy_mcp/temp/
+    2. portable per-user runtime state fallback
     """
-    try:
-        config = get_server_config()
-        configured = str(config.paths.cartographer_jobs_dir or "").strip()
-        if configured:
-            return configured
-    except Exception:
-        pass
+    return str(get_cartographer_jobs_dir())
 
-    server_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(server_dir, "temp", "cartographer_jobs")
+
+def _get_carto_file_refresh_dir() -> str:
+    """Return the per-file Cartographer refresh artifacts directory."""
+    return str(get_cartographer_file_refresh_dir())
 
 
 # @beacon[
@@ -964,11 +969,7 @@ async def _resolve_uuid_path_and_respond(target_uuid: str | None, websocket, for
         # Also append to persistent UUID Explorer log file
         try:
             from datetime import datetime
-            # Derive project_root dynamically
-            server_dir_uuid = os.path.dirname(os.path.abspath(__file__))
-            mcp_servers_dir_uuid = os.path.dirname(server_dir_uuid)
-            project_root_uuid = os.path.dirname(mcp_servers_dir_uuid)
-            log_path = os.path.join(project_root_uuid, "temp", "uuid_and_glimpse_explorer", "uuid_explorer.md")
+            log_path = os.path.join(str(get_runtime_subdir("uuid_and_glimpse_explorer")), "uuid_explorer.md")
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"## {timestamp}\n\n")
@@ -1103,110 +1104,56 @@ def _guess_line_number_from_name(file_path: str, node_name: str | None) -> int:
 # @beacon[
 #   id=auto-beacon@_launch_windsurf-nrnc,
 #   role=_launch_windsurf,
-#   slice_labels=f9-f12-handlers,ra-websocket,
+#   slice_labels=f9-f12-handlers,ra-websocket,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 def _launch_windsurf(file_path: str, line: int | None = None) -> None:
     """Launch WindSurf for the given file/line on Windows.
 
-    Uses PowerShell Start-Process so that Windows treats this like a normal
-    app activation, while still allowing Windsurf itself to reuse the
-    existing window (no explicit "new window" flag is used here).
-
-    Bidirectional path normalization:
-    - If path doesn't exist + non-C drive → try C:, then C: with __Dan_Root removed
-    - If path doesn't exist + C: drive → try E: with __Dan_Root added back
+    Uses configured executable candidates first, then standard install
+    locations. Callers must provide a real on-disk file path; this helper
+    intentionally does not apply machine-specific path rewrites.
     """
     import os
     import subprocess
 
-    # Try multiple possible Windsurf install locations
-    exe_candidates = [
-        r"C:\Users\danie\AppData\Local\Programs\Windsurf\Windsurf.exe",
-        r"C:\Users\Daniel.Nissenbaum\AppData\Local\Programs\Windsurf\Windsurf.exe",
-        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Windsurf\Windsurf.exe"),
-        os.path.expandvars(r"%PROGRAMFILES%\Windsurf\Windsurf.exe"),
-        r"C:\Program Files\Windsurf\Windsurf.exe",
-    ]
-    
     exe = None
+    exe_candidates = get_windsurf_exe_candidates()
     for candidate in exe_candidates:
         if os.path.exists(candidate):
             exe = candidate
             break
-    
+
     if not exe:
         log_event(
             f"WindSurf executable not found in any of: {exe_candidates}",
             "WS_HANDLER",
         )
-        raise FileNotFoundError("Windsurf.exe not found in standard install locations")
+        raise FileNotFoundError("Windsurf.exe not found in configured or standard install locations")
 
-    # Bidirectional path normalization (matches normalize_cartographer_path logic)
-    try:
-        if file_path and isinstance(file_path, str) and not os.path.exists(file_path):
-            drive, tail = os.path.splitdrive(file_path)
-            
-            # BRANCH A: non-C drive → try C: variants
-            if drive and drive.upper() != "C:":
-                # Try C: drive
-                alt_c_path = "C:" + tail
-                if os.path.exists(alt_c_path):
-                    log_event(
-                        f"WindSurf path normalized: {file_path} → {alt_c_path} (C: drive)",
-                        "WS_HANDLER",
-                    )
-                    file_path = alt_c_path
-                # Try C: with __Dan_Root removed
-                elif "__Dan_Root" in alt_c_path:
-                    alt_no_dan_root = alt_c_path.replace("\\__Dan_Root\\", "\\")
-                    if os.path.exists(alt_no_dan_root):
-                        log_event(
-                            f"WindSurf path normalized: {file_path} → {alt_no_dan_root} (__Dan_Root removed)",
-                            "WS_HANDLER",
-                        )
-                        file_path = alt_no_dan_root
-            
-            # BRANCH B: C: drive → try E: with __Dan_Root added back
-            elif drive and drive.upper() == "C:":
-                # Pattern: C:\__daniel347x\__repos\... → E:\__daniel347x\__Dan_Root\__repos\...
-                parts = tail.split(os.sep)
-                # parts[0] = '', parts[1] = '__daniel347x', parts[2] = '__repos', ...
-                if len(parts) >= 3 and parts[1] == "__daniel347x":
-                    # Insert __Dan_Root after __daniel347x
-                    new_parts = parts[:2] + ["__Dan_Root"] + parts[2:]
-                    new_tail = os.sep.join(new_parts)
-                    alt_e_with_dan_root = "E:" + new_tail
-                    if os.path.exists(alt_e_with_dan_root):
-                        log_event(
-                            f"WindSurf path normalized: {file_path} → {alt_e_with_dan_root} (E: + __Dan_Root)",
-                            "WS_HANDLER",
-                        )
-                        file_path = alt_e_with_dan_root
-    except Exception as e:  # noqa: BLE001
-        # Best-effort only; do not block launch.
-        log_event(f"WindSurf path normalization failed for {file_path}: {e}", "WS_HANDLER")
+    resolved_file_path = os.path.abspath(os.path.expandvars(os.path.expanduser(file_path)))
+    if not os.path.exists(resolved_file_path):
+        log_event(f"WindSurf target path does not exist: {resolved_file_path}", "WS_HANDLER")
+        raise FileNotFoundError(f"Windsurf target path not found: {resolved_file_path}")
 
-    # Build Windsurf command directly (avoid PowerShell quote hell)
     if line is not None and isinstance(line, int) and line > 0:
-        # -g file:line (reuse existing window semantics left to Windsurf)
-        ws_args = ["-g", f"{file_path}:{line}"]
+        ws_args = ["-g", f"{resolved_file_path}:{line}"]
     else:
-        # Reuse existing window and just open the file
-        ws_args = ["-r", file_path]
+        ws_args = ["-r", resolved_file_path]
 
     try:
-        # Launch Windsurf directly without PowerShell wrapper
         subprocess.Popen(
             [exe] + ws_args,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0,
         )
-        log_event(f"Launched WindSurf for {file_path} (line={line}) args={ws_args}", "WS_HANDLER")
+        log_event(
+            f"Launched WindSurf for {resolved_file_path} (line={line}) args={ws_args}",
+            "WS_HANDLER",
+        )
     except Exception as e:  # noqa: BLE001
-        # Let callers surface a structured error if needed
-        log_event(f"Failed to launch WindSurf for {file_path}: {e}", "WS_HANDLER")
+        log_event(f"Failed to launch WindSurf for {resolved_file_path}: {e}", "WS_HANDLER")
         raise
 
 
@@ -1526,7 +1473,7 @@ async def _maybe_create_ast_beacon_from_tags(
 # @beacon[
 #   id=auto-beacon@_handle_refresh_file_node-7irr,
 #   role=_handle_refresh_file_node,
-#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-websocket,ra-reconcile,
+#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-websocket,ra-reconcile,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
@@ -1768,7 +1715,7 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
 # @beacon[
 #   id=auto-beacon@_handle_refresh_folder_node-tgyl,
 #   role=_handle_refresh_folder_node,
-#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-websocket,ra-reconcile,
+#   slice_labels=ra-notes,ra-notes-cartographer,f9-f12-handlers,ra-carto-jobs,ra-websocket,ra-reconcile,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
@@ -1864,7 +1811,7 @@ async def _handle_refresh_folder_node(data: dict[str, Any], websocket) -> None:
 # @beacon[
 #   id=auto-beacon@_handle_open_node_in_windsurf-3j45,
 #   role=_handle_open_node_in_windsurf,
-#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-websocket,
+#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-websocket,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None:
@@ -2044,7 +1991,7 @@ async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None
 # @beacon[
 #   id=auto-beacon@_handle_generate_markdown_file-k4m2,
 #   role=_handle_generate_markdown_file,
-#   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-websocket,
+#   slice_labels=f9-f12-handlers,nexus-md-header-path,ra-websocket,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> None:
@@ -2499,7 +2446,8 @@ async def websocket_handler(websocket):
                             )
                             continue
 
-                        carto_jobs_base = _get_carto_jobs_base_dir()
+                        server_dir = os.path.dirname(os.path.abspath(__file__))
+                        carto_jobs_base = os.path.join(server_dir, "temp", "cartographer_jobs")
                         base_dir = Path(carto_jobs_base)
                         found = False
 
@@ -2800,12 +2748,11 @@ def _gc_carto_jobs(carto_jobs_base: str, max_age_seconds: int = 3600) -> None:
         log file.
 
     Per-file F12 GC:
-        Additionally removes per-file Cartographer F12 artifacts under::
+        Additionally removes per-file Cartographer F12 artifacts under the
+        configured file-refresh directory (or its portable runtime fallback).
 
-            E:\__daniel347x\__Obsidian\__Inking into Mind\--TypingMind\Projects - All\Projects - Individual\TODO\temp\cartographer_file_refresh
-
-        when their modification time is older than the same age threshold.
-        This directory contains, for each F12 run:
+        When their modification time is older than the same age threshold,
+        they are pruned. This directory contains, for each F12 run:
 
             <timestamp>_file_refresh_<shortid>_<basename>.json
             <timestamp>_file_refresh_<shortid>_<basename>.weave_journal.json
@@ -2897,11 +2844,7 @@ def _gc_carto_jobs(carto_jobs_base: str, max_age_seconds: int = 3600) -> None:
 
         # 2) Per-file F12 artifacts under temp/cartographer_file_refresh
         try:
-            # Derive project_root dynamically
-            server_dir_gc = os.path.dirname(os.path.abspath(__file__))
-            mcp_servers_dir_gc = os.path.dirname(server_dir_gc)
-            project_root_gc = os.path.dirname(mcp_servers_dir_gc)
-            file_refresh_dir = Path(os.path.join(project_root_gc, "temp", "cartographer_file_refresh"))
+            file_refresh_dir = Path(_get_carto_file_refresh_dir())
             if file_refresh_dir.exists():
                 for path in file_refresh_dir.iterdir():
                     try:
@@ -2961,7 +2904,6 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
             "error": f"Invalid mode {mode!r}; expected 'file' or 'folder'.",
         }
 
-    # Job directory from resolved config (fallbacks handled by helper).
     carto_jobs_base = _get_carto_jobs_base_dir()
     os.makedirs(carto_jobs_base, exist_ok=True)
 
@@ -3034,23 +2976,7 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
 
     env["WORKFLOWY_API_KEY"] = api_key
     # NEXUS_RUNS_BASE is only used for WEAVE, but safe to pass through here as well.
-    # Prefer configured value; otherwise fall back to legacy code-derived default.
-    try:
-        config = get_server_config()
-        configured_nexus_runs_base = str(config.paths.nexus_runs_base or "").strip()
-    except Exception:
-        configured_nexus_runs_base = ""
-
-    if configured_nexus_runs_base:
-        env.setdefault("NEXUS_RUNS_BASE", configured_nexus_runs_base)
-    else:
-        server_dir_env = os.path.dirname(os.path.abspath(__file__))
-        mcp_servers_dir_env = os.path.dirname(server_dir_env)
-        project_root_env = os.path.dirname(mcp_servers_dir_env)
-        env.setdefault(
-            "NEXUS_RUNS_BASE",
-            os.path.join(project_root_env, "temp", "nexus_runs"),
-        )
+    env.setdefault("NEXUS_RUNS_BASE", str(get_nexus_runs_base_dir()))
 
     cmd = [
         _sys.executable,
@@ -3652,12 +3578,8 @@ async def mcp_job_status(job_id: str | None = None) -> dict:
     from pathlib import Path
     import json as json_module
 
-    # Derive directories dynamically from this file's location
-    server_dir = os.path.dirname(os.path.abspath(__file__))
-    mcp_servers_dir = os.path.dirname(server_dir)
-    project_root = os.path.dirname(mcp_servers_dir)
-    nexus_runs_base = os.path.join(project_root, "temp", "nexus_runs")
-    # CARTO_REFRESH job directory (resolved from config when available)
+    nexus_runs_base = str(get_nexus_runs_base_dir())
+    # CARTO_REFRESH job directory (server-managed)
     carto_jobs_base = _get_carto_jobs_base_dir()
 
     def _scan_weave_journals(base_dir_str: str) -> list[dict[str, Any]]:
@@ -3862,8 +3784,9 @@ async def mcp_cancel_job(job_id: str) -> dict:
     from pathlib import Path
     import json as json_module
 
-    # Derive CARTO_REFRESH job directory from resolved config when available
-    carto_jobs_base = _get_carto_jobs_base_dir()
+    # Derive CARTO_REFRESH job directory dynamically from this file's location
+    server_dir = os.path.dirname(os.path.abspath(__file__))
+    carto_jobs_base = os.path.join(server_dir, "temp", "cartographer_jobs")
     base_dir = Path(carto_jobs_base)
     if base_dir.exists():
         for job_path in base_dir.glob("*.json"):

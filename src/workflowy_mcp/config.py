@@ -6,6 +6,7 @@ import json
 import logging
 import logging.handlers
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,118 @@ _CONFIG_META: dict[str, Any] = {
 def _repo_root() -> Path:
     """Return the package repo root (parent of src/)."""
     return Path(__file__).resolve().parents[2]
+
+
+def _portable_state_home() -> Path:
+    """Return an OS-appropriate per-user state/app-data home."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            return Path(base).expanduser()
+        return Path.home() / "AppData" / "Local"
+
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support"
+
+    xdg_state = os.environ.get("XDG_STATE_HOME")
+    if xdg_state:
+        return Path(xdg_state).expanduser()
+
+    return Path.home() / ".local" / "state"
+
+
+def get_runtime_base_dir() -> Path:
+    """Return the portable per-user runtime base dir for Workflowy MCP artifacts."""
+    base = _portable_state_home() / "workflowy-mcp"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def resolve_runtime_dir(configured_path: str | None, *fallback_parts: str) -> Path:
+    """Return a configured directory or a portable runtime fallback."""
+    raw = str(configured_path or "").strip()
+    if raw:
+        path = Path(os.path.expandvars(raw)).expanduser()
+    else:
+        path = get_runtime_base_dir().joinpath(*fallback_parts)
+
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def get_runtime_subdir(*parts: str) -> Path:
+    """Return a portable runtime subdirectory under the Workflowy MCP base dir."""
+    return resolve_runtime_dir(None, *parts)
+
+
+def get_nexus_runs_base_dir() -> Path:
+    """Return the configured or portable default NEXUS runs base directory."""
+    try:
+        config = get_server_config()
+        configured = str(config.paths.nexus_runs_base or "").strip()
+    except Exception:
+        configured = ""
+    return resolve_runtime_dir(configured, "nexus_runs")
+
+
+def get_cartographer_jobs_dir() -> Path:
+    """Return the configured or portable default Cartographer jobs directory."""
+    try:
+        config = get_server_config()
+        configured = str(config.paths.cartographer_jobs_dir or "").strip()
+    except Exception:
+        configured = ""
+    return resolve_runtime_dir(configured, "cartographer_jobs")
+
+
+def get_cartographer_file_refresh_dir() -> Path:
+    """Return the configured or portable default Cartographer file-refresh directory."""
+    try:
+        config = get_server_config()
+        configured = str(config.paths.cartographer_file_refresh_dir or "").strip()
+    except Exception:
+        configured = ""
+    return resolve_runtime_dir(configured, "cartographer_file_refresh")
+
+
+def get_windsurf_exe_candidates() -> list[str]:
+    """Return configured-first, generic fallback WindSurf executable candidates."""
+    configured: list[str] = []
+    try:
+        config = get_server_config()
+        configured = [
+            str(Path(os.path.expandvars(p)).expanduser())
+            for p in (config.paths.windsurf_exe_candidates or [])
+            if str(p or "").strip()
+        ]
+    except Exception:
+        configured = []
+
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    program_files = os.environ.get("PROGRAMFILES")
+    program_files_x86 = os.environ.get("PROGRAMFILES(X86)")
+    home = Path.home()
+
+    generic_candidates = [
+        str(home / "AppData" / "Local" / "Programs" / "Windsurf" / "Windsurf.exe"),
+        str(Path(local_appdata) / "Programs" / "Windsurf" / "Windsurf.exe") if local_appdata else "",
+        str(Path(program_files) / "Windsurf" / "Windsurf.exe") if program_files else "",
+        str(Path(program_files_x86) / "Windsurf" / "Windsurf.exe") if program_files_x86 else "",
+        r"C:\Program Files\Windsurf\Windsurf.exe",
+    ]
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in configured + generic_candidates:
+        raw = str(candidate or "").strip()
+        if not raw:
+            continue
+        key = os.path.normcase(raw)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(raw)
+    return deduped
 
 
 # @beacon[
