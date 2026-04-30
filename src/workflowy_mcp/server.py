@@ -678,6 +678,119 @@ async def _carto_jobs_watcher_loop() -> None:
 
 
 # @beacon[
+#   id=cache-refresh@_handler_preflight_cache_quiescence,
+#   role=_handler_preflight_cache_quiescence,
+#   slice_labels=ra-workflowy-cache,ra-carto-jobs,f9-f12-handlers,
+#   kind=ast,
+# ]
+async def _handler_preflight_cache_quiescence(
+    *,
+    reason: str,
+    source: str,
+) -> None:
+    """Unified pre-flight for any user-triggered handler that mutates Workflowy.
+
+    Cache-refresh policy (Dan, 2026-04-30):
+      Every WebSocket handler that reads /nodes-export to make decisions must
+      call this helper at the very top, BEFORE doing any work. It guarantees:
+
+        1. Any in-flight CARTO_REFRESH / CARTO_BULK_APPLY workers (e.g. from
+           an earlier async F12+1) have completed. Without this wait, the
+           handler could read torn cache state mid-mutation. NOTE: this also
+           coalesces with any cache refresh those workers triggered.
+
+        2. A fresh /nodes-export refresh is forced and awaited to completion.
+           Without this, the cache could miss the user's most recent
+           Workflowy edits (made via the Workflowy GUI directly, not via
+           prior MCP calls), causing reconciliation logic to either drop
+           those edits silently or compute an incorrect plan.
+
+      Cost: up to one rate-limited /nodes-export refresh (~30-60s in steady
+      state, fast when warm). The queue coalesces concurrent calls, so two
+      handlers firing nearly simultaneously share a single refresh.
+
+      Internal building blocks (helpers, jobs) NEVER call this directly.
+      Only outermost user-triggered handlers do. Composition rule: when one
+      handler invokes another's helper internally (e.g. F12+3 calls bulk
+      apply via _start_carto_bulk_visible_apply_job), the helper does NOT
+      pre-flight; the outer handler's pre-flight covers everything.
+
+    Args:
+        reason: Human-readable label for logging.
+        source: Short identifier for the requesting handler (e.g.
+            "refresh_file_node:preflight", "f12_generate_markdown_file").
+    """
+    # First wait for any in-flight CARTO jobs to complete. Their cascading
+    # cache refreshes will be picked up by the queue below.
+    await _await_carto_jobs_quiescent(reason)
+
+    # Then force a fresh cache refresh and wait for it to settle.
+    try:
+        await _request_nodes_export_cache_refresh_async(
+            reason=reason,
+            source=source,
+        )
+    except Exception as e:  # noqa: BLE001
+        # Best-effort: failures are logged but don't block the handler.
+        # The handler will proceed with whatever cache state exists.
+        log_event(
+            f"_handler_preflight_cache_quiescence: refresh schedule failed ({reason}): {e}; "
+            "continuing with possibly-stale cache.",
+            "WS_HANDLER",
+        )
+
+    await _await_nodes_export_cache_quiescent(reason)
+
+
+# @beacon[
+#   id=cache-refresh@_result_indicates_workflowy_mutation,
+#   role=_result_indicates_workflowy_mutation,
+#   slice_labels=ra-workflowy-cache,f9-f12-handlers,
+#   kind=ast,
+# ]
+def _result_indicates_workflowy_mutation(result: dict[str, Any] | None) -> bool:
+    """Return True iff the result dict indicates Workflowy state was mutated.
+
+    Used by post-flight cache-refresh logic to decide whether a
+    /nodes-export refresh is necessary. If the reconciliation/operation
+    didn't create/update/delete/move any Workflowy nodes, the cache is
+    still consistent with Workflowy and we can skip the (rate-limited)
+    refresh.
+
+    The result dict is expected to come from one of:
+      - client.refresh_file_node_beacons (returns nodes_created / _updated /
+        _deleted / _moved at the top level)
+      - reconcile_tree result (same field names)
+
+    Conservative behavior: when the result is missing or shaped unexpectedly,
+    treat it as "mutated" so we err on the side of refreshing. The cost is
+    one extra refresh; the cost of falsely skipping is silent staleness.
+    """
+    if not isinstance(result, dict):
+        return True
+
+    fields = ("nodes_created", "nodes_updated", "nodes_deleted", "nodes_moved")
+    found_any = False
+    for f in fields:
+        v = result.get(f)
+        if v is None:
+            continue
+        found_any = True
+        try:
+            if int(v) > 0:
+                return True
+        except Exception:  # noqa: BLE001
+            # Unexpected type; be conservative and assume mutation.
+            return True
+
+    if not found_any:
+        # No counters present -> can't tell; be conservative.
+        return True
+
+    return False
+
+
+# @beacon[
 #   id=server@log_event,
 #   role=log_event,
 #   slice_labels=ra-logging,
@@ -1530,22 +1643,12 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
         )
         return
 
-    # Pre-flight cache refresh (Dan, 2026-04-30, REVISED): mandatory for ALL
-    # F12+1 paths. See docstring above for rationale.
-    try:
-        await _request_nodes_export_cache_refresh_async(
-            reason=f"refresh_file_node preflight for {node_id}",
-            source="refresh_file_node:preflight",
-        )
-        await _await_nodes_export_cache_quiescent(
-            f"refresh_file_node preflight for {node_id}",
-        )
-    except Exception as e:  # noqa: BLE001
-        log_event(
-            f"_handle_refresh_file_node: pre-flight cache refresh failed for {node_id}: {e}; "
-            "continuing with possibly-stale cache (best-effort).",
-            "WS_HANDLER",
-        )
+    # Pre-flight (Dan, 2026-04-30, REVISED): mandatory for ALL F12+1 paths.
+    # See _handler_preflight_cache_quiescence docstring for rationale.
+    await _handler_preflight_cache_quiescence(
+        reason=f"refresh_file_node preflight for {node_id}",
+        source="refresh_file_node:preflight",
+    )
 
     client = get_client()
 
@@ -1636,24 +1739,41 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
         if not isinstance(result, dict):
             result = {"success": False, "error": "refresh_file_node_beacons returned non-dict"}
 
+        # Post-flight cache refresh (Dan, 2026-04-30, REVISED): only when the
+        # reconciliation actually mutated Workflowy state. See AST-node sync
+        # path below for the same logic and rationale.
         cache_refresh_request: dict[str, Any] | None = None
-        try:
-            cache_refresh_request = await _request_nodes_export_cache_refresh_async(
-                reason=f"FILE-node F12 completed for {node_id}",
-                source="refresh_file_node:file",
-            )
-        except Exception as e:  # noqa: BLE001
+        mutated = _result_indicates_workflowy_mutation(result)
+        if mutated:
+            try:
+                cache_refresh_request = await _request_nodes_export_cache_refresh_async(
+                    reason=f"FILE-node F12 completed for {node_id}",
+                    source="refresh_file_node:file",
+                )
+            except Exception as e:  # noqa: BLE001
+                log_event(
+                    f"_handle_refresh_file_node: failed to schedule async cache refresh for {node_id}: {e}",
+                    "WS_HANDLER",
+                )
+                cache_refresh_request = {"success": False, "error": str(e)}
+        else:
             log_event(
-                f"_handle_refresh_file_node: failed to schedule async cache refresh for {node_id}: {e}",
+                f"FILE-node F12 for {node_id} produced no Workflowy mutations "
+                "(stats all zero); skipping post-flight cache refresh.",
                 "WS_HANDLER",
             )
-            cache_refresh_request = {"success": False, "error": str(e)}
+            cache_refresh_request = {
+                "success": True,
+                "skipped": True,
+                "reason": "no_workflowy_mutation",
+            }
 
         result["action"] = "refresh_file_node_result"
         result["node_id"] = node_id
         result["cache_refresh_request"] = cache_refresh_request
         result["cache_refresh_requested"] = bool(
             isinstance(cache_refresh_request, dict) and cache_refresh_request.get("success")
+            and not cache_refresh_request.get("skipped")
         )
         await websocket.send(json.dumps(result))
         return
@@ -1726,24 +1846,37 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
         if not isinstance(result, dict):
             result = {"success": False, "error": "refresh_file_node_beacons returned non-dict"}
 
-        # Post-flight cache refresh (Dan, 2026-04-30): schedule a /nodes-export
-        # cache refresh after the synchronous AST-node F12 path completes.
-        # Without this, the cache remains stale until the next operation
-        # forces a refresh, and any cache-reading consumer (F12+2, F12+3,
-        # other agents) will see pre-mutation data. Mirrors the FILE-node
-        # sync path above (line ~1602). Best-effort; failures are logged.
+        # Post-flight cache refresh (Dan, 2026-04-30, REVISED): schedule a
+        # /nodes-export cache refresh after the synchronous AST-node F12 path
+        # completes -- BUT only when the reconciliation actually mutated
+        # Workflowy state. If stats show zero creates/updates/deletes/moves,
+        # the cache is still up-to-date from the pre-flight refresh and a
+        # post-flight is wasted (~30-60s of rate-limit pain for nothing).
         cache_refresh_request: dict[str, Any] | None = None
-        try:
-            cache_refresh_request = await _request_nodes_export_cache_refresh_async(
-                reason=f"AST-node F12 completed for {node_id}",
-                source="refresh_file_node:ast",
-            )
-        except Exception as e:  # noqa: BLE001
+        mutated = _result_indicates_workflowy_mutation(result)
+        if mutated:
+            try:
+                cache_refresh_request = await _request_nodes_export_cache_refresh_async(
+                    reason=f"AST-node F12 completed for {node_id}",
+                    source="refresh_file_node:ast",
+                )
+            except Exception as e:  # noqa: BLE001
+                log_event(
+                    f"_handle_refresh_file_node: failed to schedule async cache refresh for {node_id}: {e}",
+                    "WS_HANDLER",
+                )
+                cache_refresh_request = {"success": False, "error": str(e)}
+        else:
             log_event(
-                f"_handle_refresh_file_node: failed to schedule async cache refresh for {node_id}: {e}",
+                f"AST-node F12 for {node_id} produced no Workflowy mutations "
+                "(stats all zero); skipping post-flight cache refresh.",
                 "WS_HANDLER",
             )
-            cache_refresh_request = {"success": False, "error": str(e)}
+            cache_refresh_request = {
+                "success": True,
+                "skipped": True,
+                "reason": "no_workflowy_mutation",
+            }
 
         # Forward result back to the extension (success + counts or error),
         # and include any beacon_update_result for additional context.
@@ -1754,6 +1887,7 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
         result["cache_refresh_request"] = cache_refresh_request
         result["cache_refresh_requested"] = bool(
             isinstance(cache_refresh_request, dict) and cache_refresh_request.get("success")
+            and not cache_refresh_request.get("skipped")
         )
         await websocket.send(json.dumps(result))
 
@@ -2123,12 +2257,13 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         # ============================================================
 
         # ---- [1] Pre-flight cache refresh ----
-        await _request_nodes_export_cache_refresh_async(
+        # Uses the unified _handler_preflight_cache_quiescence helper so this
+        # path matches F12+1 and F12+2: wait for in-flight CARTO jobs first
+        # (avoids reading torn cache during a concurrent F12+1 carto_async
+        # worker), then force a fresh /nodes-export refresh.
+        await _handler_preflight_cache_quiescence(
             reason=f"generate_markdown_file preflight for {node_id}",
             source="f12_generate_markdown_file",
-        )
-        await _await_nodes_export_cache_quiescent(
-            f"generate_markdown_file preflight for {node_id}",
         )
 
         client = get_client()
@@ -2587,17 +2722,11 @@ async def websocket_handler(websocket):
                         if root_mode not in {'file', 'folder'}:
                             raise ValueError(f'Unsupported root_mode for bulk apply: {root_mode!r}')
 
-                        # Mandatory pre-flight: force cache refresh and wait
-                        # for it to settle. Without this, the synthesized
-                        # tree would reflect stale Workflowy state and miss
-                        # the user's most recent edits (e.g. a #tag they just
-                        # added to a heading node before pressing F12+2).
-                        await _request_nodes_export_cache_refresh_async(
+                        # Mandatory pre-flight: see _handler_preflight_cache_quiescence
+                        # docstring for rationale (carto-jobs quiescent + cache refresh).
+                        await _handler_preflight_cache_quiescence(
                             reason=f"bulk_apply_visible_nodes preflight for {root_uuid}",
                             source="bulk_apply_visible_nodes",
-                        )
-                        await _await_nodes_export_cache_quiescent(
-                            f"bulk_apply_visible_nodes preflight for {root_uuid}",
                         )
 
                         synthetic_visible_tree = await _build_synthetic_visible_tree_from_cache(
