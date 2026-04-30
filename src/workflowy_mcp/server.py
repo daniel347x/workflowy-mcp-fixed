@@ -2009,11 +2009,58 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         return
 
     try:
-        # 0. Force a fresh /nodes-export snapshot before reading. The async
-        # refresh primitive coalesces with any in-flight refresh, and the
-        # quiescent primitive blocks until ALL pending refresh work has
-        # settled. After this pair returns, the in-memory cache is
-        # guaranteed up-to-date.
+        # ============================================================
+        # F12+3 PIPELINE (Dan, 2026-04-30):
+        #
+        # The full ordered sequence:
+        #
+        #   [1] Pre-flight cache refresh + quiescent wait
+        #         Without this, in-place Workflowy edits made just before
+        #         F12+3 (e.g. indenting a heading via Tab, adding a #tag)
+        #         are silently dropped.
+        #
+        #   [2] Resolve file_path; export Workflowy subtree from the cache
+        #
+        #   [3] BULK VISIBLE TAG APPLY (file-scoped):
+        #         Treat the entire exported subtree as the "visible tree"
+        #         and run the same logic that F12+2 runs. This applies
+        #         #tag-based beacon updates from Workflowy node names to
+        #         the on-disk source file, then refreshes the FILE node
+        #         in Workflowy so the cache picks up new 🔱 decorations
+        #         and BEACON metadata blocks. Critical for the workflow
+        #         where an agent has just added 50+ #tags to Workflowy
+        #         heading nodes and now wants F12+3 to materialize all
+        #         of them as on-disk beacons before regenerating the
+        #         Markdown file.
+        #
+        #   [4] Wait for bulk apply job + its cascading cache refresh
+        #         to drain. After this, the cache reflects the
+        #         post-bulk-apply Workflowy state.
+        #
+        #   [5] Re-export the Workflowy subtree from the now-fresh cache.
+        #         The bulk apply may have changed names (added 🔱, added
+        #         tag suffixes) and notes (added BEACON metadata blocks).
+        #         We need the post-update state for the markdown emit.
+        #
+        #   [6] Phase 1 disk write: nexus_to_tokens -> Markdown file.
+        #
+        #   [7] Phase 2 disk write: reapply_markdown_ast_beacons rehydrates
+        #         the on-disk beacon HTML comments.
+        #
+        #   [8] Post-flight file-refresh job: kicks off another file
+        #         refresh from disk -> Workflowy so MD_PATH metadata
+        #         in the Workflowy notes is re-canonicalized to match
+        #         the regenerated file. (Triggers its own cache refresh.)
+        #
+        # Each phase that may mutate Workflowy state is followed by
+        # appropriate cache-quiescent waits so subsequent phases see the
+        # post-mutation state. Cost: up to 3 cache refreshes (rate-limited
+        # by Workflowy's /nodes-export endpoint, ~30-60s each in steady
+        # state). This is unavoidable given the constraint that
+        # /nodes-export is the only mechanism to read the live tree.
+        # ============================================================
+
+        # ---- [1] Pre-flight cache refresh ----
         await _request_nodes_export_cache_refresh_async(
             reason=f"generate_markdown_file preflight for {node_id}",
             source="f12_generate_markdown_file",
@@ -2023,7 +2070,7 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         )
 
         client = get_client()
-        # 1. Resolve path using Cartographer logic
+        # ---- [2] Resolve path; export subtree ----
         all_nodes = client._get_nodes_export_cache_nodes()
         nodes_by_id = {str(n.get("id")): n for n in all_nodes if n.get("id")}
         
@@ -2036,7 +2083,6 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         if not file_path:
             raise ValueError(f"Could not resolve absolute path for node {node_id}")
             
-        # 2. Export subtree
         export_result = await client.export_nodes(node_id=node_id)
         flat_nodes = export_result.get("nodes", [])
         if not flat_nodes:
@@ -2047,6 +2093,81 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
             raise ValueError("Failed to build hierarchical tree.")
             
         root_node = hierarchical_tree[0]
+
+        # ---- [3] Bulk visible tag apply (file-scoped) ----
+        # Build a synthetic "visible_tree" payload from the exported subtree.
+        # _collect_bulk_visible_apply_groups walks {root, children} the same way
+        # whether the data came from GLIMPSE DOM extraction or the cache.
+        synthetic_visible_tree = {
+            "root": {
+                "id": str(root_node.get("id") or node_id),
+                "name": str(root_node.get("name") or ""),
+                "note": str(root_node.get("note") or ""),
+            },
+            "children": list(root_node.get("children") or []),
+        }
+        bulk_apply_result: dict[str, Any] | None = None
+        bulk_apply_job_id: str | None = None
+        try:
+            bulk_apply_result = await _start_carto_bulk_visible_apply_job(
+                root_uuid=str(node_id),
+                mode="file",
+                visible_tree_payload=synthetic_visible_tree,
+            )
+            if isinstance(bulk_apply_result, dict):
+                if bulk_apply_result.get("success"):
+                    bulk_apply_job_id = bulk_apply_result.get("job_id")
+                    log_event(
+                        f"Bulk visible tag apply queued for F12+3 ({node_id}): "
+                        f"job_id={bulk_apply_job_id!r}",
+                        "WS_HANDLER",
+                    )
+                else:
+                    # Non-fatal: log and continue. F12+3 can still run
+                    # without the tag apply pre-pass; tags just won't get
+                    # materialized as on-disk beacons before the markdown
+                    # emit. Use case: the file has no AST/beacon nodes
+                    # yet, or no candidates were found.
+                    log_event(
+                        f"Bulk visible tag apply launch failed for F12+3 "
+                        f"({node_id}): {bulk_apply_result.get('error')!r}",
+                        "WS_HANDLER",
+                    )
+        except Exception as bulk_err:  # noqa: BLE001
+            log_event(
+                f"Bulk visible tag apply pre-pass failed for F12+3 ({node_id}): {bulk_err}",
+                "WS_HANDLER",
+            )
+
+        # ---- [4] Wait for bulk apply + cascading cache refresh to drain ----
+        # _await_carto_jobs_quiescent blocks until all CARTO jobs (including
+        # CARTO_BULK_APPLY) finish AND their post-completion cache refreshes
+        # are queued. _await_nodes_export_cache_quiescent then blocks until
+        # those refreshes actually settle.
+        await _await_carto_jobs_quiescent(
+            f"generate_markdown_file post-bulk-apply for {node_id}",
+        )
+        await _await_nodes_export_cache_quiescent(
+            f"generate_markdown_file post-bulk-apply cache for {node_id}",
+        )
+
+        # ---- [5] Re-export subtree from the post-bulk-apply cache ----
+        # The bulk apply may have updated names (🔱 + tag suffixes) and notes
+        # (BEACON metadata blocks) on Workflowy nodes. Without re-exporting,
+        # the markdown emit would use stale data.
+        if bulk_apply_job_id:
+            export_result = await client.export_nodes(node_id=node_id)
+            flat_nodes = export_result.get("nodes", [])
+            if not flat_nodes:
+                raise ValueError(
+                    f"Re-export returned empty nodes for {node_id} after bulk apply"
+                )
+            hierarchical_tree = client._build_hierarchy(flat_nodes, True)
+            if not hierarchical_tree:
+                raise ValueError(
+                    "Failed to rebuild hierarchical tree after bulk apply."
+                )
+            root_node = hierarchical_tree[0]
         
         # 3. Import markdown_roundtrip logic
         import importlib
@@ -2092,7 +2213,7 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         beacon_results = markdown_roundtrip.reapply_markdown_ast_beacons(file_path, root_for_render)
         ast_beacon_count = len(beacon_results)
 
-        # Auto-trigger F12 file-refresh after F12+3 succeeds (Dan, 2026-04-30):
+        # ---- [8] Post-flight file-refresh: disk -> Workflowy ----
         # F12+3 writes Workflowy state -> disk, but the MD_PATH metadata blocks
         # in the Workflowy notes still reflect the PRE-edit ancestor chains
         # (e.g. before a heading was promoted/demoted via Tab/Shift+Tab).
@@ -2100,7 +2221,8 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         # metadata blocks so they're consistent with the regenerated file.
         # Without this, the user has to manually F12-refresh after every F12+3
         # to keep MD_PATH metadata in sync. Goes via the same detached CARTO
-        # refresh queue that handles ordering with any in-flight refreshes.
+        # refresh queue that handles ordering with any in-flight refreshes,
+        # and triggers its own internal cache refresh on completion.
         post_refresh_job_id: str | None = None
         try:
             post_refresh_job_id = await _start_carto_refresh_job(
@@ -2117,6 +2239,7 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         msg = (
             f"Successfully generated markdown roundtrip for {node_id} at {file_path} "
             f"(ast_beacons_reapplied={ast_beacon_count}, "
+            f"bulk_apply_job_id={bulk_apply_job_id!r}, "
             f"post_refresh_job_id={post_refresh_job_id!r})"
         )
         log_event(msg, "WS_HANDLER")
@@ -2126,6 +2249,7 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
             "node_id": node_id,
             "file_path": file_path,
             "ast_beacons_reapplied": ast_beacon_count,
+            "bulk_apply_job_id": bulk_apply_job_id,
             "post_refresh_job_id": post_refresh_job_id,
         }))
         
