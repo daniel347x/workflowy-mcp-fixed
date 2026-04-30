@@ -1477,19 +1477,31 @@ async def _maybe_create_ast_beacon_from_tags(
 #   kind=ast,
 # ]
 async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
-    """Handle F12-driven request to refresh a Cartographer FILE node.
+    """Handle F12-driven request to refresh a Cartographer FILE/AST/beacon node.
 
     This is a WebSocket wrapper around the existing beacon_refresh_code_node
     MCP tool (which in turn calls client.refresh_file_node_beacons).
 
-    New behavior (NEXUS Core v1 async F12):
-    - For true FILE nodes with data.carto_async truthy, we launch a detached
-      CARTO_REFRESH job via _start_carto_refresh_job and return a small
-      result containing job_id / mode / root_uuid. The UUID widget polls
-      mcp_job_status to show progress.
-    - For AST/beacon nodes (non-FILE), we always run the synchronous beacon
-      update path first, then perform a per-file refresh. The caller may
-      later trigger a separate async FILE-level F12 if desired.
+    Behavior matrix:
+    - True FILE node + carto_async=true: launch detached CARTO_REFRESH job
+      via _start_carto_refresh_job. The job worker sets cache_refresh_required
+      so the job tracker schedules a /nodes-export refresh on completion.
+    - True FILE node + sync: refresh_file_node_beacons synchronously, then
+      explicitly schedule a /nodes-export cache refresh after.
+    - AST/beacon node + carto_async=true: run synchronous beacon update first,
+      then launch detached CARTO_REFRESH job (worker handles cache refresh).
+    - AST/beacon node + sync: run synchronous beacon update + per-file refresh,
+      then explicitly schedule a /nodes-export cache refresh after.
+
+    Cache-refresh policy (Dan, 2026-04-30):
+      This handler is the OUTERMOST owner of cache refreshes for its operation.
+      Pre-flight: NONE — the Electron payload (node_name, node_note) is the
+      source of truth for the user's edit, not the cache. We only await
+      cache quiescence so we don't read torn state when classifying the node.
+      Post-flight: schedule /nodes-export refresh (sync paths) OR rely on
+      cache_refresh_required flag on the spawned CARTO job (async paths).
+      Either way, the cache reflects post-mutation state by the time the
+      next operation runs.
     """
     node_id = data.get("node_id") or data.get("target_uuid") or data.get("uuid")
     node_name = data.get("node_name") or ""
@@ -1687,12 +1699,35 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
         if not isinstance(result, dict):
             result = {"success": False, "error": "refresh_file_node_beacons returned non-dict"}
 
+        # Post-flight cache refresh (Dan, 2026-04-30): schedule a /nodes-export
+        # cache refresh after the synchronous AST-node F12 path completes.
+        # Without this, the cache remains stale until the next operation
+        # forces a refresh, and any cache-reading consumer (F12+2, F12+3,
+        # other agents) will see pre-mutation data. Mirrors the FILE-node
+        # sync path above (line ~1602). Best-effort; failures are logged.
+        cache_refresh_request: dict[str, Any] | None = None
+        try:
+            cache_refresh_request = await _request_nodes_export_cache_refresh_async(
+                reason=f"AST-node F12 completed for {node_id}",
+                source="refresh_file_node:ast",
+            )
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                f"_handle_refresh_file_node: failed to schedule async cache refresh for {node_id}: {e}",
+                "WS_HANDLER",
+            )
+            cache_refresh_request = {"success": False, "error": str(e)}
+
         # Forward result back to the extension (success + counts or error),
         # and include any beacon_update_result for additional context.
         result["action"] = "refresh_file_node_result"
         result["node_id"] = node_id
         if beacon_update_result is not None:
             result["beacon_update"] = beacon_update_result
+        result["cache_refresh_request"] = cache_refresh_request
+        result["cache_refresh_requested"] = bool(
+            isinstance(cache_refresh_request, dict) and cache_refresh_request.get("success")
+        )
         await websocket.send(json.dumps(result))
 
     except Exception as e:  # noqa: BLE001
