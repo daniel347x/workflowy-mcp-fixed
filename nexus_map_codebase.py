@@ -9357,12 +9357,94 @@ def update_beacon_from_node_markdown(
             )
             return result
         else:
+            # Case 1b RESURRECTED (Dan, 2026-04-30):
             # Beacon id present in Workflowy note but no matching block on disk.
-            # (Formerly Case 1b: CREATE beacon from note metadata.) This path was
-            # used when a user pasted a BEACON metadata block into a Workflowy
-            # note to materialize a Markdown heading beacon on disk. Removed as
-            # deprecated: Markdown heading beacons should be created via the
-            # simpler tags-only path (Case 2). Treat as noop.
+            # This is the EXPECTED state during F12+3 reapply: Phase 1 of
+            # _handle_generate_markdown_file writes a beacon-free file (via
+            # nexus_to_tokens, which strips BEACON (MD AST) blocks) and Phase 2
+            # (reapply_markdown_ast_beacons) calls this helper for every
+            # beacon-bearing Workflowy node so the on-disk HTML-comment
+            # blocks get rehydrated.
+            #
+            # Previously (commit 1ad49a7) this branch was a noop on the
+            # rationale that Markdown heading beacons should only be created
+            # via the tags-only Case 2 path. That broke F12+3 entirely:
+            # Workflowy beacon-bearing nodes always have beacon_id in their
+            # note (since apply_markdown_beacons writes it during F12 ingest),
+            # so Case 1 always fired, found no on-disk match (file was
+            # beacon-free post-Phase-1), and silently no-op'd, causing all
+            # beacons to vanish from the regenerated file.
+            #
+            # Resurrected behavior: CREATE the on-disk HTML-comment block,
+            # preserving the existing beacon_id from the Workflowy note.
+            # Reuses the same fail-closed insertion logic as Case 2 to refuse
+            # to write at top-of-file when MD_PATH cannot be uniquely resolved.
+            if not md_path:
+                # Without MD_PATH we have nowhere to anchor the beacon.
+                # This shouldn't happen for properly ingested Markdown
+                # heading beacons, but guard anyway.
+                result["error"] = (
+                    f"recreate_beacon_no_md_path: beacon_id={beacon_id!r} "
+                    f"in note but neither on-disk block nor MD_PATH found."
+                )
+                return result
+
+            resolved_idx = _find_markdown_heading_insert_idx(lines, md_path)
+            if not isinstance(resolved_idx, int) or resolved_idx < 0:
+                print(
+                    "[CARTOGRAPHER] update_beacon_from_node_markdown recreate-abort "
+                    f"(file_path={file_path!r}, beacon_id={beacon_id!r}, "
+                    f"md_path={md_path!r}, resolved_idx={resolved_idx!r}): "
+                    "MD_PATH did not resolve to exactly one heading in the "
+                    "current file; refusing to write beacon at top of file.",
+                    file=sys.stderr,
+                )
+                result["error"] = (
+                    f"md_path_unresolved: MD_PATH {md_path!r} did not match "
+                    f"exactly one heading in {file_path!r} during recreate of "
+                    f"beacon_id={beacon_id!r}; refusing to fall back to "
+                    f"top-of-file insertion."
+                )
+                return result
+
+            # Determine kind from the Workflowy note (defaults to "ast" since
+            # the recreate path is exercised primarily for Markdown heading
+            # AST beacons; SPAN beacons are handled separately upstream).
+            recreate_kind = "ast"
+            for line in (note or "").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("kind:"):
+                    val = stripped.split(":", 1)[1].strip().lower()
+                    if val in {"ast", "span"}:
+                        recreate_kind = val
+                    break
+
+            insert_idx = resolved_idx
+            new_block = _build_beacon_block(
+                bid=beacon_id,
+                role=role_display or "",
+                slice_labels=slice_labels_canon,
+                kind=recreate_kind,
+                show_span=show_span_note,
+                comment_text=comment_val,
+            )
+            new_block = _indent_beacon_block(new_block, lines, insert_idx)
+            new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(new_lines) + "\n")
+            except Exception as e:  # noqa: BLE001
+                result["error"] = f"failed_to_write_file: {e}"
+                return result
+
+            result.update(
+                {
+                    "operation": "created_beacon",
+                    "beacon_id": beacon_id,
+                    "role": role_display or "",
+                    "slice_labels": slice_labels_canon,
+                }
+            )
             return result
 
     # Helper: delete beacon(s) for this MD_PATH using Cartographer Markdown outline.
