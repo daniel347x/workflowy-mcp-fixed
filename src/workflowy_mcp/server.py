@@ -3113,9 +3113,52 @@ def _cartographer_header_info(note_str: str | None) -> tuple[str, bool]:
     return first_header, has_line_count
 
 
+def _path_header_looks_like_file(first_header: str, name_text: str | None) -> bool:
+    """Mirror of the extension-side pathHeaderLooksLikeFile heuristic.
+
+    Manual file nodes (created directly in Workflowy before any Cartographer
+    refresh) may not yet have a LINE COUNT: header. If the Path: value (or
+    the visible node name) clearly ends with a filename extension, treat the
+    target as a FILE node so bulk-apply can walk into it.
+
+    This matches the JS-side classifier in glimpse-cache-client.js so the
+    server's bulk-apply grouping agrees with the extension's F12 popup
+    file-vs-folder classification.
+    """
+    header = str(first_header or "").strip()
+    if not header.startswith("Path:"):
+        return False
+
+    path_value = header[len("Path:"):].strip()
+    # Strip surrounding single/double quotes if present.
+    if len(path_value) >= 2 and path_value[0] in ("'", '"') and path_value[-1] == path_value[0]:
+        path_value = path_value[1:-1].strip()
+
+    if not path_value or path_value == "." or path_value.endswith("/") or path_value.endswith("\\"):
+        return False
+
+    lower_path = path_value.lower()
+    lower_name = str(name_text or "").strip().lower()
+
+    # Heuristic 1: Path: value clearly looks like .../filename.ext
+    if re.search(r"(^|[\\/])[^\\/]+\.[^\\/.\s]+$", lower_path):
+        return True
+    # Heuristic 2: visible node name ends with a filename extension
+    if re.search(r"\.[a-z0-9_-]+$", lower_name):
+        return True
+    return False
+
+
 def _is_file_like_payload_node(node: dict[str, Any]) -> bool:
     first_header, has_line_count = _cartographer_header_info(node.get("note"))
-    return first_header.startswith("Path:") and has_line_count
+    if not first_header.startswith("Path:"):
+        return False
+    if has_line_count:
+        return True
+    # Manually-created file nodes (e.g. Obsidian-style Markdown 99-files) often
+    # have a Path: header but no LINE COUNT: line because they were never
+    # F12-refreshed. Fall back to the extension's filename-extension heuristic.
+    return _path_header_looks_like_file(first_header, node.get("name"))
 
 
 def _is_folder_like_payload_node(node: dict[str, Any]) -> bool:
@@ -3123,6 +3166,10 @@ def _is_folder_like_payload_node(node: dict[str, Any]) -> bool:
     if first_header.startswith("Root:"):
         return True
     if first_header.startswith("Path:") and not has_line_count:
+        # Same fallback as _is_file_like_payload_node: if the Path: value
+        # clearly looks like a filename, classify as FILE rather than FOLDER.
+        if _path_header_looks_like_file(first_header, node.get("name")):
+            return False
         return True
     return False
 
