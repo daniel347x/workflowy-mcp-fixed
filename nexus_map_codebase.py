@@ -8419,18 +8419,25 @@ def update_beacon_from_node_js_ts(
 
     # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
-        role_val: str | None = None
+        # Source-of-truth policy (Dan, 2026-04-30):
+        #   role         <- Workflowy node name (decoration-stripped); metadata `role:` IGNORED.
+        #   slice_labels <- Workflowy node name #tags (only); metadata `slice_labels:` IGNORED.
+        #   comment      <- metadata block `comment:` / `comments:` line (still the source of truth).
+        #   kind / show_span <- metadata block (low-traffic invariants).
+        # The Workflowy node name is the authoritative surface for role and tags;
+        # the metadata block is treated as a stale snapshot for those fields.
         comment_val: str | None = None
         for line in (note or "").splitlines():
             stripped = line.strip()
-            if stripped.startswith("role:"):
-                role_val = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("comment:") or stripped.startswith("comments:"):
+            if stripped.startswith("comment:") or stripped.startswith("comments:"):
                 comment_val = stripped.split(":", 1)[1].strip()
 
         show_span_note = _extract_show_span_from_note(note)
 
-        role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+        # Role comes from the Workflowy node name (stripped of trident
+        # decoration and trailing #tags). Falls back to beacon_id prefix
+        # only when the node name is empty (shouldn't happen in practice).
+        role_display = role_from_name or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
         # Slice labels come **only** from Workflowy tags in the node name.
         extra_label_tokens = [t.lstrip("#") for t in tags]
@@ -9177,10 +9184,21 @@ def update_beacon_from_node_markdown(
     beacon_id = _extract_beacon_id_from_note(note)
     md_path = _extract_md_path_from_note(note)
 
+    # Strip Workflowy decoration from base_name to get the canonical role text.
+    # apply_markdown_beacons appends ' 🔱' (trident) to beaconed heading node
+    # names; that decoration must NOT leak into the on-disk beacon's role field.
+    role_from_name = base_name
+    if role_from_name:
+        # Strip trailing '🔱' (with or without leading whitespace).
+        while role_from_name.endswith("🔱"):
+            role_from_name = role_from_name[:-1].rstrip()
+        role_from_name = role_from_name.strip()
+
     result: Dict[str, Any] = {
         "language": "markdown",
         "file_path": file_path,
         "base_name": base_name,
+        "role_from_name": role_from_name,
         "tags": tags,
         "beacon_id": beacon_id,
         "md_path": md_path,
@@ -9603,10 +9621,12 @@ def update_beacon_from_node_markdown(
         # Build a synthetic id with a random hash suffix. Unlike Python/JS,
         # Markdown beacons do not encode the heading name in the id; MD_PATH
         # is the structural anchor.
-        heading = md_path[-1] if md_path else "md"
         hash_suffix = _generate_auto_beacon_hash() + _generate_auto_beacon_hash()
         simple_id = f"auto-beacon@{hash_suffix}"
-        role_display = heading
+        # Role comes from the Workflowy node name (decoration-stripped) so a
+        # rename in Workflowy is reflected in the on-disk beacon's role.
+        # Falls back to the MD_PATH heading text when the node name is empty.
+        role_display = role_from_name or (md_path[-1] if md_path else "md")
 
         # Slice labels come **only** from Workflowy tags; we do not auto-derive
         # additional labels from heading text/MD_PATH.
