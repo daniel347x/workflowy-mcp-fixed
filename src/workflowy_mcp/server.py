@@ -1995,12 +1995,33 @@ async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None
 #   kind=ast,
 # ]
 async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> None:
-    """Handle F12-driven request to generate/regenerate Markdown on disk from a subtree."""
+    """Handle F12-driven request to generate/regenerate Markdown on disk from a subtree.
+
+    Auto-refresh /nodes-export cache before reading it. Without this, in-place
+    Workflowy edits made just before F12+3 (e.g. indenting a heading via Tab)
+    are silently dropped because the cache reflects the pre-edit state. The
+    Markdown roundtrip then writes a byte-identical file and the user's change
+    is lost. We coalesce via the existing async cache-refresh queue so this is
+    safe even if a refresh is already in flight from another source.
+    """
     node_id = data.get("node_id")
     if not node_id:
         return
 
     try:
+        # 0. Force a fresh /nodes-export snapshot before reading. The async
+        # refresh primitive coalesces with any in-flight refresh, and the
+        # quiescent primitive blocks until ALL pending refresh work has
+        # settled. After this pair returns, the in-memory cache is
+        # guaranteed up-to-date.
+        await _request_nodes_export_cache_refresh_async(
+            reason=f"generate_markdown_file preflight for {node_id}",
+            source="f12_generate_markdown_file",
+        )
+        await _await_nodes_export_cache_quiescent(
+            f"generate_markdown_file preflight for {node_id}",
+        )
+
         client = get_client()
         # 1. Resolve path using Cartographer logic
         all_nodes = client._get_nodes_export_cache_nodes()
