@@ -2095,17 +2095,13 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         root_node = hierarchical_tree[0]
 
         # ---- [3] Bulk visible tag apply (file-scoped) ----
-        # Build a synthetic "visible_tree" payload from the exported subtree.
-        # _collect_bulk_visible_apply_groups walks {root, children} the same way
-        # whether the data came from GLIMPSE DOM extraction or the cache.
-        synthetic_visible_tree = {
-            "root": {
-                "id": str(root_node.get("id") or node_id),
-                "name": str(root_node.get("name") or ""),
-                "note": str(root_node.get("note") or ""),
-            },
-            "children": list(root_node.get("children") or []),
-        }
+        # Synthesize the "visible_tree" payload from the post-refresh cache,
+        # not from any DOM-walked input. This is the same helper used by the
+        # F12+2 WebSocket handler so both paths share identical semantics.
+        synthetic_visible_tree = await _build_synthetic_visible_tree_from_cache(
+            str(node_id),
+            reason=f"generate_markdown_file bulk-apply pre-pass for {node_id}",
+        )
         bulk_apply_result: dict[str, Any] | None = None
         bulk_apply_job_id: str | None = None
         try:
@@ -2507,25 +2503,50 @@ async def websocket_handler(websocket):
                             pass
                     continue
 
-                # F12 popup: batch-apply visible Workflowy metadata (tags/comment/role)
+                # F12 popup: batch-apply Workflowy metadata (tags/comment/role)
                 # to eligible AST / beacon nodes under a FILE or FOLDER root, then
                 # refresh each touched file once.
+                #
+                # Cache-first source-of-truth (Dan, 2026-04-30):
+                # We deliberately IGNORE any visible_tree payload sent by the
+                # Chrome extension and instead force a cache refresh and
+                # synthesize the tree from /nodes-export. This eliminates the
+                # scroll/expansion-state confounding variable: the bulk apply
+                # operates on the entire FILE/FOLDER subtree as it exists in
+                # Workflowy, regardless of what the user has expanded in the
+                # GUI. The Chrome extension may continue to send a payload for
+                # backwards compatibility but it is no longer used.
                 if action == 'bulk_apply_visible_nodes':
                     try:
                         root_uuid = str(data.get('root_uuid') or data.get('node_id') or '').strip()
                         root_mode = str(data.get('root_mode') or '').strip().lower()
-                        visible_tree = data.get('visible_tree')
                         if not root_uuid:
                             raise ValueError('Missing root_uuid in bulk_apply_visible_nodes payload.')
                         if root_mode not in {'file', 'folder'}:
                             raise ValueError(f'Unsupported root_mode for bulk apply: {root_mode!r}')
-                        if not isinstance(visible_tree, dict):
-                            raise ValueError('Missing visible_tree payload for bulk apply.')
+
+                        # Mandatory pre-flight: force cache refresh and wait
+                        # for it to settle. Without this, the synthesized
+                        # tree would reflect stale Workflowy state and miss
+                        # the user's most recent edits (e.g. a #tag they just
+                        # added to a heading node before pressing F12+2).
+                        await _request_nodes_export_cache_refresh_async(
+                            reason=f"bulk_apply_visible_nodes preflight for {root_uuid}",
+                            source="bulk_apply_visible_nodes",
+                        )
+                        await _await_nodes_export_cache_quiescent(
+                            f"bulk_apply_visible_nodes preflight for {root_uuid}",
+                        )
+
+                        synthetic_visible_tree = await _build_synthetic_visible_tree_from_cache(
+                            root_uuid,
+                            reason=f"bulk_apply_visible_nodes for {root_uuid}",
+                        )
 
                         result = await _start_carto_bulk_visible_apply_job(
                             root_uuid=root_uuid,
                             mode=root_mode,
-                            visible_tree_payload=visible_tree,
+                            visible_tree_payload=synthetic_visible_tree,
                         )
                         await websocket.send(
                             json.dumps(
@@ -3398,6 +3419,84 @@ def _build_bulk_visible_root_from_payload(data: dict[str, Any]) -> dict[str, Any
     children = visible_tree.get("children")
     merged["children"] = children if isinstance(children, list) else []
     return merged
+
+
+async def _build_synthetic_visible_tree_from_cache(
+    root_uuid: str,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    """Build a {root, children} "visible_tree" payload from the cached /nodes-export.
+
+    Source-of-truth policy (Dan, 2026-04-30):
+      The bulk visible tag apply pipeline historically depended on the
+      Chrome extension walking the visible Workflowy DOM and sending the
+      result over the WebSocket. That coupled the operation's correctness
+      to the user's current scroll/expansion state, which is fragile and
+      was a recurring source of bugs ("why didn't it pick up that node?
+      Oh, it wasn't expanded").
+
+      This helper replaces the DOM-walked tree with a synthesis built
+      directly from the post-refresh /nodes-export cache. The cache is
+      the authoritative source of truth for Workflowy state; expansion
+      state is irrelevant.
+
+      Caller is responsible for forcing a cache refresh + quiescent
+      wait BEFORE invoking this helper, so the synthesized tree is
+      guaranteed to reflect the user's most recent edits.
+
+    Args:
+        root_uuid: Workflowy UUID of the FILE or FOLDER node whose subtree
+            should be synthesized.
+        reason: Human-readable label for logging.
+
+    Returns:
+        A {"root": {id, name, note}, "children": [...]} payload compatible
+        with _build_bulk_visible_root_from_payload, or raises ValueError on
+        any structural problem (root not found in cache, empty subtree,
+        hierarchy build failure).
+
+    Raises:
+        ValueError: when the root UUID isn't in the cache or the subtree
+            export returns nothing usable.
+    """
+    client = get_client()
+    export_result = await client.export_nodes(node_id=root_uuid)
+    flat_nodes = export_result.get("nodes", []) or []
+    if not flat_nodes:
+        raise ValueError(
+            f"Synthetic visible_tree: empty subtree for root_uuid={root_uuid!r} "
+            f"({reason}). Either the UUID is not in the cache or the cache is stale; "
+            "caller must force a cache refresh before invoking this helper."
+        )
+
+    hierarchical_tree = client._build_hierarchy(flat_nodes, True)
+    if not hierarchical_tree:
+        raise ValueError(
+            f"Synthetic visible_tree: hierarchy build returned no roots for "
+            f"root_uuid={root_uuid!r} ({reason})."
+        )
+
+    # When the export is filtered to a single subtree, the root we asked for
+    # should be the only top-level node. If for some reason there are multiple
+    # (orphaned descendants?), pick the one matching root_uuid; otherwise take
+    # the first.
+    root_node: dict[str, Any] | None = None
+    for candidate in hierarchical_tree:
+        if str(candidate.get("id") or "") == str(root_uuid):
+            root_node = candidate
+            break
+    if root_node is None:
+        root_node = hierarchical_tree[0]
+
+    return {
+        "root": {
+            "id": str(root_node.get("id") or root_uuid),
+            "name": str(root_node.get("name") or ""),
+            "note": str(root_node.get("note") or ""),
+        },
+        "children": list(root_node.get("children") or []),
+    }
 
 
 def _collect_bulk_visible_apply_groups(
