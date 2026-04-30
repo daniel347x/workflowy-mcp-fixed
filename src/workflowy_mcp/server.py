@@ -3216,9 +3216,18 @@ def _collect_bulk_visible_apply_groups(
                 warnings.append(
                     f"Skipping candidate without enclosing FILE ancestor: node_id={node_id or '<missing>'} name={name!r}",
                 )
-            elif not _visible_node_differs_from_cache(node, cache_lookup):
-                skipped_unchanged += 1
             else:
+                # NOTE: We intentionally do NOT pre-filter via
+                # _visible_node_differs_from_cache here. That helper compared
+                # Workflowy DOM against the /nodes-export cache, which always
+                # match after a cache refresh and therefore caused EVERY
+                # candidate to be skipped (the F12+2 "nothing happens" bug).
+                #
+                # The correct "do I need a write?" check is done inside
+                # update_beacon_from_node_<lang>(...) which parses the
+                # on-disk source and compares against Workflowy state.
+                # We let it be the single source of truth and call it on
+                # every candidate (it is idempotent for unchanged nodes).
                 file_id = str(next_file.get("id"))
                 groups.setdefault(file_id, {"file_node": next_file, "nodes": []})
                 groups[file_id]["nodes"].append(
@@ -3386,6 +3395,7 @@ async def _run_carto_bulk_visible_apply_job(job_file: str, root_node: dict[str, 
                         node_id=node_id,
                         name=node_name,
                         note=node_note,
+                        skip_auto_refresh=True,
                     )
                     if isinstance(node_result, dict) and not node_result.get("success", True):
                         raise RuntimeError(node_result.get("error") or "update_beacon_from_node returned failure")

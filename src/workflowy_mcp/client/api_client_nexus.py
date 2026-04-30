@@ -5329,6 +5329,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         node_id: str,
         name: str,
         note: str,
+        skip_auto_refresh: bool = False,
     ) -> dict[str, Any]:
         """Update/create/delete a Cartographer beacon from a single Workflowy node.
 
@@ -5344,6 +5345,14 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         the underlying source files. The client should separately update the
         local /nodes-export cache name (e.g., via update_cached_node_name)
         based on the "base_name" returned by the helper.
+
+        Args:
+            skip_auto_refresh: When True, suppresses the auto-refresh of the
+                enclosing FILE node at step 6. This is used by bulk-apply
+                workflows (F12+2) which call this method many times in
+                sequence and then perform ONE final FILE refresh at the end
+                to avoid N redundant (and destructive) intermediate
+                reconciliations.
         """
         logger = _ClientLogger()
         log_event(
@@ -5708,6 +5717,24 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         # 6) Auto-refresh the enclosing FILE node so the Ether rendering updates immediately.
         # This mirrors the manual F12-on-FILE workflow but happens automatically after
         # the beacon update completes, giving immediate visual feedback in Workflowy.
+        #
+        # When skip_auto_refresh=True (bulk-apply path), we skip this step. The bulk
+        # caller is responsible for invoking refresh_file_node_beacons exactly once
+        # at the end of the per-file batch. This avoids N redundant + destructive
+        # intermediate reconciliations that would each wipe the still-pending tags
+        # of other AST nodes in the same file.
+        if skip_auto_refresh:
+            log_event(
+                f"update_beacon_from_node: skip_auto_refresh=True for {node_id!r}; "
+                "caller will refresh FILE node manually.",
+                "BEACON",
+            )
+            result["auto_refresh"] = {
+                "success": False,
+                "reason": "skip_auto_refresh",
+            }
+            return result
+
         file_node_id_for_refresh = str(file_node.get("id"))
         try:
             # Safety check: ensure source_path points to a file, not a directory.
