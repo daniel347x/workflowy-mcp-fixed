@@ -1493,11 +1493,23 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
     - AST/beacon node + sync: run synchronous beacon update + per-file refresh,
       then explicitly schedule a /nodes-export cache refresh after.
 
-    Cache-refresh policy (Dan, 2026-04-30):
+    Cache-refresh policy (Dan, 2026-04-30, REVISED):
       This handler is the OUTERMOST owner of cache refreshes for its operation.
-      Pre-flight: NONE — the Electron payload (node_name, node_note) is the
-      source of truth for the user's edit, not the cache. We only await
-      cache quiescence so we don't read torn state when classifying the node.
+
+      Pre-flight: MANDATORY for ALL paths (FILE-node + AST-node, sync + async).
+      Reason: refresh_file_node_beacons reads /nodes-export cache to:
+        (a) resolve descendant UUIDs to enclosing FILE nodes,
+        (b) resolve relative Path:/Root: notes to absolute disk paths,
+        (c) build the in-memory "ether_root" used as the reconciliation
+           target against the disk-derived source tree.
+      If the cache is stale, the reconciliation may MISS the user's
+      most recent Workflowy edits in OTHER nodes of the same file, and
+      the resulting plan could overwrite/delete those edits. The Electron
+      payload (node_name, node_note) is the source of truth ONLY for the
+      ONE node the user pressed F12 on; the rest of the file's nodes still
+      come from cache for reconciliation purposes. Pay the rate-limit cost
+      to avoid silent data loss.
+
       Post-flight: schedule /nodes-export refresh (sync paths) OR rely on
       cache_refresh_required flag on the spawned CARTO job (async paths).
       Either way, the cache reflects post-mutation state by the time the
@@ -1517,6 +1529,23 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
             )
         )
         return
+
+    # Pre-flight cache refresh (Dan, 2026-04-30, REVISED): mandatory for ALL
+    # F12+1 paths. See docstring above for rationale.
+    try:
+        await _request_nodes_export_cache_refresh_async(
+            reason=f"refresh_file_node preflight for {node_id}",
+            source="refresh_file_node:preflight",
+        )
+        await _await_nodes_export_cache_quiescent(
+            f"refresh_file_node preflight for {node_id}",
+        )
+    except Exception as e:  # noqa: BLE001
+        log_event(
+            f"_handle_refresh_file_node: pre-flight cache refresh failed for {node_id}: {e}; "
+            "continuing with possibly-stale cache (best-effort).",
+            "WS_HANDLER",
+        )
 
     client = get_client()
 
@@ -1564,10 +1593,9 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
     # Async CARTO_REFRESH path is only valid for true FILE nodes. For AST/beacon
     # nodes we must run the synchronous update-beacon pipeline so that source
     # code and Workflowy metadata stay in lockstep.
+    # NOTE: pre-flight cache refresh + quiescent wait already happened at the
+    # top of this handler; no second wait needed here.
     if is_file_node and data.get("carto_async"):
-        await _await_nodes_export_cache_quiescent(
-            f"refresh_file_node async launch for {node_id}",
-        )
         async_result = await _start_carto_refresh_job(root_uuid=str(node_id), mode="file")
         payload: dict[str, Any] = {
             "action": "refresh_file_node_result",
@@ -1581,10 +1609,9 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
     if is_file_node:
         # FILE node (no async requested): skip beacon update entirely; perform a
         # single per-file Cartographer refresh only once.
+        # NOTE: pre-flight cache refresh + quiescent wait already happened at
+        # the top of this handler; no second wait needed here.
         try:
-            await _await_nodes_export_cache_quiescent(
-                f"refresh_file_node FILE sync path for {node_id}",
-            )
             result = await client.refresh_file_node_beacons(
                 file_node_id=node_id,
                 dry_run=False,
