@@ -2092,9 +2092,32 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
         beacon_results = markdown_roundtrip.reapply_markdown_ast_beacons(file_path, root_for_render)
         ast_beacon_count = len(beacon_results)
 
+        # Auto-trigger F12 file-refresh after F12+3 succeeds (Dan, 2026-04-30):
+        # F12+3 writes Workflowy state -> disk, but the MD_PATH metadata blocks
+        # in the Workflowy notes still reflect the PRE-edit ancestor chains
+        # (e.g. before a heading was promoted/demoted via Tab/Shift+Tab).
+        # Triggering a file-refresh from disk -> Workflowy refreshes those
+        # metadata blocks so they're consistent with the regenerated file.
+        # Without this, the user has to manually F12-refresh after every F12+3
+        # to keep MD_PATH metadata in sync. Goes via the same detached CARTO
+        # refresh queue that handles ordering with any in-flight refreshes.
+        post_refresh_job_id: str | None = None
+        try:
+            post_refresh_job_id = await _start_carto_refresh_job(
+                root_uuid=str(node_id),
+                mode="file",
+            )
+        except Exception as refresh_err:  # noqa: BLE001
+            # Non-fatal: F12+3 already succeeded; auto-refresh is a UX nicety.
+            log_event(
+                f"Auto-refresh after F12+3 failed for {node_id}: {refresh_err}",
+                "WS_HANDLER",
+            )
+
         msg = (
             f"Successfully generated markdown roundtrip for {node_id} at {file_path} "
-            f"(ast_beacons_reapplied={ast_beacon_count})"
+            f"(ast_beacons_reapplied={ast_beacon_count}, "
+            f"post_refresh_job_id={post_refresh_job_id!r})"
         )
         log_event(msg, "WS_HANDLER")
         await websocket.send(json.dumps({
@@ -2102,7 +2125,8 @@ async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> Non
             "success": True,
             "node_id": node_id,
             "file_path": file_path,
-            "ast_beacons_reapplied": ast_beacon_count
+            "ast_beacons_reapplied": ast_beacon_count,
+            "post_refresh_job_id": post_refresh_job_id,
         }))
         
     except Exception as e:

@@ -196,10 +196,57 @@ def _extract_md_path_lines_from_note(note: str | None) -> list[str]:
 #   kind=ast,
 # ]
 def _heading_name_from_note_or_name(note: str | None, fallback_name: str) -> str:
-    """Prefer the canonical heading text from MD_PATH over the decorated node name."""
+    """Return the heading text to emit for a Workflowy heading node.
+
+    Policy (Dan, 2026-04-30):
+      Prefer the *Workflowy node name* (with decoration stripped) so that
+      heading rename in Workflowy is reflected in the regenerated Markdown.
+      The MD_PATH metadata block is treated as a stale snapshot; it gets
+      refreshed on the next F12 file-refresh after F12+3 anyway.
+
+      Decoration that gets stripped from raw_name:
+        - Trailing ' 🔱' / '🔱' (trident marker added by apply_markdown_beacons).
+        - Trailing '#tag' tokens (slice-label tags appended to beaconed names).
+
+      If the decoration-stripped node name is empty (shouldn't happen, but
+      guard anyway), fall back to the MD_PATH last-segment text. If both
+      are empty, return the raw fallback_name.
+
+    History:
+      Previously this function preferred MD_PATH last-segment text over the
+      node name on the rationale that decorated node names (🔱 + #tags)
+      should not leak into headings. That made heading text effectively
+      read-only in Workflowy (renaming a node had no effect on the emitted
+      Markdown heading). Stripping the decoration explicitly fixes both
+      problems.
+    """
     import re
 
+    raw = (fallback_name or "").strip()
     md_path_lines = _extract_md_path_lines_from_note(note)
+
+    # Strip Workflowy decorations from the node name to get the canonical
+    # heading text the user typed.
+    if raw:
+        # Strip trailing '#tag' tokens (whitespace-separated).
+        tokens = raw.split()
+        while tokens and tokens[-1].startswith("#"):
+            tokens.pop()
+        # Strip trailing '🔱' marker (also handle stray whitespace before it).
+        while tokens and tokens[-1].strip() == "🔱":
+            tokens.pop()
+        # Also strip a '🔱' that's glued to the last token without whitespace.
+        if tokens:
+            last = tokens[-1]
+            if last.endswith("🔱"):
+                tokens[-1] = last[:-1].rstrip()
+                if not tokens[-1]:
+                    tokens.pop()
+        canonical_name = " ".join(tokens).strip()
+        if canonical_name:
+            return canonical_name
+
+    # Fallback: MD_PATH last-segment text (legacy behavior).
     if md_path_lines:
         last = md_path_lines[-1].strip()
         m = re.match(r"^#{1,32}\s*(.*)$", last)
@@ -209,7 +256,8 @@ def _heading_name_from_note_or_name(note: str | None, fallback_name: str) -> str
                 return text
         if last:
             return last
-    return (fallback_name or "").strip()
+
+    return raw
 
 
 # @beacon[
