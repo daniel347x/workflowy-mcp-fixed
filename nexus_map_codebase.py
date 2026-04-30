@@ -1244,35 +1244,40 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
             original_content = f.read()
 
         # STEP 1.1: Detect YAML frontmatter and per-file IGNORE_MDFORMAT flag.
+        # NOTE: this detection is preserved as suspenders, but mdformat is now
+        # globally disabled below regardless of the flag value.
         frontmatter, _body = _split_frontmatter_if_any(original_content)
         ignore_mdformat = _frontmatter_has_ignore_mdformat(frontmatter)
 
-        if ignore_mdformat:
-            # Skip mdformat entirely for this file; parse the raw content.
-            body_for_parse = _body
-            full_content_for_parse = original_content
-            if DEBUG_MD_BEACONS:
-                print(
-                    f"[MD-FILE] path={file_path!r} (IGNORE_MDFORMAT=true; "
-                    "skipping mdformat normalization)",
-                )
-        else:
-            # STEP 1.2: Format the Markdown with mdformat FIRST (normalize before parsing).
-            # This auto-repairs nested code blocks, whitespace, etc.
-            body_for_parse = mdformat.text(_body)
-            full_content_for_parse = (f"---\n{frontmatter}\n---\n" if frontmatter else "") + body_for_parse
+        # MDFORMAT GLOBALLY DISABLED (Dan, 2026-04-30):
+        # mdformat doesn't work well with agents. Agents reflexively add YAML
+        # frontmatter to files that don't need it (e.g. 99 files), and mdformat
+        # mangles YAML frontmatter and rewrites the source file unconditionally
+        # on every F12 refresh, locking in any corruption. The IGNORE_MDFORMAT
+        # flag is preserved above for backward compatibility but is now a noop:
+        # the skip-mdformat branch is taken unconditionally.
+        #
+        # Original gated behavior is preserved below in commented form for
+        # reference. To re-enable mdformat on a per-file basis in the future,
+        # restore the if/else and ensure agents respect the IGNORE_MDFORMAT
+        # opt-out invariant.
+        #
+        # if ignore_mdformat:
+        #     body_for_parse = _body
+        #     full_content_for_parse = original_content
+        # else:
+        #     body_for_parse = mdformat.text(_body)
+        #     full_content_for_parse = (f"---\n{frontmatter}\n---\n" if frontmatter else "") + body_for_parse
+        #     with open(file_path, 'w', encoding='utf-8') as f:
+        #         f.write(full_content_for_parse)
 
-            # Optional debug: show formatted Markdown with line numbers
-            if DEBUG_MD_BEACONS:
-                print(f"[MD-FILE] path={file_path!r}")
-                print("[MD-FORMATTED-BEGIN]")
-                for idx, line in enumerate(full_content_for_parse.splitlines(), start=1):
-                    print(f"{idx:4d}: {line!r}")
-                print("[MD-FORMATTED-END]")
-
-            # STEP 1.3: Write formatted content BACK to source file (opinionated cleanup)
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(full_content_for_parse)
+        body_for_parse = _body
+        full_content_for_parse = original_content
+        if DEBUG_MD_BEACONS:
+            print(
+                f"[MD-FILE] path={file_path!r} (mdformat globally disabled; "
+                f"IGNORE_MDFORMAT={ignore_mdformat} preserved as no-op)",
+            )
 
         lines = full_content_for_parse.splitlines()
         md_beacons = parse_markdown_beacon_blocks(lines)
@@ -9530,13 +9535,38 @@ def update_beacon_from_node_markdown(
             else ""
         )
 
-        # Insert the beacon block directly above the target heading when
-        # possible; fall back to top-of-file only when MD_PATH cannot be
-        # resolved unambiguously in the current Markdown file.
-        insert_idx = 0
+        # FAIL-CLOSED (Dan, 2026-04-30):
+        # Insert the beacon block directly above the target heading. If MD_PATH
+        # cannot be resolved to exactly one heading in the current file (zero
+        # or multiple matches), DO NOT WRITE the beacon. Previously this fell
+        # back to insert_idx=0 (top of file), which is catastrophic during
+        # F12+3 reapply: every beacon whose ancestor chain failed to match
+        # got stacked at the top of the file, separated from its target
+        # heading. The caller (reapply_markdown_ast_beacons) inspects the
+        # 'error' field on the result and aborts the whole roundtrip, which
+        # is the right behaviour: better to surface a loud failure than
+        # silently corrupt a Markdown file with 50+ misplaced beacons.
         resolved_idx = _find_markdown_heading_insert_idx(lines, md_path)
-        if isinstance(resolved_idx, int) and resolved_idx >= 0:
-            insert_idx = resolved_idx
+        if not isinstance(resolved_idx, int) or resolved_idx < 0:
+            print(
+                "[CARTOGRAPHER] update_beacon_from_node_markdown create-abort "
+                f"(file_path={file_path!r}, md_path={md_path!r}, "
+                f"resolved_idx={resolved_idx!r}): MD_PATH did not resolve to "
+                "exactly one heading in the current file; refusing to write "
+                "beacon at top of file. This typically indicates the "
+                "on-disk heading hierarchy was disturbed during F12+3 "
+                "emit (e.g. malformed YAML frontmatter promoted to a "
+                "heading), or that two headings have the same ancestor "
+                "chain.",
+                file=sys.stderr,
+            )
+            result["error"] = (
+                f"md_path_unresolved: MD_PATH {md_path!r} did not match exactly "
+                f"one heading in {file_path!r}; refusing to fall back to "
+                f"top-of-file insertion to avoid mass-corruption."
+            )
+            return result
+        insert_idx = resolved_idx
         new_block = _build_beacon_block(
             bid=simple_id,
             role=role_display,

@@ -93,35 +93,74 @@ def load_nexus_root(data: Dict[str, Any]) -> Dict[str, Any]:
 def detach_yaml_frontmatter_child(node: Dict[str, Any]) -> tuple[str | None, Dict[str, Any]]:
     """Return (frontmatter_text, node_without_frontmatter_child).
 
-    If the node has an immediate child named ``⚙️ YAML Frontmatter``, we remove
-    that child from the returned node copy and return its note text separately so
-    callers can prepend it verbatim outside the markdown-it/mdformat pipeline.
+    Looks for YAML frontmatter in two places, in priority order:
+      1. An immediate child node named ``⚙️ YAML Frontmatter`` (the canonical
+         representation produced by ``parse_markdown_structure``). If found,
+         the child is removed from the returned node copy and its note text
+         is returned separately.
+      2. (Fallback safety net, Dan 2026-04-30) The root node's own ``note``
+         field, when it begins with a ``---`` fence followed by a closing
+         ``---``. This catches the case where Workflowy lost the frontmatter
+         child node (e.g. agent edits, F12 refresh quirks) but the YAML
+         content survived inside the file root's note. Without this fallback,
+         ``nexus_to_tokens`` would emit the YAML body as a regular Markdown
+         heading, mangling the frontmatter (the root cause of the F12+3 99-file
+         corruption observed Apr 2026).
+
+    Returns (None, node) only when no frontmatter is detected by either path.
     """
+    import sys
+
     if not isinstance(node, dict):
         return None, node
 
     children = node.get("children") or []
     if not isinstance(children, list):
-        return None, node
+        children = []
 
     frontmatter_text: str | None = None
     kept_children: list[Dict[str, Any]] = []
-    found = False
+    found_child = False
 
     for child in children:
         if isinstance(child, dict) and (child.get("name") or "").strip() == "⚙️ YAML Frontmatter":
             if frontmatter_text is None:
                 frontmatter_text = str(child.get("note") or "")
-            found = True
+            found_child = True
             continue
         kept_children.append(child)
 
-    if not found:
-        return None, node
+    if found_child:
+        node_copy = dict(node)
+        node_copy["children"] = kept_children
+        return frontmatter_text, node_copy
 
-    node_copy = dict(node)
-    node_copy["children"] = kept_children
-    return frontmatter_text, node_copy
+    # Fallback: probe the root node's own note for a `---`-fenced YAML block.
+    root_note = node.get("note") or ""
+    if isinstance(root_note, str) and root_note:
+        note_lines = root_note.splitlines()
+        if note_lines and note_lines[0].strip() == "---":
+            for idx in range(1, len(note_lines)):
+                if note_lines[idx].strip() == "---":
+                    fm_lines = note_lines[1:idx]
+                    remaining_note_lines = note_lines[idx + 1 :]
+                    fm_text = "\n".join(fm_lines).strip("\n") or None
+                    print(
+                        "[MD-ROUNDTRIP] detach_yaml_frontmatter_child: "
+                        "recovered frontmatter from root-node note (no "
+                        "'⚙️ YAML Frontmatter' child found). This indicates "
+                        "the Workflowy frontmatter child went missing; "
+                        "falling back to root-note YAML to avoid mangling.",
+                        file=sys.stderr,
+                    )
+                    node_copy = dict(node)
+                    # Strip the YAML block from the note so it isn't emitted twice.
+                    node_copy["note"] = "\n".join(remaining_note_lines).lstrip("\n")
+                    return fm_text, node_copy
+            # First line was '---' but no closing '---' was found; treat as
+            # normal text (don't risk mangling).
+
+    return None, node
 
 
 # @beacon[
