@@ -212,6 +212,12 @@ EMOJI_VUE = "🟩"
 DEBUG_MD_BEACONS = bool(os.environ.get("CARTOGRAPHER_MD_BEACONS"))
 
 
+# @beacon[
+#   id=auto-beacon@_get_line_count-8i2t,
+#   role=_get_line_count,
+#   slice_labels=test-beacon,
+#   kind=ast,
+# ]
 def _get_line_count(path: str) -> Optional[int]:
     """Return number of lines in a text file, or None on error.
 
@@ -245,6 +251,13 @@ def _portable_relpath(abs_path: str, repo_root: str) -> str | None:
         return None
 
 
+# @beacon[
+#   id=carto-path@format_file_note,
+#   role=format_file_note,
+#   slice_labels=nexus-md-header-path,nexus-path-resolution-logic,
+#   kind=ast,
+#   comment=Emit Cartographer FILE-node Path headers under the current portability and segments model,
+# ]
 def format_file_note(
     path: str,
     line_count: int | None = None,
@@ -806,6 +819,12 @@ def apply_markdown_beacons(
                 beacon["kind"] = "ast"
             break
 
+    # @beacon[
+    #   id=auto-beacon@apply_markdown_beacons.iter_nodes-rva1,
+    #   role=apply_markdown_beacons.iter_nodes,
+    #   slice_labels=test-beacon,
+    #   kind=ast,
+    # ]
     def iter_nodes(nodes: List[Dict[str, Any]]):
         for node in nodes:
             yield node
@@ -5369,7 +5388,7 @@ def parse_vue_outline(file_path: str) -> List[Dict[str, Any]]:
 # @beacon[
 #   id=auto-beacon@map_codebase,
 #   role=map_codebase,
-#   slice_labels=carto-js-ts,f9-f12-handlers,
+#   slice_labels=carto-js-ts,f9-f12-handlers,nexus-path-resolution-logic,
 #   kind=ast,
 # ]
 # Phase 1 JS/TS: directory + single-file dispatcher. This will be extended
@@ -5406,7 +5425,7 @@ def map_codebase(
     # @beacon[
     #   id=auto-beacon@map_codebase._collect_nexusignore_patterns-3h3e,
     #   role=map_codebase._collect_nexusignore_patterns,
-    #   slice_labels=f9-f12-handlers,
+    #   slice_labels=f9-f12-handlers,nexus-path-resolution-logic,
     #   kind=ast,
     # ]
     def _collect_nexusignore_patterns(
@@ -8052,8 +8071,34 @@ def update_beacon_from_node_python(
 
         block_span = _find_beacon_block_by_id(beacon_id)
         if block_span is not None:
-            # Case 1a: UPDATE existing beacon on disk.
             start_idx, end_idx, _cl = block_span
+
+            # Tag-vanish DELETE path: if Workflowy name has NO trailing #tags,
+            # delete the on-disk beacon block (regardless of kind=ast or kind=span).
+            # Span beacons with no slice_labels are useless (cannot appear in
+            # any context slice filter), so removing them when tags vanish is
+            # the correct UX -- it lets users delete beacons by simply removing
+            # the tag from the Workflowy node name.
+            if not tags:
+                new_lines = lines[:start_idx] + lines[end_idx + 1 :]
+                try:
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write("\n".join(new_lines) + "\n")
+                except Exception as e:  # noqa: BLE001
+                    result["error"] = f"failed_to_write_file: {e}"
+                    return result
+
+                result.update(
+                    {
+                        "operation": "deleted_beacon",
+                        "beacon_id": beacon_id,
+                        "role": role_display or "",
+                        "slice_labels": "",
+                    }
+                )
+                return result
+
+            # Case 1a: UPDATE existing beacon on disk.
 
             # Preserve existing kind (span vs ast) when updating an on-disk beacon.
             existing_kind = "ast"
@@ -8100,62 +8145,12 @@ def update_beacon_from_node_python(
             )
             return result
         else:
-            # Case 1b: CREATE beacon from note metadata (beacon_id in note, not on disk).
-            # Use AST_QUALNAME to find insertion point.
-            target_line: Optional[int] = None
-            if ast_qualname:
-                try:
-                    outline_nodes = parse_file_outline(file_path)
-                except Exception:
-                    outline_nodes = []
-
-                if outline_nodes:
-                    def _iter_nodes(nodes_list: list[dict[str, Any]]):
-                        for n in nodes_list:
-                            if isinstance(n, dict):
-                                yield n
-                                for ch in n.get("children") or []:
-                                    if isinstance(ch, dict):
-                                        yield from _iter_nodes([ch])
-
-                    for n in _iter_nodes(outline_nodes):
-                        if n.get("ast_qualname") == ast_qualname:
-                            ln = n.get("orig_lineno_start_unused")
-                            if isinstance(ln, int) and ln > 0:
-                                target_line = ln
-                                break
-
-            if not isinstance(target_line, int) or target_line <= 0 or target_line > len(lines):
-                insert_idx = 0
-            else:
-                insert_idx = target_line - 1
-
-            new_block = _build_beacon_block(
-                bid=beacon_id,
-                role=role_display or "",
-                slice_labels=slice_labels_canon,
-                kind="ast",
-                show_span=show_span_note,
-                comment_text=comment_val,
-            )
-            new_block = _indent_beacon_block(new_block, lines, insert_idx)
-            new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
-            try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(new_lines) + "\n")
-            except Exception as e:  # noqa: BLE001
-                result["error"] = f"failed_to_write_file: {e}"
-                return result
-
-            result.update(
-                {
-                    "operation": "created_beacon",
-                    "beacon_id": beacon_id,
-                    "role": role_display,
-                    "slice_labels": slice_labels_canon,
-                    "comment": comment_val,
-                }
-            )
+            # Beacon id present in Workflowy note but no matching block on disk.
+            # (Formerly Case 1b: CREATE beacon from note metadata.) This path was
+            # used when a user pasted a BEACON metadata block into a Workflowy
+            # note to materialize an AST beacon on disk. Removed as deprecated:
+            # AST beacons should be created via the simpler tags-only path
+            # (Case 2). Treat as noop.
             return result
 
     # Helper: delete beacon(s) for this AST_QUALNAME using Cartographer outline.
@@ -8218,9 +8213,11 @@ def update_beacon_from_node_python(
         return bid
 
     # Case 1c: DELETE beacon when note has no BEACON metadata and no tags.
-    # This covers the common Python F12 path where F12-per-node originally created
-    # a beacon for this AST_QUALNAME and the user later deletes the tags and
-    # BEACON block from the Workflowy note (leaving only AST_QUALNAME).
+    # Fallback safety net: if the user manually deleted the BEACON block from
+    # the Workflowy note (so beacon_id is empty) AND removed the tags from the
+    # name, we still walk the on-disk source and remove the orphaned beacon
+    # for this AST_QUALNAME. The primary tag-vanish DELETE path now lives in
+    # Case 1a above (when beacon_id is still in the note).
     if ast_qualname and not tags and not beacon_id:
         deleted_id = _delete_beacon_for_ast_qualname(ast_qualname)
         if deleted_id:
@@ -8439,10 +8436,36 @@ def update_beacon_from_node_js_ts(
         )
 
         block_span = _find_beacon_block_by_id(beacon_id)
-        
+
         if block_span is not None:
-            # Case 1a: UPDATE existing beacon on disk.
             start_idx, end_idx, _cl = block_span
+
+            # Tag-vanish DELETE path: if Workflowy name has NO trailing #tags,
+            # delete the on-disk beacon block (regardless of kind=ast or kind=span).
+            # Span beacons with no slice_labels are useless (cannot appear in
+            # any context slice filter), so removing them when tags vanish is
+            # the correct UX -- it lets users delete beacons by simply removing
+            # the tag from the Workflowy node name.
+            if not tags:
+                new_lines = lines[:start_idx] + lines[end_idx + 1 :]
+                try:
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write("\n".join(new_lines) + "\n")
+                except Exception as e:  # noqa: BLE001
+                    result["error"] = f"failed_to_write_file: {e}"
+                    return result
+
+                result.update(
+                    {
+                        "operation": "deleted_beacon",
+                        "beacon_id": beacon_id,
+                        "role": role_display or "",
+                        "slice_labels": "",
+                    }
+                )
+                return result
+
+            # Case 1a: UPDATE existing beacon on disk.
 
             # Preserve existing kind (span vs ast) when updating an on-disk beacon.
             existing_kind = "ast"
@@ -8488,62 +8511,12 @@ def update_beacon_from_node_js_ts(
             )
             return result
         else:
-            # Case 1b: CREATE beacon from note metadata (beacon_id in note, not on disk).
-            # Use AST_QUALNAME to find insertion point.
-            target_line: Optional[int] = None
-            if ast_qualname:
-                try:
-                    outline_nodes = parse_js_ts_outline(file_path)
-                except Exception:
-                    outline_nodes = []
-
-                if outline_nodes:
-                    def _iter_nodes(nodes_list: list[dict[str, Any]]):
-                        for n in nodes_list:
-                            if isinstance(n, dict):
-                                yield n
-                                for ch in n.get("children") or []:
-                                    if isinstance(ch, dict):
-                                        yield from _iter_nodes([ch])
-
-                    for n in _iter_nodes(outline_nodes):
-                        if n.get("ast_qualname") == ast_qualname:
-                            ln = n.get("orig_lineno_start_unused")
-                            if isinstance(ln, int) and ln > 0:
-                                target_line = ln
-                                break
-
-            if not isinstance(target_line, int) or target_line <= 0 or target_line > len(lines):
-                insert_idx = 0
-            else:
-                insert_idx = target_line - 1
-
-            new_block = _build_beacon_block(
-                bid=beacon_id,
-                role=role_display or "",
-                slice_labels=slice_labels_canon,
-                kind="ast",
-                show_span=show_span_note,
-                comment_text=comment_val,
-            )
-            new_block = _indent_beacon_block(new_block, lines, insert_idx)
-            new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
-            try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(new_lines) + "\n")
-            except Exception as e:  # noqa: BLE001
-                result["error"] = f"failed_to_write_file: {e}"
-                return result
-
-            result.update(
-                {
-                    "operation": "created_beacon",
-                    "beacon_id": beacon_id,
-                    "role": role_display,
-                    "slice_labels": slice_labels_canon,
-                    "comment": comment_val,
-                }
-            )
+            # Beacon id present in Workflowy note but no matching block on disk.
+            # (Formerly Case 1b: CREATE beacon from note metadata.) This path was
+            # used when a user pasted a BEACON metadata block into a Workflowy
+            # note to materialize an AST beacon on disk. Removed as deprecated:
+            # AST beacons should be created via the simpler tags-only path
+            # (Case 2). Treat as noop.
             return result
 
     # Helper: delete beacon(s) for this AST_QUALNAME using JS/TS Cartographer outline.
@@ -8603,9 +8576,11 @@ def update_beacon_from_node_js_ts(
         return bid
 
     # Case 1c: DELETE beacon when note has no BEACON metadata and no tags.
-    # This covers the common JS/TS F12 path where F12-per-node originally created
-    # a beacon for this AST_QUALNAME and the user later deletes the tags and
-    # BEACON block from the Workflowy note (leaving only AST_QUALNAME).
+    # Fallback safety net: if the user manually deleted the BEACON block from
+    # the Workflowy note (so beacon_id is empty) AND removed the tags from the
+    # name, we still walk the on-disk source and remove the orphaned beacon
+    # for this AST_QUALNAME. The primary tag-vanish DELETE path now lives in
+    # Case 1a above (when beacon_id is still in the note).
     if ast_qualname and not tags and not beacon_id:
         deleted_id = _delete_beacon_for_ast_qualname_js_ts(ast_qualname)
         if deleted_id:
@@ -9303,10 +9278,36 @@ def update_beacon_from_node_markdown(
         )
 
         block_span = _find_beacon_block_by_id(beacon_id)
-        
+
         if block_span is not None:
-            # Case 1a: UPDATE existing beacon on disk.
             start_idx, end_idx, _cl = block_span
+
+            # Tag-vanish DELETE path: if Workflowy name has NO trailing #tags,
+            # delete the on-disk beacon block (regardless of kind=ast or kind=span).
+            # Span beacons with no slice_labels are useless (cannot appear in
+            # any context slice filter), so removing them when tags vanish is
+            # the correct UX -- it lets users delete beacons by simply removing
+            # the tag from the Workflowy node name.
+            if not tags:
+                new_lines = lines[:start_idx] + lines[end_idx + 1 :]
+                try:
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write("\n".join(new_lines) + "\n")
+                except Exception as e:  # noqa: BLE001
+                    result["error"] = f"failed_to_write_file: {e}"
+                    return result
+
+                result.update(
+                    {
+                        "operation": "deleted_beacon",
+                        "beacon_id": beacon_id,
+                        "role": role_display or "",
+                        "slice_labels": "",
+                    }
+                )
+                return result
+
+            # Case 1a: UPDATE existing beacon on disk.
 
             # Preserve existing kind (span vs ast) when updating an on-disk beacon.
             existing_kind = "ast"
@@ -9351,42 +9352,12 @@ def update_beacon_from_node_markdown(
             )
             return result
         else:
-            # Case 1b: CREATE beacon from note metadata (beacon_id in note, not on disk).
-            # For Markdown, locate the exact heading by MD_PATH and insert the
-            # HTML beacon block immediately above it. Fall back to top-of-file
-            # only when the heading cannot be resolved unambiguously.
-            insert_idx = 0
-            if md_path:
-                resolved_idx = _find_markdown_heading_insert_idx(lines, md_path)
-                if isinstance(resolved_idx, int) and resolved_idx >= 0:
-                    insert_idx = resolved_idx
-
-            new_block = _build_beacon_block(
-                bid=beacon_id,
-                role=role_display or "",
-                slice_labels=slice_labels_canon,
-                kind="ast",
-                show_span=show_span_note,
-                comment_text=comment_val,
-            )
-            new_block = _indent_beacon_block(new_block, lines, insert_idx)
-            new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
-            try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(new_lines) + "\n")
-            except Exception as e:  # noqa: BLE001
-                result["error"] = f"failed_to_write_file: {e}"
-                return result
-
-            result.update(
-                {
-                    "operation": "created_beacon",
-                    "beacon_id": beacon_id,
-                    "role": role_display,
-                    "slice_labels": slice_labels_canon,
-                    "comment": comment_val,
-                }
-            )
+            # Beacon id present in Workflowy note but no matching block on disk.
+            # (Formerly Case 1b: CREATE beacon from note metadata.) This path was
+            # used when a user pasted a BEACON metadata block into a Workflowy
+            # note to materialize a Markdown heading beacon on disk. Removed as
+            # deprecated: Markdown heading beacons should be created via the
+            # simpler tags-only path (Case 2). Treat as noop.
             return result
 
     # Helper: delete beacon(s) for this MD_PATH using Cartographer Markdown outline.
@@ -9522,9 +9493,11 @@ def update_beacon_from_node_markdown(
         return bid
 
     # Case 1c: DELETE beacon when note has no BEACON metadata and no tags.
-    # This covers the common Markdown F12 path where F12-per-node originally created
-    # a beacon block for this MD_PATH and the user later deletes the tags and
-    # BEACON block from the Workflowy note (leaving only MD_PATH).
+    # Fallback safety net: if the user manually deleted the BEACON block from
+    # the Workflowy note (so beacon_id is empty) AND removed the tags from the
+    # name, we still walk the on-disk source and remove the orphaned beacon
+    # for this MD_PATH. The primary tag-vanish DELETE path now lives in
+    # Case 1a above (when beacon_id is still in the note).
     if md_path and not tags and not beacon_id:
         deleted_id = _delete_beacon_for_md_path(md_path)
         if deleted_id:
