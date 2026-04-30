@@ -153,7 +153,6 @@ def _read_lines(path: str) -> List[str]:
 # ]
 # @beacon[
 #   id=carto-js-ts@_python_resolve_ast_node_heuristic,
-
 #   role=carto-js-ts,
 #   slice_labels=carto-js-ts,carto-js-ts-snippets,ra-snippet-range-ast-py,f9-f12-handlers,ra-reconcile,
 #   kind=span,
@@ -1174,6 +1173,12 @@ def _js_ts_find_closing_beacon_span(
 # ]
 # Phase 3 JS/TS: JS/TS AST node finder for beacons.
 # Searches recursively through the outline tree for AST nodes with matching beacon IDs.
+# @beacon[
+#   id=auto-beacon@_js_ts_find_ast_node_for_beacon-zowk,
+#   role=_js_ts_find_ast_node_for_beacon,
+#   slice_labels=test-beacon,
+#   kind=ast,
+# ]
 def _js_ts_find_ast_node_for_beacon(
     outline_nodes: List[dict],
     beacon_id: str,
@@ -1751,6 +1756,12 @@ def _yaml_snippet_for_beacon(
     target = beacon_id.strip()
     n = len(lines)
 
+    # @beacon[
+    #   id=auto-beacon@_yaml_snippet_for_beacon._comment_line_for_id-5jxp,
+    #   role=_yaml_snippet_for_beacon._comment_line_for_id,
+    #   slice_labels=test-beacon,
+    #   kind=ast,
+    # ]
     def _comment_line_for_id(bid: str) -> Optional[int]:
         bid = bid.strip()
         if not bid:
@@ -2978,6 +2989,97 @@ if __name__ == "__main__":  # pragma: no cover
 #   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,f9-f12-handlers,ra-read-text-snippet,
 #   kind=ast,
 # ]
+def _md_beacon_has_brief_label(file_path: str, heading_line: int) -> bool:
+    """Check whether the on-disk MD beacon decorating a heading has a brief label.
+
+    "Brief" labels are slice_labels that are exactly ``b`` or start with ``b-``.
+    When present on the beacon directly above a heading, the snippet retrieval
+    for that heading should stop at the next heading of ANY level (rather than
+    the default "next heading of same-or-higher level" which includes nested
+    subsections).
+
+    This is a Markdown-only feature controlled by the user adding ``#b`` or
+    ``#b-*`` as a Workflowy tag on the heading node; F12 then promotes those
+    tags to slice_labels on the on-disk beacon block, where this function
+    discovers them.
+
+    Returns False on any error (e.g., no beacon directly above the heading,
+    parse failure). Brief mode is purely opt-in.
+    """
+    if heading_line <= 1:
+        return False
+
+    if nexus_map_codebase is None:
+        return False
+
+    try:
+        lines = _read_lines(file_path)
+    except Exception:  # noqa: BLE001
+        return False
+
+    if heading_line > len(lines):
+        return False
+
+    try:
+        beacons = nexus_map_codebase.parse_markdown_beacon_blocks(lines)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        return False
+
+    if not beacons:
+        return False
+
+    # Find the closest beacon block whose closing '-->' sits in the few lines
+    # immediately above the heading line. apply_markdown_beacons inserts AST
+    # beacon blocks directly above the heading, so the gap is typically zero
+    # or one blank line. We search up to ~6 lines above to be lenient toward
+    # mdformat reformatting.
+    LOOKBACK = 6
+    chosen: Optional[dict[str, Any]] = None
+    for b in beacons:
+        cl = b.get("comment_line")
+        if not isinstance(cl, int) or cl <= 0 or cl >= heading_line:
+            continue
+        # Walk forward from comment_line to find the closing '-->'.
+        block_end = cl
+        j = cl
+        while j <= len(lines):
+            if "-->" in lines[j - 1]:
+                block_end = j
+                break
+            j += 1
+        # Only consider beacons whose block ends within LOOKBACK lines above
+        # the heading. Lines between block_end and heading_line should be
+        # blank.
+        if block_end >= heading_line:
+            continue
+        if heading_line - block_end > LOOKBACK:
+            continue
+        gap_lines = lines[block_end:heading_line - 1]
+        if any(line.strip() for line in gap_lines):
+            continue
+        # Closer match wins (smaller gap).
+        if chosen is None or block_end > int(chosen.get("_block_end") or 0):
+            chosen = dict(b)
+            chosen["_block_end"] = block_end
+
+    if chosen is None:
+        return False
+
+    raw_labels = str(chosen.get("slice_labels") or "")
+    if not raw_labels.strip():
+        return False
+
+    # slice_labels in beacon blocks are comma-separated (and may carry minor
+    # whitespace). Split, strip, and check the brief rule.
+    for token in raw_labels.split(","):
+        label = token.strip()
+        if not label:
+            continue
+        if label == "b" or label.startswith("b-"):
+            return True
+    return False
+
+
 def get_snippet_for_md_path(
     file_path: str,
     md_path_lines: List[str],
@@ -3004,6 +3106,14 @@ def get_snippet_for_md_path(
       or higher level, with standard ``context`` padding.
     - If zero or multiple matches, raise RuntimeError so the MCP layer can
       surface a clear error (we do *not* guess).
+
+    Brief-mode override:
+    - If the heading is decorated by an on-disk MD beacon whose slice_labels
+      include ``b`` or any token starting with ``b-``, the core span instead
+      stops at the next heading of ANY level (i.e., the first nested ``###``
+      or peer ``##`` ends the snippet). This lets users tag a heading with
+      ``#b`` or ``#b-foo`` to opt into a brief, body-only snippet without
+      changing the snippet API.
     """
     import re
     from markdown_it import MarkdownIt
@@ -3123,8 +3233,15 @@ def get_snippet_for_md_path(
 
     # ------------------------------------------------------------------
     # 4. Core span: from this heading down to just before the next
-    #    heading of the same or higher level in the AST stream.
+    #    heading. By default we stop at the next heading of the same
+    #    or higher level (so a ``##`` snippet includes nested ``###``
+    #    children). If the on-disk beacon decorating this heading
+    #    carries a brief label (slice_label == "b" or starts with
+    #    "b-"), we instead stop at the next heading of ANY level.
     # ------------------------------------------------------------------
+    brief_mode = _md_beacon_has_brief_label(file_path, heading_line)
+    termination_max_level = 32 if brief_mode else heading_level
+
     core_start = heading_line
     core_end = n
 
@@ -3132,7 +3249,7 @@ def get_snippet_for_md_path(
         other = headings[j]
         other_level = int(other.get("level") or 0)
         other_start = int(other.get("start_line") or 0)
-        if other_level <= heading_level and other_start > 0:
+        if other_level <= termination_max_level and other_start > 0:
             core_end = other_start - 1
             break
 
@@ -3143,10 +3260,11 @@ def get_snippet_for_md_path(
     end_line = min(n, core_end + context)
 
     metadata = {
-        "resolution_strategy": "md_path_ast",
+        "resolution_strategy": "md_path_ast_brief" if brief_mode else "md_path_ast",
         "confidence": 1.0,
         "ambiguity": "none",
         "candidates": None,
+        "brief_mode": brief_mode,
     }
     return start_line, end_line, lines, core_start, core_end, core_start, metadata
 
