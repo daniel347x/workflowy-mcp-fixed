@@ -742,6 +742,13 @@ def _extract_markdown_beacon_context(lines: list[str], comment_line: int) -> Lis
 # Phase 2 JS/TS: Markdown beacon application template.
 # Reference for apply_js_beacons(...) when attaching JS/TS span
 # and AST beacons under headings / AST nodes with context comments.
+# @beacon[
+#   id=auto-beacon@apply_markdown_beacons-mdast,
+#   role=apply_markdown_beacons,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,f9-f12-handlers,ra-reconcile,carto-js-ts-beacons,
+#   kind=ast,
+#   comment=Attach Markdown beacons under headings or decorate headings directly. Writes BEACON (MD AST) blocks into Workflowy heading notes — ANY field-ordering or whitespace difference between cache and on-disk reapply triggers spurious UPDATE in node_data_equal. F12+3 phase 8 reads, this writes (during F12 ingest path).,
+# ]
 def apply_markdown_beacons(
     lines: list[str],
     root_children: List[Dict[str, Any]],
@@ -1222,8 +1229,9 @@ def _frontmatter_has_ignore_mdformat(frontmatter: str | None) -> bool:
 # @beacon[
 #   id=auto-beacon@parse_markdown_structure-z918,
 #   role=parse_markdown_structure,
-#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,
+#   slice_labels=nexus-md-header-path,ra-snippet-range-ast-md,f9-f12-handlers,ra-reconcile,
 #   kind=ast,
+#   comment=Parses Markdown into NEXUS node tree (AST). Phase 8 of F12+3 (post-write reconcile reads back from disk via this) — emits MD_PATH metadata for every heading. Suspect for spurious-UPDATE generation if MD_PATH ordering or whitespace round-trips differ from cache.,
 # ]
 def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
     """Parses Markdown into NEXUS node tree using markdown-it-py.
@@ -9510,6 +9518,13 @@ def update_beacon_from_node_vue(
 # Markdown: update/create/delete a beacon for a single heading/beacon node
 # based on Workflowy name/note fields. Uses MD_PATH to locate the heading
 # and mirrors the Python/JS/TS behavior for slice_labels and comments.
+# @beacon[
+#   id=auto-beacon@update_beacon_from_node_markdown-mdast,
+#   role=update_beacon_from_node_markdown,
+#   slice_labels=f9-f12-handlers,ra-reconcile,ra-bulk-visible-apply,nexus-md-header-path,carto-js-ts-beacons,
+#   kind=ast,
+#   comment=Per-node Markdown beacon write helper called once for EVERY bulk-apply candidate during F12+3 step [3]. Cases 1a/1b/1c handle update/recreate/delete; Case 2 handles tag-driven creation with idempotency guard (Fix A from commit d80b3df). Per-call cost dominates F12+3 wall-clock time when bulk-apply touches all ~533 candidates.,
+# ]
 def update_beacon_from_node_markdown(
     file_path: str,
     name: str,

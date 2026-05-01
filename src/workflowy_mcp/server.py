@@ -3555,6 +3555,13 @@ def _is_folder_like_payload_node(node: dict[str, Any]) -> bool:
     return False
 
 
+# @beacon[
+#   id=bulk-visible-apply@_normalize_bulk_visible_compare_text,
+#   role=_normalize_bulk_visible_compare_text,
+#   slice_labels=f9-f12-handlers,ra-reconcile,ra-bulk-visible-apply,ra-workflowy-cache,
+#   kind=ast,
+#   comment=Whitens visible-DOM vs cache text for spurious-UPDATE detection in F12 bulk-apply pre-pass; tied to F12+3 timeout investigation,
+# ]
 def _normalize_bulk_visible_compare_text(text: str | None) -> str:
     s = str(text or "")
     try:
@@ -3570,6 +3577,13 @@ def _normalize_bulk_visible_compare_text(text: str | None) -> str:
     return s
 
 
+# @beacon[
+#   id=bulk-visible-apply@_visible_node_differs_from_cache,
+#   role=_visible_node_differs_from_cache,
+#   slice_labels=f9-f12-handlers,ra-reconcile,ra-bulk-visible-apply,ra-workflowy-cache,
+#   kind=ast,
+#   comment=Helper that compares visible Workflowy DOM against /nodes-export cache; deliberately NOT used as bulk-apply pre-filter (see comment in _collect_bulk_visible_apply_groups). Always returned True after refresh and caused F12+2 nothing-happens bug.,
+# ]
 def _visible_node_differs_from_cache(node: dict[str, Any], nodes_by_id_cache: dict[str, dict[str, Any]]) -> bool:
     node_id = str(node.get("id") or "").strip()
     if not node_id:
@@ -3586,6 +3600,13 @@ def _visible_node_differs_from_cache(node: dict[str, Any], nodes_by_id_cache: di
     return visible_name != cached_name or visible_note != cached_note
 
 
+# @beacon[
+#   id=bulk-visible-apply@_is_bulk_visible_apply_candidate,
+#   role=_is_bulk_visible_apply_candidate,
+#   slice_labels=f9-f12-handlers,ra-reconcile,ra-bulk-visible-apply,ra-carto-jobs,
+#   kind=ast,
+#   comment=Bulk-apply candidate filter for F12+3 step [3] pre-pass. Returns True if node note contains AST_QUALNAME / BEACON / MD_PATH. SUSPECTED OVER-INCLUSIVE on fully-synced Markdown files (~533 candidates per F12+3 even when only one tagged subtree was added),
+# ]
 def _is_bulk_visible_apply_candidate(node: dict[str, Any]) -> bool:
     if _is_file_like_payload_node(node):
         return False
@@ -3599,6 +3620,13 @@ def _is_bulk_visible_apply_candidate(node: dict[str, Any]) -> bool:
     )
 
 
+# @beacon[
+#   id=bulk-visible-apply@_build_bulk_visible_root_from_payload,
+#   role=_build_bulk_visible_root_from_payload,
+#   slice_labels=f9-f12-handlers,ra-bulk-visible-apply,ra-carto-jobs,
+#   kind=ast,
+#   comment=Build bulk-visible-apply root tree from F12+3 payload (visible_tree+root+children) before _collect_bulk_visible_apply_groups walk,
+# ]
 def _build_bulk_visible_root_from_payload(data: dict[str, Any]) -> dict[str, Any] | None:
     visible_tree = data.get("visible_tree")
     if not isinstance(visible_tree, dict):
@@ -3690,6 +3718,13 @@ async def _build_synthetic_visible_tree_from_cache(
     }
 
 
+# @beacon[
+#   id=bulk-visible-apply@_collect_bulk_visible_apply_groups,
+#   role=_collect_bulk_visible_apply_groups,
+#   slice_labels=f9-f12-handlers,ra-reconcile,ra-bulk-visible-apply,ra-carto-jobs,ra-workflowy-cache,
+#   kind=ast,
+#   comment=Walk visible tree and group bulk-apply candidates by enclosing FILE node. NOTE: deliberately NO pre-filter via _visible_node_differs_from_cache (see inline comment); every candidate flows through update_beacon_from_node_<lang>. KEY DIAGNOSTIC FOR F12+3 TIMEOUT: this is where ~533 candidates get fanned out per refresh.,
+# ]
 def _collect_bulk_visible_apply_groups(
     root_node: dict[str, Any],
     nodes_by_id_cache: dict[str, dict[str, Any]] | None = None,
@@ -3756,6 +3791,13 @@ def _collect_bulk_visible_apply_groups(
     )
 
 
+# @beacon[
+#   id=bulk-visible-apply@_run_carto_bulk_visible_apply_job,
+#   role=_run_carto_bulk_visible_apply_job,
+#   slice_labels=f9-f12-handlers,ra-reconcile,ra-bulk-visible-apply,ra-carto-jobs,ra-logging,ra-workflowy-cache,
+#   kind=ast,
+#   comment=Async runner for F12+3 step [3] bulk-apply pre-pass. Awaits cache+carto quiescence, calls _collect_bulk_visible_apply_groups, then loops every candidate calling client.update_beacon_from_node + (per-file) refresh_file_node_beacons. PRIMARY SUSPECT for F12+3 timeout: serializes ~533 update_beacon_from_node calls + per-file refreshes; per-call cost is the multiplier.,
+# ]
 async def _run_carto_bulk_visible_apply_job(job_file: str, root_node: dict[str, Any], mode: str) -> None:
     client = get_client()
     job = _read_carto_job_payload(job_file) or {}
@@ -3982,6 +4024,13 @@ async def _run_carto_bulk_visible_apply_job(job_file: str, root_node: dict[str, 
         await _refresh_carto_job_tracker_once()
 
 
+# @beacon[
+#   id=bulk-visible-apply@_start_carto_bulk_visible_apply_job,
+#   role=_start_carto_bulk_visible_apply_job,
+#   slice_labels=f9-f12-handlers,ra-reconcile,ra-bulk-visible-apply,ra-carto-jobs,ra-logging,
+#   kind=ast,
+#   comment=Entry point that allocates a CARTO_BULK_APPLY job JSON (under cartographer_jobs/) and schedules _run_carto_bulk_visible_apply_job. Called by _handle_generate_markdown_file step [3]. Logs all activity to <ts>_carto-bulk-apply-<file|folder>-<id>.{log,json}.,
+# ]
 async def _start_carto_bulk_visible_apply_job(
     *,
     root_uuid: str,

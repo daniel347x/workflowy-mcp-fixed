@@ -439,8 +439,9 @@ def _collect_markdown_ast_beacon_nodes(root_node: Dict[str, Any]) -> list[tuple[
 # @beacon[
 #   id=auto-beacon@reapply_markdown_ast_beacons-4n6x,
 #   role=reapply_markdown_ast_beacons,
-#   slice_labels=nexus-md-header-path,f9-f12-handlers,
+#   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-reconcile,ra-bulk-visible-apply,carto-js-ts-beacons,
 #   kind=ast,
+#   comment=F12+3 phase 7 disk-write rehydrator. Walks Workflowy subtree for BEACON (MD AST) nodes and recreates HTML-comment beacon blocks via update_beacon_from_node_markdown. Runs AFTER nexus_to_tokens emits beacon-free Markdown (phase 6). Calls update_beacon_from_node_markdown once per beaconed heading — separate from F12+3 step [3] bulk-apply pre-pass which uses the same helper.,
 # ]
 def reapply_markdown_ast_beacons(file_path: str, root_node: Dict[str, Any]) -> list[Dict[str, Any]]:
     """Rehydrate Markdown AST beacons onto a regenerated Markdown file.
