@@ -1448,6 +1448,67 @@ def _extract_beacon_id_from_note(note: str | None) -> str | None:
 
 
 # @beacon[
+#   id=auto-beacon@_extract_slice_labels_from_beacon_block-2nx9,
+#   role=_extract_slice_labels_from_beacon_block,
+#   slice_labels=ra-reconcile,f9-f12-handlers,ra-bulk-visible-apply,
+#   kind=ast,
+#   comment=Sibling of _extract_beacon_id_from_note. Reads the slice_labels: line out of the BEACON (...) block in a node note. Used by the F12+3 step [3] bulk-apply pre-filter to detect nodes whose name #tags already match the on-disk beacon block (skipping the ~480ms MarkdownIt parse for those nodes).,
+# ]
+def _extract_slice_labels_from_beacon_block(note: str | None) -> str | None:
+    """Extract `slice_labels:` field from a node's BEACON (...) block, if any.
+
+    Returns None if the note has no BEACON block or no slice_labels line
+    inside it. Returns the raw value otherwise (caller may canonicalize).
+    """
+    if not isinstance(note, str) or "BEACON (" not in note:
+        return None
+    in_block = False
+    for line in note.splitlines():
+        stripped = line.strip()
+        if not in_block:
+            if stripped.startswith("BEACON ("):
+                in_block = True
+            continue
+        # Inside the block. Empty line OR a separator '---' ends the block.
+        if not stripped or stripped == "---":
+            return None
+        if stripped.startswith("slice_labels:"):
+            val = stripped.split(":", 1)[1].strip()
+            return val
+    return None
+
+
+# @beacon[
+#   id=auto-beacon@_extract_role_from_beacon_block-7d4q,
+#   role=_extract_role_from_beacon_block,
+#   slice_labels=ra-reconcile,f9-f12-handlers,ra-bulk-visible-apply,
+#   kind=ast,
+#   comment=Sibling of _extract_beacon_id_from_note. Reads the role: line out of the BEACON (...) block in a node note. Used by the F12+3 step [3] bulk-apply pre-filter to detect nodes whose decoration-stripped name matches the on-disk beacon block's role (e.g. catches Workflowy heading renames that need a disk write).,
+# ]
+def _extract_role_from_beacon_block(note: str | None) -> str | None:
+    """Extract `role:` field from a node's BEACON (...) block, if any.
+
+    Returns None if the note has no BEACON block or no role line inside it.
+    Returns the raw value otherwise.
+    """
+    if not isinstance(note, str) or "BEACON (" not in note:
+        return None
+    in_block = False
+    for line in note.splitlines():
+        stripped = line.strip()
+        if not in_block:
+            if stripped.startswith("BEACON ("):
+                in_block = True
+            continue
+        if not stripped or stripped == "---":
+            return None
+        if stripped.startswith("role:"):
+            val = stripped.split(":", 1)[1].strip()
+            return val
+    return None
+
+
+# @beacon[
 #   id=auto-beacon@_extract_ast_qualname_from_note-gzzl,
 #   role=_extract_ast_qualname_from_note,
 #   slice_labels=f9-f12-handlers,ra-reconcile,

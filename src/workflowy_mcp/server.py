@@ -3891,6 +3891,149 @@ def _is_bulk_visible_apply_candidate(node: dict[str, Any]) -> bool:
 
 
 # @beacon[
+#   id=bulk-visible-apply@_node_name_tags_match_beacon_block_in_note,
+#   role=_node_name_tags_match_beacon_block_in_note,
+#   slice_labels=f9-f12-handlers,ra-bulk-visible-apply,ra-workflowy-cache,
+#   kind=ast,
+#   comment=Bulk-apply pre-filter for F12+3 step [3]. Detects nodes whose name #tags + decoration-stripped base text already match the BEACON (MD AST) block in their own note and skips them - avoiding the ~480ms-per-call cost of update_beacon_from_node_markdown's full MarkdownIt parse on a fully-synced file.,
+# ]
+def _node_name_tags_match_beacon_block_in_note(candidate: dict[str, Any]) -> bool:
+    """Return True iff the node's NAME #tags + base text already match the
+    BEACON (MD AST) block embedded in the node's NOTE.
+
+    What this function actually checks
+    ----------------------------------
+    A purely intra-node, text-only equality between two pieces of cached
+    data on the SAME Workflowy node:
+
+      - The trailing '#tag1 #tag2 ...' tokens in the node's NAME, AND
+      - The 'slice_labels:' line inside the BEACON (MD AST) block in the
+        node's NOTE, AND
+      - The decoration-stripped (i.e. without the 'trident' marker)
+        leading text of the NAME, AND
+      - The 'role:' line inside the BEACON (MD AST) block in the NOTE.
+
+    NO disk access. NO MarkdownIt parse. NO Workflowy API call. This is
+    pure in-memory string comparison and runs in microseconds per call.
+
+    Why this also implies "disk is in sync"
+    ---------------------------------------
+    The BEACON (MD AST) block inside the NOTE was only ever written by
+    apply_markdown_beacons (the disk -> Workflowy ingest direction during
+    F12+1). It records what was on disk at the time of the last successful
+    sync. If the user then edits a tag in the Workflowy GUI, the NAME's
+    #tag tokens change immediately, but the BEACON block in the NOTE does
+    NOT change until the next F12+3 round-trip writes the new tag set to
+    disk and the next F12+1 ingest re-reads disk into the NOTE.
+
+    Therefore:
+      - Match between NAME tags and NOTE BEACON slice_labels means the
+        user has NOT edited tags since the last F12 cycle, AND the on-disk
+        beacon block is the most recent thing the system wrote.
+      - Mismatch means the user changed tags in Workflowy, OR the BEACON
+        block in the NOTE is stale, AND the slow path needs to run.
+
+    Why we cannot use the SIMILAR-LOOKING but BROKEN cache-vs-DOM filter
+    ------------------------------------------------------------------
+    History: an earlier filter, _visible_node_differs_from_cache, compared
+    the Workflowy-DOM payload (sent by the GLIMPSE extension) against the
+    /nodes-export cache. That filter caused the F12+2 "nothing happens"
+    bug: the cache had ALWAYS just been refreshed by the handler's
+    pre-flight, so DOM and cache always matched, so the filter ALWAYS
+    skipped every candidate.
+
+    The reason the cache-vs-DOM filter is structurally broken is that the
+    /nodes-export cache refresh has NO SEMANTIC understanding of what the
+    text inside a node MEANS. It just blindly copies whatever Workflowy's
+    server returns into the in-memory cache as opaque strings. The cache
+    refresh does NOT validate that name #tags match note BEACON
+    slice_labels - it cannot, because it has no notion of "tags" or
+    "BEACON blocks" at all. It treats node.name and node.note as plain
+    strings. So if a node is semantically out-of-sync between its NAME
+    and its NOTE BEACON block, the cache refresh just faithfully
+    preserves that out-of-sync state. DOM and cache stay equal because
+    they came from the same source, even though the node itself is
+    internally inconsistent.
+
+    THIS function does NOT have that problem because it ignores the
+    DOM/cache distinction entirely and instead checks whether the NAME's
+    tag suffix is consistent with the NOTE's BEACON slice_labels - a
+    SEMANTIC, intra-node check that the cache refresh process cannot
+    accidentally satisfy.
+
+    Conservative behavior
+    ---------------------
+    Returns True ONLY when:
+      - The note contains a BEACON (MD AST) block (so we know there's an
+        on-disk beacon for this heading; absence means we must let the
+        slow path run to handle CREATE/DELETE), AND
+      - Both slice_labels and role parse cleanly out of that block, AND
+      - Both tag-set and role match exactly after canonicalization.
+
+    Any other case returns False, and the slow path
+    (update_beacon_from_node_markdown) becomes the single source of
+    truth, exactly as before this optimization existed.
+    """
+    name = str(candidate.get("name") or "")
+    note = str(candidate.get("note") or "")
+
+    # Cheap reject: no BEACON block at all means we cannot infer disk
+    # state and must let the slow path run (covers CREATE-from-tags and
+    # delete-orphaned-disk-beacon cases).
+    if "BEACON (" not in note:
+        return False
+
+    try:
+        import importlib
+        cartographer = importlib.import_module("nexus_map_codebase")
+    except Exception:
+        return False
+
+    split_name_and_tags = getattr(cartographer, "split_name_and_tags", None)
+    canonicalize_slice_labels = getattr(cartographer, "_canonicalize_slice_labels", None)
+    extract_slice_labels = getattr(cartographer, "_extract_slice_labels_from_beacon_block", None)
+    extract_role = getattr(cartographer, "_extract_role_from_beacon_block", None)
+    if not callable(split_name_and_tags) or not callable(canonicalize_slice_labels):
+        return False
+    if not callable(extract_slice_labels) or not callable(extract_role):
+        return False
+
+    # Parse name into base + #tag tokens. Then strip the trident decoration
+    # 'U+1F531' from the base so a name like "Wednesday, November 13 trident
+    # #tag" yields role_from_name = "Wednesday, November 13".
+    base_name, name_tags = split_name_and_tags(name)
+    role_from_name = base_name
+    while role_from_name.endswith("\U0001F531"):
+        role_from_name = role_from_name[:-1].rstrip()
+    role_from_name = role_from_name.strip()
+
+    # Canonicalize the name's #tags into the same comma-joined form that
+    # is written to disk in the BEACON (MD AST) block's slice_labels: line.
+    extra_label_tokens = [t.lstrip("#") for t in name_tags]
+    canonical_name_labels = (
+        canonicalize_slice_labels(",".join(extra_label_tokens), None)
+        if extra_label_tokens
+        else ""
+    )
+
+    note_slice_labels = extract_slice_labels(note)
+    note_role = extract_role(note)
+
+    # Conservative: any missing field => fall through to slow path.
+    if note_slice_labels is None or note_role is None:
+        return False
+
+    # Both must match exactly. Different tag set or renamed heading both
+    # require the slow path so disk gets the update.
+    if canonical_name_labels != note_slice_labels.strip():
+        return False
+    if role_from_name != note_role.strip():
+        return False
+
+    return True
+
+
+# @beacon[
 #   id=bulk-visible-apply@_build_bulk_visible_root_from_payload,
 #   role=_build_bulk_visible_root_from_payload,
 #   slice_labels=f9-f12-handlers,ra-bulk-visible-apply,ra-carto-jobs,
@@ -4080,6 +4223,10 @@ async def _run_carto_bulk_visible_apply_job(job_file: str, root_node: dict[str, 
     result_summary.setdefault("files_skipped", 0)
     result_summary.setdefault("node_updates", 0)
     result_summary.setdefault("nodes_skipped", 0)
+    # nodes_skipped_in_sync counts candidates filtered by
+    # _node_name_tags_match_beacon_block_in_note (Bug #2 optimization).
+    # Distinct from "nodes_skipped" which counts errors/missing-id cases.
+    result_summary.setdefault("nodes_skipped_in_sync", 0)
     result_summary.setdefault("workflowy_nodes_updated", 0)
 
     progress = job.setdefault("progress", {})
@@ -4208,6 +4355,26 @@ async def _run_carto_bulk_visible_apply_job(job_file: str, root_node: dict[str, 
                     except Exception as e:  # noqa: BLE001
                         _append_carto_job_log(log_file, f"WARNING: update_cached_node_name failed for {node_id}: {e}")
 
+                # Bug #2 optimization (Dan, 2026-05-01): skip the slow
+                # update_beacon_from_node path when the candidate is
+                # already in sync per cache evidence (NAME #tags + base
+                # text match the BEACON (MD AST) block in the NOTE).
+                # Pure in-memory string check, microseconds per call.
+                # See _node_name_tags_match_beacon_block_in_note above
+                # for the full reasoning chain and why this is structurally
+                # different from the broken cache-vs-DOM filter.
+                try:
+                    if _node_name_tags_match_beacon_block_in_note(candidate):
+                        result_summary["nodes_skipped_in_sync"] += 1
+                        continue
+                except Exception as e:  # noqa: BLE001
+                    # Filter is best-effort; on any failure fall through
+                    # to the slow path so correctness is never reduced.
+                    _append_carto_job_log(
+                        log_file,
+                        f"WARNING: in-sync filter raised for {node_id}: {e}; running slow path.",
+                    )
+
                 try:
                     node_result = await client.update_beacon_from_node(
                         node_id=node_id,
@@ -4261,6 +4428,15 @@ async def _run_carto_bulk_visible_apply_job(job_file: str, root_node: dict[str, 
             else:
                 result_summary["files_skipped"] += 1
                 _append_carto_job_log(log_file, f"No successful node updates for {file_name}; skipping FILE refresh.")
+
+            # Per-file summary line so the GLIMPSE widget log makes the
+            # in-sync filter behavior visible.
+            _append_carto_job_log(
+                log_file,
+                f"File summary for {file_name} ({file_id}): "
+                f"updated={file_successful_node_updates}, "
+                f"skipped_in_sync={result_summary['nodes_skipped_in_sync']} (cumulative).",
+            )
 
             processed_files += 1
             progress["completed_files"] = processed_files
