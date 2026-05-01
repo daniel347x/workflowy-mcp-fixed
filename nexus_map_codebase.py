@@ -1965,15 +1965,36 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                 s["name"] = name_e
             else:
                 # Tag-tolerant preservation (Dan, post-2026-04-30): when names
-                # differ ONLY by trailing '#tag' tokens (and/or '🔱'), prefer
-                # the ETHER form so WEAVE does not strip the tags from
-                # Workflowy. This is the second half of the Anchor 5 fix:
-                # without it, even a successful tag-tolerant identity match
-                # would still trigger an UPDATE that removes the tag.
+                # differ ONLY by trailing '#tag' tokens and/or '🔱', preserve
+                # the more-decorated form so WEAVE does not strip away either:
+                #   - tags-as-text from Workflowy (ether's authoritative form), or
+                #   - the trident '🔱' from a fresh apply_markdown_beacons rebuild
+                #     (source's authoritative form when disk has the beacon block).
+                #
+                # Cases handled (base names agree after stripping tags+trident):
+                #   - Source has 🔱, ether does not (typical post-bulk-apply
+                #     state where disk got a fresh beacon block and source
+                #     was rebuilt by apply_markdown_beacons): prefer SOURCE
+                #     because it already carries the canonical decoration
+                #     (🔱 + tags-as-text reconstructed from slice_labels).
+                #   - Source has no 🔱 (typical for fresh ETCHed tagged node
+                #     whose disk heading was emitted without any beacon yet):
+                #     prefer ETHER to keep the user's tags-as-text in
+                #     Workflowy.
+                #   - Both have 🔱 or neither has 🔱 (steady state): prefer
+                #     ETHER as a safe no-op-leaning default.
                 stripped_s = _strip_tags_and_trident(name_s)
                 stripped_e = _strip_tags_and_trident(name_e)
                 if stripped_s and stripped_s == stripped_e:
-                    s["name"] = name_e
+                    source_has_trident = "🔱" in name_s
+                    ether_has_trident = "🔱" in name_e
+                    if source_has_trident and not ether_has_trident:
+                        # Source carries the post-beacon canonical decoration;
+                        # let WEAVE propagate it back so the trident shows up
+                        # in the Workflowy node name.
+                        s["name"] = name_s
+                    else:
+                        s["name"] = name_e
         note_e = match.get("note")
         if isinstance(note_s, str) and isinstance(note_e, str):
             if whiten_text_for_header_compare(note_s) == whiten_text_for_header_compare(note_e):
