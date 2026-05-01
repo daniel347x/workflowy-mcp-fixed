@@ -1965,36 +1965,48 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                 s["name"] = name_e
             else:
                 # Tag-tolerant preservation (Dan, post-2026-04-30): when names
-                # differ ONLY by trailing '#tag' tokens and/or '🔱', preserve
-                # the more-decorated form so WEAVE does not strip away either:
-                #   - tags-as-text from Workflowy (ether's authoritative form), or
-                #   - the trident '🔱' from a fresh apply_markdown_beacons rebuild
-                #     (source's authoritative form when disk has the beacon block).
+                # differ ONLY by trailing '#tag' tokens and/or '🔱', merge to
+                # the canonical superset form rather than picking one side
+                # wholesale. Otherwise WEAVE will drop whichever decorations
+                # the chosen side lacks.
                 #
-                # Cases handled (base names agree after stripping tags+trident):
-                #   - Source has 🔱, ether does not (typical post-bulk-apply
-                #     state where disk got a fresh beacon block and source
-                #     was rebuilt by apply_markdown_beacons): prefer SOURCE
-                #     because it already carries the canonical decoration
-                #     (🔱 + tags-as-text reconstructed from slice_labels).
-                #   - Source has no 🔱 (typical for fresh ETCHed tagged node
-                #     whose disk heading was emitted without any beacon yet):
-                #     prefer ETHER to keep the user's tags-as-text in
-                #     Workflowy.
-                #   - Both have 🔱 or neither has 🔱 (steady state): prefer
-                #     ETHER as a safe no-op-leaning default.
+                # Failure modes the simple-pick approach hits:
+                #   - Source has trident+tag, ether has trident only (cache
+                #     was patched by update_cached_node_name with the
+                #     tag-stripped base_name during a bulk-apply pre-pass).
+                #     Picking ether → tag is dropped from the live Workflowy
+                #     node by the next WEAVE UPDATE.
+                #   - Source has no trident, ether has tag only (fresh ETCHed
+                #     tagged node whose disk emit had no beacon yet). Picking
+                #     source → tag dropped.
+                #
+                # Merge policy (canonical form: <base> [🔱] [… user tags]):
+                #   - base = stripped (already known equal)
+                #   - trident = present if either side has it
+                #   - tags = union of source and ether trailing #tag tokens,
+                #     preserving ether's order first (Workflowy is source
+                #     of truth for user-authored tag-as-text), then
+                #     appending any source-only tags (rare, but ensures
+                #     no decoration is lost).
                 stripped_s = _strip_tags_and_trident(name_s)
                 stripped_e = _strip_tags_and_trident(name_e)
                 if stripped_s and stripped_s == stripped_e:
-                    source_has_trident = "🔱" in name_s
-                    ether_has_trident = "🔱" in name_e
-                    if source_has_trident and not ether_has_trident:
-                        # Source carries the post-beacon canonical decoration;
-                        # let WEAVE propagate it back so the trident shows up
-                        # in the Workflowy node name.
-                        s["name"] = name_s
-                    else:
-                        s["name"] = name_e
+                    has_trident = ("🔱" in name_s) or ("🔱" in name_e)
+                    s_tags = [
+                        t for t in name_s.split() if t.startswith("#")
+                    ]
+                    e_tags = [
+                        t for t in name_e.split() if t.startswith("#")
+                    ]
+                    merged_tags: list[str] = list(e_tags)
+                    for t in s_tags:
+                        if t not in merged_tags:
+                            merged_tags.append(t)
+                    merged_parts: list[str] = [stripped_s]
+                    if has_trident:
+                        merged_parts.append("🔱")
+                    merged_parts.extend(merged_tags)
+                    s["name"] = " ".join(merged_parts)
         note_e = match.get("note")
         if isinstance(note_s, str) and isinstance(note_e, str):
             if whiten_text_for_header_compare(note_s) == whiten_text_for_header_compare(note_e):
