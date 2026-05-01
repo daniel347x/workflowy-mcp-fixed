@@ -78,10 +78,11 @@ async def main():
     parser.add_argument(
         '--mode',
         required=True,
-        choices=['enchanted', 'direct', 'carto_refresh'],
+        choices=['enchanted', 'direct', 'carto_refresh', 'markdown_generate'],
         help=(
-            'ENCHANTED (nexus_tag-based), DIRECT (json_file-based), or '
-            'CARTO_REFRESH (Cartographer F12 job JSON-based)'
+            'ENCHANTED (nexus_tag-based), DIRECT (json_file-based), '
+            'CARTO_REFRESH (Cartographer F12 job JSON-based), or '
+            'MARKDOWN_GENERATE (F12+3 detached pipeline, also CARTO job JSON-based)'
         ),
     )
     parser.add_argument('--nexus-tag', help='NEXUS tag (for enchanted mode)')
@@ -89,7 +90,7 @@ async def main():
     parser.add_argument('--parent-id', help='Parent UUID (for direct mode, optional)')
     parser.add_argument('--dry-run', default='false', help='Dry run flag (true/false)')
     parser.add_argument('--import-policy', default='strict', help='Import policy (for direct mode)')
-    parser.add_argument('--carto-job-file', help='CARTO_REFRESH job JSON file (for carto_refresh mode)')
+    parser.add_argument('--carto-job-file', help='CARTO job JSON file (for carto_refresh and markdown_generate modes)')
     
     args = parser.parse_args()
     
@@ -119,6 +120,8 @@ async def main():
     # This avoids path calculation issues when worker is deployed vs source location
     nexus_runs_base = os.environ.get('NEXUS_RUNS_BASE')
     if mode in ('enchanted', 'direct') and not nexus_runs_base:
+        # NOTE: carto_refresh and markdown_generate modes do NOT need NEXUS_RUNS_BASE
+        # — they receive their root path via the CARTO job JSON file.
         log_worker("ERROR: NEXUS_RUNS_BASE not set in environment")
         log_worker("Launcher must pass the nexus_runs directory path via environment")
         sys.exit(1)
@@ -230,8 +233,9 @@ async def main():
         pid_file = json_path.parent / ".weave.pid"
         log_worker(f"DIRECT mode: json_file={json_file}, parent_id={args.parent_id}")
     else:
-        # CARTO_REFRESH mode does not use a .weave.pid file; PID is tracked via the CARTO job JSON.
-        log_worker("CARTO_REFRESH mode: PID file will not be created (tracked via job JSON)")
+        # CARTO_REFRESH and MARKDOWN_GENERATE modes do not use a .weave.pid file;
+        # PID is tracked via the CARTO job JSON.
+        log_worker(f"{mode.upper()} mode: PID file will not be created (tracked via job JSON)")
     
     # Write PID file for WEAVE modes only
     if pid_file is not None:
@@ -596,6 +600,108 @@ async def main():
     # ]
     # @beacon-close[
     #   id=wkv1@carto-refresh-core,
+    # ]
+
+    # @beacon[
+    #   id=weave-worker@markdown-generate-job,
+    #   role=weave worker  MARKDOWN_GENERATE job runner (F12+3 detached pipeline),
+    #   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,ra-carto-jobs,ra-bulk-visible-apply,ra-logging,nexus-md-header-path,
+    #   kind=span,
+    #   show_span=false,
+    #   comment=Detached worker dispatch for MARKDOWN_GENERATE jobs (F12+3). Reads CARTO job JSON for root_uuid, runs the 8-phase markdown generate pipeline (bulk-apply tags + write Markdown to disk + reapply beacons + post-flight refresh) via markdown_generate_pipeline.run_markdown_generate_pipeline(). Writes status/progress back to job JSON. Survives MCP server restart.,
+    # ]
+    # MARKDOWN_GENERATE mode: run F12+3 8-phase pipeline via CARTO job JSON and exit
+    if mode == 'markdown_generate':
+        if not args.carto_job_file:
+            log_worker("ERROR: --carto-job-file required for markdown_generate mode")
+            await client.close()
+            sys.exit(1)
+
+        job_path = Path(args.carto_job_file)
+        if not job_path.exists():
+            log_worker(f"ERROR: MARKDOWN_GENERATE job file not found: {job_path}")
+            await client.close()
+            sys.exit(1)
+
+        # Load job JSON
+        try:
+            with open(job_path, 'r', encoding='utf-8') as jf:
+                job = json.load(jf)
+        except Exception as e:
+            log_worker(f"ERROR: Failed to read MARKDOWN_GENERATE job file: {e}")
+            await client.close()
+            sys.exit(1)
+
+        # If job was cancelled before the worker started, exit early without work
+        if job.get('status') == 'cancelled':
+            log_worker(
+                f"MARKDOWN_GENERATE job {job.get('id') or job_path.stem} is already "
+                "marked cancelled; exiting without running pipeline."
+            )
+            await client.close()
+            sys.exit(0)
+
+        root_uuid = job.get('root_uuid')
+        if not root_uuid:
+            log_worker("ERROR: MARKDOWN_GENERATE job has no root_uuid")
+            await client.close()
+            sys.exit(1)
+
+        # Update job status to running
+        now_iso = datetime.utcnow().isoformat()
+        job['status'] = 'running'
+        job['updated_at'] = now_iso
+        job['pid'] = os.getpid()
+        try:
+            with open(job_path, 'w', encoding='utf-8') as jf:
+                json.dump(job, jf, indent=2)
+        except Exception as e:
+            log_worker(f"ERROR: Failed to write MARKDOWN_GENERATE job file: {e}")
+
+        # Expose job file to downstream helpers (mirrors carto_refresh pattern).
+        os.environ["CARTO_JOB_FILE"] = str(job_path)
+
+        log_worker(f"MARKDOWN_GENERATE: starting F12+3 pipeline for root_uuid={root_uuid}")
+
+        exit_code = 0
+        try:
+            from workflowy_mcp.markdown_generate_pipeline import run_markdown_generate_pipeline
+            result = await run_markdown_generate_pipeline(
+                client=client,
+                root_uuid=root_uuid,
+                job_file=str(job_path),
+            )
+            if not result.get('success'):
+                exit_code = 1
+                log_worker(f"MARKDOWN_GENERATE: pipeline reported failure: {result.get('error')}")
+            else:
+                log_worker(
+                    f"MARKDOWN_GENERATE: pipeline completed successfully "
+                    f"(file_path={result.get('file_path')}, "
+                    f"ast_beacons={result.get('ast_beacons_reapplied', 0)})"
+                )
+        except Exception as e:
+            exit_code = 1
+            log_worker(f"MARKDOWN_GENERATE failed with error: {e}")
+            import traceback
+            log_worker(traceback.format_exc())
+            # Update job JSON with the failure (the pipeline itself may not
+            # have had a chance to do this if the import or initial setup blew up).
+            try:
+                with open(job_path, 'r', encoding='utf-8') as jf:
+                    fresh_job = json.load(jf)
+                fresh_job['status'] = 'failed'
+                fresh_job['error'] = str(e)
+                fresh_job['updated_at'] = datetime.utcnow().isoformat()
+                with open(job_path, 'w', encoding='utf-8') as jf:
+                    json.dump(fresh_job, jf, indent=2)
+            except Exception as inner_e:
+                log_worker(f"ERROR: Failed to write MARKDOWN_GENERATE failure status: {inner_e}")
+        finally:
+            await client.close()
+            sys.exit(exit_code)
+    # @beacon-close[
+    #   id=weave-worker@markdown-generate-job,
     # ]
 
     # LAB ONLY:

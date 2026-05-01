@@ -2204,12 +2204,93 @@ async def _handle_open_node_in_windsurf(data: dict[str, Any], websocket) -> None
 async def _handle_generate_markdown_file(data: dict[str, Any], websocket) -> None:
     """Handle F12-driven request to generate/regenerate Markdown on disk from a subtree.
 
-    Auto-refresh /nodes-export cache before reading it. Without this, in-place
-    Workflowy edits made just before F12+3 (e.g. indenting a heading via Tab)
-    are silently dropped because the cache reflects the pre-edit state. The
-    Markdown roundtrip then writes a byte-identical file and the user's change
-    is lost. We coalesce via the existing async cache-refresh queue so this is
-    safe even if a refresh is already in flight from another source.
+    THIN LAUNCHER (May 2026 redesign):
+        Performs pre-flight cache quiescence, then launches a detached
+        weave_worker.py subprocess in `markdown_generate` mode. Returns
+        immediately with a job_id; the actual 8-phase pipeline runs in
+        the worker process and reports progress via cartographer_jobs/
+        JSON files (which the GLIMPSE widget polls).
+
+        Why this design: see Workflowy doc node
+            "4 CARTO BACKGROUND WORKERS & CACHE QUIESCENCE"
+        Specifically the section " History: why F12+3 was originally broken".
+
+        The previous implementation ran the entire 8-phase pipeline inline
+        in the MCP server's WebSocket event loop, which blocked all other
+        MCP traffic (chat tool calls, F9, etc.) for 5-10 minutes per F12+3
+        invocation and triggered "MCP server returned no results" errors
+        in TypingMind after 60s.
+
+    Pre-flight quiescence (kept inline):
+        Even though the actual pipeline now runs in a detached worker, the
+        handler still does pre-flight cache quiescence here. Reasons:
+          1. Ensures the on-disk /nodes-export snapshot is fresh before the
+             worker spawns and warm-starts from it.
+          2. Provides a single ordering point: F12+3 won't START while another
+             CARTO worker is mid-mutation on a possibly-overlapping subtree.
+             (User-discipline still required to avoid conflicts.)
+        Cost: at most one rate-limited /nodes-export refresh (~30-60s, often
+        coalesced to near-zero if cache is already warm).
+    """
+    node_id = data.get("node_id")
+    if not node_id:
+        return
+
+    try:
+        # Pre-flight: ensure cache is fresh and no overlapping CARTO workers
+        # are mid-mutation. After this returns, it's safe to spawn the worker.
+        await _handler_preflight_cache_quiescence(
+            reason=f"generate_markdown_file preflight for {node_id}",
+            source="f12_generate_markdown_file",
+        )
+
+        # Launch detached worker subprocess. Returns immediately with job_id.
+        async_result = await _start_carto_markdown_generate_job(root_uuid=str(node_id))
+
+        log_event(
+            f"F12+3 markdown generate launched for {node_id}: "
+            f"job_id={async_result.get('job_id')!r}, success={async_result.get('success')}",
+            "WS_HANDLER",
+        )
+
+        # Send WebSocket reply immediately. The widget will poll job JSON for progress.
+        payload: dict[str, Any] = {
+            "action": "generate_markdown_file_result",
+            "node_id": node_id,
+        }
+        if isinstance(async_result, dict):
+            payload.update(async_result)
+        await websocket.send(json.dumps(payload))
+        return
+    except Exception as e:
+        err_msg = f"_handle_generate_markdown_file launcher error for {node_id}: {e}"
+        log_event(err_msg, "WS_HANDLER")
+        try:
+            await websocket.send(json.dumps({
+                "action": "generate_markdown_file_result",
+                "success": False,
+                "node_id": node_id,
+                "error": err_msg
+            }))
+        except Exception:
+            pass
+        return
+
+
+# DEAD CODE BELOW: original inline 8-phase pipeline. Preserved temporarily for
+# reference during the May 2026 detached-worker migration. The function above
+# (the launcher) replaces this entirely. The body below is unreachable because
+# the launcher always returns before reaching it.
+#
+# This dead code block will be removed in a follow-up cleanup commit once the
+# new detached-worker pipeline is verified working in production.
+#
+# To remove: delete from "if False:  # DEAD CODE" through the matching end of
+# the original except-block (right before the next @beacon[...] block).
+async def _DEAD_handle_generate_markdown_file_inline(data: dict[str, Any], websocket) -> None:
+    """DEAD CODE: original inline 8-phase F12+3 pipeline (preserved for reference).
+
+    DO NOT CALL. The thin-launcher version above replaces this entirely.
     """
     node_id = data.get("node_id")
     if not node_id:
@@ -3440,6 +3521,184 @@ async def _start_carto_refresh_job(root_uuid: str, mode: str) -> dict:
         return {
             "success": False,
             "error": f"Failed to launch CARTO_REFRESH worker: {e}",
+        }
+
+
+# @beacon[
+#   id=auto-beacon@_start_carto_markdown_generate_job,
+#   role=_start_carto_markdown_generate_job,
+#   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,ra-logging,ra-carto-jobs,ra-bulk-visible-apply,nexus-md-header-path,
+#   kind=ast,
+# ]
+async def _start_carto_markdown_generate_job(root_uuid: str) -> dict:
+    """Launch a MARKDOWN_GENERATE (F12+3) job via weave_worker.py as a detached process.
+
+    This mirrors _start_carto_refresh_job exactly but targets the F12+3 8-phase
+    pipeline (bulk-apply tags + write Markdown + reapply beacons + post-flight
+    refresh). The pipeline body lives in markdown_generate_pipeline.py and is
+    invoked by weave_worker.py's `markdown_generate` mode.
+
+    Architecture rationale: see Workflowy doc node
+        "4 CARTO BACKGROUND WORKERS & CACHE QUIESCENCE"
+    Specifically the section " History: why F12+3 was originally broken".
+
+    Originally F12+3 ran inline on the MCP foreground event loop, blocking
+    everything for 5-10 minutes per invocation. This launcher restores the
+    detached-worker pattern and frees the event loop.
+    """
+    import os
+    import sys as _sys
+    import subprocess
+    from datetime import datetime as _dt
+    import json as json_module
+    from uuid import uuid4 as _uuid4
+
+    carto_jobs_base = _get_carto_jobs_base_dir()
+    os.makedirs(carto_jobs_base, exist_ok=True)
+
+    # Opportunistic GC of old completed/cancelled CARTO jobs.
+    _gc_carto_jobs(carto_jobs_base)
+
+    now_dt = _dt.utcnow()
+    now = now_dt.isoformat()
+    job_id = f"carto-markdown-generate-{_uuid4().hex[:8]}"
+    ts_prefix = now_dt.strftime("%Y%m%d-%H%M%S")
+    filename_prefix = f"{ts_prefix}_{job_id}"
+    job_file = os.path.join(carto_jobs_base, f"{filename_prefix}.json")
+    log_file = os.path.join(carto_jobs_base, f"{filename_prefix}.log")
+
+    job_payload = {
+        "id": job_id,
+        "type": "CARTO_MARKDOWN_GENERATE",
+        "mode": "file",
+        "root_uuid": root_uuid,
+        "status": "queued",
+        "cache_refresh_required": True,
+        "created_at": now,
+        "updated_at": now,
+        "progress": {
+            "total_files": 1,
+            "completed_files": 0,
+            "current_file": None,
+            "current_phase": "queued",
+            "nodes_created": 0,
+            "nodes_updated": 0,
+            "nodes_moved": 0,
+            "nodes_deleted": 0,
+        },
+        "result_summary": {
+            "errors": [],
+        },
+        "error": None,
+        "logs_path": log_file,
+    }
+
+    try:
+        with open(job_file, "w", encoding="utf-8") as jf:
+            json_module.dump(job_payload, jf, indent=2)
+    except Exception as e:  # noqa: BLE001
+        return {
+            "success": False,
+            "error": f"Failed to write MARKDOWN_GENERATE job file '{job_file}': {e}",
+        }
+
+    # Locate weave_worker.py (sibling of this server.py)
+    worker_script = os.path.join(os.path.dirname(__file__), "weave_worker.py")
+    worker_script = os.path.abspath(worker_script)
+    if not os.path.exists(worker_script):
+        return {
+            "success": False,
+            "error": f"weave_worker.py not found: {worker_script}",
+        }
+
+    client = get_client()
+
+    # Environment similar to detached CARTO_REFRESH worker.
+    env = os.environ.copy()
+    try:
+        api_key = client.config.api_key.get_secret_value()
+    except Exception:  # noqa: BLE001
+        api_key = env.get("WORKFLOWY_API_KEY", "")
+    if not api_key:
+        return {
+            "success": False,
+            "error": "WORKFLOWY_API_KEY not configured for MARKDOWN_GENERATE",
+        }
+
+    env["WORKFLOWY_API_KEY"] = api_key
+    # NEXUS_RUNS_BASE is only used for WEAVE modes; safe to pass through.
+    env.setdefault("NEXUS_RUNS_BASE", str(get_nexus_runs_base_dir()))
+
+    cmd = [
+        _sys.executable,
+        worker_script,
+        "--mode",
+        "markdown_generate",
+        "--carto-job-file",
+        job_file,
+        "--dry-run",
+        "false",
+    ]
+
+    try:
+        log_handle = open(log_file, "w", encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        return {
+            "success": False,
+            "error": f"Failed to open MARKDOWN_GENERATE log file '{log_file}': {e}",
+        }
+
+    log_event(
+        f"Launching MARKDOWN_GENERATE worker for root={root_uuid}, job_id={job_id}, log={log_file}",
+        "CARTO",
+    )
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            if _sys.platform == "win32"
+            else 0,
+            start_new_session=True if _sys.platform != "win32" else False,
+            stdin=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+        )
+        pid = process.pid
+        log_event(
+            f"MARKDOWN_GENERATE worker detached: PID={pid}, job_id={job_id}",
+            "CARTO",
+        )
+
+        # Update job file with PID.
+        job_payload["pid"] = pid
+        job_payload["updated_at"] = _dt.utcnow().isoformat()
+        try:
+            with open(job_file, "w", encoding="utf-8") as jf:
+                json_module.dump(job_payload, jf, indent=2)
+        except Exception as e:  # noqa: BLE001
+            log_event(
+                f"WARNING: Failed to update MARKDOWN_GENERATE job file with pid: {e}",
+                "CARTO",
+            )
+
+        return {
+            "success": True,
+            "job_id": job_id,
+            "pid": pid,
+            "detached": True,
+            "mode": "markdown_generate",
+            "root_uuid": root_uuid,
+            "job_file": job_file,
+            "log_file": log_file,
+            "note": "MARKDOWN_GENERATE worker detached - survives MCP restart.",
+        }
+    except Exception as e:  # noqa: BLE001
+        log_event(f"Failed to launch MARKDOWN_GENERATE worker: {e}", "CARTO")
+        return {
+            "success": False,
+            "error": f"Failed to launch MARKDOWN_GENERATE worker: {e}",
         }
 
 
