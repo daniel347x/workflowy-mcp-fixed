@@ -90,7 +90,18 @@ _ws_server_task = None
 _ws_message_queue = None  # asyncio.Queue for message routing
 
 # In-memory job registry for long-running operations (ETCH, NEXUS, etc.)
+# @beacon[
+#   id=server@_jobs-registry,
+#   role=in-memory job registry for ETCH/NEXUS/CARTO async jobs,
+#   slice_labels=f9-f12-handlers,ra-carto-jobs,ra-logging,nexus--glimpse-extension,
+#   kind=span,
+#   show_span=true,
+#   comment=Module-level dict tracking in-memory asyncio jobs (ETCH, NEXUS, CARTO_BULK_APPLY). Populated by _start_background_job, scanned by mcp_job_status. RELEVANT TO F12+3 TIMEOUT INVESTIGATION: when 'MCP died' is observed, one diagnostic question is whether the foreground asyncio task representing _run_carto_bulk_visible_apply_job is still alive in this dict but stuck awaiting a downstream call — inspect via mcp_job_status. Detached CARTO_REFRESH workers do NOT live here; they're tracked via JSON files under cartographer_jobs/.,
+# ]
 _jobs: dict[str, dict[str, Any]] = {}
+# @beacon-close[
+#   id=server@_jobs-registry,
+# ]
 _job_counter: int = 0
 _job_lock: asyncio.Lock = asyncio.Lock()
 

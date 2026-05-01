@@ -260,9 +260,10 @@ async def main():
     # @beacon[
     #   id=weave-worker@carto-refresh-job,
     #   role=weave worker – CARTO_REFRESH job runner,
-    #   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,ra-carto-jobs,
+    #   slice_labels=f9-f12-handlers,ra-reconcile,nexus-core-v1,ra-carto-jobs,ra-bulk-visible-apply,ra-logging,
     #   kind=span,
-    #   comment=Async CARTO_REFRESH job execution block in weave_worker main,
+    #   show_span=false,
+    #   comment=Detached worker dispatch for CARTO_REFRESH jobs (FILE mode → refresh_file_node_beacons; FOLDER mode → refresh_folder_cartographer_sync). Reads job JSON, runs Cartographer reconcile, writes status back. RELEVANT TO F12+3 TIMEOUT: this entire branch runs OUT-OF-PROCESS via subprocess detach, so foreground MCP server is not directly waiting on it — BUT the foreground bulk-apply runner DOES await per-file refresh_file_node_beacons in-process (see _run_carto_bulk_visible_apply_job). HYPOTHESIS (unverified): if the foreground in-process refresh hangs while a separate detached CARTO_REFRESH worker is also active, deadlock-like symptoms could result. Closures _carto_should_cancel{,_file} and _carto_progress{,_for_file} live inside this branch and are individually beaconed.,
     # ]
     # CARTO_REFRESH mode: run Cartographer refresh via CARTO job JSON and exit
     if mode == 'carto_refresh':

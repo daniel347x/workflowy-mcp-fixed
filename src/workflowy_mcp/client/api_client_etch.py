@@ -28,8 +28,9 @@ _current_weave_context = {"json_file": None}
 # @beacon[
 #   id=auto-beacon@_log_to_file_helper-epud,
 #   role=_log_to_file_helper,
-#   slice_labels=ra-logging,
+#   slice_labels=ra-logging,f9-f12-handlers,ra-reconcile,ra-carto-jobs,
 #   kind=ast,
+#   comment=Writes per-tag debug log entries (reconcile_debug.log / etch_debug.log / nexus_debug.log / jewelstorm_debug.log). For F12+3, the per-file F12 reconcile_debug.log under cartographer_file_refresh/ is produced here — this is the writer counterpart to the log files Step 1 of the F12+3 timeout investigation reads. Routes to tag-specific dir when _current_weave_context['json_file'] is set, else falls back to global temp/.,
 # ]
 def _log_to_file_helper(message: str, log_type: str = "reconcile") -> None:
     """Log message to a tag-specific debug file (best-effort).

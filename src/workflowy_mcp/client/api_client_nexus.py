@@ -3618,6 +3618,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                 weave_journal = None
                 weave_journal_path = None
 
+            # @beacon[
+            #   id=weave-journal@bulk_import_from_file.log_weave_entry_fn,
+            #   role=bulk_import_from_file.log_weave_entry_fn,
+            #   slice_labels=ra-logging,f9-f12-handlers,ra-reconcile,
+            #   kind=ast,
+            #   comment=Per-node WEAVE journal entry writer for general WEAVE flow (bulk_import_from_file). Appends timestamped entries to <json>.weave_journal.json. NOT used by F12+3 in-process bulk-apply; F12+3 has its own log_weave_entry_fn defined under refresh_file_node_beacons. Reading first-entry vs last-entry timestamps in this journal is Step 1 of the WEAVE timing breakdown.,
+            # ]
             def log_weave_entry_fn(entry: dict[str, Any]) -> None:
                 if weave_journal is None or weave_journal_path is None:
                     return
@@ -5136,6 +5143,13 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     f12_journal = None
                     f12_journal_path = None
 
+                # @beacon[
+                #   id=weave-journal@refresh_file_node_beacons.log_weave_entry_fn,
+                #   role=refresh_file_node_beacons.log_weave_entry_fn,
+                #   slice_labels=ra-logging,f9-f12-handlers,ra-reconcile,ra-carto-jobs,ra-bulk-visible-apply,
+                #   kind=ast,
+                #   comment=Per-node F12 journal entry writer. Appends timestamped entries to <source_json>.weave_journal.json under cartographer_file_refresh/. PRIMARY DIAGNOSTIC TARGET for F12+3 timeout investigation: first-entry vs last-entry timestamp delta tells you whether the per-node reconcile loop itself was slow or finished fast (and the timeout is downstream WebSocket/quiescence).,
+                # ]
                 def log_weave_entry_fn(entry: dict[str, Any]) -> None:
                     if f12_journal is None or f12_journal_path is None:
                         return
