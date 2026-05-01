@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import os
 import argparse
@@ -170,7 +171,22 @@ def detach_yaml_frontmatter_child(node: Dict[str, Any]) -> tuple[str | None, Dic
 #   kind=ast,
 # ]
 def _extract_md_path_lines_from_note(note: str | None) -> list[str]:
-    """Extract raw MD_PATH heading lines from a Workflowy note."""
+    """Extract raw MD_PATH heading lines from a Workflowy note.
+
+    Bug #3 hardening (Dan, 2026-05-01): the MD_PATH section of a Workflowy
+    Markdown note is supposed to contain only Markdown heading lines
+    (lines starting with 1-6 '#' characters followed by whitespace and
+    heading text). However, an earlier corruption mode could leave
+    BEACON metadata fields ('id: ...', 'role: ...', 'slice_labels: ...',
+    'kind: ast') accidentally interleaved inside the MD_PATH block when
+    the closing '---' separator was missing or misplaced. To make F12+3
+    phase [6]/[7] resilient against such cache poisoning, this extractor
+    now skips any line inside the MD_PATH block that does NOT match the
+    Markdown heading shape '^#{1,32}\s+'. The block still terminates on
+    the first '---' as before. This is layer (1) of the defense-in-depth
+    fix; layers (2)/(3) live in nexus_to_tokens and the parse-time
+    MD_PATH builder.
+    """
     if not isinstance(note, str):
         return []
     lines = note.splitlines()
@@ -184,8 +200,14 @@ def _extract_md_path_lines_from_note(note: str | None) -> list[str]:
             continue
         if stripped == "---":
             break
-        if stripped:
-            path_lines.append(stripped)
+        if not stripped:
+            continue
+        # Layer (1) filter: only accept actual Markdown heading lines.
+        # Drops stray BEACON metadata fields that may have leaked into
+        # the MD_PATH block due to historical corruption.
+        if not re.match(r"^#{1,32}\s+\S", stripped):
+            continue
+        path_lines.append(stripped)
     return path_lines
 
 
@@ -220,10 +242,41 @@ def _heading_name_from_note_or_name(note: str | None, fallback_name: str) -> str
       Markdown heading). Stripping the decoration explicitly fixes both
       problems.
     """
-    import re
+    import re as _re_local  # local alias to avoid shadowing module-level re
 
     raw = (fallback_name or "").strip()
     md_path_lines = _extract_md_path_lines_from_note(note)
+
+    # Layer (2) heading-name guard (Dan, 2026-05-01, Bug #3 hardening):
+    # Reject a fallback_name that smells like a leaked BEACON metadata
+    # block. Such a name (e.g., "BEACON (MD AST)\nid: ...\nrole: ...\n...")
+    # would otherwise be flattened to a single line via raw.split()/join(),
+    # producing a corrupt heading like
+    # '## BEACON (MD AST) id: ... role: ... slice_labels: ... kind: ast'
+    # on disk, which is the original Bug #3 corruption shape.
+    #
+    # Heuristics for "smelly":
+    #   - Contains an internal newline, OR
+    #   - Starts with the BEACON header marker (any language), OR
+    #   - Contains two or more recognizable metadata-field prefixes
+    #     ('id:', 'role:', 'slice_labels:', 'kind:').
+    def _name_is_meta_block(candidate: str) -> bool:
+        if not candidate:
+            return False
+        if "\n" in candidate or "\r" in candidate:
+            return True
+        head = candidate.lstrip()
+        if head.startswith("BEACON ("):
+            return True
+        meta_markers = ("id:", "role:", "slice_labels:", "kind:")
+        hits = sum(1 for m in meta_markers if m in candidate)
+        if hits >= 2:
+            return True
+        return False
+
+    if _name_is_meta_block(raw):
+        # Discard the poisoned name and fall through to MD_PATH fallback.
+        raw = ""
 
     # Strip Workflowy decorations from the node name to get the canonical
     # heading text the user typed.
@@ -249,12 +302,15 @@ def _heading_name_from_note_or_name(note: str | None, fallback_name: str) -> str
     # Fallback: MD_PATH last-segment text (legacy behavior).
     if md_path_lines:
         last = md_path_lines[-1].strip()
-        m = re.match(r"^#{1,32}\s*(.*)$", last)
+        m = _re_local.match(r"^#{1,32}\s*(.*)$", last)
         if m:
             text = (m.group(1) or "").strip()
-            if text:
+            # Same meta-block guard on the MD_PATH-derived fallback text:
+            # if MD_PATH itself was poisoned at some point, layer (1) should
+            # have already filtered the offending lines, but belt-and-suspenders.
+            if text and not _name_is_meta_block(text):
                 return text
-        if last:
+        if last and not _name_is_meta_block(last):
             return last
 
     return raw

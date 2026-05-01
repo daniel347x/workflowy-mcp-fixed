@@ -384,12 +384,34 @@ def tokens_to_nexus_tree(
         while stack and stack[-1][0] >= heading_level:
             stack.pop()
 
-        # Build MD_PATH lines from current ancestor stack + this heading
+        # Build MD_PATH lines from current ancestor stack + this heading.
+        #
+        # Layer (3) sanitizer (Dan, 2026-05-01, Bug #3 hardening):
+        # Collapse any internal whitespace/newlines in ancestor names and
+        # in the current heading text to a single line before embedding
+        # into MD_PATH. Also replace meta-blocky names (BEACON metadata
+        # that may have leaked into a node's name field) with a clearly
+        # flagged placeholder so the MD_PATH structure survives even if
+        # the in-memory tree was corrupted upstream. The level (number of
+        # '#'s) is always preserved; only the visible text is sanitized.
+        def _md_path_sanitize(name: str) -> str:
+            single = " ".join((name or "").split()).strip()
+            if not single:
+                return "..."
+            head = single.lstrip()
+            if head.startswith("BEACON ("):
+                return "⚠️ corrupt-heading"
+            meta_markers = ("id:", "role:", "slice_labels:", "kind:")
+            hits = sum(1 for m in meta_markers if m in single)
+            if hits >= 2:
+                return "⚠️ corrupt-heading"
+            return single
+
         md_path_lines: List[str] = []
         for lvl, ancestor_node in stack:
-            ancestor_name = (ancestor_node.get("name") or "").strip() or "..."
+            ancestor_name = _md_path_sanitize(ancestor_node.get("name") or "")
             md_path_lines.append(f"{('#' * lvl)} {ancestor_name}".rstrip())
-        this_heading_name = heading_text or "..."
+        this_heading_name = _md_path_sanitize(heading_text or "")
         md_path_lines.append(f"{('#' * heading_level)} {this_heading_name}".rstrip())
 
         note_lines: List[str] = ["MD_PATH:"]
@@ -1536,6 +1558,20 @@ def _extract_md_path_from_note(note: str | None) -> list[str] | None:
 
     Returns the raw heading lines (including leading '#' characters) between
     the 'MD_PATH:' sentinel and the terminating '---' line.
+
+    Bug #3 hardening (Dan, 2026-05-01): the MD_PATH section is supposed to
+    contain only Markdown heading lines (1-6 '#' characters followed by
+    whitespace and heading text). An earlier corruption mode could leave
+    BEACON metadata fields ('id: ...', 'role: ...', 'slice_labels: ...',
+    'kind: ast') interleaved inside the MD_PATH block when the closing
+    '---' separator was missing or misplaced. To make F12+3 phase [7]
+    (update_beacon_from_node_markdown) and other MD_PATH consumers
+    resilient against such cache poisoning, this extractor now skips any
+    line inside the MD_PATH block that does NOT match the Markdown
+    heading shape '^#{1,32}\s+\S'. The block still terminates on the
+    first '---' as before. This is layer (1) of the defense-in-depth
+    fix; layers (2)/(3) live in markdown_roundtrip.nexus_to_tokens and
+    in tokens_to_nexus_tree's MD_PATH builder below.
     """
     if not isinstance(note, str):
         return None
@@ -1550,9 +1586,15 @@ def _extract_md_path_from_note(note: str | None) -> list[str] | None:
             continue
         if stripped == "---":
             break
-        if stripped:
-            # Preserve the heading text as written; callers may whiten it.
-            path_lines.append(stripped)
+        if not stripped:
+            continue
+        # Layer (1) filter: only accept actual Markdown heading lines.
+        # Drops stray BEACON metadata fields that may have leaked into
+        # the MD_PATH block due to historical corruption.
+        if not re.match(r"^#{1,32}\s+\S", stripped):
+            continue
+        # Preserve the heading text as written; callers may whiten it.
+        path_lines.append(stripped)
     return path_lines or None
 
 
