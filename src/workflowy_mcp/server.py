@@ -3875,19 +3875,63 @@ def _visible_node_differs_from_cache(node: dict[str, Any], nodes_by_id_cache: di
 #   role=_is_bulk_visible_apply_candidate,
 #   slice_labels=f9-f12-handlers,ra-reconcile,ra-bulk-visible-apply,ra-carto-jobs,
 #   kind=ast,
-#   comment=Bulk-apply candidate filter for F12+3 step [3] pre-pass. Returns True if node note contains AST_QUALNAME / BEACON / MD_PATH. SUSPECTED OVER-INCLUSIVE on fully-synced Markdown files (~533 candidates per F12+3 even when only one tagged subtree was added),
+#   comment=Bulk-apply candidate filter for F12+3 step [3] pre-pass. Tightened May 2026 to require either an existing BEACON block OR trailing #tags - excludes plain MD_PATH-only heading nodes that cannot possibly need a disk write.,
 # ]
 def _is_bulk_visible_apply_candidate(node: dict[str, Any]) -> bool:
+    """Return True iff this node could plausibly need a disk-side beacon update.
+
+    Three eligibility classes are admitted:
+
+    1. **AST_QUALNAME nodes** — Python/JS/TS AST nodes mapped by Cartographer.
+       The slow path may need to update an attached beacon block.
+    2. **Existing BEACON block in note** — the node already has a beacon
+       attached on disk; the slow path may need to update or delete it.
+    3. **MD_PATH + trailing #tags in name** — a Markdown heading with #tags
+       in its name; the slow path may need to CREATE a beacon on disk
+       (Case 2 in update_beacon_from_node_markdown).
+
+    A plain Markdown heading node (MD_PATH-only, no BEACON, no #tags) is
+    intentionally NOT a candidate: the slow path on such a node would only
+    enter Case 1c (orphan-cleanup), which requires a full Markdown reparse
+    to discover that no orphan exists. In a fully-synced file every such
+    call is a ~1-second no-op. F12+1's reconciliation pass handles orphan
+    cleanup separately, so excluding these nodes here only forfeits orphan
+    detection FROM the F12+3 step [3] pre-pass. F12+1 still catches them.
+
+    For the Jim file (614 MD_PATH-bearing nodes, 180 beacon-bearing) this
+    drops the candidate count from 614 → 180 — a 3.4× reduction in step
+    [3] wall-clock. Combined with the in-sync filter
+    (_node_name_tags_match_beacon_block_in_note), the steady-state F12+3
+    drops from ~10 minutes to seconds.
+    """
     if _is_file_like_payload_node(node):
         return False
     if _is_folder_like_payload_node(node):
         return False
     note = str(node.get("note") or "")
-    return (
-        "AST_QUALNAME:" in note
-        or "BEACON (" in note
-        or "MD_PATH:" in note
-    )
+    name = str(node.get("name") or "")
+
+    # Class 1: AST node with a Cartographer qualname — always a candidate.
+    if "AST_QUALNAME:" in note:
+        return True
+
+    # Class 2: already-beaconed node — always a candidate.
+    if "BEACON (" in note:
+        return True
+
+    # Class 3: Markdown heading WITH trailing #tags — may need beacon CREATE.
+    # Plain MD_PATH-only heading without tags is NOT a candidate (see
+    # docstring rationale).
+    if "MD_PATH:" in note:
+        # Quick check for trailing #tag tokens in the name. We look for any
+        # token starting with '#' in the whitespace-separated tail of the
+        # name; this is the same shape recognized by split_name_and_tags.
+        for token in reversed(name.split()):
+            if token.startswith("#"):
+                return True
+            break  # tail token is not a tag — no tags present
+
+    return False
 
 
 # @beacon[
