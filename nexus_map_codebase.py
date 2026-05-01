@@ -1704,7 +1704,40 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
     ether_by_mdpath: dict[tuple[str, ...], list[dict[str, Any]]] = {}
     ether_by_vuekey: dict[str, dict[str, Any]] = {}
     ether_by_name: dict[str, list[dict[str, Any]]] = {}
+    # Anchor 5 (Dan, post-2026-04-30): tag-stripped raw name index for
+    # tag-tolerant matching. Keyed by base name with trailing '#tag' tokens
+    # and ' 🔱' decoration removed. This allows freshly-ETCHed Workflowy
+    # nodes named e.g. 'My new section #aal--design' to match the on-disk
+    # 'My new section' that nexus_to_tokens emits (which strips trailing
+    # tags from heading text).
+    ether_by_name_stripped: dict[str, list[dict[str, Any]]] = {}
     matched_ether_obj_ids: set[int] = set()
+
+    def _strip_tags_and_trident(raw: str) -> str:
+        """Return the raw name with trailing #tags and 🔱 decoration removed.
+
+        Mirrors the stripping done by
+        ``markdown_roundtrip._heading_name_from_note_or_name`` so that the
+        on-disk heading text and the Workflowy node base text can be
+        compared byte-for-byte.
+        """
+        if not isinstance(raw, str):
+            return ""
+        tokens = raw.split()
+        # Strip trailing '#tag' tokens.
+        while tokens and tokens[-1].startswith("#"):
+            tokens.pop()
+        # Strip trailing '🔱' marker (whitespace-separated).
+        while tokens and tokens[-1].strip() == "🔱":
+            tokens.pop()
+        # Also strip a '🔱' glued to the last token without whitespace.
+        if tokens:
+            last = tokens[-1]
+            if last.endswith("🔱"):
+                tokens[-1] = last[:-1].rstrip()
+                if not tokens[-1]:
+                    tokens.pop()
+        return " ".join(tokens).strip()
 
     def _candidate_if_unmatched(candidate: dict[str, Any] | None) -> dict[str, Any] | None:
         if not isinstance(candidate, dict):
@@ -1749,6 +1782,10 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
         # 4) Raw name fallback
         if isinstance(name_e, str):
             ether_by_name.setdefault(name_e, []).append(e)
+            # 5) Tag-stripped raw name fallback (Dan, post-2026-04-30).
+            stripped_e = _strip_tags_and_trident(name_e)
+            if stripped_e and stripped_e != name_e:
+                ether_by_name_stripped.setdefault(stripped_e, []).append(e)
 
         # Debug: log any ETHER child that looks like our target function
         if (
@@ -1860,6 +1897,47 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                             flush=True,
                         )
 
+                # 5) Tag-tolerant raw-name fallback (Dan, post-2026-04-30).
+                # Handles freshly-ETCHed Workflowy nodes with trailing #tags
+                # whose corresponding heading on disk has the tags stripped
+                # by nexus_to_tokens. Without this, the entire tagged
+                # subtree would be DELETE+CREATE'd by reconcile_tree (loss
+                # of tag, UUID, and recursive subtree wipe).
+                #
+                # Strategy: strip trailing '#tag' tokens and '🔱' from BOTH
+                # the source name and ether names; match if the bases agree.
+                # When matched, we additionally preserve the ETHER name on
+                # the source so the downstream WEAVE engine does not
+                # UPDATE the Workflowy node to remove the tags.
+                if match is None and isinstance(name_s, str):
+                    stripped_s = _strip_tags_and_trident(name_s)
+                    if stripped_s:
+                        # Try direct lookup against pre-built tag-stripped index.
+                        candidate = _first_unmatched(
+                            ether_by_name_stripped.get(stripped_s)
+                        )
+                        # If no hit, try the case where the SOURCE was already
+                        # bare and an ether node has the same bare name in
+                        # ether_by_name (covers stripped_s == name_e).
+                        if candidate is None and stripped_s in ether_by_name:
+                            candidate = _first_unmatched(
+                                ether_by_name.get(stripped_s)
+                            )
+                        if candidate is not None:
+                            match = candidate
+                            if debug_hit:
+                                print(
+                                    "[CARTO-DEBUG]   MATCH via tag-tolerant name:",
+                                    {
+                                        "name_s": name_s,
+                                        "stripped_s": stripped_s,
+                                        "match_id": match.get("id"),
+                                        "match_name": match.get("name"),
+                                    },
+                                    file=_carto_debug_sys.stderr,
+                                    flush=True,
+                                )
+
         if match is None:
             if debug_hit:
                 print("[CARTO-DEBUG]   NO MATCH for source child", file=_carto_debug_sys.stderr, flush=True)
@@ -1885,6 +1963,17 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
         if isinstance(name_s, str) and isinstance(name_e, str):
             if whiten_text_for_header_compare(name_s) == whiten_text_for_header_compare(name_e):
                 s["name"] = name_e
+            else:
+                # Tag-tolerant preservation (Dan, post-2026-04-30): when names
+                # differ ONLY by trailing '#tag' tokens (and/or '🔱'), prefer
+                # the ETHER form so WEAVE does not strip the tags from
+                # Workflowy. This is the second half of the Anchor 5 fix:
+                # without it, even a successful tag-tolerant identity match
+                # would still trigger an UPDATE that removes the tag.
+                stripped_s = _strip_tags_and_trident(name_s)
+                stripped_e = _strip_tags_and_trident(name_e)
+                if stripped_s and stripped_s == stripped_e:
+                    s["name"] = name_e
         note_e = match.get("note")
         if isinstance(note_s, str) and isinstance(note_e, str):
             if whiten_text_for_header_compare(note_s) == whiten_text_for_header_compare(note_e):
