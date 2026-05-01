@@ -2546,9 +2546,227 @@ def normalize_duplicate_ast_beacons_in_file(file_path: str) -> dict[str, Any]:
             return _normalize_duplicate_ast_beacons_python(file_path)
         if ext in {".js", ".jsx", ".ts", ".tsx", ".vue"}:
             return _normalize_duplicate_ast_beacons_js_ts(file_path)
+        if ext in {".md", ".markdown"}:
+            return _normalize_duplicate_ast_beacons_markdown(file_path)
         return {"success": True, "changed": False, "file_path": file_path, "reason": "unsupported_ext"}
     except Exception as e:  # noqa: BLE001
         return {"success": False, "changed": False, "file_path": file_path, "error": str(e)}
+
+
+# @beacon[
+#   id=carto-hygiene@_normalize_duplicate_ast_beacons_markdown,
+#   role=carto-hygiene: dedupe Markdown AST beacons,
+#   slice_labels=carto-js-ts,carto-js-ts-beacons,f9-f12-handlers,ra-reconcile,nexus-md-header-path,
+#   kind=ast,
+#   comment=Markdown implementation for normalize_duplicate_ast_beacons_in_file: groups by next-heading anchor and merges duplicate '<!-- @beacon[...] -->' blocks targeting the same heading.
+# ]
+def _normalize_duplicate_ast_beacons_markdown(file_path: str) -> dict[str, Any]:
+    """Markdown variant of normalize_duplicate_ast_beacons_in_file.
+
+    Mirrors the Python/JS-TS implementations but operates on HTML-comment
+    beacon blocks anchored to the next Markdown heading line.
+
+    Anchor policy:
+      - The anchor for each beacon block is the line number of the next
+        non-blank, non-HTML-comment line that begins with one or more '#'
+        characters followed by whitespace (a Markdown heading of any level
+        from H1 through H6).
+      - HTML comment lines (including any '@beacon[...]' duplicate blocks
+        sitting between this beacon and the heading) are skipped while
+        scanning for the anchor; this lets a stack of duplicates all
+        resolve to the same heading anchor.
+
+    Merge policy (when 2+ AST beacon blocks share an anchor):
+      - Keep one block in the position of the FIRST occurrence (top of
+        the stack) and drop the rest.
+      - Choose the canonical id by preferring numeric-suffix ids (e.g.
+        ``prefix@000123``) when present; otherwise keep the first
+        encountered id.
+      - Union slice_labels (deduplicated, canonicalized).
+      - Merge role and comment via deduplicated join.
+
+    SPAN beacons are intentionally ignored (they may legitimately stack
+    or overlap and are not subject to the same accidental-duplication
+    pattern as AST beacons).
+    """
+    with open(file_path, "r", encoding="utf-8") as f:
+        raw_text = f.read()
+    lines = raw_text.splitlines(keepends=True)
+    n = len(lines)
+
+    parsed = parse_markdown_beacon_blocks([line.rstrip("\n\r") for line in lines])
+
+    def _block_extent(comment_line_1based: int) -> tuple[int, int]:
+        """Return (start_idx, end_idx) 0-based inclusive for the HTML comment
+        block containing the beacon at comment_line_1based."""
+        cl = comment_line_1based
+        if not isinstance(cl, int) or cl <= 0:
+            return (-1, -1)
+        start_idx = cl - 1
+        j = cl - 1
+        while j >= 1:
+            raw = lines[j - 1]
+            if "<!--" in raw:
+                start_idx = j - 1
+                break
+            if raw.strip():
+                break
+            j -= 1
+        j = cl
+        end_idx = cl - 1
+        while j <= n:
+            raw = lines[j - 1]
+            end_idx = j - 1
+            if "-->" in raw:
+                break
+            j += 1
+        return (start_idx, end_idx)
+
+    def _next_heading_anchor_after(end_idx: int) -> int | None:
+        """Return 1-based line number of the next Markdown heading after end_idx.
+
+        Skips blank lines and HTML comment blocks (so a stack of duplicate
+        beacons all anchor to the same heading).
+        """
+        i = end_idx + 1
+        in_html_comment = False
+        while i < n:
+            raw = lines[i].rstrip("\n\r")
+            stripped = raw.strip()
+            if not stripped:
+                i += 1
+                continue
+            if not in_html_comment and "<!--" in raw and "-->" not in raw:
+                in_html_comment = True
+                i += 1
+                continue
+            if in_html_comment:
+                if "-->" in raw:
+                    in_html_comment = False
+                i += 1
+                continue
+            if stripped.startswith("<!--") and stripped.endswith("-->"):
+                i += 1
+                continue
+            if re.match(r"^#{1,6}\s", stripped):
+                return i + 1  # 1-based
+            return None
+        return None
+
+    ast_blocks: list[dict[str, Any]] = []
+    for b in parsed:
+        kind = (b.get("kind") or "span").strip().lower() or "span"
+        if kind != "ast":
+            continue
+        cl = b.get("comment_line")
+        if not isinstance(cl, int) or cl <= 0:
+            continue
+        start_idx, end_idx = _block_extent(cl)
+        if start_idx < 0 or end_idx < 0:
+            continue
+        anchor = _next_heading_anchor_after(end_idx)
+        if anchor is None:
+            continue
+        ast_blocks.append(
+            {
+                "start_i": start_idx,
+                "end_i": end_idx,
+                "comment_line": cl,
+                "anchor_lineno": anchor,
+                "id": (b.get("id") or "").strip(),
+                "role": (b.get("role") or "").strip(),
+                "slice_labels": (b.get("slice_labels") or "").strip(),
+                "comment": (b.get("comment") or "").strip(),
+            }
+        )
+
+    by_anchor: dict[int, list[dict[str, Any]]] = {}
+    for b in ast_blocks:
+        by_anchor.setdefault(int(b["anchor_lineno"]), []).append(b)
+
+    changed = False
+    merged_groups = 0
+    removed_blocks = 0
+
+    deletions: list[tuple[int, int]] = []
+    replacements: dict[int, list[str]] = {}
+
+    for _anchor, group in by_anchor.items():
+        if len(group) <= 1:
+            continue
+
+        group_sorted = sorted(group, key=lambda x: int(x["start_i"]))
+        position_block = group_sorted[0]
+
+        ids = [str(g.get("id") or "").strip() for g in group_sorted]
+        canonical_id = ""
+        for cand in ids:
+            if _is_numeric_suffix_beacon_id(cand):
+                canonical_id = cand
+                break
+        if not canonical_id:
+            canonical_id = ids[0] if ids else ""
+        if not canonical_id:
+            continue
+
+        roles = [str(g.get("role") or "").strip() for g in group_sorted]
+        comments = [str(g.get("comment") or "").strip() for g in group_sorted]
+        slices = [str(g.get("slice_labels") or "").strip() for g in group_sorted]
+
+        merged_role = _merge_unique_strings([r for r in roles if r])
+        merged_comment = _merge_unique_strings([c for c in comments if c])
+        merged_slice = _canonicalize_slice_labels_union(slices)
+
+        first_line = lines[int(position_block["start_i"])]
+        indent = re.match(r"^\s*", first_line)
+        indent_str = indent.group(0) if indent else ""
+
+        new_block_text_lines: list[str] = [
+            f"{indent_str}<!--\n",
+            f"{indent_str}@beacon[\n",
+            f"{indent_str}  id={canonical_id},\n",
+        ]
+        if merged_role:
+            new_block_text_lines.append(f"{indent_str}  role={merged_role},\n")
+        if merged_slice:
+            new_block_text_lines.append(f"{indent_str}  slice_labels={merged_slice},\n")
+        new_block_text_lines.append(f"{indent_str}  kind=ast,\n")
+        if merged_comment:
+            new_block_text_lines.append(f"{indent_str}  comment={merged_comment},\n")
+        new_block_text_lines.append(f"{indent_str} ]\n")
+        new_block_text_lines.append(f"{indent_str}-->\n")
+
+        replacements[int(position_block["start_i"])] = new_block_text_lines
+        deletions.append((int(position_block["start_i"]), int(position_block["end_i"])))
+        for other in group_sorted[1:]:
+            deletions.append((int(other["start_i"]), int(other["end_i"])))
+            removed_blocks += 1
+
+        merged_groups += 1
+        changed = True
+
+    if not changed:
+        return {"success": True, "changed": False, "file_path": file_path, "kind": "markdown"}
+
+    deletions_sorted = sorted(deletions, key=lambda t: t[0], reverse=True)
+
+    for start_i, end_i in deletions_sorted:
+        if start_i in replacements:
+            lines[start_i : end_i + 1] = replacements[start_i]
+        else:
+            del lines[start_i : end_i + 1]
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+    return {
+        "success": True,
+        "changed": True,
+        "file_path": file_path,
+        "kind": "markdown",
+        "merged_groups": merged_groups,
+        "removed_blocks": removed_blocks,
+    }
 
 
 # @beacon[
@@ -9740,11 +9958,6 @@ def update_beacon_from_node_markdown(
 
     # Case 2: create from MD_PATH + tags.
     if md_path and tags:
-        # Build a synthetic id with a random hash suffix. Unlike Python/JS,
-        # Markdown beacons do not encode the heading name in the id; MD_PATH
-        # is the structural anchor.
-        hash_suffix = _generate_auto_beacon_hash() + _generate_auto_beacon_hash()
-        simple_id = f"auto-beacon@{hash_suffix}"
         # Role comes from the Workflowy node name (decoration-stripped) so a
         # rename in Workflowy is reflected in the on-disk beacon's role.
         # Falls back to the MD_PATH heading text when the node name is empty.
@@ -9791,6 +10004,118 @@ def update_beacon_from_node_markdown(
             )
             return result
         insert_idx = resolved_idx
+
+        # IDEMPOTENCY GUARD (Dan, post-2026-04-30):
+        # Before generating a fresh ID and inserting a new beacon block,
+        # check whether a beacon block already anchors to the same heading
+        # (i.e., the parsed beacon's `comment_line` falls inside a comment
+        # block whose closing '-->' is at or above `insert_idx`, with
+        # nothing but blank lines or other beacon comments between it and
+        # `insert_idx`). If found, treat this as an UPDATE in place using
+        # the existing ID instead of CREATE. This prevents accumulating
+        # duplicate beacon blocks when:
+        #   - F12+2 is invoked multiple times in quick succession before
+        #     the cache reflects the BEACON metadata written by an earlier
+        #     invocation (cache-timing race);
+        #   - update_beacon_from_node_markdown is called with a stale note
+        #     that lacks the beacon_id even though disk has one.
+        existing_anchored: Optional[tuple[str, int, int, int]] = None
+        for b in beacons:
+            cl = b.get("comment_line")
+            if not isinstance(cl, int) or cl <= 0:
+                continue
+            # Compute this beacon's block extent (same logic as
+            # _find_beacon_block_by_id) so we can check whether it
+            # immediately precedes the target heading at insert_idx.
+            blk_start = cl - 1
+            j = cl - 1
+            while j >= 1:
+                raw = lines[j - 1]
+                if "<!--" in raw:
+                    blk_start = j - 1
+                    break
+                if raw.strip():
+                    break
+                j -= 1
+            j = cl
+            blk_end = cl - 1
+            while j <= len(lines):
+                raw = lines[j - 1]
+                blk_end = j - 1
+                if "-->" in raw:
+                    break
+                j += 1
+            # The block anchors the heading at insert_idx if its end is
+            # just before insert_idx, allowing for blank lines or other
+            # (yet-to-be-deduped) beacon comment blocks in between.
+            if blk_end >= insert_idx:
+                continue
+            anchors_target = True
+            for k in range(blk_end + 1, insert_idx):
+                line_text = lines[k] if k < len(lines) else ""
+                if not line_text.strip():
+                    continue
+                # Allow other beacon HTML comment blocks between this
+                # block and the heading (they will be cleaned up by the
+                # duplicate-beacon hygiene pass on the next F12 cycle).
+                if line_text.lstrip().startswith("<!--") or "@beacon" in line_text or line_text.strip() == "-->":
+                    continue
+                anchors_target = False
+                break
+            if anchors_target:
+                existing_id = (b.get("id") or "").strip()
+                if existing_id:
+                    existing_anchored = (existing_id, blk_start, blk_end, cl)
+                    break
+
+        if existing_anchored is not None:
+            # UPDATE in place using the existing beacon's ID.
+            existing_id, start_idx, end_idx, _cl = existing_anchored
+            # Preserve existing kind (default 'ast') and show_span when
+            # rewriting; this mirrors Case 1a's update behavior.
+            existing_kind = "ast"
+            existing_show_span: Optional[bool] = None
+            for b in beacons:
+                if (b.get("id") or "").strip() != existing_id:
+                    continue
+                k_val = (b.get("kind") or "").strip().lower()
+                if k_val in {"ast", "span"}:
+                    existing_kind = k_val
+                if b.get("show_span_explicit"):
+                    existing_show_span = bool(b.get("show_span"))
+                break
+
+            new_block = _build_beacon_block(
+                bid=existing_id,
+                role=role_display,
+                slice_labels=slice_labels_canon,
+                kind=existing_kind,
+                show_span=existing_show_span,
+                comment_text=None,
+            )
+            new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(new_lines) + "\n")
+            except Exception as e:  # noqa: BLE001
+                result["error"] = f"failed_to_write_file: {e}"
+                return result
+
+            result.update(
+                {
+                    "operation": "updated_beacon",
+                    "beacon_id": existing_id,
+                    "role": role_display,
+                    "slice_labels": slice_labels_canon,
+                }
+            )
+            return result
+
+        # No existing beacon block anchors this heading: build a fresh ID
+        # and insert a new beacon block above the heading.
+        hash_suffix = _generate_auto_beacon_hash() + _generate_auto_beacon_hash()
+        simple_id = f"auto-beacon@{hash_suffix}"
+
         new_block = _build_beacon_block(
             bid=simple_id,
             role=role_display,
