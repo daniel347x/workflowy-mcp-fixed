@@ -499,6 +499,7 @@ async def _run_bulk_apply_inline(
     from .server import (
         _build_bulk_visible_root_from_payload,
         _collect_bulk_visible_apply_groups,
+        _node_name_tags_match_beacon_block_in_note,
     )
 
     summary = {
@@ -506,6 +507,10 @@ async def _run_bulk_apply_inline(
         "files_refreshed": 0,
         "files_skipped": 0,
         "nodes_skipped": 0,
+        # nodes_skipped_in_sync counts candidates filtered by
+        # _node_name_tags_match_beacon_block_in_note (Bug #2 optimization).
+        # Distinct from "nodes_skipped" which counts errors/missing-id cases.
+        "nodes_skipped_in_sync": 0,
         "warnings": [],
         "errors": [],
     }
@@ -611,6 +616,34 @@ async def _run_bulk_apply_inline(
                         log_file,
                         f"WARNING: update_cached_node_name failed for {node_id}: {e}",
                     )
+
+            # Bug #2 optimization (Dan, 2026-05-01): skip the slow
+            # update_beacon_from_node path when the candidate is
+            # already in sync per cache evidence (NAME #tags + base
+            # text match the BEACON (MD AST) block in the NOTE).
+            # Pure in-memory string check, microseconds per call.
+            # See _node_name_tags_match_beacon_block_in_note in server.py
+            # for the full reasoning chain and why this is structurally
+            # different from the broken cache-vs-DOM filter.
+            #
+            # NOTE: this codepath also lives inside markdown_generate_pipeline.py
+            # (this file) which DUPLICATES _run_carto_bulk_visible_apply_job
+            # from server.py. The original Bug #2 fix landed only in
+            # server.py and missed this duplicate, which is why F12+3 still
+            # ran slowly until this second patch landed too. If a future
+            # bulk-apply optimization is needed, it must be applied to BOTH
+            # codepaths in lockstep.
+            try:
+                if _node_name_tags_match_beacon_block_in_note(candidate):
+                    summary["nodes_skipped_in_sync"] += 1
+                    continue
+            except Exception as e:
+                # Filter is best-effort; on any failure fall through
+                # to the slow path so correctness is never reduced.
+                _append_log(
+                    log_file,
+                    f"WARNING: in-sync filter raised for {node_id}: {e}; running slow path.",
+                )
 
             try:
                 node_result = await client.update_beacon_from_node(
