@@ -3983,9 +3983,30 @@ def _node_name_tags_match_beacon_block_in_note(candidate: dict[str, Any]) -> boo
     if "BEACON (" not in note:
         return False
 
+    # Lazy import of nexus_map_codebase. The module lives at the repo root
+    # (NOT inside the workflowy_mcp package), so it may not be on sys.path
+    # when this filter is first called. Mirror the pattern used by
+    # WorkFlowyClient.update_beacon_from_node: walk up from this file's
+    # location to find the project root and add it to sys.path if needed.
     try:
         import importlib
-        cartographer = importlib.import_module("nexus_map_codebase")
+        import os as _os
+        import sys as _sys
+
+        try:
+            cartographer = importlib.import_module("nexus_map_codebase")
+        except ImportError:
+            here = _os.path.dirname(_os.path.abspath(__file__))
+            # server.py is at <repo>/src/workflowy_mcp/server.py; walk up 3 levels.
+            project_root = _os.path.dirname(_os.path.dirname(here))
+            if project_root and project_root not in _sys.path:
+                _sys.path.insert(0, project_root)
+            # Also try the alternate Obsidian-source layout where this module
+            # lives at <root>/MCP_Servers/workflowy_mcp/server.py.
+            alt_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(here)))
+            if alt_root and alt_root not in _sys.path:
+                _sys.path.insert(0, alt_root)
+            cartographer = importlib.import_module("nexus_map_codebase")
     except Exception:
         return False
 
@@ -4031,6 +4052,152 @@ def _node_name_tags_match_beacon_block_in_note(candidate: dict[str, Any]) -> boo
         return False
 
     return True
+
+
+# @beacon[
+#   id=bulk-visible-apply@_bulk_apply_per_file_inner_loop,
+#   role=_bulk_apply_per_file_inner_loop,
+#   slice_labels=f9-f12-handlers,ra-bulk-visible-apply,ra-carto-jobs,
+#   kind=ast,
+#   comment=Single-source-of-truth implementation of the F12+2/F12+3 bulk-apply per-candidate inner loop. Called from BOTH _run_carto_bulk_visible_apply_job (server.py) and run_bulk_apply_inline (markdown_generate_pipeline.py) to eliminate the duplicate-codepath gotcha that hid the original Bug #2 fix from F12+3 until a follow-up patch was needed.,
+# ]
+async def _bulk_apply_per_file_inner_loop(
+    client: Any,
+    candidate_nodes: list[dict[str, Any]],
+    file_name: str,
+    summary: dict[str, Any],
+    cancel_check: Callable[[], bool],
+    log: Callable[[str], None],
+    progress_tick: Callable[[], None],
+) -> tuple[int, bool]:
+    """Run the per-candidate inner loop for ONE file. Single-source-of-truth.
+
+    Background
+    ----------
+    The F12+2 and F12+3 step [3] bulk-apply paths used to ship as two
+    near-identical copies of this loop body — one inside
+    ``_run_carto_bulk_visible_apply_job`` (server.py, used directly when
+    F12+2 is invoked via WebSocket), and a duplicate inside
+    ``run_bulk_apply_inline`` (markdown_generate_pipeline.py, used when
+    F12+3 spawns a detached ``markdown_generate`` worker subprocess that
+    runs the 8-phase pipeline inline). The duplicate paths bit Dan on
+    May 1, 2026: the Bug #2 in-sync filter optimization (commit
+    ``bd90026``) was applied only to the server.py copy, so F12+3 still
+    ran at the old slow rate until commit ``e1a8d34`` patched the
+    pipeline copy too. This function exists so any future change to the
+    inner loop touches exactly ONE place.
+
+    Caller responsibilities (NOT done here)
+    ---------------------------------------
+    - Build the visible-tree root_node and group candidates by enclosing
+      FILE node (via ``_collect_bulk_visible_apply_groups``).
+    - The OUTER per-file loop, including the per-file
+      ``refresh_file_node_beacons`` call after this returns when
+      ``file_successful_node_updates > 0``.
+    - Initialize the ``summary`` dict with the standard keys
+      (``node_updates``, ``nodes_skipped``, ``nodes_skipped_in_sync``,
+      ``errors``). This function increments those keys in place.
+    - Provide the three callables described below.
+
+    Callable parameters
+    -------------------
+    cancel_check() -> bool
+        Polled at the top of each candidate iteration. Return True to
+        stop the loop (the caller is responsible for setting any
+        higher-level cancel state, e.g. job status).
+    log(msg: str) -> None
+        Append a log line. Each implementation routes to its own job log
+        file (server.py uses ``_append_carto_job_log``, pipeline uses
+        ``_append_log``).
+    progress_tick() -> None
+        Called after each successful ``update_beacon_from_node`` call,
+        i.e. after ``summary['node_updates']`` is incremented. Used to
+        flush the running counter into the job JSON for live widget
+        progress display. May be a no-op if the caller doesn't track
+        progress at this granularity.
+
+    Side effects on ``summary`` (in place)
+    --------------------------------------
+    - ``summary['node_updates']``        += 1 per successful update
+    - ``summary['nodes_skipped']``       += 1 per missing-id or error
+    - ``summary['nodes_skipped_in_sync']`` += 1 per in-sync filter hit
+    - ``summary['errors']`` (list)       appended for each failure
+
+    Returns
+    -------
+    (file_successful_node_updates, was_cancelled)
+        ``file_successful_node_updates`` — count of successful update
+        calls in this file's inner loop. The caller uses this to decide
+        whether to invoke the per-file ``refresh_file_node_beacons``.
+        ``was_cancelled`` — True iff ``cancel_check()`` returned True
+        and the loop exited early.
+    """
+    file_successful_node_updates = 0
+
+    for candidate in candidate_nodes:
+        if cancel_check():
+            return file_successful_node_updates, True
+
+        node_id = str(candidate.get("id") or "").strip()
+        node_name = str(candidate.get("name") or "")
+        node_note = str(candidate.get("note") or "")
+        if not node_id:
+            summary["nodes_skipped"] += 1
+            summary["errors"].append(
+                f"Skipped visible node with missing id under file {file_name}.",
+            )
+            continue
+
+        if node_name:
+            try:
+                await client.update_cached_node_name(
+                    node_id=node_id,
+                    new_name=node_name,
+                )
+            except Exception as e:  # noqa: BLE001
+                log(f"WARNING: update_cached_node_name failed for {node_id}: {e}")
+
+        # Bug #2 in-sync filter (Dan, 2026-05-01). Skips the slow
+        # update_beacon_from_node path when the candidate's NAME #tags
+        # + decoration-stripped base text already match the BEACON
+        # (MD AST) block in its NOTE. See
+        # _node_name_tags_match_beacon_block_in_note above for the full
+        # reasoning chain and why this is structurally different from
+        # the broken cache-vs-DOM filter.
+        try:
+            if _node_name_tags_match_beacon_block_in_note(candidate):
+                summary["nodes_skipped_in_sync"] += 1
+                continue
+        except Exception as e:  # noqa: BLE001
+            # Filter is best-effort; on any failure fall through to the
+            # slow path so correctness is never reduced.
+            log(f"WARNING: in-sync filter raised for {node_id}: {e}; running slow path.")
+
+        try:
+            node_result = await client.update_beacon_from_node(
+                node_id=node_id,
+                name=node_name,
+                note=node_note,
+                skip_auto_refresh=True,
+            )
+            if isinstance(node_result, dict) and not node_result.get("success", True):
+                raise RuntimeError(
+                    node_result.get("error") or "update_beacon_from_node returned failure",
+                )
+            file_successful_node_updates += 1
+            summary["node_updates"] += 1
+            try:
+                progress_tick()
+            except Exception as e:  # noqa: BLE001
+                # Progress reporting must never break the loop.
+                log(f"WARNING: progress_tick raised for {node_id}: {e}")
+        except Exception as e:  # noqa: BLE001
+            msg = f"Node update failed for {node_id} ({node_name!r}): {e}"
+            summary["errors"].append(msg)
+            summary["nodes_skipped"] += 1
+            log(f"ERROR: {msg}")
+
+    return file_successful_node_updates, False
 
 
 # @beacon[
@@ -4330,70 +4497,33 @@ async def _run_carto_bulk_visible_apply_job(job_file: str, root_node: dict[str, 
             _write_carto_job_payload(job_file, job)
             _append_carto_job_log(log_file, f"Updating {len(candidate_nodes)} visible node(s) for file {file_name} ({file_id}).")
 
-            file_successful_node_updates = 0
-            for candidate in candidate_nodes:
-                if _carto_job_cancel_requested(job_file):
-                    job["status"] = "cancelled"
-                    progress["current_phase"] = "cancelled"
-                    _append_carto_job_log(log_file, "Cancellation requested during node update pass.")
-                    break
+            # Per-candidate inner loop — delegated to the single-source-of-truth
+            # helper _bulk_apply_per_file_inner_loop. server.py and
+            # markdown_generate_pipeline.py both route through that helper so
+            # any future change to the inner loop touches exactly ONE place
+            # (avoids the May 2026 duplicate-codepath gotcha that hid Bug #2's
+            # fix from the F12+3 path).
+            def _server_progress_tick() -> None:
+                progress["nodes_updated"] = result_summary["node_updates"]
+                job["updated_at"] = datetime.utcnow().isoformat()
+                _write_carto_job_payload(job_file, job)
 
-                node_id = str(candidate.get("id") or "").strip()
-                node_name = str(candidate.get("name") or "")
-                node_note = str(candidate.get("note") or "")
-                if not node_id:
-                    result_summary["nodes_skipped"] += 1
-                    errors.append(f"Skipped visible node with missing id under file {file_name}.")
-                    continue
+            file_successful_node_updates, was_cancelled = (
+                await _bulk_apply_per_file_inner_loop(
+                    client=client,
+                    candidate_nodes=candidate_nodes,
+                    file_name=file_name,
+                    summary=result_summary,
+                    cancel_check=lambda: _carto_job_cancel_requested(job_file),
+                    log=lambda msg: _append_carto_job_log(log_file, msg),
+                    progress_tick=_server_progress_tick,
+                )
+            )
 
-                if node_name:
-                    try:
-                        await client.update_cached_node_name(
-                            node_id=node_id,
-                            new_name=node_name,
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        _append_carto_job_log(log_file, f"WARNING: update_cached_node_name failed for {node_id}: {e}")
-
-                # Bug #2 optimization (Dan, 2026-05-01): skip the slow
-                # update_beacon_from_node path when the candidate is
-                # already in sync per cache evidence (NAME #tags + base
-                # text match the BEACON (MD AST) block in the NOTE).
-                # Pure in-memory string check, microseconds per call.
-                # See _node_name_tags_match_beacon_block_in_note above
-                # for the full reasoning chain and why this is structurally
-                # different from the broken cache-vs-DOM filter.
-                try:
-                    if _node_name_tags_match_beacon_block_in_note(candidate):
-                        result_summary["nodes_skipped_in_sync"] += 1
-                        continue
-                except Exception as e:  # noqa: BLE001
-                    # Filter is best-effort; on any failure fall through
-                    # to the slow path so correctness is never reduced.
-                    _append_carto_job_log(
-                        log_file,
-                        f"WARNING: in-sync filter raised for {node_id}: {e}; running slow path.",
-                    )
-
-                try:
-                    node_result = await client.update_beacon_from_node(
-                        node_id=node_id,
-                        name=node_name,
-                        note=node_note,
-                        skip_auto_refresh=True,
-                    )
-                    if isinstance(node_result, dict) and not node_result.get("success", True):
-                        raise RuntimeError(node_result.get("error") or "update_beacon_from_node returned failure")
-                    file_successful_node_updates += 1
-                    result_summary["node_updates"] += 1
-                    progress["nodes_updated"] = result_summary["node_updates"]
-                    job["updated_at"] = datetime.utcnow().isoformat()
-                    _write_carto_job_payload(job_file, job)
-                except Exception as e:  # noqa: BLE001
-                    msg = f"Node update failed for {node_id} ({node_name!r}): {e}"
-                    errors.append(msg)
-                    result_summary["nodes_skipped"] += 1
-                    _append_carto_job_log(log_file, f"ERROR: {msg}")
+            if was_cancelled:
+                job["status"] = "cancelled"
+                progress["current_phase"] = "cancelled"
+                _append_carto_job_log(log_file, "Cancellation requested during node update pass.")
 
             if str(job.get("status")) == "cancelled":
                 break

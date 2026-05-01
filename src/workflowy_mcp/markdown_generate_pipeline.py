@@ -498,8 +498,8 @@ async def _run_bulk_apply_inline(
     # never invoke).
     from .server import (
         _build_bulk_visible_root_from_payload,
+        _bulk_apply_per_file_inner_loop,
         _collect_bulk_visible_apply_groups,
-        _node_name_tags_match_beacon_block_in_note,
     )
 
     summary = {
@@ -590,86 +590,30 @@ async def _run_bulk_apply_inline(
             f"Updating {len(candidate_nodes)} visible node(s) for file {file_name} ({file_id}).",
         )
 
-        file_successful_node_updates = 0
-        for candidate in candidate_nodes:
-            if cancel_check():
-                break
+        # Per-candidate inner loop — delegated to the single-source-of-truth
+        # helper _bulk_apply_per_file_inner_loop in server.py. Both server.py
+        # and this file route through that helper so any future change to the
+        # inner loop touches exactly ONE place (eliminates the May 2026
+        # duplicate-codepath gotcha that hid Bug #2's fix from F12+3).
+        def _pipeline_progress_tick() -> None:
+            job_local = _read_job_payload(job_file)
+            progress_local = job_local.setdefault("progress", {})
+            progress_local["nodes_updated"] = summary["node_updates"]
+            _write_job_payload(job_file, job_local)
 
-            node_id = str(candidate.get("id") or "").strip()
-            node_name = str(candidate.get("name") or "")
-            node_note = str(candidate.get("note") or "")
-            if not node_id:
-                summary["nodes_skipped"] += 1
-                summary["errors"].append(
-                    f"Skipped visible node with missing id under file {file_name}."
-                )
-                continue
+        file_successful_node_updates, was_cancelled = (
+            await _bulk_apply_per_file_inner_loop(
+                client=client,
+                candidate_nodes=candidate_nodes,
+                file_name=file_name,
+                summary=summary,
+                cancel_check=cancel_check,
+                log=lambda msg: _append_log(log_file, msg),
+                progress_tick=_pipeline_progress_tick,
+            )
+        )
 
-            if node_name:
-                try:
-                    await client.update_cached_node_name(
-                        node_id=node_id,
-                        new_name=node_name,
-                    )
-                except Exception as e:
-                    _append_log(
-                        log_file,
-                        f"WARNING: update_cached_node_name failed for {node_id}: {e}",
-                    )
-
-            # Bug #2 optimization (Dan, 2026-05-01): skip the slow
-            # update_beacon_from_node path when the candidate is
-            # already in sync per cache evidence (NAME #tags + base
-            # text match the BEACON (MD AST) block in the NOTE).
-            # Pure in-memory string check, microseconds per call.
-            # See _node_name_tags_match_beacon_block_in_note in server.py
-            # for the full reasoning chain and why this is structurally
-            # different from the broken cache-vs-DOM filter.
-            #
-            # NOTE: this codepath also lives inside markdown_generate_pipeline.py
-            # (this file) which DUPLICATES _run_carto_bulk_visible_apply_job
-            # from server.py. The original Bug #2 fix landed only in
-            # server.py and missed this duplicate, which is why F12+3 still
-            # ran slowly until this second patch landed too. If a future
-            # bulk-apply optimization is needed, it must be applied to BOTH
-            # codepaths in lockstep.
-            try:
-                if _node_name_tags_match_beacon_block_in_note(candidate):
-                    summary["nodes_skipped_in_sync"] += 1
-                    continue
-            except Exception as e:
-                # Filter is best-effort; on any failure fall through
-                # to the slow path so correctness is never reduced.
-                _append_log(
-                    log_file,
-                    f"WARNING: in-sync filter raised for {node_id}: {e}; running slow path.",
-                )
-
-            try:
-                node_result = await client.update_beacon_from_node(
-                    node_id=node_id,
-                    name=node_name,
-                    note=node_note,
-                    skip_auto_refresh=True,
-                )
-                if isinstance(node_result, dict) and not node_result.get("success", True):
-                    raise RuntimeError(
-                        node_result.get("error") or "update_beacon_from_node returned failure"
-                    )
-                file_successful_node_updates += 1
-                summary["node_updates"] += 1
-                # Update job progress with running counter.
-                job = _read_job_payload(job_file)
-                progress = job.setdefault("progress", {})
-                progress["nodes_updated"] = summary["node_updates"]
-                _write_job_payload(job_file, job)
-            except Exception as e:
-                msg = f"Node update failed for {node_id} ({node_name!r}): {e}"
-                summary["errors"].append(msg)
-                summary["nodes_skipped"] += 1
-                _append_log(log_file, f"ERROR: {msg}")
-
-        if cancel_check():
+        if was_cancelled:
             break
 
         if file_successful_node_updates > 0:
