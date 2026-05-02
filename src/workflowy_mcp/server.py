@@ -1817,10 +1817,14 @@ async def _handle_refresh_file_node(data: dict[str, Any], websocket) -> None:
             note_val = str(note_val)
 
         # Call the new unified beacon update method (supports Python/JS/TS/Markdown).
+        # The handler owns the FILE refresh below, so suppress the helper's
+        # auto-refresh to avoid double disk→Workflowy reconciliation for
+        # AST-node F12+1.
         beacon_update_result = await client.update_beacon_from_node(
             node_id=str(node_id),
             name=str(node_name),
             note=note_val,
+            skip_auto_refresh=True,
         )
     except Exception as e:  # noqa: BLE001
         log_event(
@@ -4013,8 +4017,14 @@ def _node_name_tags_match_beacon_block_in_note(candidate: dict[str, Any]) -> boo
       - The note contains a BEACON (MD AST) block (so we know there's an
         on-disk beacon for this heading; absence means we must let the
         slow path run to handle CREATE/DELETE), AND
-      - Both slice_labels and role parse cleanly out of that block, AND
-      - Both tag-set and role match exactly after canonicalization.
+      - slice_labels parses cleanly out of that block, AND
+      - The canonicalized name #tags match the on-disk slice_labels exactly.
+
+    Role is INTENTIONALLY NOT compared (Dan, May 2026). The role: field
+    is cosmetic only and including it in the in-sync check caused
+    phantom UPDATE storms whenever the Workflowy NAME and the on-disk
+    role: differed by surrounding quotes or punctuation. See the inline
+    comment near the bottom of this function for the full explanation.
 
     Any other case returns False, and the slow path
     (update_beacon_from_node_markdown) becomes the single source of
@@ -4095,13 +4105,26 @@ def _node_name_tags_match_beacon_block_in_note(candidate: dict[str, Any]) -> boo
     if canonical_name_labels != note_slice_labels.strip():
         return False
 
-    # Role comparison must be robust to encoding differences between the
-    # cached Workflowy name (which preserves smart quotes / typographic
-    # punctuation as the user typed them) and the on-disk BEACON block's
-    # role: line (which is HTML-encoded and uses ASCII quotes). Normalize
-    # both sides to a common ASCII-folded form before comparison.
-    if _normalize_role_for_in_sync_compare(role_from_name) != _normalize_role_for_in_sync_compare(note_role.strip()):
-        return False
+    # Role comparison is INTENTIONALLY DISABLED (Dan, May 2026).
+    #
+    # Background: the role: field in BEACON blocks is a cosmetic display
+    # value derived from the heading/AST node name. It carries no
+    # semantic information that the slice_labels: comparison above does
+    # not already cover. Including role in the in-sync check caused
+    # repeated phantom UPDATE storms during F12+2 reconcile whenever the
+    # Workflowy NAME and the on-disk role: differed by ANY character
+    # (surrounding ASCII quotes, punctuation tweaks, etc.) — the slow
+    # path then ran, update_cached_node_name stripped the tag from the
+    # cache via base_name, and the per-file reconcile fired UPDATE for
+    # every such node every time.
+    #
+    # Fix: skip role comparison entirely. slice_labels match is the
+    # only thing that determines whether disk and Workflowy are tag-
+    # synced. note_role/role_from_name are computed above only so the
+    # debug log can still show what role *would* have been compared,
+    # if anyone is ever curious — they no longer gate the result.
+    _ = role_from_name  # explicitly noted unused
+    _ = note_role        # explicitly noted unused
 
     return True
 
