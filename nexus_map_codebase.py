@@ -9759,7 +9759,34 @@ def update_beacon_from_node_markdown(
 
         show_span_note = _extract_show_span_from_note(note)
 
-        role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+        # ROLE PRIORITY (Dan, May 2026 data-loss fix):
+        # The role written to the on-disk beacon's role: field MUST come
+        # from the live Workflowy NAME (decoration-stripped), NOT from the
+        # cached note's stale BEACON block role: line.
+        #
+        # Reason: when the user renames a heading in Workflowy (e.g. adds
+        # the word "NOW" to a heading's name), the cache's NAME field is
+        # updated by Workflowy's normal sync, but the cached note's BEACON
+        # block still contains the OLD role text until F12+1 disk -> cache
+        # ingest refreshes it. If we read role from the note here, we
+        # propagate stale role text back to disk; the subsequent disk ->
+        # cache reconcile (refresh_file_node_beacons inside the bulk-apply
+        # caller) then sees the OLD heading text on disk and UPDATEs
+        # Workflowy to match -> the user's edit is silently destroyed.
+        #
+        # role_from_name (computed earlier from `name`) is the user's
+        # edited heading text minus tags and the trident decoration. It
+        # matches what Case 2 already does for newly-tagged headings
+        # (role_display = role_from_name). Using it here makes Case 1a
+        # consistent with Case 2 and prevents data loss on rename.
+        #
+        # Fallback to role_val (cached note) only when role_from_name is
+        # empty (e.g. a beacon with no Workflowy heading text).
+        role_display = (
+            role_from_name
+            or role_val
+            or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+        )
 
         # Slice labels come **only** from Workflowy tags in the node name.
         extra_label_tokens = [t.lstrip("#") for t in tags]
