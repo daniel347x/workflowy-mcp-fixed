@@ -9785,21 +9785,23 @@ def update_beacon_from_node_markdown(
 
     # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
-        # See update_beacon_from_node_python docstring for the source-of-truth
-        # policy. role: from note is NOT consulted; only comment metadata
-        # still comes from the note.
+        # Preserve stable metadata from the cached BEACON note block when it
+        # exists. The live Workflowy name remains the source of truth for
+        # slice_labels/tags, but role is treated as stable descriptive beacon
+        # metadata: if the user had a custom role in the existing beacon block,
+        # keep it rather than overwriting it with the heading text.
+        role_val: str | None = None
         comment_val: str | None = None
         for line in (note or "").splitlines():
             stripped = line.strip()
-            if stripped.startswith("comment:") or stripped.startswith("comments:"):
+            if stripped.startswith("role:"):
+                role_val = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("comment:") or stripped.startswith("comments:"):
                 comment_val = stripped.split(":", 1)[1].strip()
 
         show_span_note = _extract_show_span_from_note(note)
 
-        # Role comes from the live Workflowy node name (decoration-stripped),
-        # NOT from the cached note's stale BEACON metadata. See sweep doc
-        # in update_beacon_from_node_python for the data-loss reasoning.
-        role_display = role_from_name or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+        role_display = role_val or role_from_name or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
         # Slice labels come **only** from Workflowy tags in the node name.
         extra_label_tokens = [t.lstrip("#") for t in tags]

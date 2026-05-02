@@ -469,53 +469,45 @@ def _is_persistent_notes_subtree(node: Dict[str, Any]) -> bool:
 #   kind=ast,
 # ]
 def _collect_markdown_ast_beacon_nodes(root_node: Dict[str, Any]) -> list[tuple[str, str, list[str]]]:
-    """Collect Markdown AST beacon-bearing nodes from a Workflowy subtree.
+    """Collect Markdown heading nodes whose *current name tags* require a beacon.
 
-    Returns a list of (name, note, md_path_lines) tuples for each beaconed
-    heading. Critically, the ``note`` returned has its ``MD_PATH:`` block
-    REBUILT from the live tree's heading hierarchy rather than copied from
-    the cached note.
+    Returns a list of (name, note, md_path_lines) tuples. The returned ``note``
+    has its ``MD_PATH:`` block REBUILT from the live tree's heading hierarchy
+    rather than copied from the cached note.
 
-    Why we rebuild MD_PATH from the live tree (Dan, May 1 2026 final fix)
-    ---------------------------------------------------------------------
-    Phase [7]'s downstream helper ``update_beacon_from_node_markdown``
-    calls ``_find_markdown_heading_insert_idx`` which walks the
-    JUST-EMITTED on-disk file looking for a heading whose ancestor chain
-    matches the MD_PATH lines in the note. If the user just renamed a
-    high-level heading in Workflowy and ran F12+3, the cached MD_PATH in
-    descendants' notes still records the OLD ancestor names (because
-    descendant MD_PATH cache notes only get refreshed by F12+1's disk
-    -> tree reconcile, not by F12+3). The on-disk file, in contrast,
-    has the NEW ancestor names (phase [6]'s ``nexus_to_tokens`` emits
-    headings using the live cache name via ``_heading_name_from_note_or_name``).
+    Source-of-truth policy for F12+3 Phase [7]
+    ------------------------------------------
+    The current Workflowy heading name is the source of truth for whether a
+    Markdown AST beacon should exist at all:
 
-    Without this fix, every descendant of a renamed ancestor fails phase
-    [7] with ``md_path_unresolved`` because the cached MD_PATH no longer
-    matches the disk reality. The whole F12+3 aborts loudly, even though
-    nothing on disk is corrupt -- it's just a stale cache.
+      - If the current name has trailing ``#tags`` -> emit/reapply a beacon.
+      - If the current name has no trailing ``#tags`` -> do NOT emit a beacon,
+        even if the cached note still contains stale ``BEACON (MD AST)`` text.
 
-    The fix: walk ``root_node`` (the live tree that phase [6] just used
-    to emit the file) and synthesize each beaconed node's MD_PATH from
-    the live ancestor chain. The emitted heading texts are derived via
-    the same ``_heading_name_from_note_or_name`` helper that phase [6]
-    used, so the synthesized MD_PATH matches the on-disk reality
-    byte-for-byte.
+    This makes Phase [7] the single clean materialization pass from the live
+    tree state to the final on-disk Markdown file. Existing BEACON metadata in
+    the note is still passed through to ``update_beacon_from_node_markdown``
+    when present so that stable fields such as id/comment/kind/show_span can be
+    preserved. But stale note metadata is no longer treated as evidence that a
+    beacon should continue to exist after the user removed all name tags.
+
+    Why we rebuild MD_PATH from the live tree
+    -----------------------------------------
+    Phase [7]'s downstream helper ``update_beacon_from_node_markdown`` calls
+    ``_find_markdown_heading_insert_idx`` against the JUST-EMITTED on-disk file.
+    Cached MD_PATH blocks can be stale after Workflowy heading renames, while
+    phase [6] emitted headings from the live node names. Therefore we synthesize
+    each candidate's MD_PATH from the same live ancestor chain used for emission,
+    so insertion paths match disk reality byte-for-byte.
     """
     collected: list[tuple[str, str, list[str]]] = []
 
+    def _name_has_trailing_tags(raw_name: str) -> bool:
+        tokens = (raw_name or "").strip().split()
+        return bool(tokens and tokens[-1].startswith("#"))
+
     def walk(node: Dict[str, Any], depth: int, ancestor_chain: list[str]) -> None:
-        """Recurse, accumulating heading text at each depth in ancestor_chain.
-
-        Mirrors ``nexus_to_tokens`` recursion depth semantics:
-          - depth 0 = the FILE root (NOT a heading; no contribution to chain)
-          - depth 1 = H1 heading
-          - depth 2 = H2 heading
-          - depth >= 6 clamps to H6 (matches ``min(depth, 6)`` in nexus_to_tokens)
-
-        ancestor_chain[i] is the disk-emitted heading TEXT for depth i+1
-        (i.e., ancestor_chain[0] is the H1 heading text, ancestor_chain[1]
-        the H2, etc.).
-        """
+        """Recurse, accumulating disk-emitted heading text at each depth."""
         if not isinstance(node, dict):
             return
         if _is_markdown_span_beacon_node(node) or _is_persistent_notes_subtree(node):
@@ -523,6 +515,7 @@ def _collect_markdown_ast_beacon_nodes(root_node: Dict[str, Any]) -> list[tuple[
 
         raw_name = (node.get("name") or "").strip()
         note = node.get("note") or ""
+
         # YAML Frontmatter at depth >=1 is emitted as ---/---/blank, not a
         # heading. Skip its descendants from the heading-tree walk.
         if depth >= 1 and raw_name == "⚙️ YAML Frontmatter":
@@ -536,18 +529,17 @@ def _collect_markdown_ast_beacon_nodes(root_node: Dict[str, Any]) -> list[tuple[
         else:
             new_chain = ancestor_chain
 
-        # If this node is a beaconed heading, synthesize a fresh MD_PATH
-        # from new_chain and rewrite its note's MD_PATH: block. Then add
-        # it to the collected list.
-        if depth >= 1 and "BEACON (MD AST)" in note and new_chain:
+        # Phase [7] should emit a Markdown AST beacon iff the live Workflowy
+        # heading name currently has trailing #tags. Existing cached BEACON
+        # metadata is used only as stable metadata for that write, not as the
+        # existence condition.
+        if depth >= 1 and _name_has_trailing_tags(raw_name) and new_chain:
             md_path_lines: list[str] = []
             for idx, ancestor_text in enumerate(new_chain):
                 level = min(idx + 1, 6)
                 md_path_lines.append(f"{'#' * level} {ancestor_text}")
-            rewritten_note = _rewrite_md_path_block_in_note(note, md_path_lines)
-            collected.append(
-                (str(node.get("name") or ""), rewritten_note, md_path_lines),
-            )
+            rewritten_note = _rewrite_md_path_block_in_note(str(note), md_path_lines)
+            collected.append((str(node.get("name") or ""), rewritten_note, md_path_lines))
 
         for child in node.get("children") or []:
             if isinstance(child, dict):
@@ -556,7 +548,6 @@ def _collect_markdown_ast_beacon_nodes(root_node: Dict[str, Any]) -> list[tuple[
     walk(root_node, 0, [])
     collected.sort(key=lambda item: (len(item[2]), item[2]))
     return collected
-
 
 def _rewrite_md_path_block_in_note(note: str, md_path_lines: list[str]) -> str:
     """Replace the ``MD_PATH:`` block in a Workflowy note with a fresh one.
@@ -604,18 +595,23 @@ def _rewrite_md_path_block_in_note(note: str, md_path_lines: list[str]) -> str:
 #   role=reapply_markdown_ast_beacons,
 #   slice_labels=nexus-md-header-path,f9-f12-handlers,ra-reconcile,ra-bulk-visible-apply,carto-js-ts-beacons,
 #   kind=ast,
-#   comment=F12+3 phase 7 disk-write rehydrator. Walks Workflowy subtree for BEACON (MD AST) nodes and recreates HTML-comment beacon blocks via update_beacon_from_node_markdown. Runs AFTER nexus_to_tokens emits beacon-free Markdown (phase 6). Calls update_beacon_from_node_markdown once per beaconed heading — separate from F12+3 step [3] bulk-apply pre-pass which uses the same helper.,
+#   comment=F12+3 phase 7 disk-write rehydrator. Walks Workflowy subtree for heading nodes whose current names carry trailing #tags and materializes exactly those as HTML-comment beacon blocks via update_beacon_from_node_markdown. Runs AFTER nexus_to_tokens emits beacon-free Markdown (phase 6).,
 # ]
 def reapply_markdown_ast_beacons(file_path: str, root_node: Dict[str, Any]) -> list[Dict[str, Any]]:
     """Rehydrate Markdown AST beacons onto a regenerated Markdown file.
 
     Strategy:
       1. Export beacon-free Markdown content from Workflowy.
-      2. Walk the Workflowy subtree for nodes carrying BEACON (MD AST) metadata.
-      3. Recreate/update the corresponding HTML comment beacon blocks on disk
-         via Cartographer's existing update_beacon_from_node_markdown helper.
+      2. Walk the Workflowy subtree for heading nodes whose current names have
+         trailing #tags. Existing BEACON (MD AST) note metadata is used only to
+         preserve stable fields (id/comment/kind/show_span), not as the beacon
+         existence condition.
+      3. Create/update the corresponding HTML comment beacon blocks on disk via
+         Cartographer's existing update_beacon_from_node_markdown helper.
 
-    Markdown SPAN beacons are intentionally ignored.
+    Heading nodes without trailing #tags intentionally emit no beacon, even if
+    their cached note still contains stale BEACON (MD AST) metadata. Markdown
+    SPAN beacons are intentionally ignored.
     """
     import importlib
 
