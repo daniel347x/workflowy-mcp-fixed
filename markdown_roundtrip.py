@@ -469,27 +469,134 @@ def _is_persistent_notes_subtree(node: Dict[str, Any]) -> bool:
 #   kind=ast,
 # ]
 def _collect_markdown_ast_beacon_nodes(root_node: Dict[str, Any]) -> list[tuple[str, str, list[str]]]:
-    """Collect Markdown AST beacon-bearing nodes from a Workflowy subtree."""
+    """Collect Markdown AST beacon-bearing nodes from a Workflowy subtree.
+
+    Returns a list of (name, note, md_path_lines) tuples for each beaconed
+    heading. Critically, the ``note`` returned has its ``MD_PATH:`` block
+    REBUILT from the live tree's heading hierarchy rather than copied from
+    the cached note.
+
+    Why we rebuild MD_PATH from the live tree (Dan, May 1 2026 final fix)
+    ---------------------------------------------------------------------
+    Phase [7]'s downstream helper ``update_beacon_from_node_markdown``
+    calls ``_find_markdown_heading_insert_idx`` which walks the
+    JUST-EMITTED on-disk file looking for a heading whose ancestor chain
+    matches the MD_PATH lines in the note. If the user just renamed a
+    high-level heading in Workflowy and ran F12+3, the cached MD_PATH in
+    descendants' notes still records the OLD ancestor names (because
+    descendant MD_PATH cache notes only get refreshed by F12+1's disk
+    -> tree reconcile, not by F12+3). The on-disk file, in contrast,
+    has the NEW ancestor names (phase [6]'s ``nexus_to_tokens`` emits
+    headings using the live cache name via ``_heading_name_from_note_or_name``).
+
+    Without this fix, every descendant of a renamed ancestor fails phase
+    [7] with ``md_path_unresolved`` because the cached MD_PATH no longer
+    matches the disk reality. The whole F12+3 aborts loudly, even though
+    nothing on disk is corrupt -- it's just a stale cache.
+
+    The fix: walk ``root_node`` (the live tree that phase [6] just used
+    to emit the file) and synthesize each beaconed node's MD_PATH from
+    the live ancestor chain. The emitted heading texts are derived via
+    the same ``_heading_name_from_note_or_name`` helper that phase [6]
+    used, so the synthesized MD_PATH matches the on-disk reality
+    byte-for-byte.
+    """
     collected: list[tuple[str, str, list[str]]] = []
 
-    def walk(node: Dict[str, Any]) -> None:
+    def walk(node: Dict[str, Any], depth: int, ancestor_chain: list[str]) -> None:
+        """Recurse, accumulating heading text at each depth in ancestor_chain.
+
+        Mirrors ``nexus_to_tokens`` recursion depth semantics:
+          - depth 0 = the FILE root (NOT a heading; no contribution to chain)
+          - depth 1 = H1 heading
+          - depth 2 = H2 heading
+          - depth >= 6 clamps to H6 (matches ``min(depth, 6)`` in nexus_to_tokens)
+
+        ancestor_chain[i] is the disk-emitted heading TEXT for depth i+1
+        (i.e., ancestor_chain[0] is the H1 heading text, ancestor_chain[1]
+        the H2, etc.).
+        """
         if not isinstance(node, dict):
             return
         if _is_markdown_span_beacon_node(node) or _is_persistent_notes_subtree(node):
             return
 
-        note = str(node.get("note") or "")
-        md_path_lines = _extract_md_path_lines_from_note(note)
-        if "BEACON (MD AST)" in note and md_path_lines:
-            collected.append((str(node.get("name") or ""), note, md_path_lines))
+        raw_name = (node.get("name") or "").strip()
+        note = node.get("note") or ""
+        # YAML Frontmatter at depth >=1 is emitted as ---/---/blank, not a
+        # heading. Skip its descendants from the heading-tree walk.
+        if depth >= 1 and raw_name == "⚙️ YAML Frontmatter":
+            return
+
+        # Build the next chain. Depth 0 (FILE root) does NOT contribute.
+        if depth >= 1:
+            own_heading = _heading_name_from_note_or_name(note, raw_name)
+            new_chain = list(ancestor_chain)
+            new_chain.append(own_heading or raw_name)
+        else:
+            new_chain = ancestor_chain
+
+        # If this node is a beaconed heading, synthesize a fresh MD_PATH
+        # from new_chain and rewrite its note's MD_PATH: block. Then add
+        # it to the collected list.
+        if depth >= 1 and "BEACON (MD AST)" in note and new_chain:
+            md_path_lines: list[str] = []
+            for idx, ancestor_text in enumerate(new_chain):
+                level = min(idx + 1, 6)
+                md_path_lines.append(f"{'#' * level} {ancestor_text}")
+            rewritten_note = _rewrite_md_path_block_in_note(note, md_path_lines)
+            collected.append(
+                (str(node.get("name") or ""), rewritten_note, md_path_lines),
+            )
 
         for child in node.get("children") or []:
             if isinstance(child, dict):
-                walk(child)
+                walk(child, depth + 1, new_chain)
 
-    walk(root_node)
+    walk(root_node, 0, [])
     collected.sort(key=lambda item: (len(item[2]), item[2]))
     return collected
+
+
+def _rewrite_md_path_block_in_note(note: str, md_path_lines: list[str]) -> str:
+    """Replace the ``MD_PATH:`` block in a Workflowy note with a fresh one.
+
+    If the note has no existing ``MD_PATH:`` block, prepend a new one. The
+    BEACON block and any body text after the MD_PATH block are preserved.
+    """
+    if not isinstance(note, str):
+        note = ""
+
+    new_md_path_block_lines = ["MD_PATH:"]
+    new_md_path_block_lines.extend(md_path_lines)
+    new_md_path_block_lines.append("---")
+
+    note_lines = note.splitlines() if note else []
+
+    # Find the existing MD_PATH: block (from "MD_PATH:" line to the next "---").
+    md_path_start: int | None = None
+    md_path_end: int | None = None
+    for idx, line in enumerate(note_lines):
+        if line.strip() == "MD_PATH:":
+            md_path_start = idx
+            for j in range(idx + 1, len(note_lines)):
+                if note_lines[j].strip() == "---":
+                    md_path_end = j
+                    break
+            break
+
+    if md_path_start is not None and md_path_end is not None:
+        # Replace existing block in place.
+        rewritten = (
+            note_lines[:md_path_start]
+            + new_md_path_block_lines
+            + note_lines[md_path_end + 1:]
+        )
+    else:
+        # No MD_PATH block found; prepend.
+        rewritten = new_md_path_block_lines + note_lines
+
+    return "\n".join(rewritten)
 
 
 # @beacon[
