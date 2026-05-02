@@ -8417,10 +8417,28 @@ def update_beacon_from_node_python(
       anchored to that AST node, derived from tags.
     - Else if there is a beacon on disk for this AST_QUALNAME/id but the note
       has no BEACON block → delete the beacon.
+
+    Source-of-truth policy (May 2026 sweep, applies to all language helpers):
+      role         <- Workflowy node name (decoration-stripped); metadata `role:` IGNORED.
+      slice_labels <- Workflowy node name #tags (only); metadata `slice_labels:` IGNORED.
+      comment      <- metadata block `comment:` / `comments:` line (still source of truth).
+      kind / show_span <- metadata block (low-traffic invariants).
+    The Workflowy NAME field is authoritative for role and tags; the metadata
+    block is treated as a stale snapshot for those fields. Reading role from
+    the metadata caused a data-loss bug where renames in Workflowy were
+    silently reverted by the subsequent disk -> Workflowy reconcile.
     """
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
     ast_qualname = _extract_ast_qualname_from_note(note)
+
+    # Role-from-name: strip Workflowy trident decoration from base_name so the
+    # on-disk beacon's role: line reflects the user's typed heading text.
+    role_from_name = base_name
+    if role_from_name:
+        while role_from_name.endswith("\U0001F531"):
+            role_from_name = role_from_name[:-1].rstrip()
+        role_from_name = role_from_name.strip()
 
     print(
         f"[CARTOGRAPHER] update_beacon_from_node_python start "
@@ -8512,21 +8530,19 @@ def update_beacon_from_node_python(
 
     # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
-        # Derive role/comment from note. slice_labels are now driven solely by
-        # the Workflowy node name's trailing #tags; the slice_labels line in
-        # the BEACON block is treated as display-only.
-        role_val: str | None = None
+        # See the helper docstring for the source-of-truth policy. Comment is
+        # the only field still parsed from the note metadata block.
         comment_val: str | None = None
         for line in (note or "").splitlines():
             stripped = line.strip()
-            if stripped.startswith("role:"):
-                role_val = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("comment:") or stripped.startswith("comments:"):
+            if stripped.startswith("comment:") or stripped.startswith("comments:"):
                 comment_val = stripped.split(":", 1)[1].strip()
 
         show_span_note = _extract_show_span_from_note(note)
 
-        role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+        # Role comes from the live Workflowy node name (decoration-stripped),
+        # NOT from the cached note's stale BEACON metadata.
+        role_display = role_from_name or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
         # Slice labels come **only** from Workflowy tags in the node name.
         extra_label_tokens = [t.lstrip("#") for t in tags]
@@ -8799,10 +8815,21 @@ def update_beacon_from_node_js_ts(
     """Update/create/delete JS/TS @beacon[...] blocks for a single node.
 
     Mirrors the Python helper but uses JS/TS beacons and Tree-sitter outlines.
+    See update_beacon_from_node_python for the source-of-truth policy.
     """
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
     ast_qualname = _extract_ast_qualname_from_note(note)
+
+    # Role-from-name: strip Workflowy trident decoration from base_name.
+    # (Was missing in earlier April 2026 partial fix; referenced as
+    # role_from_name below without ever being defined -- latent NameError.
+    # Sweep restored it for every language helper, May 2026.)
+    role_from_name = base_name
+    if role_from_name:
+        while role_from_name.endswith("\U0001F531"):
+            role_from_name = role_from_name[:-1].rstrip()
+        role_from_name = role_from_name.strip()
 
     result: Dict[str, Any] = {
         "language": "js_ts",
@@ -9161,10 +9188,19 @@ def update_beacon_from_node_vue(
     - Style blocks: SPAN beacons only (/* ... */ syntax).
 
     This helper performs on-disk edits ONLY.
+
+    See update_beacon_from_node_python for the source-of-truth policy.
     """
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
     ast_qualname = _extract_ast_qualname_from_note(note)
+
+    # Role-from-name: strip Workflowy trident decoration from base_name.
+    role_from_name = base_name
+    if role_from_name:
+        while role_from_name.endswith("\U0001F531"):
+            role_from_name = role_from_name[:-1].rstrip()
+        role_from_name = role_from_name.strip()
 
     result: Dict[str, Any] = {
         "language": "vue",
@@ -9362,14 +9398,13 @@ def update_beacon_from_node_vue(
     # Case 1: Update/create based on explicit beacon_id in note
     # ------------------------------
     if beacon_id:
-        role_val: str | None = None
+        # See helper docstring re source-of-truth policy. role: from note is
+        # NOT consulted; only comment / kind metadata still come from the note.
         comment_val: str | None = None
         kind_val: str = "ast"
         for ln in (note or "").splitlines():
             s = ln.strip()
-            if s.startswith("role:"):
-                role_val = s.split(":", 1)[1].strip()
-            elif s.startswith("comment:") or s.startswith("comments:"):
+            if s.startswith("comment:") or s.startswith("comments:"):
                 comment_val = s.split(":", 1)[1].strip()
             elif s.startswith("kind:"):
                 kv = s.split(":", 1)[1].strip().lower()
@@ -9385,7 +9420,9 @@ def update_beacon_from_node_vue(
             else ""
         )
 
-        role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+        # Role comes from the live Workflowy node name (decoration-stripped),
+        # NOT from the cached note's stale BEACON metadata.
+        role_display = role_from_name or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
         # Try script blocks first (JS line comment). If target_script_ix is known,
         # restrict to that script block; else try all scripts.
@@ -9748,45 +9785,21 @@ def update_beacon_from_node_markdown(
 
     # Case 1: beacon_id present in note (update existing or create from metadata).
     if beacon_id:
-        role_val: str | None = None
+        # See update_beacon_from_node_python docstring for the source-of-truth
+        # policy. role: from note is NOT consulted; only comment metadata
+        # still comes from the note.
         comment_val: str | None = None
         for line in (note or "").splitlines():
             stripped = line.strip()
-            if stripped.startswith("role:"):
-                role_val = stripped.split(":", 1)[1].strip()
-            elif stripped.startswith("comment:") or stripped.startswith("comments:"):
+            if stripped.startswith("comment:") or stripped.startswith("comments:"):
                 comment_val = stripped.split(":", 1)[1].strip()
 
         show_span_note = _extract_show_span_from_note(note)
 
-        # ROLE PRIORITY (Dan, May 2026 data-loss fix):
-        # The role written to the on-disk beacon's role: field MUST come
-        # from the live Workflowy NAME (decoration-stripped), NOT from the
-        # cached note's stale BEACON block role: line.
-        #
-        # Reason: when the user renames a heading in Workflowy (e.g. adds
-        # the word "NOW" to a heading's name), the cache's NAME field is
-        # updated by Workflowy's normal sync, but the cached note's BEACON
-        # block still contains the OLD role text until F12+1 disk -> cache
-        # ingest refreshes it. If we read role from the note here, we
-        # propagate stale role text back to disk; the subsequent disk ->
-        # cache reconcile (refresh_file_node_beacons inside the bulk-apply
-        # caller) then sees the OLD heading text on disk and UPDATEs
-        # Workflowy to match -> the user's edit is silently destroyed.
-        #
-        # role_from_name (computed earlier from `name`) is the user's
-        # edited heading text minus tags and the trident decoration. It
-        # matches what Case 2 already does for newly-tagged headings
-        # (role_display = role_from_name). Using it here makes Case 1a
-        # consistent with Case 2 and prevents data loss on rename.
-        #
-        # Fallback to role_val (cached note) only when role_from_name is
-        # empty (e.g. a beacon with no Workflowy heading text).
-        role_display = (
-            role_from_name
-            or role_val
-            or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
-        )
+        # Role comes from the live Workflowy node name (decoration-stripped),
+        # NOT from the cached note's stale BEACON metadata. See sweep doc
+        # in update_beacon_from_node_python for the data-loss reasoning.
+        role_display = role_from_name or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
         # Slice labels come **only** from Workflowy tags in the node name.
         extra_label_tokens = [t.lstrip("#") for t in tags]
@@ -10317,9 +10330,18 @@ def update_beacon_from_node_sql(
 
     Currently supports updating role/slice_labels/comment for an existing
     @beacon[...] block identified by id=... in the Workflowy note.
+
+    See update_beacon_from_node_python for the source-of-truth policy.
     """
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
+
+    # Role-from-name: strip Workflowy trident decoration from base_name.
+    role_from_name = base_name
+    if role_from_name:
+        while role_from_name.endswith("\U0001F531"):
+            role_from_name = role_from_name[:-1].rstrip()
+        role_from_name = role_from_name.strip()
 
     result: Dict[str, Any] = {
         "language": "sql",
@@ -10351,14 +10373,12 @@ def update_beacon_from_node_sql(
             existing_show_span = bool(b.get("show_span"))
         break
 
-    # Derive role/comment from note; slice_labels from Workflowy name tags only.
-    role_val: str | None = None
+    # See helper docstring re source-of-truth policy. role: from note is NOT
+    # consulted; only comment metadata still comes from the note.
     comment_val: str | None = None
     for line in (note or "").splitlines():
         stripped = line.strip()
-        if stripped.startswith("role:"):
-            role_val = stripped.split(":", 1)[1].strip()
-        elif stripped.startswith("comment:") or stripped.startswith("comments:"):
+        if stripped.startswith("comment:") or stripped.startswith("comments:"):
             comment_val = stripped.split(":", 1)[1].strip()
 
     show_span_note = _extract_show_span_from_note(note)
@@ -10366,7 +10386,9 @@ def update_beacon_from_node_sql(
         show_span_note if show_span_note is not None else existing_show_span
     )
 
-    role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+    # Role comes from the live Workflowy node name (decoration-stripped),
+    # NOT from the cached note's stale BEACON metadata.
+    role_display = role_from_name or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
     extra_label_tokens = [t.lstrip("#") for t in tags]
     slice_labels_canon = (
@@ -10482,10 +10504,20 @@ def update_beacon_from_node_shell(
     name: str,
     note: str,
 ) -> Dict[str, Any]:
-    """Update an existing shell span beacon's metadata for a single node."""
+    """Update an existing shell span beacon's metadata for a single node.
+
+    See update_beacon_from_node_python for the source-of-truth policy.
+    """
 
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
+
+    # Role-from-name: strip Workflowy trident decoration from base_name.
+    role_from_name = base_name
+    if role_from_name:
+        while role_from_name.endswith("\U0001F531"):
+            role_from_name = role_from_name[:-1].rstrip()
+        role_from_name = role_from_name.strip()
 
     result: Dict[str, Any] = {
         "language": "shell",
@@ -10560,13 +10592,12 @@ def update_beacon_from_node_shell(
 
     start_idx, end_idx, existing_kind = span
 
-    role_val: str | None = None
+    # See helper docstring re source-of-truth policy. role: from note is NOT
+    # consulted; only comment metadata still comes from the note.
     comment_val: str | None = None
     for line in (note or "").splitlines():
         stripped = line.strip()
-        if stripped.startswith("role:"):
-            role_val = stripped.split(":", 1)[1].strip()
-        elif stripped.startswith("comment:") or stripped.startswith("comments:"):
+        if stripped.startswith("comment:") or stripped.startswith("comments:"):
             comment_val = stripped.split(":", 1)[1].strip()
 
     show_span_note = _extract_show_span_from_note(note)
@@ -10574,7 +10605,9 @@ def update_beacon_from_node_shell(
         show_span_note if show_span_note is not None else existing_show_span
     )
 
-    role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+    # Role comes from the live Workflowy node name (decoration-stripped),
+    # NOT from the cached note's stale BEACON metadata.
+    role_display = role_from_name or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
     extra_label_tokens = [t.lstrip("#") for t in tags]
     slice_labels_canon = (
@@ -10648,10 +10681,20 @@ def update_beacon_from_node_yaml(
     name: str,
     note: str,
 ) -> Dict[str, Any]:
-    """Update an existing YAML span beacon's metadata for a single node."""
+    """Update an existing YAML span beacon's metadata for a single node.
+
+    See update_beacon_from_node_python for the source-of-truth policy.
+    """
 
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
+
+    # Role-from-name: strip Workflowy trident decoration from base_name.
+    role_from_name = base_name
+    if role_from_name:
+        while role_from_name.endswith("\U0001F531"):
+            role_from_name = role_from_name[:-1].rstrip()
+        role_from_name = role_from_name.strip()
 
     result: Dict[str, Any] = {
         "language": "yaml",
@@ -10724,13 +10767,12 @@ def update_beacon_from_node_yaml(
 
     start_idx, end_idx, existing_kind = span
 
-    role_val: str | None = None
+    # See helper docstring re source-of-truth policy. role: from note is NOT
+    # consulted; only comment metadata still comes from the note.
     comment_val: str | None = None
     for line in (note or "").splitlines():
         stripped = line.strip()
-        if stripped.startswith("role:"):
-            role_val = stripped.split(":", 1)[1].strip()
-        elif stripped.startswith("comment:") or stripped.startswith("comments:"):
+        if stripped.startswith("comment:") or stripped.startswith("comments:"):
             comment_val = stripped.split(":", 1)[1].strip()
 
     show_span_note = _extract_show_span_from_note(note)
@@ -10738,7 +10780,9 @@ def update_beacon_from_node_yaml(
         show_span_note if show_span_note is not None else existing_show_span
     )
 
-    role_display = role_val or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
+    # Role comes from the live Workflowy node name (decoration-stripped),
+    # NOT from the cached note's stale BEACON metadata.
+    role_display = role_from_name or (beacon_id.split("@", 1)[0] if "@" in beacon_id else "")
 
     extra_label_tokens = [t.lstrip("#") for t in tags]
     slice_labels_canon = (
