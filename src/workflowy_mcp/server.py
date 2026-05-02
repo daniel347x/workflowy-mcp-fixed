@@ -4326,9 +4326,29 @@ async def _bulk_apply_per_file_inner_loop(
                 note=node_note,
                 skip_auto_refresh=True,
             )
+            if isinstance(node_result, dict):
+                log(
+                    "HELPER RESULT "
+                    f"node_id={node_id} "
+                    f"success={node_result.get('success')} "
+                    f"op={node_result.get('operation')!r} "
+                    f"lang={node_result.get('language')!r} "
+                    f"beacon_id={node_result.get('beacon_id')!r} "
+                    f"slice_labels={node_result.get('slice_labels')!r} "
+                    f"tags={node_result.get('tags')!r} "
+                    f"base_name={node_result.get('base_name')!r} "
+                    f"source_path={node_result.get('source_path')!r} "
+                    f"error={node_result.get('error')!r} "
+                    f"cache_name_updated={node_result.get('cache_name_updated')!r} "
+                    f"cache_note_updated={node_result.get('cache_note_updated')!r} "
+                    f"cache_skip={node_result.get('cache_name_update_skipped_reason')!r}"
+                )
+            else:
+                log(f"HELPER RESULT node_id={node_id} non_dict={node_result!r}")
             if isinstance(node_result, dict) and not node_result.get("success", True):
                 raise RuntimeError(
-                    node_result.get("error") or "update_beacon_from_node returned failure",
+                    node_result.get("error")
+                    or f"update_beacon_from_node returned failure/op={node_result.get('operation')!r}",
                 )
             file_successful_node_updates += 1
             summary["node_updates"] += 1
