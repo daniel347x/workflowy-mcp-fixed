@@ -867,16 +867,20 @@ def apply_markdown_beacons(
     # we can attach beacons relative to concrete headings.
     heading_positions: list[tuple[Dict[str, Any], int]] = []
 
-    def _find_heading_lineno(heading_text: str) -> Optional[int]:
-        """Find the line number of a Markdown heading whose text matches heading_text.
+    def _find_heading_lineno(heading_text: str, *, start_after: int = 0) -> Optional[int]:
+        """Find the next Markdown heading line matching heading_text.
 
-        We treat any line starting with 1–6 '#' characters followed by optional
-        whitespace and then exactly heading_text as a match. This avoids regex
-        edge-cases with f-strings and keeps the logic transparent.
+        IMPORTANT: search starts *after* start_after and callers advance a
+        document-order cursor while walking Cartographer nodes. A previous
+        implementation scanned from the top of the file for every node, so
+        duplicate heading texts all resolved to the first occurrence. That
+        made Markdown AST beacons attach to the wrong later heading when a
+        duplicate H6 appeared under a different parent (Dan, May 2026).
         """
         if not heading_text:
             return None
-        for idx, line in enumerate(lines, start=1):
+        for idx in range(max(1, int(start_after or 0) + 1), len(lines) + 1):
+            line = lines[idx - 1]
             stripped = line.strip()
             if not stripped.startswith("#"):
                 if DEBUG_MD_BEACONS:
@@ -891,7 +895,7 @@ def apply_markdown_beacons(
                     hash_count += 1
                 else:
                     break
-            if not (1 <= hash_count <= 6):
+            if not (1 <= hash_count <= 32):
                 if DEBUG_MD_BEACONS:
                     print(
                         f"[MD-HEAD-CHECK] heading={heading_text!r} line={idx} text={stripped!r} (hash_count={hash_count} out of range)"
@@ -906,13 +910,15 @@ def apply_markdown_beacons(
                 return idx
         return None
 
+    heading_cursor = 0
     for node in all_nodes:
         name = (node.get("name") or "").strip()
         if not name:
             continue
-        ln = _find_heading_lineno(name)
+        ln = _find_heading_lineno(name, start_after=heading_cursor)
         if ln is not None:
             heading_positions.append((node, ln))
+            heading_cursor = ln
 
     if DEBUG_MD_BEACONS and heading_positions:
         print("[MD-HEAD-LIST] headings:")
