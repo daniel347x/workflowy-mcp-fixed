@@ -320,6 +320,7 @@ def format_file_note(
 def tokens_to_nexus_tree(
     tokens,
     source_lines: Optional[List[str]] = None,
+    source_line_offset: int = 0,
 ) -> List[Dict[str, Any]]:
     """Convert markdown-it-py token stream to NEXUS hierarchical tree.
 
@@ -419,23 +420,9 @@ def tokens_to_nexus_tree(
         note_lines.append("---")
         note_text = "\n".join(note_lines)
 
-        # Create NEXUS node
-        nexus_node: Dict[str, Any] = {
-            "name": this_heading_name,
-            "priority": priority_counter,
-            "note": note_text,
-            "children": [],
-        }
-        priority_counter += 100
-
-        # Add to parent (or root if stack empty)
-        if stack:
-            stack[-1][1]["children"].append(nexus_node)
-        else:
-            root_children.append(nexus_node)
-
         # Determine source line span for the heading itself so we can attach the
-        # raw body that follows it verbatim.
+        # raw body that follows it verbatim and stamp the parsed node with a
+        # concrete full-file heading line for beacon attachment.
         token_map = getattr(token, "map", None)
         if token_map:
             heading_start0, heading_end0 = token_map
@@ -444,6 +431,27 @@ def tokens_to_nexus_tree(
         else:
             heading_start0 = 0
             heading_end0 = 0
+
+        # Create NEXUS node.
+        # _md_heading_line is an internal Cartographer-only source coordinate
+        # used by apply_markdown_beacons(...) to attach Markdown AST beacons
+        # by actual parser line number rather than by raw heading-name search.
+        # This removes duplicate-heading ambiguity while keeping MD_PATH as
+        # the durable identity shown in Workflowy notes.
+        nexus_node: Dict[str, Any] = {
+            "name": this_heading_name,
+            "priority": priority_counter,
+            "note": note_text,
+            "children": [],
+            "_md_heading_line": int(heading_start0) + 1 + int(source_line_offset or 0),
+        }
+        priority_counter += 100
+
+        # Add to parent (or root if stack empty)
+        if stack:
+            stack[-1][1]["children"].append(nexus_node)
+        else:
+            root_children.append(nexus_node)
 
         heading_entries.append(
             {
@@ -865,60 +873,22 @@ def apply_markdown_beacons(
 
     # Precompute heading positions (line numbers) in the Markdown source so
     # we can attach beacons relative to concrete headings.
+    #
+    # Architecturally correct Markdown attachment rule (Dan, May 2026): do
+    # NOT infer heading identity by searching raw heading names. Duplicate
+    # headings are common in long 99 files. tokens_to_nexus_tree(...) stamps
+    # every parsed heading node with _md_heading_line from markdown-it's token
+    # map, so we can attach AST beacons by concrete source line number.
     heading_positions: list[tuple[Dict[str, Any], int]] = []
-
-    def _find_heading_lineno(heading_text: str, *, start_after: int = 0) -> Optional[int]:
-        """Find the next Markdown heading line matching heading_text.
-
-        IMPORTANT: search starts *after* start_after and callers advance a
-        document-order cursor while walking Cartographer nodes. A previous
-        implementation scanned from the top of the file for every node, so
-        duplicate heading texts all resolved to the first occurrence. That
-        made Markdown AST beacons attach to the wrong later heading when a
-        duplicate H6 appeared under a different parent (Dan, May 2026).
-        """
-        if not heading_text:
-            return None
-        for idx in range(max(1, int(start_after or 0) + 1), len(lines) + 1):
-            line = lines[idx - 1]
-            stripped = line.strip()
-            if not stripped.startswith("#"):
-                if DEBUG_MD_BEACONS:
-                    print(
-                        f"[MD-HEAD-CHECK] heading={heading_text!r} line={idx} text={stripped!r} (no # prefix)"
-                    )
-                continue
-            # Count leading '#' characters
-            hash_count = 0
-            for ch in stripped:
-                if ch == "#":
-                    hash_count += 1
-                else:
-                    break
-            if not (1 <= hash_count <= 32):
-                if DEBUG_MD_BEACONS:
-                    print(
-                        f"[MD-HEAD-CHECK] heading={heading_text!r} line={idx} text={stripped!r} (hash_count={hash_count} out of range)"
-                    )
-                continue
-            rest = stripped[hash_count:].lstrip()
-            if DEBUG_MD_BEACONS:
-                print(f"[MD-HEAD-CHECK] heading={heading_text!r} line={idx} rest={rest!r}")
-            if rest == heading_text:
-                if DEBUG_MD_BEACONS:
-                    print(f"[MD-HEAD] name={heading_text!r} lineno={idx}")
-                return idx
-        return None
-
-    heading_cursor = 0
     for node in all_nodes:
-        name = (node.get("name") or "").strip()
-        if not name:
-            continue
-        ln = _find_heading_lineno(name, start_after=heading_cursor)
-        if ln is not None:
+        ln_raw = node.get("_md_heading_line")
+        try:
+            ln = int(ln_raw) if ln_raw is not None else 0
+        except Exception:
+            ln = 0
+        if ln > 0:
             heading_positions.append((node, ln))
-            heading_cursor = ln
+    heading_positions.sort(key=lambda pair: pair[1])
 
     if DEBUG_MD_BEACONS and heading_positions:
         print("[MD-HEAD-LIST] headings:")
@@ -1337,7 +1307,19 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
         # STEP 3: Convert token stream to NEXUS hierarchical tree with priorities.
         # Use the exact body lines from the parsed Markdown so list/code-block
         # structure is preserved verbatim inside heading notes.
-        root_children = tokens_to_nexus_tree(tokens, source_lines=body_for_parse.splitlines())
+        # When YAML frontmatter exists, markdown-it token line maps are relative
+        # to body_for_parse, while apply_markdown_beacons receives full-file
+        # line numbers. Carry the body offset into each heading node's internal
+        # _md_heading_line coordinate so beacon attachment is line-accurate.
+        body_line_offset = 0
+        if frontmatter is not None:
+            # Opening '---' + frontmatter lines + closing '---'.
+            body_line_offset = len(frontmatter.splitlines()) + 2
+        root_children = tokens_to_nexus_tree(
+            tokens,
+            source_lines=body_for_parse.splitlines(),
+            source_line_offset=body_line_offset,
+        )
         
         if frontmatter is not None:
             # Preserve frontmatter at the top of the tree so it survives round-trips
