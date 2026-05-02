@@ -21,10 +21,7 @@ PIPELINE PHASES:
 
     [2] Resolve file_path from the worker's warm /nodes-export mirror.
 
-    [4] Force-refresh the worker's /nodes-export mirror before rendering.
-        Fail closed: if this refresh fails, abort the pipeline.
-
-    [5] Re-export the Workflowy subtree from the refreshed mirror.
+    [5] Re-export the Workflowy subtree from the preflight-fresh mirror.
 
     [6] Write beacon-free Markdown to disk via nexus_to_tokens.
 
@@ -167,51 +164,22 @@ async def run_markdown_generate_pipeline(
         _append_log(log_file, f"Resolved file_path: {file_path}")
 
         # ====================================================================
-        # PHASE [4]: Refresh worker's cache before rendering.
+        # PHASE [5]: Re-export from the preflight-fresh cache.
         # ====================================================================
-        # F12+3 no longer performs the old Phase [3] bulk-visible beacon apply.
-        # The authoritative beacon rehydration happens after the full Markdown
-        # rewrite in Phase [7]. Before building the render tree, force the
-        # worker's in-memory /nodes-export mirror to a clean Workflowy snapshot.
-        #
-        # Fail-closed: if this refresh fails, abort the pipeline. Continuing
-        # with a stale or partial in-memory mirror risks writing incorrect
-        # Markdown and makes the beacon metadata story impossible to reason
-        # about.
-        # ====================================================================
+        # The primary MCP process owns CARTO job quiescence and the mandatory
+        # /nodes-export refresh before spawning this worker. The worker consumes
+        # that warm-started snapshot and does not perform a second refresh.
+        # If the snapshot is missing or malformed, export_nodes/_build_hierarchy
+        # will fail closed below rather than continuing with unknown state.
         if _job_cancelled(job_file):
             return _finish_cancelled(job_file, job, log_file)
 
-        _set_phase(
-            job_file,
-            job,
-            log_file,
-            "phase-4-refresh-cache",
-            "Refreshing worker's /nodes-export cache before Markdown render",
-        )
-
-        try:
-            refresh_result = await client.refresh_nodes_export_cache()
-            _append_log(
-                log_file,
-                f"Cache refresh complete: nodes={refresh_result.get('node_count', '?')}",
-            )
-        except Exception as e:
-            _append_log(log_file, f"ERROR: cache refresh failed; aborting F12+3 pipeline: {e}")
-            raise
-
-        if _job_cancelled(job_file):
-            return _finish_cancelled(job_file, job, log_file)
-
-        # ====================================================================
-        # PHASE [5]: Re-export from now-fresh cache.
-        # ====================================================================
         _set_phase(
             job_file,
             job,
             log_file,
             "phase-5-re-export",
-            "Re-exporting subtree from refreshed cache",
+            "Re-exporting subtree from preflight-fresh cache",
         )
 
         export_result = await client.export_nodes(node_id=root_uuid)
@@ -221,7 +189,7 @@ async def run_markdown_generate_pipeline(
 
         hierarchical_tree = client._build_hierarchy(flat_nodes, True)
         if not hierarchical_tree:
-            raise ValueError("Failed to rebuild hierarchical tree after cache refresh.")
+            raise ValueError("Failed to rebuild hierarchical tree from preflight-fresh cache.")
         root_node = hierarchical_tree[0]
 
         # ====================================================================

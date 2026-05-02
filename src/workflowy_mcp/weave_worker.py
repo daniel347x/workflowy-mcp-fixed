@@ -171,6 +171,12 @@ async def main():
         else:
             log_worker("Using warm-started /nodes-export cache snapshot for WEAVE worker")
     else:
+        if mode == "markdown_generate":
+            log_worker(
+                "ERROR: MARKDOWN_GENERATE worker has no warm-started /nodes-export snapshot. "
+                "Primary MCP preflight must refresh/cache /nodes-export before spawning this worker."
+            )
+            sys.exit(1)
         try:
             log_worker("Refreshing /nodes-export cache for WEAVE worker…")
             await client.refresh_nodes_export_cache()

@@ -736,21 +736,23 @@ async def _handler_preflight_cache_quiescence(
     await _await_carto_jobs_quiescent(reason)
 
     # Then force a fresh cache refresh and wait for it to settle.
+    # Fail closed: any handler that calls this helper is about to make
+    # decisions from /nodes-export. Continuing with a stale snapshot can
+    # silently overwrite user edits, so refresh failures must abort the
+    # caller rather than degrade to best-effort behavior.
     try:
         await _request_nodes_export_cache_refresh_async(
             reason=reason,
             source=source,
         )
+        await _await_nodes_export_cache_quiescent(reason)
     except Exception as e:  # noqa: BLE001
-        # Best-effort: failures are logged but don't block the handler.
-        # The handler will proceed with whatever cache state exists.
         log_event(
-            f"_handler_preflight_cache_quiescence: refresh schedule failed ({reason}): {e}; "
-            "continuing with possibly-stale cache.",
+            f"_handler_preflight_cache_quiescence: cache refresh/quiescence failed ({reason}): {e}; "
+            "aborting handler to avoid stale /nodes-export state.",
             "WS_HANDLER",
         )
-
-    await _await_nodes_export_cache_quiescent(reason)
+        raise
 
 
 # @beacon[
