@@ -2093,7 +2093,18 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                 #
                 # Merge policy (canonical form: <base> [🔱] [… user tags]):
                 #   - base = stripped (already known equal)
-                #   - trident = present if either side has it
+                #   - trident = present if SOURCE (disk-derived) has it.
+                #     Trident is a UI marker meaning "there is an on-disk
+                #     beacon block for this heading". Disk is the source
+                #     of truth for that fact, so we follow disk. If disk
+                #     no longer has a beacon (e.g. user removed all tags
+                #     in Workflowy and F12+3 deleted the disk beacon),
+                #     the ether-side trident is stale and must be dropped.
+                #     Previously this used (in_source OR in_ether) which
+                #     made the trident sticky and caused stale tridents
+                #     to remain forever after a tag-vanish DELETE - a
+                #     real bug because the trident is also used as a
+                #     manual search anchor in Workflowy GUI (Dan, May 2026).
                 #   - tags = union of source and ether trailing #tag tokens,
                 #     preserving ether's order first (Workflowy is source
                 #     of truth for user-authored tag-as-text), then
@@ -2102,7 +2113,7 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
                 stripped_s = _strip_tags_and_trident(name_s)
                 stripped_e = _strip_tags_and_trident(name_e)
                 if stripped_s and stripped_s == stripped_e:
-                    has_trident = ("🔱" in name_s) or ("🔱" in name_e)
+                    has_trident = "🔱" in name_s
                     s_tags = [
                         t for t in name_s.split() if t.startswith("#")
                     ]
