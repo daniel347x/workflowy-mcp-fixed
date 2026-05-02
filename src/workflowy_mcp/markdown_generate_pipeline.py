@@ -616,54 +616,56 @@ async def _run_bulk_apply_inline(
         if was_cancelled:
             break
 
+        # CRITICAL DATA-LOSS FIX (Dan, May 2026):
+        #
+        # When invoked as part of F12+3 (this pipeline), we MUST NOT call
+        # refresh_file_node_beacons here. That helper performs a full
+        # disk -> Workflowy reconcile. At THIS point in F12+3:
+        #
+        #   - Phase 3 has just rewritten on-disk beacon `role:` lines to
+        #     reflect user renames (correct).
+        #   - Phase 3 has NOT touched on-disk Markdown HEADING lines
+        #     (e.g. `### My Heading`). Heading text edits in Workflowy
+        #     reach disk only via Phase 6's whole-file rewrite, which
+        #     hasn't run yet.
+        #   - The cache/Workflowy NAME field DOES reflect the user's edit.
+        #
+        # If we run reconcile NOW, apply_markdown_beacons constructs the
+        # source-tree NAME from the on-disk heading line (OLD text) and
+        # the reconcile sees src.name (OLD) vs tgt.name (NEW user edit) ->
+        # fires F12 UPDATE -> SILENTLY DESTROYS the user's edit on the
+        # Workflowy server. This was the May 2026 NOWWW data-loss bug.
+        #
+        # The post-flight F12+1 (phase 8 of the pipeline) handles the
+        # disk -> Workflowy reconcile correctly, AFTER phase 6 has
+        # rewritten heading lines on disk to match user edits. By the
+        # time phase 8 reconciles, src.name and tgt.name agree, and no
+        # destructive UPDATE fires.
+        #
+        # The cache mutations from phase 3's update_beacon_from_node
+        # (cache name + cache BEACON note) are still durable - they
+        # survive into phases 4-8 because the cache is in-memory.
+        #
+        # NOTE: this is a behavioral DIVERGENCE between the F12+2
+        # standalone path (server.py::_run_carto_bulk_visible_apply_job,
+        # which DOES call refresh_file_node_beacons here because it has
+        # no follow-up phase 8) and the F12+3 pipeline path (this code,
+        # which skips it because phase 8 covers it). Both paths share
+        # _bulk_apply_per_file_inner_loop, but they diverge on the
+        # OUTER per-file refresh policy.
         if file_successful_node_updates > 0:
             _append_log(
                 log_file,
-                f"Refreshing Workflowy FILE node once for {file_name} ({file_id}).",
+                f"Phase 3 wrote {file_successful_node_updates} on-disk beacon updates for {file_name} "
+                f"({file_id}); skipping per-file refresh_file_node_beacons here. "
+                f"Phase 8 (post-write F12+1) will reconcile disk -> Workflowy after phase 6 "
+                f"has updated heading lines, avoiding the mid-phase-3 data-loss race.",
             )
-            try:
-                refresh_result = await client.refresh_file_node_beacons(
-                    file_node_id=file_id,
-                    dry_run=False,
-                )
-                if isinstance(refresh_result, dict) and not refresh_result.get(
-                    "success", True
-                ):
-                    raise RuntimeError(
-                        refresh_result.get("error") or "refresh_file_node_beacons returned failure"
-                    )
-                successful_file_refreshes += 1
-                summary["files_refreshed"] = successful_file_refreshes
-                # Update progress with refresh stats.
-                job = _read_job_payload(job_file)
-                progress = job.setdefault("progress", {})
-                progress["nodes_created"] = progress.get("nodes_created", 0) + int(
-                    (refresh_result or {}).get("nodes_created", 0) or 0
-                )
-                progress["nodes_moved"] = progress.get("nodes_moved", 0) + int(
-                    (refresh_result or {}).get("nodes_moved", 0) or 0
-                )
-                progress["nodes_deleted"] = progress.get("nodes_deleted", 0) + int(
-                    (refresh_result or {}).get("nodes_deleted", 0) or 0
-                )
-                _write_job_payload(job_file, job)
-                _append_log(
-                    log_file,
-                    f"Refreshed FILE node {file_name}: "
-                    f"+{int((refresh_result or {}).get('nodes_created', 0) or 0)} "
-                    f"~{int((refresh_result or {}).get('nodes_updated', 0) or 0)} "
-                    f"↻{int((refresh_result or {}).get('nodes_moved', 0) or 0)} "
-                    f"-{int((refresh_result or {}).get('nodes_deleted', 0) or 0)}",
-                )
-            except Exception as e:
-                msg = f"FILE refresh failed for {file_name} ({file_id}): {e}"
-                summary["errors"].append(msg)
-                _append_log(log_file, f"ERROR: {msg}")
         else:
             summary["files_skipped"] += 1
             _append_log(
                 log_file,
-                f"No successful node updates for {file_name}; skipping FILE refresh.",
+                f"No successful node updates for {file_name}.",
             )
 
         processed_files += 1
