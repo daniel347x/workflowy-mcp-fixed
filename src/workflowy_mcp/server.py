@@ -4092,10 +4092,87 @@ def _node_name_tags_match_beacon_block_in_note(candidate: dict[str, Any]) -> boo
     # require the slow path so disk gets the update.
     if canonical_name_labels != note_slice_labels.strip():
         return False
-    if role_from_name != note_role.strip():
+
+    # Role comparison must be robust to encoding differences between the
+    # cached Workflowy name (which preserves smart quotes / typographic
+    # punctuation as the user typed them) and the on-disk BEACON block's
+    # role: line (which is HTML-encoded and uses ASCII quotes). Normalize
+    # both sides to a common ASCII-folded form before comparison.
+    if _normalize_role_for_in_sync_compare(role_from_name) != _normalize_role_for_in_sync_compare(note_role.strip()):
         return False
 
     return True
+
+
+# @beacon[
+#   id=bulk-visible-apply@_normalize_role_for_in_sync_compare,
+#   role=_normalize_role_for_in_sync_compare,
+#   slice_labels=f9-f12-handlers,ra-bulk-visible-apply,ra-workflowy-cache,
+#   kind=ast,
+#   comment=ASCII-folding normalizer for the in-sync filter's role: comparison. Must be applied to BOTH the Workflowy NAME-derived role text AND the on-disk BEACON block's role: line so semantically-equal strings (smart-quote vs ASCII, &amp; vs &) compare equal.,
+# ]
+def _normalize_role_for_in_sync_compare(text: str) -> str:
+    """Normalize a role string for the in-sync filter's equality check.
+
+    Handles the common encoding mismatches between the Workflowy NAME text
+    (preserved as the user typed it) and the on-disk BEACON block's role:
+    line (HTML-escaped, ASCII-only quotes due to the disk writer's output
+    conventions):
+
+      - HTML entities: &amp; → &, &lt; → <, &gt; → >, &quot; → "
+      - Smart single quotes: ' (U+2018), ' (U+2019) → ASCII apostrophe (')
+      - Smart double quotes: " (U+201C), " (U+201D) → ASCII quote (")
+      - Em / en dashes: — (U+2014), – (U+2013) → ASCII hyphen-minus (-)
+      - Ellipsis: … (U+2026) → three ASCII dots (...)
+
+    Whitespace at edges is collapsed via .strip(). Internal whitespace is
+    preserved verbatim (the on-disk and cached forms agree on whitespace
+    between words; we don't need to normalize that).
+
+    This is INTENTIONALLY narrower than whiten_text_for_header_compare:
+    that helper also strips quotes, drops emojis, and removes tag markup,
+    which would be too lossy here — we want to detect REAL differences
+    in role text (e.g. user renamed the heading, or upstream tooling
+    changed the role text), not just encoding artifacts.
+    """
+    if not isinstance(text, str):
+        return ""
+    s = text
+
+    # HTML entities first (so subsequent literal-quote folding catches
+    # the decoded forms uniformly).
+    html_entity_map = {
+        "&amp;": "&",
+        "&lt;": "<",
+        "&gt;": ">",
+        "&quot;": '"',
+        "&#39;": "'",
+        "&apos;": "'",
+    }
+    for ent, ch in html_entity_map.items():
+        if ent in s:
+            s = s.replace(ent, ch)
+
+    # Smart-quote / dash / ellipsis folding to ASCII equivalents.
+    smart_to_ascii = {
+        "\u2018": "'",   # LEFT SINGLE QUOTATION MARK
+        "\u2019": "'",   # RIGHT SINGLE QUOTATION MARK
+        "\u201A": "'",   # SINGLE LOW-9 QUOTATION MARK
+        "\u201B": "'",   # SINGLE HIGH-REVERSED-9 QUOTATION MARK
+        "\u201C": '"',   # LEFT DOUBLE QUOTATION MARK
+        "\u201D": '"',   # RIGHT DOUBLE QUOTATION MARK
+        "\u201E": '"',   # DOUBLE LOW-9 QUOTATION MARK
+        "\u201F": '"',   # DOUBLE HIGH-REVERSED-9 QUOTATION MARK
+        "\u2013": "-",   # EN DASH
+        "\u2014": "-",   # EM DASH
+        "\u2015": "-",   # HORIZONTAL BAR
+        "\u2026": "...", # HORIZONTAL ELLIPSIS
+    }
+    for src, dst in smart_to_ascii.items():
+        if src in s:
+            s = s.replace(src, dst)
+
+    return s.strip()
 
 
 # @beacon[
