@@ -5499,7 +5499,19 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         if not isinstance(result, dict):
             result = {"raw_result": result}
 
-        result.setdefault("success", True)
+        # Fail closed on helper failures/no-ops (Dan, May 2026).
+        # Language helpers historically returned dicts with an "error" field
+        # (or operation="noop") without setting success=False. Treating those
+        # as success is dangerous in F12+2: the caller then refreshes the FILE
+        # from disk even though no beacon was written, which can push the
+        # disk-derived untagged state back into Workflowy and delete the user's
+        # newly typed tag. A helper must report a real disk-side beacon op to
+        # count as success here.
+        operation = result.get("operation")
+        if result.get("error") or operation in {None, "noop"}:
+            result["success"] = False
+        else:
+            result.setdefault("success", True)
         result.setdefault("node_id", node_id)
         result.setdefault("source_path", source_path)
 
@@ -5514,13 +5526,27 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         )
 
         # 4) Update local /nodes-export cache name + note to reflect on-disk state.
-        # This is critical so that subsequent operations (WEAVE, F12 file refresh)
-        # see the updated beacon metadata without requiring a full /nodes-export
-        # refresh from the API.
+        #
+        # IMPORTANT F12+2 SAFETY RULE (Dan, May 2026): when skip_auto_refresh=True
+        # (bulk-apply paths), DO NOT patch the in-memory /nodes-export cache here.
+        # The outer F12+2 runner will call refresh_file_node_beacons exactly once
+        # after the per-candidate loop. Patching cache names inside the loop is
+        # hazardous because helper base_name is intentionally tag-stripped; if the
+        # disk write failed/no-oped, the subsequent disk→Workflowy reconcile can
+        # treat the tag-stripped cache as target state and delete the user's tag.
+        #
+        # For non-bulk single-node F12 paths, cache patching remains useful as a
+        # local mirror optimization after a confirmed successful disk-side op.
+        should_patch_cache = (
+            (not skip_auto_refresh)
+            and bool(result.get("success"))
+            and operation in {"updated_beacon", "created_beacon", "deleted_beacon"}
+        )
+
         base_name_from_helper = result.get("base_name")
-        if base_name_from_helper and isinstance(base_name_from_helper, str):
+        if should_patch_cache and base_name_from_helper and isinstance(base_name_from_helper, str):
             # For AST/beacon nodes, the helper stripped trailing tags.
-            # Update the cached node name to match.
+            # Update the cached node name to match only outside bulk-apply paths.
             try:
                 updated = await self.update_cached_node_name(
                     str(node_id),
@@ -5533,12 +5559,15 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     "BEACON",
                 )
                 result["cache_name_updated"] = False
+        elif skip_auto_refresh:
+            result["cache_name_updated"] = False
+            result["cache_name_update_skipped_reason"] = "skip_auto_refresh_bulk_apply"
 
         # 5) Optionally update the cached note with the updated beacon metadata.
         # This is more involved, so for now we only do it when the helper
-        # explicitly returned beacon metadata in the result.
-        operation = result.get("operation")
-        if operation in {"updated_beacon", "created_beacon"}:
+        # explicitly returned beacon metadata in the result and we are not in a
+        # bulk-apply path.
+        if should_patch_cache and operation in {"updated_beacon", "created_beacon"}:
             beacon_id_from_helper = result.get("beacon_id")
             role_from_helper = result.get("role") or ""
             slice_labels_from_helper = result.get("slice_labels") or ""
