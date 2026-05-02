@@ -1,61 +1,37 @@
 """F12+3 Markdown Generate Pipeline (detached worker pipeline body).
 
-This module contains the 8-phase pipeline that generates Markdown from a
-Workflowy subtree, runs it through bulk-apply tag materialization, writes
-the result to disk, reapplies on-disk beacons, and post-flight refreshes
-Workflowy from disk.
+This module generates Markdown from a Workflowy subtree, writes it to disk,
+reapplies on-disk Markdown AST beacons, and launches a post-flight disk ->
+Workflowy refresh.
 
 ARCHITECTURE:
-    Originally (April 2026), this 8-phase pipeline ran INLINE inside the
-    MCP server's WebSocket handler `_handle_generate_markdown_file`. That
-    blocked the MCP foreground event loop for 5-10 minutes per F12+3
-    invocation, which made the entire MCP server (including chat tool
-    calls) unresponsive while the pipeline ran.
+    Originally (April 2026), this pipeline ran INLINE inside the MCP server's
+    WebSocket handler `_handle_generate_markdown_file`. That blocked the MCP
+    foreground event loop for 5-10 minutes per F12+3 invocation.
 
     The fix (May 2026) was to extract the pipeline body into this module,
     which runs inside a detached `weave_worker.py` subprocess (mode
     `markdown_generate`). The MCP server's handler now just spawns the
-    subprocess and returns immediately, mirroring the proven F12+1
-    detached-worker pattern.
-
-    See Workflowy documentation node:
-      "4️⃣ CARTO BACKGROUND WORKERS & CACHE QUIESCENCE"
-    for the full architectural rationale.
+    subprocess and returns immediately, mirroring the proven F12+1 detached
+    worker pattern.
 
 PIPELINE PHASES:
     [1] Pre-flight cache refresh + quiescent wait.
-        Already done by the MCP handler before launching this worker;
-        the worker warm-starts from the resulting fresh disk cache.
+        Already done by the MCP handler before launching this worker.
 
-    [2] Resolve file_path; export Workflowy subtree from cache.
+    [2] Resolve file_path from the worker's warm /nodes-export mirror.
 
-    [3] Bulk visible tag apply (file-scoped).
-        Loops through every visible AST/beacon/MD_PATH-tagged node,
-        applying #tag-based beacon updates from Workflowy node names
-        to the on-disk source file. Triggers a per-file Cartographer
-        refresh after the loop.
+    [4] Force-refresh the worker's /nodes-export mirror before rendering.
+        Fail closed: if this refresh fails, abort the pipeline.
 
-    [4] Wait for bulk apply + cascading cache refresh to drain.
-        Ensures the cache reflects post-bulk-apply Workflowy state.
+    [5] Re-export the Workflowy subtree from the refreshed mirror.
 
-    [4.5] Reload worker's in-memory cache from disk.
-        Critical step: the worker's RAM cache was frozen at startup,
-        before phase [3]'s mutations. The cache refresh in phase [4]
-        wrote the disk file, but the worker's in-memory copy is still
-        stale. Phase [4.5] explicitly reloads from disk so phase [5]
-        sees the post-mutation state.
+    [6] Write beacon-free Markdown to disk via nexus_to_tokens.
 
-    [5] Re-export the Workflowy subtree from the now-fresh cache.
+    [7] Reapply on-disk Markdown AST beacons via reapply_markdown_ast_beacons.
 
-    [6] Phase 1 disk write: nexus_to_tokens -> Markdown file.
-
-    [7] Phase 2 disk write: reapply_markdown_ast_beacons rehydrates
-        on-disk beacon HTML comments.
-
-    [8] Post-flight file-refresh: another disk -> Workflowy refresh
-        so MD_PATH metadata in Workflowy notes is re-canonicalized.
-        This is launched as a separate detached CARTO_REFRESH job
-        and we do NOT wait for it (fire-and-forget).
+    [8] Launch a detached post-flight CARTO_REFRESH (disk -> Workflowy).
+        This is fire-and-forget; F12+3 does not await it.
 """
 from __future__ import annotations
 
@@ -129,7 +105,7 @@ async def run_markdown_generate_pipeline(
     root_uuid: str,
     job_file: str,
 ) -> dict[str, Any]:
-    """Run the 8-phase F12+3 Markdown generate pipeline.
+    """Run the F12+3 Markdown generate pipeline.
 
     Args:
         client: A WorkFlowyClient instance (worker's own, with warm cache).
@@ -191,108 +167,38 @@ async def run_markdown_generate_pipeline(
         _append_log(log_file, f"Resolved file_path: {file_path}")
 
         # ====================================================================
-        # PHASE [3]: Bulk visible tag apply.
+        # PHASE [4]: Refresh worker's cache before rendering.
         # ====================================================================
-        # The bulk-apply pre-pass loops through every visible AST/beacon node
-        # and calls update_beacon_from_node + per-file refresh_file_node_beacons.
-        # In the worker subprocess, we run this INLINE (not via a separate
-        # subprocess) because we're already in a detached worker — the MCP
-        # server's event loop is no longer involved.
+        # F12+3 no longer performs the old Phase [3] bulk-visible beacon apply.
+        # The authoritative beacon rehydration happens after the full Markdown
+        # rewrite in Phase [7]. Before building the render tree, force the
+        # worker's in-memory /nodes-export mirror to a clean Workflowy snapshot.
+        #
+        # Fail-closed: if this refresh fails, abort the pipeline. Continuing
+        # with a stale or partial in-memory mirror risks writing incorrect
+        # Markdown and makes the beacon metadata story impossible to reason
+        # about.
         # ====================================================================
         if _job_cancelled(job_file):
             return _finish_cancelled(job_file, job, log_file)
 
-        _set_phase(
-            job_file,
-            job,
-            log_file,
-            "phase-3-bulk-apply",
-            "Running bulk visible tag apply",
-        )
-
-        # Build the synthetic visible tree from the worker's cache.
-        export_result = await client.export_nodes(node_id=root_uuid)
-        flat_nodes = export_result.get("nodes", []) or []
-        if not flat_nodes:
-            raise ValueError(f"Empty subtree export for {root_uuid}")
-
-        hierarchical_tree = client._build_hierarchy(flat_nodes, True)
-        if not hierarchical_tree:
-            raise ValueError("Failed to build hierarchical tree.")
-
-        root_node_for_apply: dict[str, Any] | None = None
-        for candidate in hierarchical_tree:
-            if str(candidate.get("id") or "") == str(root_uuid):
-                root_node_for_apply = candidate
-                break
-        if root_node_for_apply is None:
-            root_node_for_apply = hierarchical_tree[0]
-
-        synthetic_visible_tree = {
-            "root": {
-                "id": str(root_node_for_apply.get("id") or root_uuid),
-                "name": str(root_node_for_apply.get("name") or ""),
-                "note": str(root_node_for_apply.get("note") or ""),
-            },
-            "children": list(root_node_for_apply.get("children") or []),
-        }
-
-        # Run the bulk apply inline in this worker (NOT spawning a sub-subprocess).
-        bulk_apply_summary = await _run_bulk_apply_inline(
-            client=client,
-            visible_tree_payload=synthetic_visible_tree,
-            job_file=job_file,
-            log_file=log_file,
-            cancel_check=lambda: _job_cancelled(job_file),
-        )
-        _append_log(
-            log_file,
-            f"Bulk apply complete: "
-            f"node_updates={bulk_apply_summary.get('node_updates', 0)}, "
-            f"files_refreshed={bulk_apply_summary.get('files_refreshed', 0)}, "
-            f"files_skipped={bulk_apply_summary.get('files_skipped', 0)}",
-        )
-
-        if _job_cancelled(job_file):
-            return _finish_cancelled(job_file, job, log_file)
-
-        # ====================================================================
-        # PHASE [4] + [4.5]: Refresh worker's cache so phase [5] sees
-        # post-mutation state.
-        #
-        # The worker's in-memory cache was frozen at startup, BEFORE phase [3]
-        # mutated Workflowy. We need to refresh it now.
-        #
-        # Worker-driven refresh strategy (vs. waiting for MCP server's watcher
-        # to refresh and reloading from disk): we trigger our own refresh
-        # call. This goes through the same Workflowy server-side rate limit
-        # so it won't be redundant — if MCP server already refreshed in the
-        # last 60s, this call coalesces with that. If not, we pay the rate
-        # limit ourselves.
-        #
-        # See Workflowy documentation:
-        #   "🔁 Mid-pipeline cache refresh: how phase [4] of F12+3 actually works"
-        # ====================================================================
         _set_phase(
             job_file,
             job,
             log_file,
             "phase-4-refresh-cache",
-            "Refreshing worker's /nodes-export cache after bulk apply",
+            "Refreshing worker's /nodes-export cache before Markdown render",
         )
 
-        if bulk_apply_summary.get("node_updates", 0) > 0 or bulk_apply_summary.get("files_refreshed", 0) > 0:
-            try:
-                refresh_result = await client.refresh_nodes_export_cache()
-                _append_log(
-                    log_file,
-                    f"Cache refresh complete: nodes={refresh_result.get('node_count', '?')}",
-                )
-            except Exception as e:
-                _append_log(log_file, f"WARNING: cache refresh failed: {e}")
-                # Continue anyway — phase [5] will use whatever cache state exists.
-        else:
-            _append_log(log_file, "Skipping cache refresh (no mutations in phase [3])")
+        try:
+            refresh_result = await client.refresh_nodes_export_cache()
+            _append_log(
+                log_file,
+                f"Cache refresh complete: nodes={refresh_result.get('node_count', '?')}",
+            )
+        except Exception as e:
+            _append_log(log_file, f"ERROR: cache refresh failed; aborting F12+3 pipeline: {e}")
+            raise
 
         if _job_cancelled(job_file):
             return _finish_cancelled(job_file, job, log_file)
@@ -315,7 +221,7 @@ async def run_markdown_generate_pipeline(
 
         hierarchical_tree = client._build_hierarchy(flat_nodes, True)
         if not hierarchical_tree:
-            raise ValueError("Failed to rebuild hierarchical tree after bulk apply.")
+            raise ValueError("Failed to rebuild hierarchical tree after cache refresh.")
         root_node = hierarchical_tree[0]
 
         # ====================================================================
@@ -422,15 +328,13 @@ async def run_markdown_generate_pipeline(
         # ====================================================================
         progress["current_phase"] = "done"
         job["status"] = "completed"
-        job["cache_refresh_required"] = True  # Phase [3] mutated Workflowy
+        job["cache_refresh_required"] = False  # This job writes disk only; Phase [8] worker handles Workflowy mutations.
         result_summary["file_path"] = file_path
         result_summary["ast_beacons_reapplied"] = ast_beacon_count
-        result_summary["bulk_apply"] = bulk_apply_summary
         result_summary["post_refresh_job_id"] = post_refresh_job_id
         result_summary["message"] = (
             f"Generated markdown for {root_uuid} at {file_path} "
             f"(ast_beacons={ast_beacon_count}, "
-            f"bulk_apply.node_updates={bulk_apply_summary.get('node_updates', 0)}, "
             f"post_refresh_job_id={post_refresh_job_id!r})"
         )
         job["updated_at"] = _now_iso()
@@ -441,7 +345,6 @@ async def run_markdown_generate_pipeline(
             "success": True,
             "file_path": file_path,
             "ast_beacons_reapplied": ast_beacon_count,
-            "bulk_apply": bulk_apply_summary,
             "post_refresh_job_id": post_refresh_job_id,
         }
 
@@ -470,213 +373,6 @@ def _finish_cancelled(
     _write_job_payload(job_file, job)
     _append_log(log_file, "Pipeline cancelled.")
     return {"success": False, "cancelled": True}
-
-
-async def _run_bulk_apply_inline(
-    *,
-    client: Any,
-    visible_tree_payload: dict[str, Any],
-    job_file: str,
-    log_file: str | None,
-    cancel_check,
-) -> dict[str, Any]:
-    """Run the bulk-apply phase inline (no sub-subprocess).
-
-    This mirrors `_run_carto_bulk_visible_apply_job` from server.py but runs
-    directly in the current worker process instead of spawning yet another
-    asyncio task. We're already in a detached worker, so we don't need to
-    detach again.
-
-    Returns a summary dict similar to the bulk-apply CARTO job's result_summary.
-    """
-    # Import the helper that walks the visible tree and groups candidates by
-    # enclosing FILE node. This lives in server.py — we need to import it
-    # carefully because server.py initializes a lot of MCP server state.
-    # Solution: import the helper module-level functions only; server.py's
-    # top-level FastMCP registration runs unconditionally on import, but
-    # the worker process can tolerate that (it just registers handlers we
-    # never invoke).
-    from .server import (
-        _build_bulk_visible_root_from_payload,
-        _bulk_apply_per_file_inner_loop,
-        _collect_bulk_visible_apply_groups,
-    )
-
-    summary = {
-        "node_updates": 0,
-        "files_refreshed": 0,
-        "files_skipped": 0,
-        "nodes_skipped": 0,
-        # nodes_skipped_in_sync counts candidates filtered by
-        # _node_name_tags_match_beacon_block_in_note (Bug #2 optimization).
-        # Distinct from "nodes_skipped" which counts errors/missing-id cases.
-        "nodes_skipped_in_sync": 0,
-        "warnings": [],
-        "errors": [],
-    }
-
-    # Build root node from payload.
-    root_node = _build_bulk_visible_root_from_payload(
-        {"visible_tree": visible_tree_payload}
-    )
-    if not isinstance(root_node, dict):
-        summary["errors"].append("Invalid visible_tree payload.")
-        return summary
-
-    # Get cache-side nodes for grouping.
-    try:
-        all_nodes_cache = client._get_nodes_export_cache_nodes() or []
-        nodes_by_id_cache = {
-            str(n.get("id")): n
-            for n in all_nodes_cache
-            if isinstance(n, dict) and n.get("id")
-        }
-    except Exception:
-        nodes_by_id_cache = {}
-
-    # Group candidates by enclosing FILE node.
-    grouped_files, grouping_warnings, skipped_unchanged = _collect_bulk_visible_apply_groups(
-        root_node,
-        nodes_by_id_cache=nodes_by_id_cache,
-    )
-    if grouping_warnings:
-        summary["warnings"].extend(grouping_warnings)
-        for msg in grouping_warnings:
-            _append_log(log_file, f"WARNING: {msg}")
-    if skipped_unchanged:
-        summary["nodes_skipped"] += int(skipped_unchanged)
-        _append_log(
-            log_file,
-            f"Skipping {skipped_unchanged} unchanged visible node(s) after semantic compare.",
-        )
-
-    file_items = sorted(
-        grouped_files.items(),
-        key=lambda kv: str(kv[1].get("file_node", {}).get("name") or kv[0]).lower(),
-    )
-
-    if not file_items:
-        _append_log(log_file, "No eligible visible AST/beacon nodes found.")
-        return summary
-
-    _append_log(log_file, f"Processing {len(file_items)} file(s).")
-
-    # Update progress in job JSON.
-    job = _read_job_payload(job_file)
-    progress = job.setdefault("progress", {})
-    progress["total_files"] = len(file_items)
-    progress["completed_files"] = 0
-    _write_job_payload(job_file, job)
-
-    processed_files = 0
-    successful_file_refreshes = 0
-
-    for file_id, file_group in file_items:
-        if cancel_check():
-            _append_log(log_file, "Cancellation requested; stopping bulk apply.")
-            break
-
-        file_node = file_group.get("file_node") or {}
-        file_name = str(file_node.get("name") or file_id)
-        candidate_nodes = file_group.get("nodes") or []
-
-        # Update progress with current file.
-        job = _read_job_payload(job_file)
-        progress = job.setdefault("progress", {})
-        progress["current_file"] = file_id
-        _write_job_payload(job_file, job)
-        _append_log(
-            log_file,
-            f"Updating {len(candidate_nodes)} visible node(s) for file {file_name} ({file_id}).",
-        )
-
-        # Per-candidate inner loop — delegated to the single-source-of-truth
-        # helper _bulk_apply_per_file_inner_loop in server.py. Both server.py
-        # and this file route through that helper so any future change to the
-        # inner loop touches exactly ONE place (eliminates the May 2026
-        # duplicate-codepath gotcha that hid Bug #2's fix from F12+3).
-        def _pipeline_progress_tick() -> None:
-            job_local = _read_job_payload(job_file)
-            progress_local = job_local.setdefault("progress", {})
-            progress_local["nodes_updated"] = summary["node_updates"]
-            _write_job_payload(job_file, job_local)
-
-        file_successful_node_updates, was_cancelled = (
-            await _bulk_apply_per_file_inner_loop(
-                client=client,
-                candidate_nodes=candidate_nodes,
-                file_name=file_name,
-                summary=summary,
-                cancel_check=cancel_check,
-                log=lambda msg: _append_log(log_file, msg),
-                progress_tick=_pipeline_progress_tick,
-            )
-        )
-
-        if was_cancelled:
-            break
-
-        # CRITICAL DATA-LOSS FIX (Dan, May 2026):
-        #
-        # When invoked as part of F12+3 (this pipeline), we MUST NOT call
-        # refresh_file_node_beacons here. That helper performs a full
-        # disk -> Workflowy reconcile. At THIS point in F12+3:
-        #
-        #   - Phase 3 has just rewritten on-disk beacon `role:` lines to
-        #     reflect user renames (correct).
-        #   - Phase 3 has NOT touched on-disk Markdown HEADING lines
-        #     (e.g. `### My Heading`). Heading text edits in Workflowy
-        #     reach disk only via Phase 6's whole-file rewrite, which
-        #     hasn't run yet.
-        #   - The cache/Workflowy NAME field DOES reflect the user's edit.
-        #
-        # If we run reconcile NOW, apply_markdown_beacons constructs the
-        # source-tree NAME from the on-disk heading line (OLD text) and
-        # the reconcile sees src.name (OLD) vs tgt.name (NEW user edit) ->
-        # fires F12 UPDATE -> SILENTLY DESTROYS the user's edit on the
-        # Workflowy server. This was the May 2026 NOWWW data-loss bug.
-        #
-        # The post-flight F12+1 (phase 8 of the pipeline) handles the
-        # disk -> Workflowy reconcile correctly, AFTER phase 6 has
-        # rewritten heading lines on disk to match user edits. By the
-        # time phase 8 reconciles, src.name and tgt.name agree, and no
-        # destructive UPDATE fires.
-        #
-        # The cache mutations from phase 3's update_beacon_from_node
-        # (cache name + cache BEACON note) are still durable - they
-        # survive into phases 4-8 because the cache is in-memory.
-        #
-        # NOTE: this is a behavioral DIVERGENCE between the F12+2
-        # standalone path (server.py::_run_carto_bulk_visible_apply_job,
-        # which DOES call refresh_file_node_beacons here because it has
-        # no follow-up phase 8) and the F12+3 pipeline path (this code,
-        # which skips it because phase 8 covers it). Both paths share
-        # _bulk_apply_per_file_inner_loop, but they diverge on the
-        # OUTER per-file refresh policy.
-        if file_successful_node_updates > 0:
-            _append_log(
-                log_file,
-                f"Phase 3 wrote {file_successful_node_updates} on-disk beacon updates for {file_name} "
-                f"({file_id}); skipping per-file refresh_file_node_beacons here. "
-                f"Phase 8 (post-write F12+1) will reconcile disk -> Workflowy after phase 6 "
-                f"has updated heading lines, avoiding the mid-phase-3 data-loss race.",
-            )
-        else:
-            summary["files_skipped"] += 1
-            _append_log(
-                log_file,
-                f"No successful node updates for {file_name}.",
-            )
-
-        processed_files += 1
-        # Update progress.
-        job = _read_job_payload(job_file)
-        progress = job.setdefault("progress", {})
-        progress["completed_files"] = processed_files
-        progress["current_file"] = None
-        _write_job_payload(job_file, job)
-
-    return summary
 
 
 def _launch_post_refresh_subprocess(
