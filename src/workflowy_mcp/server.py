@@ -3883,6 +3883,23 @@ def _visible_node_differs_from_cache(node: dict[str, Any], nodes_by_id_cache: di
 #   kind=ast,
 #   comment=Bulk-apply candidate filter for F12+3 step [3] pre-pass. Tightened May 2026 to require either an existing BEACON block OR trailing #tags - excludes plain MD_PATH-only heading nodes that cannot possibly need a disk write.,
 # ]
+def _note_has_real_beacon_metadata_block(note: str) -> bool:
+    """Return True iff a Workflowy note contains a real BEACON metadata block.
+
+    Do NOT use a raw substring test for "BEACON (". Long Markdown files can
+    legitimately contain heading text such as "## BEACON (MD AST)" inside
+    MD_PATH lines or body prose. Those are not Cartographer metadata blocks
+    and must not make F12+2 treat a plain heading as a beacon candidate.
+    """
+    if not isinstance(note, str):
+        return False
+    for line in note.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("BEACON ("):
+            return True
+    return False
+
+
 def _is_bulk_visible_apply_candidate(node: dict[str, Any]) -> bool:
     """Return True iff this node could plausibly need a disk-side beacon update.
 
@@ -3922,7 +3939,11 @@ def _is_bulk_visible_apply_candidate(node: dict[str, Any]) -> bool:
         return True
 
     # Class 2: already-beaconed node — always a candidate.
-    if "BEACON (" in note:
+    # IMPORTANT: require a real metadata line, not just the substring
+    # "BEACON (" somewhere in MD_PATH/body text. A heading literally named
+    # "## BEACON (MD AST)" otherwise poisons every descendant's MD_PATH and
+    # creates false-positive F12+2 candidates that helper-noop noisily.
+    if _note_has_real_beacon_metadata_block(note):
         return True
 
     # Class 3: Markdown heading WITH trailing #tags — may need beacon CREATE.
@@ -4033,10 +4054,12 @@ def _node_name_tags_match_beacon_block_in_note(candidate: dict[str, Any]) -> boo
     name = str(candidate.get("name") or "")
     note = str(candidate.get("note") or "")
 
-    # Cheap reject: no BEACON block at all means we cannot infer disk
-    # state and must let the slow path run (covers CREATE-from-tags and
-    # delete-orphaned-disk-beacon cases).
-    if "BEACON (" not in note:
+    # Cheap reject: no real BEACON metadata block at all means we cannot
+    # infer disk state and must let the slow path run (covers CREATE-from-tags
+    # and delete-orphaned-disk-beacon cases). Use line-anchored metadata
+    # detection; substring matching is unsafe because MD_PATH/body text can
+    # contain literal heading names like "## BEACON (MD AST)".
+    if not _note_has_real_beacon_metadata_block(note):
         return False
 
     # Lazy import of nexus_map_codebase. The module lives at the repo root
