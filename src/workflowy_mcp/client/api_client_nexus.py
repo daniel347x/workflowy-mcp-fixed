@@ -7958,7 +7958,42 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         non-beacon Notes). This fully decouples NOTES from structural
         mutations while still relying on explicitly_preserved_ids as the
         primary deletion guard.
+
+        Markdown opt-out (May 2026)
+        ---------------------------
+        For .md files this entire salvage machinery is disabled and an empty
+        context is returned. The salvage logic was designed for source-code
+        FILE refreshes that genuinely tear down and rebuild the AST subtree
+        under the FILE node, where structural changes can orphan user-
+        authored Notes children. Markdown's roundtrip never tears down the
+        structural subtree: every heading on disk corresponds 1:1 to a
+        Workflowy node, so there is nothing to salvage. Worse, Dan-style
+        Markdown headings frequently start with NOTES marker emoji
+        (📝 / 💡 / 🌟 / 📌 / 🧠 / etc.) as part of their actual heading text
+        — these are NOT user-authored persistent Notes nodes but the
+        emoji-prefix heuristic in `_is_notes_name` cannot distinguish them.
+        Engaging the park-then-restore dance for those nodes is wasted work
+        in the steady-state happy path and risks duplication if a user
+        edits an emoji-prefixed Markdown heading directly on disk before
+        the next F12+1 (the cached Workflowy node gets parked at the FILE
+        root, reconcile creates a new node under the structural parent
+        keyed off the renamed disk heading, then restore moves the parked
+        original back — result: two siblings under the same parent).
+        Returning an empty context here ensures all emoji-prefixed Markdown
+        headings flow through the normal reconcile path identified by
+        MD_PATH or beacon id, with no parking moves.
         """
+        if isinstance(source_path, str) and source_path.lower().endswith(".md"):
+            try:
+                log_event(
+                    "_collect_notes_salvage_context_for_file: skipping NOTES salvage for Markdown file "
+                    f"file={file_node_id} path={source_path} mode={mode}",
+                    "BEACON",
+                )
+            except Exception:
+                pass
+            return NotesSalvageContext()
+
 
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus._collect_notes_salvage_context_for_file._canonical_path-uhh8,
@@ -8252,7 +8287,39 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         This helper is used by both the legacy full-rebuild path and the
         incremental F12 path (as a belt-and-suspenders layer on top of
         explicitly_preserved_ids).
+
+        Markdown opt-out (May 2026)
+        ---------------------------
+        For .md files this entire salvage machinery is disabled. The matching
+        guard in `_collect_notes_salvage_context_for_file` returns an empty
+        context for Markdown files, so by the time we get here `salvage_ctx`
+        will already be empty — but we add a parallel early-return guard
+        here so future callers that build their own `salvage_ctx` cannot
+        accidentally re-engage the park-then-restore dance for Markdown.
+        See the docstring of `_collect_notes_salvage_context_for_file` for
+        the full rationale.
         """
+        if isinstance(source_path, str) and source_path.lower().endswith(".md"):
+            try:
+                log_event(
+                    "_restore_notes_for_file: skipping NOTES restore for Markdown file "
+                    f"file={file_node_id} path={source_path}",
+                    "BEACON",
+                )
+            except Exception:
+                pass
+            return {
+                "notes_identified_for_salvage": 0,
+                "notes_salvaged": 0,
+                "notes_orphaned": 0,
+                "notes_stashed_by_path": 0,
+                "notes_path_reattached": 0,
+                "notes_path_unmatched": 0,
+                "notes_moved_to_parking": 0,
+                "generic_notes_reattached": 0,
+                "generic_notes_salvaged": 0,
+            }
+
 
         # @beacon[
         #   id=auto-beacon@WorkFlowyClientNexus._restore_notes_for_file._canonical_path-cnpc,
