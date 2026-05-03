@@ -6461,6 +6461,7 @@ async def glimpse(
     node_id: str,
     output_file: str | None = None,
     suppress_metadata: bool = False,
+    as_markdown: bool = False,
 ) -> dict:
     """Load entire node tree into agent context.
     
@@ -6477,8 +6478,10 @@ async def glimpse(
             original_ids_seen ledger, full NEXUS TERRAIN format)
         suppress_metadata: Preview-only token saver. When True, strips generated
             Cartographer metadata blocks (MD_PATH, AST_QUALNAME, BEACON blocks,
-            SPAN TEXT) from notes before preview_tree is built. Does not mutate
+            SPAN TEXT) from notes before preview output is built. Does not mutate
             Workflowy or disk.
+        as_markdown: Preview-only token saver. When True, return the GLIMPSE tree
+            as compact Markdown headings + note text instead of bracketed preview_tree.
         
     Returns:
         When output_file is None: Minimal in-memory preview with only
@@ -6498,23 +6501,30 @@ async def glimpse(
             node_id,
             output_file=output_file,
             suppress_metadata=suppress_metadata,
+            as_markdown=as_markdown,
             _ws_connection=ws_conn,
             _ws_queue=ws_queue,
         )
         if _rate_limiter:
             _rate_limiter.on_success()
         
-        # For in-memory GLIMPSE results, return only the MINITREE to the agent.
+        # For in-memory GLIMPSE results, return only the preview payload to the agent.
         # SCRY-to-disk paths (output_file is not None) continue to carry the
         # full JSON tree on disk only (coarse_terrain/phantom_gem/etc.).
-        if output_file is None and isinstance(result, dict) and "preview_tree" in result:
-            return {
+        if output_file is None and isinstance(result, dict) and (
+            "preview_tree" in result or "preview_markdown" in result
+        ):
+            payload = {
                 "success": result.get("success", True),
                 "_source": result.get("_source"),
                 "node_count": result.get("node_count"),
                 "depth": result.get("depth"),
-                "preview_tree": result.get("preview_tree"),
             }
+            if result.get("preview_markdown") is not None:
+                payload["preview_markdown"] = result.get("preview_markdown")
+            else:
+                payload["preview_tree"] = result.get("preview_tree")
+            return payload
         
         return result
     except Exception as e:

@@ -914,9 +914,41 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if isinstance(child, dict):
                 cls._strip_cartographer_metadata_from_tree_for_preview(child)
 
+    @classmethod
+    def _build_markdown_preview_from_tree(cls, nodes: list[dict[str, Any]] | None, level: int = 1) -> str:
+        """Render a Workflowy tree as minimal Markdown for GLIMPSE preview.
+
+        This is intentionally *not* the NEXUS JSON→Markdown export path. It is
+        an in-memory, no-metadata display format for large GLIMPSE slices:
+        each node becomes a heading, and the note (optionally already stripped
+        via suppress_metadata=True) is emitted as raw text beneath it.
+        """
+        if not nodes:
+            return ""
+        lines: list[str] = []
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            name = str(node.get("name") or "Untitled").strip() or "Untitled"
+            heading_level = max(1, min(int(level or 1), 64))
+            lines.append(f"{'#' * heading_level} {name}")
+            note = node.get("note") or ""
+            if isinstance(note, str) and note.strip():
+                lines.append("")
+                lines.append(note.strip())
+            children = node.get("children") or []
+            if children:
+                child_md = cls._build_markdown_preview_from_tree(children, level + 1)
+                if child_md:
+                    lines.append("")
+                    lines.append(child_md)
+            lines.append("")
+        return "\n".join(lines).strip()
+
     async def workflowy_glimpse(
         self, node_id: str, use_efficient_traversal: bool = False,
         output_file: str | None = None, suppress_metadata: bool = False,
+        as_markdown: bool = False,
         _ws_connection=None, _ws_queue=None
     ) -> dict[str, Any]:
         """Load node tree via WebSocket (GLIMPSE command)."""
@@ -944,28 +976,36 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     response['_source'] = 'websocket'
                     logger.info("✅ WebSocket GLIMPSE successful")
                     
-                    # Attach preview_tree. Optional suppress_metadata strips generated
-                    # Cartographer metadata from notes for display only, before
-                    # preview_tree flattens notes into single-line strings.
+                    # Attach preview output. Optional suppress_metadata strips generated
+                    # Cartographer metadata from notes for display only. Optional
+                    # as_markdown renders the same in-memory tree as compact Markdown
+                    # instead of the bracketed preview_tree format.
                     preview_tree = None
+                    preview_markdown = None
                     try:
                         root_obj = response.get("root") or {}
                         children = response.get("children") or []
+                        preview_nodes: list[dict[str, Any]]
                         if isinstance(root_obj, dict):
                             root_obj.setdefault("children", children)
                             if suppress_metadata:
                                 self._strip_cartographer_metadata_from_tree_for_preview(root_obj)
-                            preview_tree = self._annotate_preview_ids_and_build_tree([root_obj], "WG")
+                            preview_nodes = [root_obj]
                         else:
                             if suppress_metadata:
                                 for child in children:
                                     if isinstance(child, dict):
                                         self._strip_cartographer_metadata_from_tree_for_preview(child)
-                            preview_tree = self._annotate_preview_ids_and_build_tree(children, "WG")
+                            preview_nodes = children
+
+                        if as_markdown:
+                            preview_markdown = self._build_markdown_preview_from_tree(preview_nodes)
+                        else:
+                            preview_tree = self._annotate_preview_ids_and_build_tree(preview_nodes, "WG")
                     except Exception:
                         pass
                     
-                    if preview_tree is not None:
+                    if preview_tree is not None or preview_markdown is not None:
                         old = response
                         response = {
                             "success": old.get("success"),
@@ -973,6 +1013,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                             "node_count": old.get("node_count"),
                             "depth": old.get("depth"),
                             "preview_tree": preview_tree,
+                            "preview_markdown": preview_markdown,
                             "root": old.get("root"),
                             "children": old.get("children"),
                         }
