@@ -903,10 +903,30 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             out.pop()
         return "\n".join(out)
 
+    @staticmethod
+    def _strip_workflowy_dom_markup_for_preview(text: str) -> str:
+        """Convert Workflowy DOM markup in preview strings to plain text.
+
+        GLIMPSE WebSocket extraction can receive Workflowy's rendered HTML for
+        tag pills (e.g. <span class="contentTag ...">#<span ...>tag</span>).
+        In compact Markdown preview those spans are extremely noisy. Strip HTML
+        tags and unescape entities for display only.
+        """
+        if not isinstance(text, str) or not text:
+            return ""
+        import html as _html
+        import re as _re
+
+        stripped = _re.sub(r"<[^>]+>", "", text)
+        return _html.unescape(stripped)
+
     @classmethod
     def _strip_cartographer_metadata_from_tree_for_preview(cls, node: dict[str, Any]) -> None:
         if not isinstance(node, dict):
             return
+        name = node.get("name")
+        if isinstance(name, str) and name:
+            node["name"] = cls._strip_workflowy_dom_markup_for_preview(name)
         note = node.get("note")
         if isinstance(note, str) and note:
             node["note"] = cls._strip_cartographer_metadata_from_note_for_preview(note)
