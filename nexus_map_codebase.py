@@ -498,6 +498,149 @@ def tokens_to_nexus_tree(
     return root_children
 
 
+def arbitrary_hash_markdown_lines_to_nexus_tree(
+    source_lines: List[str],
+    source_line_offset: int = 0,
+    *,
+    max_hash_depth: int = 64,
+) -> List[Dict[str, Any]]:
+    """Parse Markdown headings with arbitrary hash depth into a NEXUS tree.
+
+    This is the Workflowy-first Markdown heading parser used by Cartographer.
+    CommonMark / markdown-it only recognizes ATX headings with 1..6 hashes;
+    Dan's 99-file curation workflow deliberately uses 7, 8, 9+ hash headings
+    as real Workflowy child nodes. Therefore heading recognition here is a
+    simple source-line rule: any line matching ``^#{1,max_hash_depth}\\s+`` is
+    a heading node, regardless of the official Markdown 6-level cap.
+
+    The function preserves the same shape as tokens_to_nexus_tree(...):
+    each heading node gets name/note/priority/children and an internal
+    ``_md_heading_line`` full-file coordinate for apply_markdown_beacons(...).
+    The durable Workflowy-visible identity remains MD_PATH in the note.
+    """
+    root_children: List[Dict[str, Any]] = []
+    stack: List[tuple[int, Dict[str, Any]]] = []
+    priority_counter = 100
+    heading_entries: List[Dict[str, Any]] = []
+    excluded_body_lines: set[int] = set()
+
+    # Exclude @beacon[...] / @beacon-close[...] HTML comment blocks from the
+    # body text attached to heading notes. They are metadata, not prose.
+    i = 0
+    while i < len(source_lines):
+        raw = source_lines[i]
+        if "<!--" in raw:
+            j = i
+            block_lines: list[str] = []
+            while j < len(source_lines):
+                block_lines.append(source_lines[j])
+                if "-->" in source_lines[j]:
+                    break
+                j += 1
+            if any("@beacon[" in x or "@beacon-close[" in x for x in block_lines):
+                for line_no in range(i + 1, min(j + 1, len(source_lines)) + 1):
+                    excluded_body_lines.add(line_no)
+            i = j + 1
+            continue
+        i += 1
+
+    heading_re = re.compile(rf"^(#{{1,{int(max_hash_depth)}}})\s+(.*)$")
+
+    def _md_path_sanitize(name: str) -> str:
+        single = " ".join((name or "").split()).strip()
+        if not single:
+            return "..."
+        head = single.lstrip()
+        if head.startswith("BEACON ("):
+            return "⚠️ corrupt-heading"
+        meta_markers = ("id:", "role:", "slice_labels:", "kind:")
+        hits = sum(1 for m in meta_markers if m in single)
+        if hits >= 2:
+            return "⚠️ corrupt-heading"
+        return single
+
+    for idx, raw in enumerate(source_lines, start=1):
+        if idx in excluded_body_lines:
+            continue
+        stripped = raw.strip()
+        m = heading_re.match(stripped)
+        if not m:
+            continue
+
+        heading_level = len(m.group(1))
+        heading_text = m.group(2).strip()
+        # Trim optional closing ATX hashes ("### Title ###") when present.
+        heading_text = re.sub(r"\s+#+\s*$", "", heading_text).strip()
+
+        while stack and stack[-1][0] >= heading_level:
+            stack.pop()
+
+        md_path_lines: List[str] = []
+        for lvl, ancestor_node in stack:
+            ancestor_name = _md_path_sanitize(ancestor_node.get("name") or "")
+            md_path_lines.append(f"{('#' * lvl)} {ancestor_name}".rstrip())
+        this_heading_name = _md_path_sanitize(heading_text or "")
+        md_path_lines.append(f"{('#' * heading_level)} {this_heading_name}".rstrip())
+
+        note_lines: List[str] = ["MD_PATH:"]
+        note_lines.extend(md_path_lines)
+        note_lines.append("---")
+        note_text = "\n".join(note_lines)
+
+        nexus_node: Dict[str, Any] = {
+            "name": this_heading_name,
+            "priority": priority_counter,
+            "note": note_text,
+            "children": [],
+            "_md_heading_line": int(idx) + int(source_line_offset or 0),
+        }
+        priority_counter += 100
+
+        if stack:
+            stack[-1][1]["children"].append(nexus_node)
+        else:
+            root_children.append(nexus_node)
+
+        heading_entries.append(
+            {
+                "node": nexus_node,
+                "heading_start_line": idx,
+                "body_start_line": idx + 1,
+            }
+        )
+        stack.append((heading_level, nexus_node))
+
+    if heading_entries:
+        total_lines = len(source_lines)
+        for idx, entry in enumerate(heading_entries):
+            body_start_line = int(entry["body_start_line"])
+            next_heading_start = (
+                int(heading_entries[idx + 1]["heading_start_line"])
+                if idx + 1 < len(heading_entries)
+                else total_lines + 1
+            )
+            body_end_line = next_heading_start - 1
+
+            body_lines: List[str] = []
+            if body_end_line >= body_start_line:
+                for line_no in range(body_start_line, body_end_line + 1):
+                    if line_no in excluded_body_lines:
+                        continue
+                    body_lines.append(source_lines[line_no - 1])
+
+                while body_lines and not body_lines[0].strip():
+                    body_lines.pop(0)
+                while body_lines and not body_lines[-1].strip():
+                    body_lines.pop()
+
+            if body_lines:
+                entry["node"]["note"] = (
+                    f"{entry['node']['note']}\n\n" + "\n".join(body_lines)
+                )
+
+    return root_children
+
+
 # @beacon[
 #   id=carto-js-ts@parse_markdown_beacon_blocks,
 #   role=carto-js-ts,
@@ -1288,36 +1431,19 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
         lines = full_content_for_parse.splitlines()
         md_beacons = parse_markdown_beacon_blocks(lines)
 
-        # STEP 2: Parse ONLY the body with markdown-it-py to avoid misinterpreting frontmatter
-        md = MarkdownIt("commonmark")
-        tokens = md.parse(body_for_parse)
-
-        if DEBUG_MD_BEACONS:
-            print("[MD-TOKENS-BEGIN]")
-            for t in tokens:
-                # t.map is (start_line, end_line) 0-based; add 1 for human-readable
-                line_span = t.map if hasattr(t, 'map') and t.map is not None else None
-                if line_span:
-                    span_str = f"[{line_span[0]+1},{line_span[1]+1}]"
-                else:
-                    span_str = "[]"
-                print(f"  type={t.type!r} tag={t.tag!r} map={span_str} content={t.content!r}")
-            print("[MD-TOKENS-END]")
-        
-        # STEP 3: Convert token stream to NEXUS hierarchical tree with priorities.
-        # Use the exact body lines from the parsed Markdown so list/code-block
-        # structure is preserved verbatim inside heading notes.
-        # When YAML frontmatter exists, markdown-it token line maps are relative
-        # to body_for_parse, while apply_markdown_beacons receives full-file
-        # line numbers. Carry the body offset into each heading node's internal
-        # _md_heading_line coordinate so beacon attachment is line-accurate.
+        # STEP 2/3: Parse Markdown headings with arbitrary hash depth.
+        #
+        # CommonMark / markdown-it caps ATX headings at 6 hashes. Dan's
+        # Workflowy-first 99-file methodology explicitly supports 7, 8, 9+
+        # hash headings as real child nodes, so the Cartographer disk→Workflowy
+        # path must bypass that spec cap. We still preserve body lines verbatim;
+        # only heading recognition is custom and deliberately broader.
         body_line_offset = 0
         if frontmatter is not None:
             # Opening '---' + frontmatter lines + closing '---'.
             body_line_offset = len(frontmatter.splitlines()) + 2
-        root_children = tokens_to_nexus_tree(
-            tokens,
-            source_lines=body_for_parse.splitlines(),
+        root_children = arbitrary_hash_markdown_lines_to_nexus_tree(
+            body_for_parse.splitlines(),
             source_line_offset=body_line_offset,
         )
         
