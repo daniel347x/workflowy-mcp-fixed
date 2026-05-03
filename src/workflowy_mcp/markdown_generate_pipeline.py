@@ -253,9 +253,21 @@ async def run_markdown_generate_pipeline(
         # NON-FATAL (May 2026): each failure becomes a warning entry and
         # the loop continues. We persist the warning count + per-warning
         # detail into the CARTO job JSON and log so the human can review.
+        #
+        # log_callback (May 2026): we route every per-beacon attempt line
+        # into the same job log file via _append_log so the user can watch
+        # progress in real time and post-mortem the run if anything looked
+        # off. The callback is best-effort inside the helper; if it ever
+        # raises, beacon writing continues uninterrupted.
+        def _phase7_log(msg: str) -> None:
+            try:
+                _append_log(log_file, msg)
+            except Exception:  # noqa: BLE001
+                pass
+
         beacon_results, beacon_warnings = (
             markdown_roundtrip.reapply_markdown_ast_beacons(
-                file_path, root_for_render
+                file_path, root_for_render, log_callback=_phase7_log
             )
         )
         ast_beacon_count = len(beacon_results)

@@ -603,7 +603,9 @@ def _rewrite_md_path_block_in_note(note: str, md_path_lines: list[str]) -> str:
 #   comment=F12+3 phase 7 disk-write rehydrator. Walks Workflowy subtree for heading nodes whose current names carry trailing #tags and materializes exactly those as HTML-comment beacon blocks via update_beacon_from_node_markdown. Runs AFTER nexus_to_tokens emits beacon-free Markdown (phase 6).,
 # ]
 def reapply_markdown_ast_beacons(
-    file_path: str, root_node: Dict[str, Any]
+    file_path: str,
+    root_node: Dict[str, Any],
+    log_callback: "Callable[[str], None] | None" = None,
 ) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]]]:
     """Rehydrate Markdown AST beacons onto a regenerated Markdown file.
 
@@ -637,6 +639,16 @@ def reapply_markdown_ast_beacons(
         warnings are present.
       - Persist warning details into the job log so the user can review.
 
+    Args:
+        file_path: Absolute path to the on-disk Markdown file.
+        root_node: Workflowy subtree root (from cache export).
+        log_callback: Optional callable that receives one line per beacon
+            attempt (success and skip). Designed to plug into the F12+3
+            pipeline's `_append_log` helper so each beacon's outcome is
+            captured in the per-job log file. The callable must be
+            best-effort and must not raise; this function wraps each
+            invocation in try/except.
+
     Returns:
         Tuple of (results, warnings) where:
           - results: list of successful per-beacon helper result dicts
@@ -660,9 +672,32 @@ def reapply_markdown_ast_beacons(
     if helper is None:
         raise RuntimeError("update_beacon_from_node_markdown helper not available")
 
+    def _emit_log(msg: str) -> None:
+        # Best-effort log emit. Never let logging break the pipeline.
+        if log_callback is None:
+            return
+        try:
+            log_callback(msg)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _short_name(s: str, n: int = 80) -> str:
+        s = (s or "").strip()
+        if len(s) <= n:
+            return s
+        return s[:n - 3] + "..."
+
+    candidates = _collect_markdown_ast_beacon_nodes(root_node)
+    total_candidates = len(candidates)
+    _emit_log(
+        f"Phase 7: rehydrating Markdown AST beacons "
+        f"({total_candidates} candidate(s) to process)."
+    )
+
     results: list[Dict[str, Any]] = []
     warnings: list[Dict[str, Any]] = []
-    for name, note, md_path in _collect_markdown_ast_beacon_nodes(root_node):
+    for idx, (name, note, md_path) in enumerate(candidates, start=1):
+        depth = len(md_path) if md_path else 0
         try:
             result = helper(file_path, name, note)
         except Exception as exc:  # noqa: BLE001
@@ -672,6 +707,10 @@ def reapply_markdown_ast_beacons(
                 "md_path": list(md_path) if md_path else None,
                 "operation": None,
             })
+            _emit_log(
+                f"  beacon[{idx}/{total_candidates}] depth={depth} "
+                f"name={_short_name(name)!r} -> SKIPPED (helper raised: {exc!r})"
+            )
             continue
 
         if not isinstance(result, dict):
@@ -681,15 +720,24 @@ def reapply_markdown_ast_beacons(
                 "md_path": list(md_path) if md_path else None,
                 "operation": None,
             })
+            _emit_log(
+                f"  beacon[{idx}/{total_candidates}] depth={depth} "
+                f"name={_short_name(name)!r} -> SKIPPED (non-dict result: {result!r})"
+            )
             continue
 
         if result.get("error"):
+            err_str = str(result.get("error"))
             warnings.append({
                 "name": name,
-                "error": str(result.get("error")),
+                "error": err_str,
                 "md_path": list(md_path) if md_path else None,
                 "operation": str(result.get("operation") or "") or None,
             })
+            _emit_log(
+                f"  beacon[{idx}/{total_candidates}] depth={depth} "
+                f"name={_short_name(name)!r} -> SKIPPED (error: {err_str})"
+            )
             continue
 
         op = str(result.get("operation") or "")
@@ -700,10 +748,24 @@ def reapply_markdown_ast_beacons(
                 "md_path": list(md_path) if md_path else None,
                 "operation": op or None,
             })
+            _emit_log(
+                f"  beacon[{idx}/{total_candidates}] depth={depth} "
+                f"name={_short_name(name)!r} -> SKIPPED (unexpected operation: {op!r})"
+            )
             continue
 
         results.append(result)
+        beacon_id = str(result.get("beacon_id") or result.get("id") or "")
+        beacon_id_part = f" id={beacon_id}" if beacon_id else ""
+        _emit_log(
+            f"  beacon[{idx}/{total_candidates}] depth={depth} "
+            f"name={_short_name(name)!r} -> {op}{beacon_id_part}"
+        )
 
+    _emit_log(
+        f"Phase 7 complete: {len(results)} written, {len(warnings)} skipped "
+        f"({total_candidates} total)."
+    )
     return results, warnings
 
 
