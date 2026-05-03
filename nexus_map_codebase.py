@@ -823,7 +823,7 @@ def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
                             # Default: until just before next header (any level)
                             span_end = len(lines)
                             for idx in range(span_start + 1, len(lines) + 1):
-                                if re.match(r"^#{1,6}\s", lines[idx - 1]):
+                                if re.match(r"^#{1,64}\s", lines[idx - 1]):
                                     span_end = idx - 1
                                     break
 
@@ -1879,7 +1879,7 @@ def _find_markdown_heading_insert_idx(lines: list[str], md_path_lines: list[str]
         s = (raw or "").strip()
         if not s:
             continue
-        m = re.match(r"^(#{1,32})\s*(.*)$", s)
+        m = re.match(r"^(#{1,64})\s*(.*)$", s)
         if not m:
             return None
         level = len(m.group(1))
@@ -1891,6 +1891,7 @@ def _find_markdown_heading_insert_idx(lines: list[str], md_path_lines: list[str]
 
     md_text = "\n".join(lines)
     md = MarkdownIt("commonmark")
+    md.block.ruler.at("heading", markdown_it_heading_arbitrary_depth)
     tokens = md.parse(md_text)
 
     stack: list[tuple[int, str]] = []
@@ -1900,7 +1901,7 @@ def _find_markdown_heading_insert_idx(lines: list[str], md_path_lines: list[str]
             continue
 
         try:
-            level = int(token.tag[1]) if token.tag and len(token.tag) > 1 else 1
+            level = int(token.tag[1:]) if token.tag and len(token.tag) > 1 else 1
         except Exception:
             level = 1
 
@@ -2969,7 +2970,7 @@ def _normalize_duplicate_ast_beacons_markdown(file_path: str) -> dict[str, Any]:
             if stripped.startswith("<!--") and stripped.endswith("-->"):
                 i += 1
                 continue
-            if re.match(r"^#{1,6}\s", stripped):
+            if re.match(r"^#{1,64}\s", stripped):
                 return i + 1  # 1-based
             return None
         return None
