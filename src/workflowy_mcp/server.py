@@ -6462,6 +6462,7 @@ async def glimpse(
     output_file: str | None = None,
     suppress_metadata: bool = False,
     as_markdown: bool = False,
+    output_format: str = "terrain",
 ) -> dict:
     """Load entire node tree into agent context.
     
@@ -6482,6 +6483,9 @@ async def glimpse(
             Workflowy or disk.
         as_markdown: Preview-only token saver. When True, return the GLIMPSE tree
             as compact Markdown headings + note text instead of bracketed preview_tree.
+        output_format: When output_file is provided, default 'terrain' preserves
+            historical NEXUS terrain export behavior. Use 'preview_markdown' to
+            write the compact Markdown preview slice directly to output_file.
         
     Returns:
         When output_file is None: Minimal in-memory preview with only
@@ -6502,6 +6506,7 @@ async def glimpse(
             output_file=output_file,
             suppress_metadata=suppress_metadata,
             as_markdown=as_markdown,
+            output_format=output_format,
             _ws_connection=ws_conn,
             _ws_queue=ws_queue,
         )

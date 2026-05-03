@@ -969,6 +969,7 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
         self, node_id: str, use_efficient_traversal: bool = False,
         output_file: str | None = None, suppress_metadata: bool = False,
         as_markdown: bool = False,
+        output_format: str = "terrain",
         _ws_connection=None, _ws_queue=None
     ) -> dict[str, Any]:
         """Load node tree via WebSocket (GLIMPSE command)."""
@@ -1040,8 +1041,46 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     
                     _log_glimpse_to_file("glimpse", node_id, response)
                     
-                    # Write TERRAIN if requested
+                    # Write output file if requested.
+                    # Default preserves historic NEXUS TERRAIN export behavior.
+                    # output_format='preview_markdown' writes the exact compact
+                    # GLIMPSE preview slice as a standalone Markdown file.
                     if output_file is not None:
+                        fmt = (output_format or "terrain").strip().lower()
+                        if fmt in {"preview_markdown", "markdown", "md"}:
+                            preview_md = response.get("preview_markdown")
+                            if not isinstance(preview_md, str):
+                                # Build a Markdown preview on demand even if caller
+                                # forgot as_markdown=True.
+                                root_obj = response.get("root") or {}
+                                children = response.get("children") or []
+                                if isinstance(root_obj, dict):
+                                    root_obj.setdefault("children", children)
+                                    if suppress_metadata:
+                                        self._strip_cartographer_metadata_from_tree_for_preview(root_obj)
+                                    preview_nodes = [root_obj]
+                                else:
+                                    if suppress_metadata:
+                                        for child in children:
+                                            if isinstance(child, dict):
+                                                self._strip_cartographer_metadata_from_tree_for_preview(child)
+                                    preview_nodes = children
+                                preview_md = self._build_markdown_preview_from_tree(preview_nodes)
+
+                            with open(output_file, "w", encoding="utf-8") as f:
+                                f.write(preview_md)
+                                if preview_md and not preview_md.endswith("\n"):
+                                    f.write("\n")
+                            return {
+                                "success": True,
+                                "_source": response.get("_source"),
+                                "node_count": response.get("node_count"),
+                                "depth": response.get("depth"),
+                                "output_file": output_file,
+                                "output_format": "preview_markdown",
+                                "bytes_written": len(preview_md.encode("utf-8")) if isinstance(preview_md, str) else 0,
+                            }
+
                         return await self._write_glimpse_as_terrain(node_id, response, output_file)
                     
                     return response
