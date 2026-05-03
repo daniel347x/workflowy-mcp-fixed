@@ -6460,6 +6460,7 @@ def generate_markdown(
 async def glimpse(
     node_id: str,
     output_file: str | None = None,
+    suppress_metadata: bool = False,
 ) -> dict:
     """Load entire node tree into agent context.
     
@@ -6474,6 +6475,10 @@ async def glimpse(
             export package using shared nexus_helper functions (WebSocket GLIMPSE +
             API SCRY merged for has_hidden_children / children_status annotations,
             original_ids_seen ledger, full NEXUS TERRAIN format)
+        suppress_metadata: Preview-only token saver. When True, strips generated
+            Cartographer metadata blocks (MD_PATH, AST_QUALNAME, BEACON blocks,
+            SPAN TEXT) from notes before preview_tree is built. Does not mutate
+            Workflowy or disk.
         
     Returns:
         When output_file is None: Minimal in-memory preview with only
@@ -6492,6 +6497,7 @@ async def glimpse(
         result = await client.workflowy_glimpse(
             node_id,
             output_file=output_file,
+            suppress_metadata=suppress_metadata,
             _ws_connection=ws_conn,
             _ws_queue=ws_queue,
         )

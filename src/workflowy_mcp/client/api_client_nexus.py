@@ -819,9 +819,105 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
     #   kind=ast,
     #   comment=Ignite,
     # ]
+    @staticmethod
+    def _strip_cartographer_metadata_from_note_for_preview(note: str) -> str:
+        """Remove Cartographer metadata blocks from a note for GLIMPSE preview only.
+
+        This is a display/token-saving transform. It must never be used for
+        terrain/source JSON, disk writes, or Workflowy mutations. The goal is
+        to let large GLIMPSE context slices hide generated metadata like
+        MD_PATH, AST_QUALNAME, BEACON (...) blocks, and SPAN TEXT payloads while
+        preserving human-authored prose below those blocks.
+        """
+        if not isinstance(note, str) or not note:
+            return ""
+        lines = note.splitlines()
+        out: list[str] = []
+        i = 0
+        n = len(lines)
+        while i < n:
+            s = lines[i].strip()
+
+            # Markdown heading identity block at note top.
+            if s == "MD_PATH:" or s.startswith("MD_PATH:"):
+                i += 1
+                while i < n:
+                    if lines[i].strip() == "---":
+                        i += 1
+                        break
+                    i += 1
+                continue
+
+            # Python/JS/TS AST identity line.
+            if s.startswith("AST_QUALNAME:"):
+                i += 1
+                if i < n and lines[i].strip() == "---":
+                    i += 1
+                continue
+
+            # BEACON metadata block rendered into Workflowy notes.
+            if s.startswith("BEACON (") or s.startswith("@beacon["):
+                i += 1
+                # Common form ends with an explicit --- separator.
+                found_sep = False
+                while i < n:
+                    t = lines[i].strip()
+                    if t == "---":
+                        i += 1
+                        found_sep = True
+                        break
+                    # Fallback for code AST notes with no explicit separator:
+                    # consume canonical beacon key lines and blank padding, then stop.
+                    if t and not any(
+                        t.startswith(prefix)
+                        for prefix in (
+                            "id:",
+                            "role:",
+                            "slice_labels:",
+                            "kind:",
+                            "show_span:",
+                            "comment:",
+                            "comments:",
+                        )
+                    ):
+                        break
+                    i += 1
+                if found_sep:
+                    # Drop at most one blank line after generated metadata.
+                    if i < n and not lines[i].strip():
+                        i += 1
+                continue
+
+            # SPAN TEXT is generated, often huge, and usually the biggest token sink.
+            # If a user wants the exact span bytes, snippet tools are the right path.
+            if s == "SPAN TEXT:" or s.startswith("SPAN TEXT:"):
+                break
+
+            out.append(lines[i])
+            i += 1
+
+        # Trim only outer blank lines created by stripping metadata.
+        while out and not out[0].strip():
+            out.pop(0)
+        while out and not out[-1].strip():
+            out.pop()
+        return "\n".join(out)
+
+    @classmethod
+    def _strip_cartographer_metadata_from_tree_for_preview(cls, node: dict[str, Any]) -> None:
+        if not isinstance(node, dict):
+            return
+        note = node.get("note")
+        if isinstance(note, str) and note:
+            node["note"] = cls._strip_cartographer_metadata_from_note_for_preview(note)
+        for child in node.get("children") or []:
+            if isinstance(child, dict):
+                cls._strip_cartographer_metadata_from_tree_for_preview(child)
+
     async def workflowy_glimpse(
         self, node_id: str, use_efficient_traversal: bool = False,
-        output_file: str | None = None, _ws_connection=None, _ws_queue=None
+        output_file: str | None = None, suppress_metadata: bool = False,
+        _ws_connection=None, _ws_queue=None
     ) -> dict[str, Any]:
         """Load node tree via WebSocket (GLIMPSE command)."""
         import asyncio
@@ -848,15 +944,23 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                     response['_source'] = 'websocket'
                     logger.info("✅ WebSocket GLIMPSE successful")
                     
-                    # Attach preview_tree
+                    # Attach preview_tree. Optional suppress_metadata strips generated
+                    # Cartographer metadata from notes for display only, before
+                    # preview_tree flattens notes into single-line strings.
                     preview_tree = None
                     try:
                         root_obj = response.get("root") or {}
                         children = response.get("children") or []
                         if isinstance(root_obj, dict):
                             root_obj.setdefault("children", children)
+                            if suppress_metadata:
+                                self._strip_cartographer_metadata_from_tree_for_preview(root_obj)
                             preview_tree = self._annotate_preview_ids_and_build_tree([root_obj], "WG")
                         else:
+                            if suppress_metadata:
+                                for child in children:
+                                    if isinstance(child, dict):
+                                        self._strip_cartographer_metadata_from_tree_for_preview(child)
                             preview_tree = self._annotate_preview_ids_and_build_tree(children, "WG")
                     except Exception:
                         pass
