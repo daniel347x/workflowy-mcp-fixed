@@ -510,7 +510,14 @@ def _collect_markdown_ast_beacon_nodes(root_node: Dict[str, Any]) -> list[tuple[
         """Recurse, accumulating disk-emitted heading text at each depth."""
         if not isinstance(node, dict):
             return
-        if _is_markdown_span_beacon_node(node) or _is_persistent_notes_subtree(node):
+        # F12+3 is Workflowy -> disk. We deliberately do NOT skip
+        # `_is_persistent_notes_subtree(node)` here. That filter is for the
+        # OPPOSITE direction (F12+1 disk -> Workflowy salvage). In F12+3, a
+        # Notes-style subtree in Workflowy is exactly what the user wants
+        # written to disk; filtering it out makes new Workflowy-only nodes
+        # disappear silently. SPAN beacons are still filtered because they
+        # are Workflowy-only navigation aids, not heading content.
+        if _is_markdown_span_beacon_node(node):
             return
 
         raw_name = (node.get("name") or "").strip()
@@ -811,7 +818,11 @@ def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
             child for child in children_sorted
             if (child.get("name") or "").strip() != "⚙️ YAML Frontmatter"
             and not _is_markdown_span_beacon_node(child)
-            and not _is_persistent_notes_subtree(child)
+            # NOTE: do NOT filter _is_persistent_notes_subtree here. F12+3 is
+            # Workflowy -> disk; emoji-prefixed nodes (📝, 💡, 🌟, 📌, etc.) added
+            # directly in Workflowy must be written to disk on F12+3. The
+            # "persistent notes" salvage filter is only meaningful for the
+            # F12+1 disk -> Workflowy reconcile direction.
         ]
 
         for child in frontmatter_children:
@@ -837,7 +848,11 @@ def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
         lines.append("")
 
     for child in children_sorted:
-        if _is_markdown_span_beacon_node(child) or _is_persistent_notes_subtree(child):
+        # See comment in depth==0 branch above: do NOT filter
+        # `_is_persistent_notes_subtree(child)` here. F12+3 must emit
+        # emoji-prefixed user-added subtrees to disk; the persistent-notes
+        # salvage filter is for F12+1 disk -> Workflowy reconcile only.
+        if _is_markdown_span_beacon_node(child):
             continue
         lines.extend(nexus_to_tokens(child, depth + 1))
 
