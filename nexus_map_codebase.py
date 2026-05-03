@@ -374,7 +374,7 @@ def tokens_to_nexus_tree(
             continue
 
         # Start of a heading
-        heading_level = int(token.tag[1])  # h1 -> 1, h2 -> 2, etc.
+        heading_level = int(token.tag[1:])  # h1 -> 1, h12 -> 12, etc.
 
         # Get the heading text from next token (should be inline)
         heading_text = ""
@@ -496,6 +496,62 @@ def tokens_to_nexus_tree(
                 )
 
     return root_children
+
+
+def markdown_it_heading_arbitrary_depth(state, startLine: int, endLine: int, silent: bool) -> bool:
+    """markdown-it block rule for ATX headings with arbitrary hash depth.
+
+    This is a minimal fork of markdown_it.rules_block.heading.heading with the
+    CommonMark 6-hash cap lifted to 64. Keeping this as a markdown-it rule lets
+    the parser retain its existing block-context intelligence (fences, indented
+    code, HTML blocks, blockquote recursion, source maps, etc.) instead of
+    replacing the whole outline parse with a raw line scanner.
+    """
+    from markdown_it.common.utils import isStrSpace
+
+    pos = state.bMarks[startLine] + state.tShift[startLine]
+    maximum = state.eMarks[startLine]
+
+    if pos >= maximum:
+        return False
+    if state.is_code_block(startLine):
+        return False
+    if state.src[pos] != "#":
+        return False
+
+    level = 0
+    while pos < maximum and state.src[pos] == "#" and level < 64:
+        level += 1
+        pos += 1
+
+    if level == 0 or level > 64:
+        return False
+    if pos < maximum and not isStrSpace(state.src[pos]):
+        return False
+
+    if silent:
+        return True
+
+    maximum = state.skipSpacesBack(maximum, pos)
+    tmp = state.skipCharsStrBack(maximum, "#", pos)
+    if tmp > pos and isStrSpace(state.src[tmp - 1]):
+        maximum = tmp
+
+    state.line = startLine + 1
+
+    token = state.push("heading_open", "h" + str(level), 1)
+    token.markup = "#" * level
+    token.map = [startLine, state.line]
+
+    token = state.push("inline", "", 0)
+    token.content = state.src[pos:maximum].strip()
+    token.map = [startLine, state.line]
+    token.children = []
+
+    token = state.push("heading_close", "h" + str(level), -1)
+    token.markup = "#" * level
+
+    return True
 
 
 def arbitrary_hash_markdown_lines_to_nexus_tree(
@@ -1431,19 +1487,48 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
         lines = full_content_for_parse.splitlines()
         md_beacons = parse_markdown_beacon_blocks(lines)
 
-        # STEP 2/3: Parse Markdown headings with arbitrary hash depth.
+        # STEP 2: Parse ONLY the body with markdown-it-py to avoid misinterpreting frontmatter.
         #
-        # CommonMark / markdown-it caps ATX headings at 6 hashes. Dan's
-        # Workflowy-first 99-file methodology explicitly supports 7, 8, 9+
-        # hash headings as real child nodes, so the Cartographer disk→Workflowy
-        # path must bypass that spec cap. We still preserve body lines verbatim;
-        # only heading recognition is custom and deliberately broader.
+        # We keep markdown-it-py's block parser because it already knows the
+        # hard cases (fenced code, indented code, HTML blocks, blockquotes,
+        # source maps). The only thing we override is the ATX heading rule's
+        # CommonMark 6-hash cap. Dan's Workflowy-first 99-file methodology
+        # explicitly supports 7, 8, 9+ hash headings as real child nodes.
+        md = MarkdownIt("commonmark")
+        try:
+            md.block.ruler.at("heading", markdown_it_heading_arbitrary_depth)
+        except Exception:
+            # Fail loudly enough to be visible in the parse-error node rather
+            # than silently falling back to the 6-hash CommonMark rule.
+            raise
+        tokens = md.parse(body_for_parse)
+
+        if DEBUG_MD_BEACONS:
+            print("[MD-TOKENS-BEGIN]")
+            for t in tokens:
+                # t.map is (start_line, end_line) 0-based; add 1 for human-readable
+                line_span = t.map if hasattr(t, 'map') and t.map is not None else None
+                if line_span:
+                    span_str = f"[{line_span[0]+1},{line_span[1]+1}]"
+                else:
+                    span_str = "[]"
+                print(f"  type={t.type!r} tag={t.tag!r} map={span_str} content={t.content!r}")
+            print("[MD-TOKENS-END]")
+
+        # STEP 3: Convert token stream to NEXUS hierarchical tree with priorities.
+        # Use the exact body lines from the parsed Markdown so list/code-block
+        # structure is preserved verbatim inside heading notes.
+        # When YAML frontmatter exists, markdown-it token line maps are relative
+        # to body_for_parse, while apply_markdown_beacons receives full-file
+        # line numbers. Carry the body offset into each heading node's internal
+        # _md_heading_line coordinate so beacon attachment is line-accurate.
         body_line_offset = 0
         if frontmatter is not None:
             # Opening '---' + frontmatter lines + closing '---'.
             body_line_offset = len(frontmatter.splitlines()) + 2
-        root_children = arbitrary_hash_markdown_lines_to_nexus_tree(
-            body_for_parse.splitlines(),
+        root_children = tokens_to_nexus_tree(
+            tokens,
+            source_lines=body_for_parse.splitlines(),
             source_line_offset=body_line_offset,
         )
         
