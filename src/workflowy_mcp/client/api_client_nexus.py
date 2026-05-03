@@ -934,31 +934,110 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if isinstance(child, dict):
                 cls._strip_cartographer_metadata_from_tree_for_preview(child)
 
+    @staticmethod
+    def _md_depth_from_note_for_preview(note: str) -> int | None:
+        """Return final MD_PATH heading depth from a Cartographer note, if any."""
+        if not isinstance(note, str) or "MD_PATH:" not in note:
+            return None
+        import re as _re
+
+        in_path = False
+        last_depth: int | None = None
+        for line in note.splitlines():
+            stripped = line.strip()
+            if stripped == "MD_PATH:" or stripped.startswith("MD_PATH:"):
+                in_path = True
+                continue
+            if in_path and stripped == "---":
+                break
+            if in_path:
+                m = _re.match(r"^(#+)\s+", stripped)
+                if m:
+                    last_depth = len(m.group(1))
+        return last_depth
+
     @classmethod
-    def _build_markdown_preview_from_tree(cls, nodes: list[dict[str, Any]] | None, level: int = 1) -> str:
+    def _build_markdown_preview_from_tree(
+        cls,
+        nodes: list[dict[str, Any]] | None,
+        level: int = 1,
+        *,
+        suppress_metadata: bool = False,
+        markdown_heading_mode: str = "semantic",
+    ) -> str:
         """Render a Workflowy tree as minimal Markdown for GLIMPSE preview.
 
-        This is intentionally *not* the NEXUS JSON→Markdown export path. It is
-        an in-memory, no-metadata display format for large GLIMPSE slices:
-        each node becomes a heading, and the note (optionally already stripped
-        via suppress_metadata=True) is emitted as raw text beneath it.
+        In semantic mode, Markdown Cartographer nodes are rebased by MD_PATH
+        depth so the visible pseudo-document starts at '#', rather than wasting
+        heading levels on Workflowy scaffolding above the mapped file/slice.
+        If no MD_PATH nodes are present, falls back to structural Workflowy
+        depth rendering.
         """
         if not nodes:
             return ""
+
+        mode = (markdown_heading_mode or "semantic").strip().lower()
+        flat_md_nodes: list[tuple[dict[str, Any], int]] = []
+
+        def collect_md(node_list: list[dict[str, Any]] | None) -> None:
+            for node in node_list or []:
+                if not isinstance(node, dict):
+                    continue
+                depth = cls._md_depth_from_note_for_preview(str(node.get("note") or ""))
+                if isinstance(depth, int) and depth > 0:
+                    flat_md_nodes.append((node, depth))
+                collect_md(node.get("children") or [])
+
+        collect_md(nodes)
+
+        # Semantic Markdown mode: treat all visible Markdown-mapped nodes as one
+        # pseudo-document and rebase the shallowest visible MD_PATH depth to H1.
+        if mode in {"semantic", "auto"} and flat_md_nodes:
+            min_depth = min(depth for _node, depth in flat_md_nodes)
+            lines: list[str] = []
+            for node, md_depth in flat_md_nodes:
+                raw_name = str(node.get("name") or "Untitled").strip() or "Untitled"
+                name = cls._strip_workflowy_dom_markup_for_preview(raw_name)
+                heading_level = max(1, min((md_depth - min_depth) + 1, 64))
+                lines.append(f"{'#' * heading_level} {name}")
+                raw_note = str(node.get("note") or "")
+                note = (
+                    cls._strip_cartographer_metadata_from_note_for_preview(raw_note)
+                    if suppress_metadata
+                    else raw_note
+                )
+                if note.strip():
+                    lines.append("")
+                    lines.append(note.strip())
+                lines.append("")
+            return "\n".join(lines).strip()
+
+        # Structural fallback: use Workflowy nesting depth directly.
         lines: list[str] = []
         for node in nodes:
             if not isinstance(node, dict):
                 continue
-            name = str(node.get("name") or "Untitled").strip() or "Untitled"
+            raw_name = str(node.get("name") or "Untitled").strip() or "Untitled"
+            name = cls._strip_workflowy_dom_markup_for_preview(raw_name)
             heading_level = max(1, min(int(level or 1), 64))
             lines.append(f"{'#' * heading_level} {name}")
-            note = node.get("note") or ""
-            if isinstance(note, str) and note.strip():
+            raw_note = str(node.get("note") or "")
+            note = (
+                cls._strip_cartographer_metadata_from_note_for_preview(raw_note)
+                if suppress_metadata
+                else raw_note
+            )
+            if note.strip():
                 lines.append("")
                 lines.append(note.strip())
             children = node.get("children") or []
             if children:
-                child_md = cls._build_markdown_preview_from_tree(children, level + 1)
+                child_md = cls._build_markdown_preview_from_tree(
+                    children,
+                    level + 1,
+                    suppress_metadata=suppress_metadata,
+                    markdown_heading_mode="structural",
+                )
                 if child_md:
                     lines.append("")
                     lines.append(child_md)
@@ -1009,18 +1088,22 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                         preview_nodes: list[dict[str, Any]]
                         if isinstance(root_obj, dict):
                             root_obj.setdefault("children", children)
-                            if suppress_metadata:
+                            if suppress_metadata and not as_markdown:
                                 self._strip_cartographer_metadata_from_tree_for_preview(root_obj)
                             preview_nodes = [root_obj]
                         else:
-                            if suppress_metadata:
+                            if suppress_metadata and not as_markdown:
                                 for child in children:
                                     if isinstance(child, dict):
                                         self._strip_cartographer_metadata_from_tree_for_preview(child)
                             preview_nodes = children
 
                         if as_markdown:
-                            preview_markdown = self._build_markdown_preview_from_tree(preview_nodes)
+                            preview_markdown = self._build_markdown_preview_from_tree(
+                                preview_nodes,
+                                suppress_metadata=suppress_metadata,
+                                markdown_heading_mode="semantic",
+                            )
                         else:
                             preview_tree = self._annotate_preview_ids_and_build_tree(preview_nodes, "WG")
                     except Exception:
@@ -1056,16 +1139,14 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
                                 children = response.get("children") or []
                                 if isinstance(root_obj, dict):
                                     root_obj.setdefault("children", children)
-                                    if suppress_metadata:
-                                        self._strip_cartographer_metadata_from_tree_for_preview(root_obj)
                                     preview_nodes = [root_obj]
                                 else:
-                                    if suppress_metadata:
-                                        for child in children:
-                                            if isinstance(child, dict):
-                                                self._strip_cartographer_metadata_from_tree_for_preview(child)
                                     preview_nodes = children
-                                preview_md = self._build_markdown_preview_from_tree(preview_nodes)
+                                preview_md = self._build_markdown_preview_from_tree(
+                                    preview_nodes,
+                                    suppress_metadata=suppress_metadata,
+                                    markdown_heading_mode="semantic",
+                                )
 
                             with open(output_file, "w", encoding="utf-8") as f:
                                 f.write(preview_md)
