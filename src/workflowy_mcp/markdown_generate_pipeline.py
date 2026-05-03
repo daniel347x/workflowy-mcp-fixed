@@ -249,11 +249,44 @@ async def run_markdown_generate_pipeline(
             "Reapplying on-disk Markdown AST beacons",
         )
 
-        beacon_results = markdown_roundtrip.reapply_markdown_ast_beacons(
-            file_path, root_for_render
+        # Phase 7 returns (results, warnings). Per-beacon failures are
+        # NON-FATAL (May 2026): each failure becomes a warning entry and
+        # the loop continues. We persist the warning count + per-warning
+        # detail into the CARTO job JSON and log so the human can review.
+        beacon_results, beacon_warnings = (
+            markdown_roundtrip.reapply_markdown_ast_beacons(
+                file_path, root_for_render
+            )
         )
         ast_beacon_count = len(beacon_results)
+        ast_beacon_warning_count = len(beacon_warnings)
         _append_log(log_file, f"Reapplied {ast_beacon_count} AST beacons on disk")
+        if ast_beacon_warning_count:
+            _append_log(
+                log_file,
+                f"WARNING: {ast_beacon_warning_count} AST beacons skipped due to per-beacon errors. "
+                f"Run will be marked completed_with_warnings.",
+            )
+            for w in beacon_warnings:
+                try:
+                    md_path_repr = w.get("md_path")
+                    md_path_str = (
+                        " / ".join(md_path_repr) if isinstance(md_path_repr, list) else "<none>"
+                    )
+                    _append_log(
+                        log_file,
+                        f"  WARNING beacon-skip: name={w.get('name')!r} "
+                        f"error={w.get('error')!r} md_path={md_path_str}",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            # Surface warnings into job JSON so the watcher / widget /
+            # post-mortem inspection can find them without scraping the log.
+            try:
+                job["warnings"] = list(beacon_warnings)
+                job["warning_count"] = ast_beacon_warning_count
+            except Exception:  # noqa: BLE001
+                pass
 
         # ====================================================================
         # PHASE [8]: Post-flight file refresh (disk -> Workflowy).
@@ -292,27 +325,51 @@ async def run_markdown_generate_pipeline(
             # Non-fatal: F12+3 succeeded. User will need to manually refresh.
 
         # ====================================================================
-        # SUCCESS
+        # SUCCESS  (or SUCCESS-WITH-WARNINGS)
+        #
+        # Tri-state status precedence (May 2026):
+        #   failed > completed_with_warnings > completed
+        # If any phase-7 beacon was skipped due to a per-beacon error, the
+        # job is marked `completed_with_warnings`. The GC sweep in server.py
+        # exempts BOTH `failed` AND `completed_with_warnings` from auto-
+        # cleanup, and the GLIMPSE widget keeps both visible until manually
+        # cleared. This way a single anomalous beacon out of thousands
+        # doesn't silently disappear from the user's view.
         # ====================================================================
         progress["current_phase"] = "done"
-        job["status"] = "completed"
+        if ast_beacon_warning_count > 0:
+            job["status"] = "completed_with_warnings"
+        else:
+            job["status"] = "completed"
         job["cache_refresh_required"] = False  # This job writes disk only; Phase [8] worker handles Workflowy mutations.
         result_summary["file_path"] = file_path
         result_summary["ast_beacons_reapplied"] = ast_beacon_count
+        result_summary["ast_beacons_skipped"] = ast_beacon_warning_count
         result_summary["post_refresh_job_id"] = post_refresh_job_id
         result_summary["message"] = (
             f"Generated markdown for {root_uuid} at {file_path} "
             f"(ast_beacons={ast_beacon_count}, "
+            f"skipped={ast_beacon_warning_count}, "
             f"post_refresh_job_id={post_refresh_job_id!r})"
         )
         job["updated_at"] = _now_iso()
         _write_job_payload(job_file, job)
-        _append_log(log_file, "F12+3 pipeline completed successfully.")
+        if ast_beacon_warning_count > 0:
+            _append_log(
+                log_file,
+                f"F12+3 pipeline completed WITH WARNINGS "
+                f"({ast_beacon_warning_count} beacon(s) skipped, "
+                f"{ast_beacon_count} written successfully).",
+            )
+        else:
+            _append_log(log_file, "F12+3 pipeline completed successfully.")
 
         return {
             "success": True,
+            "completed_with_warnings": ast_beacon_warning_count > 0,
             "file_path": file_path,
             "ast_beacons_reapplied": ast_beacon_count,
+            "ast_beacons_skipped": ast_beacon_warning_count,
             "post_refresh_job_id": post_refresh_job_id,
         }
 

@@ -602,7 +602,9 @@ def _rewrite_md_path_block_in_note(note: str, md_path_lines: list[str]) -> str:
 #   kind=ast,
 #   comment=F12+3 phase 7 disk-write rehydrator. Walks Workflowy subtree for heading nodes whose current names carry trailing #tags and materializes exactly those as HTML-comment beacon blocks via update_beacon_from_node_markdown. Runs AFTER nexus_to_tokens emits beacon-free Markdown (phase 6).,
 # ]
-def reapply_markdown_ast_beacons(file_path: str, root_node: Dict[str, Any]) -> list[Dict[str, Any]]:
+def reapply_markdown_ast_beacons(
+    file_path: str, root_node: Dict[str, Any]
+) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]]]:
     """Rehydrate Markdown AST beacons onto a regenerated Markdown file.
 
     Strategy:
@@ -617,6 +619,31 @@ def reapply_markdown_ast_beacons(file_path: str, root_node: Dict[str, Any]) -> l
     Heading nodes without trailing #tags intentionally emit no beacon, even if
     their cached note still contains stale BEACON (MD AST) metadata. Markdown
     SPAN beacons are intentionally ignored.
+
+    Per-beacon failure policy (May 2026 hardening)
+    ----------------------------------------------
+    Individual beacon failures are NON-FATAL. If a single beacon's
+    `update_beacon_from_node_markdown` call returns an error or an
+    unexpected operation, the failure is recorded as a structured warning
+    entry (with name, error message, and md_path when available) and the
+    loop CONTINUES to the next beacon. The function only raises on
+    catastrophic conditions (helper not importable, helper not callable).
+
+    This protects long-running F12+3 runs from losing thousands of
+    successfully-written beacons because of a single anomalous node.
+    The caller is expected to:
+      - Inspect the returned warnings list.
+      - Mark the overall job status as `completed_with_warnings` if any
+        warnings are present.
+      - Persist warning details into the job log so the user can review.
+
+    Returns:
+        Tuple of (results, warnings) where:
+          - results: list of successful per-beacon helper result dicts
+          - warnings: list of dicts with shape
+              {"name": str, "error": str, "md_path": list[str] | None,
+               "operation": str | None}
+            One entry per skipped/failed beacon.
     """
     import importlib
 
@@ -634,22 +661,50 @@ def reapply_markdown_ast_beacons(file_path: str, root_node: Dict[str, Any]) -> l
         raise RuntimeError("update_beacon_from_node_markdown helper not available")
 
     results: list[Dict[str, Any]] = []
-    for name, note, _md_path in _collect_markdown_ast_beacon_nodes(root_node):
-        result = helper(file_path, name, note)
+    warnings: list[Dict[str, Any]] = []
+    for name, note, md_path in _collect_markdown_ast_beacon_nodes(root_node):
+        try:
+            result = helper(file_path, name, note)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append({
+                "name": name,
+                "error": f"helper raised exception: {exc!r}",
+                "md_path": list(md_path) if md_path else None,
+                "operation": None,
+            })
+            continue
+
         if not isinstance(result, dict):
-            raise RuntimeError(f"Unexpected markdown beacon helper result for {name!r}: {result!r}")
+            warnings.append({
+                "name": name,
+                "error": f"unexpected non-dict helper result: {result!r}",
+                "md_path": list(md_path) if md_path else None,
+                "operation": None,
+            })
+            continue
+
         if result.get("error"):
-            raise RuntimeError(
-                f"Failed to reapply Markdown AST beacon for {name!r}: {result.get('error')}"
-            )
+            warnings.append({
+                "name": name,
+                "error": str(result.get("error")),
+                "md_path": list(md_path) if md_path else None,
+                "operation": str(result.get("operation") or "") or None,
+            })
+            continue
+
         op = str(result.get("operation") or "")
         if op not in {"created_beacon", "updated_beacon", "noop"}:
-            raise RuntimeError(
-                f"Unexpected markdown beacon operation for {name!r}: {op!r}"
-            )
+            warnings.append({
+                "name": name,
+                "error": f"unexpected operation: {op!r}",
+                "md_path": list(md_path) if md_path else None,
+                "operation": op or None,
+            })
+            continue
+
         results.append(result)
 
-    return results
+    return results, warnings
 
 
 # @beacon[

@@ -3268,6 +3268,14 @@ def _gc_carto_jobs(carto_jobs_base: str, max_age_seconds: int = 3600) -> None:
                     continue
 
                 status = str(job.get("status", "")).lower()
+                # GC EXEMPTION (May 2026 expanded):
+                # - `failed` jobs are exempt (status not in this set, so we
+                #   `continue` past delete and the file stays).
+                # - `completed_with_warnings` jobs are ALSO exempt for the
+                #   same reason: the user must be able to come back to a
+                #   warning long after the run finished. Only clean
+                #   `completed` and explicit `cancelled` runs are eligible
+                #   for age-based cleanup.
                 if status not in ("completed", "cancelled"):
                     continue
 
