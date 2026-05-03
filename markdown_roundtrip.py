@@ -536,7 +536,12 @@ def _collect_markdown_ast_beacon_nodes(root_node: Dict[str, Any]) -> list[tuple[
         if depth >= 1 and _name_has_trailing_tags(raw_name) and new_chain:
             md_path_lines: list[str] = []
             for idx, ancestor_text in enumerate(new_chain):
-                level = min(idx + 1, 6)
+                # Arbitrary heading depth: NEXUS Markdown supports up to 64
+                # heading levels (do NOT clamp to 6). Clamping at 6 collapses
+                # deep ancestor chains into ambiguous sibling H6 stacks, which
+                # then fail to resolve uniquely in
+                # _find_markdown_heading_insert_idx during F12+3 phase 7.
+                level = min(idx + 1, 64)
                 md_path_lines.append(f"{'#' * level} {ancestor_text}")
             rewritten_note = _rewrite_md_path_block_in_note(str(note), md_path_lines)
             collected.append((str(node.get("name") or ""), rewritten_note, md_path_lines))
@@ -699,7 +704,11 @@ def nexus_to_tokens(node: Dict[str, Any], depth: int = 0) -> List[str]:
         return lines
 
     # depth >= 1: emit heading
-    level = min(depth, 6)
+    # Arbitrary heading depth: NEXUS Markdown supports up to 64 heading
+    # levels (do NOT clamp to 6). Clamping at 6 collapses deep Workflowy
+    # nesting into flat sibling H6 stacks on disk, which then makes the
+    # phase 7 MD_PATH lookup ambiguous and aborts F12+3.
+    level = min(depth, 64)
     heading_name = _heading_name_from_note_or_name(note, raw_name)
     heading = f"{'#' * level} {heading_name}" if heading_name else f"{'#' * level}"
     lines.append(heading)
