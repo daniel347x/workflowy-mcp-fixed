@@ -921,12 +921,38 @@ def parse_markdown_beacon_blocks(lines: list[str]) -> list[dict[str, Any]]:
     return beacons
 
 
-def _extract_markdown_beacon_context(lines: list[str], comment_line: int) -> List[str]:
+def _extract_markdown_beacon_context(
+    lines: list[str],
+    comment_line: int,
+    enabled: bool = False,
+) -> List[str]:
     """Extract nearby HTML comment lines (non-beacon) around a Markdown beacon.
 
     We look above and below the beacon's comment_line for HTML comments
     (<!-- ... -->) that do not contain @beacon[. Blank lines are skipped.
+
+    DISABLED BY DEFAULT (Dan, May 2026)
+    -----------------------------------
+    Unlike Python/JS-TS/SQL/Shell, where comment-slurping pulls genuine
+    documentation (docstrings, adjacent comments) into the Workflowy node
+    note as a free benefit, in Markdown an HTML comment is part of the
+    section's *body content* rather than metadata about the section.
+    Slurping it into the node note duplicates it in an awkward
+    ``CONTEXT COMMENTS (MD):`` block sandwiched between the BEACON
+    metadata and the section body.
+
+    The comments are not lost when slurping is disabled: they remain in
+    the source ``.md`` file on disk and are visible via ``read_text_file``
+    or ``read_text_snippet`` on the heading's beacon UUID. Only the
+    duplicate copy in the Workflowy note is suppressed.
+
+    The full above/below traversal logic is preserved below the early
+    return so a future caller can opt back in by passing ``enabled=True``
+    if a use case for Markdown comment slurping ever emerges.
     """
+    if not enabled:
+        return []
+
     context: List[str] = []
 
     # Above
