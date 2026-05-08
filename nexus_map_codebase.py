@@ -2275,59 +2275,86 @@ def reconcile_trees_cartographer(source_node: Dict[str, Any], ether_node: Dict[s
             if whiten_text_for_header_compare(name_s) == whiten_text_for_header_compare(name_e):
                 s["name"] = name_e
             else:
-                # Tag-tolerant preservation (Dan, post-2026-04-30): when names
-                # differ ONLY by trailing '#tag' tokens and/or '🔱', merge to
-                # the canonical superset form rather than picking one side
-                # wholesale. Otherwise WEAVE will drop whichever decorations
-                # the chosen side lacks.
+                # Disk-as-truth name reconciliation (Dan, post-2026-05).
                 #
-                # Failure modes the simple-pick approach hits:
-                #   - Source has trident+tag, ether has trident only (cache
-                #     was patched by update_cached_node_name with the
-                #     tag-stripped base_name during a bulk-apply pre-pass).
-                #     Picking ether → tag is dropped from the live Workflowy
-                #     node by the next WEAVE UPDATE.
-                #   - Source has no trident, ether has tag only (fresh ETCHed
-                #     tagged node whose disk emit had no beacon yet). Picking
-                #     source → tag dropped.
+                # When source and ether match by an identity anchor (beacon
+                # id, AST_QUALNAME, MD_PATH, vue key, raw name, or tag-stripped
+                # name) but their full names differ AFTER stripping trailing
+                # '#tag' tokens and '🔱' decoration, we rebuild the final
+                # Workflowy name purely from disk-derived information. We do
+                # NOT consult Workflowy / cache metadata to decide which tags
+                # to keep or drop, and we do NOT use the literal '🔱'
+                # character as a behavioral signal (an agent could write a
+                # stray trident into source text; that must not be treated
+                # as legitimate beacon state).
                 #
-                # Merge policy (canonical form: <base> [🔱] [… user tags]):
-                #   - base = stripped (already known equal)
-                #   - trident = present if SOURCE (disk-derived) has it.
-                #     Trident is a UI marker meaning "there is an on-disk
-                #     beacon block for this heading". Disk is the source
-                #     of truth for that fact, so we follow disk. If disk
-                #     no longer has a beacon (e.g. user removed all tags
-                #     in Workflowy and F12+3 deleted the disk beacon),
-                #     the ether-side trident is stale and must be dropped.
-                #     Previously this used (in_source OR in_ether) which
-                #     made the trident sticky and caused stale tridents
-                #     to remain forever after a tag-vanish DELETE - a
-                #     real bug because the trident is also used as a
-                #     manual search anchor in Workflowy GUI (Dan, May 2026).
-                #   - tags = union of source and ether trailing #tag tokens,
-                #     preserving ether's order first (Workflowy is source
-                #     of truth for user-authored tag-as-text), then
-                #     appending any source-only tags (rare, but ensures
-                #     no decoration is lost).
+                # Rebuild rule (when stripped bases are equal):
+                #
+                #   final.base   = stripped_s (= stripped_e by branch guard)
+                #   final.tags   = right-edge '#tag' tokens of name_s, but
+                #                  ONLY when the source/disk node note
+                #                  carries a freshly-parsed BEACON block
+                #                  (b_id_s is non-empty). Otherwise the
+                #                  managed-system rule applies: any trailing
+                #                  '#tag' tokens on the heading text without
+                #                  a backing beacon block are illegitimate
+                #                  decoration and are stripped.
+                #   final.trident = present iff final.tags is non-empty.
+                #                   Trident is a purely cosmetic UI marker
+                #                   that mirrors "this node has tags from a
+                #                   real disk-side beacon". It never controls
+                #                   any other behavior.
+                #
+                # Consequences (intentional under Dan's F12+1 = pull-from-disk
+                # policy):
+                #
+                # - Agent removed beacon block from disk → name_s has no
+                #   trailing tags and b_id_s is empty → ether-side trailing
+                #   tags + trident are dropped on the next F12+1.
+                # - Agent changed slice_labels on disk → name_s carries the
+                #   new tag set → ether-side stale tags are replaced wholesale
+                #   with the new disk tags.
+                # - User added a free-floating '#tag' to a heading in
+                #   Workflowy without a backing disk beacon → that tag is
+                #   stripped on F12+1. Per Dan's managed-system principle:
+                #   under F12 there are no legitimate free-floating tags.
+                # - User edited tags in Workflowy and ran F12+1 instead of
+                #   F12+2 first → user's Workflowy edits are wiped. This is
+                #   user error; F12+2/F12+3 are the push-to-disk paths.
+                #
+                # This replaces the previous union/superset merge policy that
+                # tried to preserve ether-side trailing tags. That policy was
+                # symmetric between source and ether for tag tokens, which
+                # made the BEACON-removed case impossible to express: ether's
+                # stale beacon-derived tags survived forever even after the
+                # disk beacon was deleted. Disk-as-truth is the correct model
+                # for F12+1.
                 stripped_s = _strip_tags_and_trident(name_s)
                 stripped_e = _strip_tags_and_trident(name_e)
                 if stripped_s and stripped_s == stripped_e:
-                    has_trident = "🔱" in name_s
-                    s_tags = [
-                        t for t in name_s.split() if t.startswith("#")
-                    ]
-                    e_tags = [
-                        t for t in name_e.split() if t.startswith("#")
-                    ]
-                    merged_tags: list[str] = list(e_tags)
-                    for t in s_tags:
-                        if t not in merged_tags:
-                            merged_tags.append(t)
+                    def _trailing_hash_tags(raw: str) -> list[str]:
+                        """Return ONLY the contiguous '#tag' tokens at the right edge of raw.
+
+                        Right-anchored: walks tokens from the end while they
+                        start with '#'. Embedded hashtag-like substrings in
+                        the middle of the name (e.g. 'Heading about #AI
+                        topics') are NOT picked up.
+                        """
+                        if not isinstance(raw, str):
+                            return []
+                        toks = raw.split()
+                        trailing: list[str] = []
+                        while toks and toks[-1].startswith("#"):
+                            trailing.insert(0, toks.pop())
+                        return trailing
+
+                    source_has_beacon = bool(b_id_s)
+                    disk_tags = _trailing_hash_tags(name_s) if source_has_beacon else []
+
                     merged_parts: list[str] = [stripped_s]
-                    if has_trident:
+                    if disk_tags:
                         merged_parts.append("🔱")
-                    merged_parts.extend(merged_tags)
+                    merged_parts.extend(disk_tags)
                     s["name"] = " ".join(merged_parts)
         note_e = match.get("note")
         if isinstance(note_s, str) and isinstance(note_e, str):
