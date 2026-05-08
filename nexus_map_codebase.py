@@ -354,9 +354,32 @@ def tokens_to_nexus_tree(
     heading_entries: List[Dict[str, Any]] = []
     excluded_body_lines: set[int] = set()
 
+    # Bug fix (Dan, May 2026): track blockquote nesting depth so we ignore
+    # headings that occur INSIDE a Markdown blockquote (lines prefixed with
+    # '>'). These are part of quoted body content (e.g. an embedded PDF or
+    # email transcript) and must NOT become Workflowy heading nodes / Cartographer
+    # AST nodes / MD_PATH entries. Without this guard, a quoted '# Some Title'
+    # line inside a '>' block was being promoted to a top-level heading,
+    # gathering subsequent real document content as its 'children', and
+    # corrupting the MD_PATH ancestor chain for everything that followed.
+    # Markdown-it-py emits blockquote_open / blockquote_close tokens around
+    # blockquoted content; nested blockquotes nest these pairs, so a simple
+    # integer depth counter is sufficient.
+    blockquote_depth: int = 0
+
     i = 0
     while i < len(tokens):
         token = tokens[i]
+
+        if token.type == "blockquote_open":
+            blockquote_depth += 1
+            i += 1
+            continue
+        if token.type == "blockquote_close":
+            if blockquote_depth > 0:
+                blockquote_depth -= 1
+            i += 1
+            continue
 
         if token.type == "html_block" and (
             "@beacon[" in (token.content or "") or "@beacon-close[" in (token.content or "")
@@ -371,6 +394,13 @@ def tokens_to_nexus_tree(
 
         if token.type != "heading_open":
             i += 1
+            continue
+
+        # Skip headings that live inside a blockquote: they are quoted body
+        # content, not document structure. Advance past heading_open + inline
+        # + heading_close as a unit to keep the loop counter aligned.
+        if blockquote_depth > 0:
+            i += 3
             continue
 
         # Start of a heading
@@ -1922,8 +1952,23 @@ def _find_markdown_heading_insert_idx(lines: list[str], md_path_lines: list[str]
 
     stack: list[tuple[int, str]] = []
     matches: list[int] = []
+    # Track blockquote nesting depth so we ignore '#' lines that live inside
+    # a Markdown blockquote ('>'). Mirrors the same guard added to
+    # tokens_to_nexus_tree: blockquoted headings are quoted body content,
+    # not document structure, and must not be candidates for MD_PATH-based
+    # insertion-point resolution. (Dan, May 2026.)
+    blockquote_depth: int = 0
     for idx, token in enumerate(tokens):
+        if token.type == "blockquote_open":
+            blockquote_depth += 1
+            continue
+        if token.type == "blockquote_close":
+            if blockquote_depth > 0:
+                blockquote_depth -= 1
+            continue
         if token.type != "heading_open":
+            continue
+        if blockquote_depth > 0:
             continue
 
         try:
