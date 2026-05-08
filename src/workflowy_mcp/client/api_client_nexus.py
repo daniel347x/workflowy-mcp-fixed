@@ -934,9 +934,34 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if isinstance(child, dict):
                 cls._strip_cartographer_metadata_from_tree_for_preview(child)
 
-    @staticmethod
-    def _md_depth_from_note_for_preview(note: str) -> int | None:
-        """Return final MD_PATH heading depth from a Cartographer note, if any."""
+    @classmethod
+    def _md_depth_from_note_for_preview(cls, note: str) -> int | None:
+        """Return final MD_PATH heading depth from a Cartographer note, if any.
+
+        Bug fix (Dan, May 2026): the WebSocket extractor delivers Markdown
+        heading prefixes ``##``, ``###``, ``####`` (and deeper) wrapped in
+        Workflowy's tag-pill HTML, e.g.::
+
+            <span class="contentTag explosive" title="Filter ##"
+                  data-val="##">#<span class="contentTagText">#</span>
+                  <span class="contentTagNub"></span></span> Heading text
+
+        because Workflowy's GUI treats any ``#word`` token as a tag pill,
+        and that includes the leading ``##``/``###``/``####`` prefixes of
+        Markdown headings inside cached MD_PATH blocks. The depth-counting
+        regex ``^(#+)\s+`` only matched the *first* MD_PATH line (depth 1,
+        which is delivered as a plain ``# `` because ``# `` followed by a
+        space + non-tag text is not tag-pill-wrapped); every deeper line
+        started with ``<`` instead of ``#`` and silently failed the regex.
+        Result: every visible Markdown node returned depth=1, so the
+        ``preview_markdown`` renderer's semantic-rebase formula
+        ``(md_depth - min_depth) + 1`` collapsed everything to a single
+        ``#`` heading level.
+
+        Fix: strip Workflowy DOM markup from each MD_PATH line *before*
+        applying the depth regex, so all heading levels are correctly
+        recovered regardless of tag-pill wrapping.
+        """
         if not isinstance(note, str) or "MD_PATH:" not in note:
             return None
         import re as _re
@@ -951,7 +976,10 @@ class WorkFlowyClientNexus(WorkFlowyClientEtch):
             if in_path and stripped == "---":
                 break
             if in_path:
-                m = _re.match(r"^(#+)\s+", stripped)
+                # Recover literal '#' chars hidden inside Workflowy
+                # tag-pill <span> markup before counting heading depth.
+                cleaned = cls._strip_workflowy_dom_markup_for_preview(stripped).strip()
+                m = _re.match(r"^(#+)\s+", cleaned)
                 if m:
                     last_depth = len(m.group(1))
         return last_depth
