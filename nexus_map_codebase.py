@@ -354,18 +354,31 @@ def tokens_to_nexus_tree(
     heading_entries: List[Dict[str, Any]] = []
     excluded_body_lines: set[int] = set()
 
-    # Bug fix (Dan, May 2026): track blockquote nesting depth so we ignore
-    # headings that occur INSIDE a Markdown blockquote (lines prefixed with
-    # '>'). These are part of quoted body content (e.g. an embedded PDF or
-    # email transcript) and must NOT become Workflowy heading nodes / Cartographer
-    # AST nodes / MD_PATH entries. Without this guard, a quoted '# Some Title'
-    # line inside a '>' block was being promoted to a top-level heading,
-    # gathering subsequent real document content as its 'children', and
-    # corrupting the MD_PATH ancestor chain for everything that followed.
-    # Markdown-it-py emits blockquote_open / blockquote_close tokens around
-    # blockquoted content; nested blockquotes nest these pairs, so a simple
-    # integer depth counter is sufficient.
+    # Bug fix (Dan, May 2026): track containment depth so we ignore
+    # headings that occur INSIDE a Markdown construct that represents body
+    # content rather than document structure. Specifically:
+    #
+    #   - Blockquotes ('>'-prefixed lines, e.g. quoted PDFs, emails, or any
+    #     verbatim transcript). A heading inside a blockquote is part of the
+    #     quoted material, not part of the enclosing document's outline.
+    #
+    #   - List items. A heading nested inside a bullet or numbered list item
+    #     is body content belonging to the enclosing real heading, not its
+    #     own document-level section.
+    #
+    # Without these guards, a quoted/listed '# Some Title' line was being
+    # promoted to a top-level Workflowy heading node, gathering subsequent
+    # real document content as its 'children', and corrupting the MD_PATH
+    # ancestor chain for everything that followed.
+    #
+    # Markdown-it-py emits matched open/close token pairs around blockquoted
+    # and list-item content; nested instances nest the pairs cleanly, so
+    # simple integer depth counters are sufficient. Note that we track
+    # ``list_item_*`` rather than ``bullet_list_*`` / ``ordered_list_*``
+    # because the meaningful containment is the individual list item, not
+    # the surrounding list wrapper.
     blockquote_depth: int = 0
+    list_item_depth: int = 0
 
     i = 0
     while i < len(tokens):
@@ -378,6 +391,15 @@ def tokens_to_nexus_tree(
         if token.type == "blockquote_close":
             if blockquote_depth > 0:
                 blockquote_depth -= 1
+            i += 1
+            continue
+        if token.type == "list_item_open":
+            list_item_depth += 1
+            i += 1
+            continue
+        if token.type == "list_item_close":
+            if list_item_depth > 0:
+                list_item_depth -= 1
             i += 1
             continue
 
@@ -396,11 +418,17 @@ def tokens_to_nexus_tree(
             i += 1
             continue
 
-        # Skip headings that live inside a blockquote: they are quoted body
-        # content, not document structure. Advance past heading_open + inline
-        # + heading_close as a unit to keep the loop counter aligned.
-        if blockquote_depth > 0:
-            i += 3
+        # Skip headings that live inside a blockquote OR list item: they are
+        # body content, not document structure. Advance the loop counter by
+        # ONE so the natural token-by-token walk handles the following
+        # ``inline`` and ``heading_close`` tokens through their own normal
+        # type checks. (We deliberately do NOT advance by 3 to skip the
+        # whole heading triple; that would assume markdown-it always emits
+        # heading_open + inline + heading_close as a strict three-token
+        # group, which is true today but a fragile contract to depend on.
+        # Letting the loop fall through is strictly more robust.)
+        if blockquote_depth > 0 or list_item_depth > 0:
+            i += 1
             continue
 
         # Start of a heading
@@ -1952,12 +1980,14 @@ def _find_markdown_heading_insert_idx(lines: list[str], md_path_lines: list[str]
 
     stack: list[tuple[int, str]] = []
     matches: list[int] = []
-    # Track blockquote nesting depth so we ignore '#' lines that live inside
-    # a Markdown blockquote ('>'). Mirrors the same guard added to
-    # tokens_to_nexus_tree: blockquoted headings are quoted body content,
-    # not document structure, and must not be candidates for MD_PATH-based
-    # insertion-point resolution. (Dan, May 2026.)
+    # Track blockquote AND list-item nesting depth so we ignore '#' lines
+    # that live inside Markdown body-content containers. Mirrors the same
+    # guards added to tokens_to_nexus_tree: blockquoted or list-item-nested
+    # headings are body content (e.g. quoted PDFs, transcripts, list-item
+    # subheadings), not document structure, and must not be candidates for
+    # MD_PATH-based insertion-point resolution. (Dan, May 2026.)
     blockquote_depth: int = 0
+    list_item_depth: int = 0
     for idx, token in enumerate(tokens):
         if token.type == "blockquote_open":
             blockquote_depth += 1
@@ -1966,9 +1996,16 @@ def _find_markdown_heading_insert_idx(lines: list[str], md_path_lines: list[str]
             if blockquote_depth > 0:
                 blockquote_depth -= 1
             continue
+        if token.type == "list_item_open":
+            list_item_depth += 1
+            continue
+        if token.type == "list_item_close":
+            if list_item_depth > 0:
+                list_item_depth -= 1
+            continue
         if token.type != "heading_open":
             continue
-        if blockquote_depth > 0:
+        if blockquote_depth > 0 or list_item_depth > 0:
             continue
 
         try:
