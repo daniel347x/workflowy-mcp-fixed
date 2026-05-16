@@ -3087,58 +3087,49 @@ def get_snippet_for_md_path(
 ) -> Tuple[int, int, List[str], int, int, int, dict]:
     """Resolve snippet for a Markdown heading node identified by its MD_PATH.
 
-    md_path_lines should be the sequence of heading lines recorded in the
-    Workflowy note, e.g.::
-
-        MD_PATH:
-        # Top
-        ## Section
-        ### Subsection
-        ---
-
-    The caller must strip the leading ``MD_PATH:`` line and terminating ``---``
-    separator and pass only the actual heading lines.
-
-    Contract:
-    - If exactly one heading in the file has a computed path whose (level,text)
-      chain matches ``md_path_lines`` exactly, return a snippet spanning the
-      lines from that heading down to just before the next heading of the same
-      or higher level, with standard ``context`` padding.
-    - If zero or multiple matches, raise RuntimeError so the MCP layer can
-      surface a clear error (we do *not* guess).
-
-    Brief-mode override:
-    - If the heading is decorated by an on-disk MD beacon whose slice_labels
-      include ``b`` or any token starting with ``b-``, the core span instead
-      stops at the next heading of ANY level (i.e., the first nested ``###``
-      or peer ``##`` ends the snippet). This lets users tag a heading with
-      ``#b`` or ``#b-foo`` to opt into a brief, body-only snippet without
-      changing the snippet API.
+    IMPORTANT: this function intentionally uses Cartographer's
+    ``parse_markdown_structure(...)`` output rather than maintaining a separate
+    markdown-it heading stack. F9/F10 snippet navigation must agree with F12+1
+    and F12+3 about what counts as the Markdown outline. In May 2026 a separate
+    snippet-only markdown-it parser failed on README-SCRATCH because blockquoted
+    headings (e.g. ``> # ...``) reset the local stack even though Cartographer's
+    parser correctly treats them as body content. Result: MD_PATH lookup failed
+    and F9 fell through to a bad name-search guess. Keeping MD_PATH resolution
+    anchored to Cartographer's parsed tree prevents parser drift.
     """
-    import re
-    from markdown_it import MarkdownIt
-    from nexus_map_codebase import whiten_text_for_header_compare
+    if nexus_map_codebase is None:
+        raise RuntimeError("nexus_map_codebase is not available for Markdown MD_PATH resolution")
 
-    # Read the Markdown file once; reuse these lines for snippet construction.
-    lines = _read_lines(file_path)
+    import re
+
+    # Read source lines with the same control-character and LF-oriented line
+    # semantics as Cartographer when those helpers are available.
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            raw_text = f.read()
+        sanitizer = getattr(nexus_map_codebase, "_strip_disallowed_markdown_control_chars", None)
+        if callable(sanitizer):
+            raw_text = sanitizer(raw_text)
+        splitter = getattr(nexus_map_codebase, "_markdown_source_lines", None)
+        if callable(splitter):
+            lines = splitter(raw_text)
+        else:
+            lines = raw_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    except Exception:
+        lines = _read_lines(file_path)
     n = len(lines)
 
-    # ------------------------------------------------------------------
-    # 1. Normalize desired MD_PATH using the same whitening semantics
-    #    used by Cartographer for header comparison.
-    # ------------------------------------------------------------------
     desired: List[tuple[int, str]] = []
     for raw in md_path_lines:
         s = (raw or "").strip()
         if not s:
             continue
-        m = re.match(r"^(#{1,32})\s*(.*)$", s)
+        m = re.match(r"^(#{1,64})\s*(.*)$", s)
         if not m:
             raise RuntimeError(f"Invalid MD_PATH component {raw!r} in note")
         level = len(m.group(1))
         text = (m.group(2) or "").strip()
-        # Whiten + casefold so comparisons are robust to markup/emoji/spacing.
-        norm = whiten_text_for_header_compare(text).casefold()
+        norm = nexus_map_codebase.whiten_text_for_header_compare(text).casefold()
         desired.append((level, norm))
 
     if not desired:
@@ -3147,66 +3138,60 @@ def get_snippet_for_md_path(
     target_depth = len(desired)
     target_level = desired[-1][0]
 
-    # ------------------------------------------------------------------
-    # 2. Parse the actual Markdown with markdown-it-py to obtain a
-    #    heading stream that matches Cartographer's view of structure.
-    # ------------------------------------------------------------------
-    md_text = "\n".join(lines)
-    md = MarkdownIt("commonmark")
-    tokens = md.parse(md_text)
-
-    headings: List[dict[str, Any]] = []
-    stack: List[tuple[int, str]] = []  # (level, normalized_text)
-
-    for idx, token in enumerate(tokens):
-        if token.type != "heading_open":
-            continue
-
-        # Derive heading level from <hN> tag; fall back to level 1 on anomalies.
-        try:
-            level = int(token.tag[1]) if token.tag and len(token.tag) > 1 else 1
-        except Exception:  # noqa: BLE001
-            level = 1
-
-        # Heading text is carried by the following inline token.
-        text = ""
-        if idx + 1 < len(tokens) and tokens[idx + 1].type == "inline":
-            text = tokens[idx + 1].content or ""
-        norm = whiten_text_for_header_compare(text).casefold()
-
-        # Maintain a stack of (level, norm_text) following the same
-        # semantics as Cartographer's MD_PATH generation: the nearest
-        # preceding heading with a *lower* level is the parent.
-        while stack and stack[-1][0] >= level:
-            stack.pop()
-        stack.append((level, norm))
-
-        # Compute the starting line for this heading from token.map when
-        # available; fall back to 1-based index 1 if mapping is missing.
-        start0 = None
-        if getattr(token, "map", None):  # type: ignore[attr-defined]
-            start0 = token.map[0]  # 0-based
-        elif idx + 1 < len(tokens) and getattr(tokens[idx + 1], "map", None):  # type: ignore[attr-defined]
-            start0 = tokens[idx + 1].map[0]
-        if start0 is None:
-            start0 = 0
-        start_line = start0 + 1
-
-        headings.append(
-            {
-                "level": level,
-                "path": list(stack),  # copy of current (level, norm_text) chain
-                "start_line": start_line,
-            }
-        )
-
-    if not headings:
+    # Parse with Cartographer's canonical Markdown parser (same as F12+1).
+    outline_nodes = nexus_map_codebase.parse_markdown_structure(file_path)
+    if not outline_nodes:
         raise RuntimeError(f"No headings found while resolving MD_PATH for {file_path!r}")
 
-    # ------------------------------------------------------------------
-    # 3. Match MD_PATH against the normalized heading paths.
-    # ------------------------------------------------------------------
-    candidates: List[tuple[int, dict[str, Any]]] = []
+    headings: List[dict] = []
+
+    def _extract_md_path(note: str) -> List[str]:
+        out: List[str] = []
+        in_block = False
+        for line in (note or "").splitlines():
+            stripped = line.strip()
+            if not in_block:
+                if stripped == "MD_PATH:":
+                    in_block = True
+                continue
+            if stripped == "---":
+                break
+            if stripped:
+                out.append(stripped)
+        return out
+
+    def _walk(nodes: List[dict]) -> None:
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            note = node.get("note") or ""
+            node_md = _extract_md_path(note)
+            heading_line = node.get("_md_heading_line")
+            if node_md and isinstance(heading_line, int) and heading_line > 0:
+                last = node_md[-1].strip()
+                m = re.match(r"^(#{1,64})\s*(.*)$", last)
+                if m:
+                    level = len(m.group(1))
+                    path_norm: List[tuple[int, str]] = []
+                    for raw_path_line in node_md:
+                        pm = re.match(r"^(#{1,64})\s*(.*)$", raw_path_line.strip())
+                        if not pm:
+                            continue
+                        p_level = len(pm.group(1))
+                        p_text = (pm.group(2) or "").strip()
+                        p_norm = nexus_map_codebase.whiten_text_for_header_compare(p_text).casefold()
+                        path_norm.append((p_level, p_norm))
+                    headings.append({
+                        "level": level,
+                        "path": path_norm,
+                        "start_line": int(heading_line),
+                    })
+            _walk(node.get("children") or [])
+
+    _walk(outline_nodes)
+    headings.sort(key=lambda h: int(h.get("start_line") or 0))
+
+    candidates: List[tuple[int, dict]] = []
     for i, h in enumerate(headings):
         path_chain = h.get("path") or []
         if len(path_chain) != target_depth:
@@ -3231,20 +3216,11 @@ def get_snippet_for_md_path(
     heading_line = int(match.get("start_line") or 1)
     heading_level = int(match.get("level") or target_level)
 
-    # ------------------------------------------------------------------
-    # 4. Core span: from this heading down to just before the next
-    #    heading. By default we stop at the next heading of the same
-    #    or higher level (so a ``##`` snippet includes nested ``###``
-    #    children). If the on-disk beacon decorating this heading
-    #    carries a brief label (slice_label == "b" or starts with
-    #    "b-"), we instead stop at the next heading of ANY level.
-    # ------------------------------------------------------------------
     brief_mode = _md_beacon_has_brief_label(file_path, heading_line)
-    termination_max_level = 32 if brief_mode else heading_level
+    termination_max_level = 64 if brief_mode else heading_level
 
     core_start = heading_line
     core_end = n
-
     for j in range(match_index + 1, len(headings)):
         other = headings[j]
         other_level = int(other.get("level") or 0)
@@ -3260,7 +3236,7 @@ def get_snippet_for_md_path(
     end_line = min(n, core_end + context)
 
     metadata = {
-        "resolution_strategy": "md_path_ast_brief" if brief_mode else "md_path_ast",
+        "resolution_strategy": "md_path_carto_brief" if brief_mode else "md_path_carto",
         "confidence": 1.0,
         "ambiguity": "none",
         "candidates": None,
