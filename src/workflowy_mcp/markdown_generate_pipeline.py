@@ -92,15 +92,28 @@ _MARKDOWN_DISALLOWED_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f
 
 
 def _strip_disallowed_markdown_control_chars(text: str | None) -> str:
-    """Remove C0 controls that must never be written to Markdown files.
+    """Repair/remove C0 controls that must never be written to Markdown files.
 
-    Preserve TAB, LF, and CR; strip all other C0 controls (BEL, VT, FF,
-    etc.). This keeps F12+3 from persisting accidental backslash-escape
-    corruption such as ``\a`` -> BEL or ``\v`` -> vertical tab.
+    Preserve TAB, LF, and CR. Convert common accidental Python escape controls
+    back to visible literal backslash sequences (BEL -> ``\\a``, BS ->
+    ``\\b``, VT -> ``\\v``, FF -> ``\\f``); strip all other illegal C0
+    controls. This keeps F12+3 from persisting accidental backslash-escape
+    corruption while preserving likely user intent when possible.
     """
     if not isinstance(text, str):
         return ""
-    return _MARKDOWN_DISALLOWED_CONTROL_CHARS_RE.sub("", text)
+
+    visible_escape_repairs = {
+        "\x07": r"\a",
+        "\x08": r"\b",
+        "\x0b": r"\v",
+        "\x0c": r"\f",
+    }
+
+    def _replace(match: re.Match[str]) -> str:
+        return visible_escape_repairs.get(match.group(0), "")
+
+    return _MARKDOWN_DISALLOWED_CONTROL_CHARS_RE.sub(_replace, text)
 
 
 def _job_cancelled(job_file: str) -> bool:

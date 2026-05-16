@@ -1511,12 +1511,21 @@ _MARKDOWN_DISALLOWED_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f
 
 
 def _strip_disallowed_markdown_control_chars(text: str | None) -> str:
-    """Remove C0 controls that must never appear in Markdown content.
+    """Repair/remove C0 controls that must never appear in Markdown content.
 
     We intentionally preserve TAB, LF, and CR. Everything else in the C0
-    control range is treated as corruption. This is especially important for
-    BEL (\x07) and vertical tab (\x0b), which can appear when a Windows path
-    like ``\agentic\visualizations\run_...`` is accidentally interpreted as
+    control range is treated as corruption. For the common accidental Python
+    escape cases, preserve likely user intent by converting the invisible
+    control back to a visible literal backslash sequence:
+
+      - BEL (\x07) -> ``\\a``
+      - BS  (\x08) -> ``\\b``
+      - VT  (\x0b) -> ``\\v``
+      - FF  (\x0c) -> ``\\f``
+
+    Other illegal C0 controls are stripped. This is especially important for
+    vertical tab (\x0b), which can appear when a Windows path like
+    ``\agentic\visualizations\run_...`` is accidentally interpreted as
     Python/JSON-style escapes. Python ``str.splitlines()`` treats VT as a line
     boundary, while markdown-it token maps are LF-oriented; allowing VT into
     the parse stream desynchronizes heading maps from raw ``source_lines`` and
@@ -1524,7 +1533,18 @@ def _strip_disallowed_markdown_control_chars(text: str | None) -> str:
     """
     if not isinstance(text, str):
         return ""
-    return _MARKDOWN_DISALLOWED_CONTROL_CHARS_RE.sub("", text)
+
+    visible_escape_repairs = {
+        "\x07": r"\a",
+        "\x08": r"\b",
+        "\x0b": r"\v",
+        "\x0c": r"\f",
+    }
+
+    def _replace(match: re.Match[str]) -> str:
+        return visible_escape_repairs.get(match.group(0), "")
+
+    return _MARKDOWN_DISALLOWED_CONTROL_CHARS_RE.sub(_replace, text)
 
 
 def _sanitize_markdown_lines(lines: list[str]) -> list[str]:
