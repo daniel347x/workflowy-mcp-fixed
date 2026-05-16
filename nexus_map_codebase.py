@@ -1527,6 +1527,18 @@ def _strip_disallowed_markdown_control_chars(text: str | None) -> str:
     return _MARKDOWN_DISALLOWED_CONTROL_CHARS_RE.sub("", text)
 
 
+def _sanitize_markdown_lines(lines: list[str]) -> list[str]:
+    """Strip illegal C0 controls from already-split Markdown lines."""
+    return [_strip_disallowed_markdown_control_chars(line) for line in (lines or [])]
+
+
+def _write_markdown_lines_sanitized(file_path: str, lines: list[str]) -> None:
+    """Write Markdown lines after enforcing the no-illegal-C0-controls rule."""
+    safe_lines = _sanitize_markdown_lines(lines)
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(safe_lines) + "\n")
+
+
 def _markdown_source_lines(text: str | None) -> list[str]:
     """Split Markdown source into LF-oriented lines matching markdown-it maps.
 
@@ -1563,8 +1575,15 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
     try:
         # STEP 1: Load the Markdown source.
         with open(file_path, 'r', encoding='utf-8') as f:
-            original_content = f.read()
-        original_content = _strip_disallowed_markdown_control_chars(original_content)
+            original_content_raw = f.read()
+        original_content = _strip_disallowed_markdown_control_chars(original_content_raw)
+        if original_content != original_content_raw:
+            # F12+1 treats disk as source of truth, but illegal C0 controls are
+            # never legitimate Markdown source in Dan's workflow. Remove them
+            # from disk before parsing so downstream token maps and body-line
+            # extraction cannot be poisoned by VT/BEL/etc.
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(original_content)
 
         # STEP 1.1: Detect YAML frontmatter and per-file IGNORE_MDFORMAT flag.
         # NOTE: this detection is preserved as suspenders, but mdformat is now
@@ -8934,8 +8953,7 @@ def update_beacon_from_node_python(
             if not tags:
                 new_lines = lines[:start_idx] + lines[end_idx + 1 :]
                 try:
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write("\n".join(new_lines) + "\n")
+                    _write_markdown_lines_sanitized(file_path, new_lines)
                 except Exception as e:  # noqa: BLE001
                     result["error"] = f"failed_to_write_file: {e}"
                     return result
@@ -8981,8 +8999,7 @@ def update_beacon_from_node_python(
             new_block = _indent_beacon_block(new_block, lines, start_idx)
             new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
             try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(new_lines) + "\n")
+                _write_markdown_lines_sanitized(file_path, new_lines)
             except Exception as e:  # noqa: BLE001
                 result["error"] = f"failed_to_write_file: {e}"
                 return result
@@ -9056,8 +9073,7 @@ def update_beacon_from_node_python(
         start_idx, end_idx, _cl = span
         new_lines = lines[:start_idx] + lines[end_idx + 1 :]
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(new_lines) + "\n")
+            _write_markdown_lines_sanitized(file_path, new_lines)
         except Exception as e:  # noqa: BLE001
             result["error"] = f"failed_to_write_file: {e}"
             return None
@@ -9141,8 +9157,7 @@ def update_beacon_from_node_python(
         new_block = _indent_beacon_block(new_block, lines, insert_idx)
         new_lines = lines[:insert_idx] + new_block + lines[insert_idx:]
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(new_lines) + "\n")
+            _write_markdown_lines_sanitized(file_path, new_lines)
         except Exception as e:  # noqa: BLE001
             result["error"] = f"failed_to_write_file: {e}"
             return result
@@ -9365,8 +9380,7 @@ def update_beacon_from_node_js_ts(
             new_block = _indent_beacon_block(new_block, lines, start_idx)
             new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
             try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(new_lines) + "\n")
+                _write_markdown_lines_sanitized(file_path, new_lines)
             except Exception as e:  # noqa: BLE001
                 result["error"] = f"failed_to_write_file: {e}"
                 return result
@@ -10055,6 +10069,8 @@ def update_beacon_from_node_markdown(
     Uses MD_PATH to locate the heading and follows the same name-tag-only
     slice_labels semantics as the Python/JS/TS helpers.
     """
+    name = _strip_disallowed_markdown_control_chars(name)
+    note = _strip_disallowed_markdown_control_chars(note)
     base_name, tags = split_name_and_tags(name)
     beacon_id = _extract_beacon_id_from_note(note)
     md_path = _extract_md_path_from_note(note)
@@ -10082,7 +10098,12 @@ def update_beacon_from_node_markdown(
 
     try:
         with open(file_path, "r", encoding="utf-8") as f:
-            lines = f.read().splitlines()
+            raw_text = f.read()
+        safe_text = _strip_disallowed_markdown_control_chars(raw_text)
+        if safe_text != raw_text:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(safe_text)
+        lines = _markdown_source_lines(safe_text)
     except Exception as e:  # noqa: BLE001
         result["error"] = f"failed_to_read_file: {e}"
         return result
@@ -10239,8 +10260,7 @@ def update_beacon_from_node_markdown(
             )
             new_lines = lines[:start_idx] + new_block + lines[end_idx + 1 :]
             try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(new_lines) + "\n")
+                _write_markdown_lines_sanitized(file_path, new_lines)
             except Exception as e:  # noqa: BLE001
                 result["error"] = f"failed_to_write_file: {e}"
                 return result
@@ -10419,7 +10439,8 @@ def update_beacon_from_node_markdown(
         # and compute fresh beacon locations.
         try:
             with open(file_path, "r", encoding="utf-8") as f:
-                current_lines = f.read().splitlines()
+                current_text = _strip_disallowed_markdown_control_chars(f.read())
+            current_lines = _markdown_source_lines(current_text)
         except Exception as e:  # noqa: BLE001
             result["error"] = f"failed_to_read_file: {e}"
             return None
