@@ -1507,6 +1507,39 @@ def _frontmatter_has_ignore_mdformat(frontmatter: str | None) -> bool:
     return False
 
 
+_MARKDOWN_DISALLOWED_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _strip_disallowed_markdown_control_chars(text: str | None) -> str:
+    """Remove C0 controls that must never appear in Markdown content.
+
+    We intentionally preserve TAB, LF, and CR. Everything else in the C0
+    control range is treated as corruption. This is especially important for
+    BEL (\x07) and vertical tab (\x0b), which can appear when a Windows path
+    like ``\agentic\visualizations\run_...`` is accidentally interpreted as
+    Python/JSON-style escapes. Python ``str.splitlines()`` treats VT as a line
+    boundary, while markdown-it token maps are LF-oriented; allowing VT into
+    the parse stream desynchronizes heading maps from raw ``source_lines`` and
+    can make a node's body start with its own heading line.
+    """
+    if not isinstance(text, str):
+        return ""
+    return _MARKDOWN_DISALLOWED_CONTROL_CHARS_RE.sub("", text)
+
+
+def _markdown_source_lines(text: str | None) -> list[str]:
+    """Split Markdown source into LF-oriented lines matching markdown-it maps.
+
+    Do NOT use ``str.splitlines()`` here: it treats vertical tab, form feed,
+    and other Unicode line separators as line breaks. Markdown source maps are
+    based on newline structure. A mismatch here corrupts body-range extraction.
+    """
+    if not isinstance(text, str):
+        return []
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized.split("\n")
+
+
 # @beacon[
 #   id=auto-beacon@parse_markdown_structure-z918,
 #   role=parse_markdown_structure,
@@ -1531,6 +1564,7 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
         # STEP 1: Load the Markdown source.
         with open(file_path, 'r', encoding='utf-8') as f:
             original_content = f.read()
+        original_content = _strip_disallowed_markdown_control_chars(original_content)
 
         # STEP 1.1: Detect YAML frontmatter and per-file IGNORE_MDFORMAT flag.
         # NOTE: this detection is preserved as suspenders, but mdformat is now
@@ -1568,7 +1602,7 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
                 f"IGNORE_MDFORMAT={ignore_mdformat} preserved as no-op)",
             )
 
-        lines = full_content_for_parse.splitlines()
+        lines = _markdown_source_lines(full_content_for_parse)
         md_beacons = parse_markdown_beacon_blocks(lines)
 
         # STEP 2: Parse ONLY the body with markdown-it-py to avoid misinterpreting frontmatter.
@@ -1612,7 +1646,7 @@ def parse_markdown_structure(file_path: str) -> List[Dict[str, Any]]:
             body_line_offset = len(frontmatter.splitlines()) + 2
         root_children = tokens_to_nexus_tree(
             tokens,
-            source_lines=body_for_parse.splitlines(),
+            source_lines=_markdown_source_lines(body_for_parse),
             source_line_offset=body_line_offset,
         )
         

@@ -35,6 +35,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -85,6 +86,21 @@ def _set_phase(
     job["updated_at"] = _now_iso()
     _write_job_payload(job_file, job)
     _append_log(log_file, f"[phase={phase}] {message}")
+
+
+_MARKDOWN_DISALLOWED_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _strip_disallowed_markdown_control_chars(text: str | None) -> str:
+    """Remove C0 controls that must never be written to Markdown files.
+
+    Preserve TAB, LF, and CR; strip all other C0 controls (BEL, VT, FF,
+    etc.). This keeps F12+3 from persisting accidental backslash-escape
+    corruption such as ``\a`` -> BEL or ``\v`` -> vertical tab.
+    """
+    if not isinstance(text, str):
+        return ""
+    return _MARKDOWN_DISALLOWED_CONTROL_CHARS_RE.sub("", text)
 
 
 def _job_cancelled(job_file: str) -> bool:
@@ -236,6 +252,8 @@ async def run_markdown_generate_pipeline(
             frontmatter_clean = markdown_roundtrip.clean_html_entities(frontmatter_text).strip("\n")
             body_clean = final_markdown.lstrip("\n")
             final_markdown = f"---\n{frontmatter_clean}\n---\n\n{body_clean}"
+
+        final_markdown = _strip_disallowed_markdown_control_chars(final_markdown)
 
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(final_markdown)
